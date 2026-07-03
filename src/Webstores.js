@@ -1693,9 +1693,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const front = arr.find((m) => !m.side || m.side === 'front') || arr[0];
       if (!front || !front.url) continue;
       const item = cat.find((c) => c.sku === sku && (sbw[c.id]?.color || '') === color) || cat.find((c) => c.sku === sku);
-      // The baked mock becomes the item image; clear any overlay decoration so the
-      // logo isn't stamped twice (baked + CSS overlay).
-      if (item) { await supabase.from('webstore_products').update({ image_url: front.url, decorations: [] }).eq('id', item.id); applied++; }
+      // The baked mock becomes the item image. Don't DROP the placed art — the store→SO
+      // conversion reads webstore_products.decorations to build the production art lines,
+      // so clearing them left production with a "no decoration" line for a garment that
+      // clearly shows a logo. Instead mark each art decoration `baked: true`: the storefront
+      // skips the CSS overlay for baked decorations (the logo is already in the image, so no
+      // double-stamp), while the SO conversion still emits the art file + placement to print.
+      if (item) {
+        const prev = Array.isArray(item.decorations) ? item.decorations : [];
+        const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked }).eq('id', item.id); applied++;
+      }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
     loadDetail(sel);
@@ -1850,6 +1858,51 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // ── Roster: add players (each gets a unique link token), remove players ──
+  // A url-safe 32-hex token per player backs /shop/<slug>?player=<token>. The DB
+  // has a UNIQUE index on token, so a collision would surface as an insert error.
+  const addRoster = useCallback(async (players) => {
+    const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+    const normPos = (v) => { const s = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(s)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(s)) return 'field'; return null; };
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: sel.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return { error: true }; }
+    const { data, error } = await supabase.from('webstore_roster').insert(rows).select();
+    if (error) { flash('Could not add players: ' + error.message); return { error }; }
+    flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    return { data };
+  }, [sel, flash, loadDetail]);
+
+  const updateRoster = useCallback(async (id, fields) => {
+    const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return { error }; }
+    loadDetail(sel);
+    return {};
+  }, [sel, flash, loadDetail]);
+
+  const removeRoster = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_roster').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Email selected roster players their personal link (initial invite / resend).
+  const inviteRoster = useCallback(async (playerIds) => {
+    const ids = (playerIds || []).filter(Boolean);
+    if (!ids.length) { flash('No players to email.'); return { error: true }; }
+    try {
+      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
+      const skipped = (d.skipped || []).length;
+      flash(`Emailed ${d.sent} link${d.sent === 1 ? '' : 's'}${skipped ? ` · ${skipped} skipped (no email)` : ''}`);
+      loadDetail(sel);
+      return { data: d };
+    } catch (e) { flash('Email failed: ' + e.message); return { error: true }; }
+  }, [sel, flash, loadDetail]);
+
   // Edit an order's line items (size/qty/remove), then recompute its totals.
   const saveOrderEdits = useCallback(async (order, edited) => {
     for (const it of edited) {
@@ -1870,8 +1923,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const round2 = (n) => Math.round(n * 100) / 100;
     const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
     const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
-    const total = round2(Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0));
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
+    // Processing fee and sales tax are both levied on the product subtotal, so they scale
+    // with it. Re-derive each from THIS order's own stored ratio (fee/subtotal, tax/subtotal)
+    // and re-apply to the new subtotal: a size-only edit (subtotal unchanged) leaves the total
+    // exactly as charged, while a qty/removal edit scales the fee + tax to match. Dropping
+    // them — the old behavior — pushed the DB total below what the card actually paid and
+    // broke the refund cap (which reads `total`). Mirrors webstore-checkout's preTax + tax.
+    const oldSub = Number(order.subtotal) || 0;
+    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
+    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
+    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - (Number(order.discount_amt) || 0)));
+    const total = round2(preTax + tax);
+    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
   }, [sel, detail, flash, loadDetail]);
@@ -2117,6 +2180,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
     const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
     const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
+    // Club fundraising is a passthrough NSA owes the team, not rep margin. Its dollars are
+    // baked into each garment's unit_sell (so the SO total reconciles to what was collected),
+    // so we carry the same amount as an SO-level COST (_webstore_fundraise): calcGP subtracts
+    // it, keeping fundraising out of the GP that rep commission is paid on. Scaled by discRatio
+    // to match the fundraise embedded in the (already discount-scaled) unit_sells.
+    const batchFundraiseGross = open.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+    const fundraiseCost = r2(batchFundraiseGross * discRatio);
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
     // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
@@ -2250,7 +2320,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
@@ -2383,6 +2453,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
+          onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
@@ -2598,9 +2669,38 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Live-inventory panel (Reporting view): per-store stock for every item.
+  const [invStoreId, setInvStoreId] = useState('');
+  const [invItems, setInvItems] = useState([]);
+  const [invStock, setInvStock] = useState(null); // Map: product_id | 'wp:'+id → { units, sizeStock, ... }
+  const [invLoading, setInvLoading] = useState(false);
 
   const templates = stores.filter((s) => s.is_template);
   const nonTemplates = stores.filter((s) => !s.is_template);
+
+  // Load a store's items + live availability (vendor by SKU + in-house by product_id), same source
+  // of truth as every store builder so the numbers match. Unlinked items get a synthetic key so
+  // several manual items never collide on a null product id.
+  const loadInventory = useCallback(async (storeId) => {
+    if (!storeId) { setInvItems([]); setInvStock(null); return; }
+    setInvLoading(true);
+    try {
+      const { data: items } = await supabase.from('webstore_products')
+        .select('id,product_id,sku,display_name,image_url,sizes_offered,kind,active')
+        .eq('store_id', storeId).eq('active', true).eq('kind', 'single').order('sort_order');
+      const rows = items || [];
+      const stockRows = rows.map((p) => ({ id: p.product_id || ('wp:' + p.id), sku: p.sku }));
+      let stock = new Map();
+      try { stock = await fetchStockMap(stockRows); } catch { /* show without stock */ }
+      setInvItems(rows); setInvStock(stock);
+    } finally { setInvLoading(false); }
+  }, []);
+  // First time the Reporting view opens, default the picker to the first store.
+  useEffect(() => {
+    if (view === 'reporting' && !invStoreId && nonTemplates.length) {
+      const first = nonTemplates[0].id; setInvStoreId(first); loadInventory(first);
+    }
+  }, [view, invStoreId, nonTemplates, loadInventory]);
 
   const money = (n) => '$' + Math.round(n || 0).toLocaleString();
   const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
@@ -2984,6 +3084,96 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                 <div style={{ ...BCN, fontWeight: 800, fontSize: 30, color: '#192853', lineHeight: 1.1, marginTop: 3 }}>{k.value}</div>
               </div>
             ))}
+          </div>
+
+          {/* Live Inventory — per-store stock for every item */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853' }}>Live Inventory</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <select value={invStoreId} onChange={(e) => { setInvStoreId(e.target.value); loadInventory(e.target.value); }}
+                  style={{ padding: '7px 10px', border: '1px solid #C3CAD8', borderRadius: 7, fontSize: 13, fontWeight: 600, color: '#192853', background: '#fff', maxWidth: 300 }}>
+                  <option value="">Choose a store…</option>
+                  {nonTemplates.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <button onClick={() => loadInventory(invStoreId)} disabled={!invStoreId || invLoading} title="Refresh live stock"
+                  style={{ padding: '7px 12px', border: '1px solid #C3CAD8', borderRadius: 7, background: '#fff', fontSize: 12.5, fontWeight: 700, color: '#2A2F3E', cursor: (!invStoreId || invLoading) ? 'default' : 'pointer' }}>{invLoading ? '…' : '↻ Refresh'}</button>
+              </div>
+            </div>
+            {!invStoreId ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Pick a store to see live stock for every item.</div>
+            ) : invLoading ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Checking live stock…</div>
+            ) : invItems.length === 0 ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>No items on this store.</div>
+            ) : (() => {
+              const pill = (bg, fg) => ({ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 20, background: bg, color: fg, whiteSpace: 'nowrap' });
+              let inStock = 0, out = 0, unlinked = 0;
+              const rowData = invItems.map((p) => {
+                const key = p.product_id || ('wp:' + p.id);
+                const st = invStock && invStock.get(key);
+                const offered = foldScale(Array.isArray(p.sizes_offered) ? p.sizes_offered : []);
+                const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
+                const list = offered.length ? offered : (st ? st.sizes : []);
+                const sizeRows = list.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
+                const total = sizeRows.reduce((a, s) => a + s.q, 0);
+                const linked = !!p.product_id;
+                if (!linked && !(st && st.units)) unlinked++;
+                else if (total > 0) inStock++;
+                else out++;
+                return { p, sizeRows, total, linked };
+              });
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 12.5, color: '#5A6075', flexWrap: 'wrap' }}>
+                    <span><b style={{ color: '#1B7F4B' }}>{inStock}</b> in stock</span>
+                    <span><b style={{ color: '#962C32' }}>{out}</b> out</span>
+                    {unlinked > 0 && <span><b style={{ color: '#9A6B00' }}>{unlinked}</b> not linked to catalog</span>}
+                    <span style={{ color: '#8A93A8' }}>· {invItems.length} item{invItems.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead><tr style={{ color: '#8A93A8', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Item</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Sizes — live stock</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'right' }}>Total</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Status</th>
+                      </tr></thead>
+                      <tbody>
+                        {rowData.map(({ p, sizeRows, total, linked }) => (
+                          <tr key={p.id}>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                {p.image_url ? <img src={p.image_url} alt="" style={{ width: 34, height: 34, objectFit: 'contain', borderRadius: 5, border: '1px solid #EEF1F6' }} /> : <div style={{ width: 34, height: 34, borderRadius: 5, background: '#F4F6FA' }} />}
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, color: '#192853', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 230 }}>{p.display_name || p.sku || 'Item'}</div>
+                                  <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#8A93A8' }}>{p.sku || '—'}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {sizeRows.length ? (
+                                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                  {sizeRows.map(({ sz, q }) => (
+                                    <span key={sz} title={`${q} available`} style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: q > 0 ? '#E7F5EE' : '#FBEBEC', color: q > 0 ? '#1B7F4B' : '#962C32', border: `1px solid ${q > 0 ? '#BFE6D0' : '#F3C7CB'}` }}>{sz}&nbsp;{q}</span>
+                                  ))}
+                                </div>
+                              ) : <span style={{ color: '#8A93A8', fontSize: 12 }}>{linked ? 'No stock data' : 'Not linked — add a catalog SKU'}</span>}
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA', textAlign: 'right', fontWeight: 800, color: total > 0 ? '#192853' : '#962C32' }}>{total}</td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {!linked ? <span style={pill('#FDF3DA', '#9A6B00')}>⚠ not linked</span>
+                                : total > 0 ? <span style={pill('#E7F5EE', '#1B7F4B')}>In stock</span>
+                                  : <span style={pill('#FBEBEC', '#962C32')}>Out of stock</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
           </div>
 
           {/* Sales by Rep */}
@@ -3746,7 +3936,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -3835,7 +4025,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     const color = st.color || '';
     const key = (c.sku || '') + '|' + color;
     (Array.isArray(c.decorations) ? c.decorations : []).forEach((d) => {
-      if (!d || d.kind !== 'art') return;
+      if (!d || d.kind !== 'art' || d.baked) return; // baked art is already in the item image — don't re-place it
       const url = decoUrlForColor(d, color, _qmWebLogos(d)) || d.art_url || d.web_url || '';
       if (!url || !_qmIsImg(url)) return;
       const artId = d.art_file_id || d.art_id || ('deco-' + url);
@@ -3924,7 +4114,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
-          {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
+          {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
@@ -4149,8 +4339,9 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
         <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
-          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
-          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup.
+              Skip `baked` decorations — already rendered into the item image (a Quick Mock). */}
+          {(p.decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
             <img key={i} src={decoUrlForColor(d, stock?.color, _webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
           ); })}
         </div>
@@ -5162,6 +5353,9 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
   const [cardStyle, setCardStyle] = useState(item.card_style || '');
+  // Roster audience: who this item is for — everyone ('all'), field players, or
+  // goalkeepers. Drives per-player bifurcation of the storefront.
+  const [audience, setAudience] = useState(item.roster_audience || 'all');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
@@ -5308,13 +5502,13 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, audience, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions, card_style: cardStyle || null };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -5505,9 +5699,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
+            <Row label="Who it's for (roster position)">
+              <select className="form-input" value={audience} onChange={(e) => setAudience(e.target.value)}>
+                <option value="all">Everyone</option>
+                <option value="field">Field players only</option>
+                <option value="gk">Goalkeepers only</option>
+              </select>
+            </Row>
             <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout. “Who it's for” hides an item from players whose roster position doesn't match (players who open their personal link).</div>
         </ItemSection>
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
@@ -8511,12 +8712,33 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
-  const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
+  // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
+  // together, so a discounted order collected proportionally less fundraising, and a 100%-off
+  // order collected none — paying the club the gross fundraise_amt overpaid them on every
+  // discounted order.
+  const netFundraise = (o) => {
+    const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
+    if (fund <= 0) return 0;
+    const base = sub + fund;
+    if (base <= 0) return r2f(fund);
+    const disc = Math.min(Number(o.discount_amt) || 0, base);
+    return Math.max(0, r2f(fund - disc * (fund / base)));
+  };
+  const fundGross = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
   const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
   const shipNet = shipCollected - shipCost;
-  const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const fundPending = fundraise - fundPaid;
+  // "Collected & owed" counts fundraising on every card-paid order through its whole
+  // lifecycle (paid → batched → shipped → complete), NOT just status==='paid' — the old test
+  // dropped every batched order and cratered the payout right after the rep batched the store.
+  // Team-tab / unpaid orders bill on the club invoice, so their fundraising is still "pending".
+  // Fully-refunded orders (status 'refunded') owe nothing.
+  const nonRefunded = orders.filter((o) => o.status !== 'refunded');
+  const fundOwed = r2f(nonRefunded.reduce((a, o) => a + netFundraise(o), 0));
+  const fundPaid = r2f(nonRefunded.filter((o) => o.payment_mode === 'paid').reduce((a, o) => a + netFundraise(o), 0));
+  const fundPending = r2f(Math.max(0, fundOwed - fundPaid));
   const paid = orders.filter((o) => o.payment_mode === 'paid');
 
   // ── Accounting ledger — every dollar in and out of the store ──
@@ -8606,7 +8828,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundOwed), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
           ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
@@ -8634,7 +8856,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.5 }}>Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
       </div></div>
 
-      {fundraise > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      {fundGross > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontSize: 11, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Club fundraising payout</div>
           <div style={{ fontSize: 26, fontWeight: 900, color: '#166534' }}>{money(fundPaid)}</div>
@@ -9482,21 +9704,140 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   );
 }
 
-function RosterTab({ roster, notOrdered }) {
-  if (!roster.length) return <Empty msg="No roster uploaded. Upload one (coming in a later step) to track who hasn't ordered." />;
+// Roster management: add players (each gets a private /shop link), copy links to
+// hand out, and track who has ordered. Marking "ordered" happens automatically
+// when a player checks out through their link (webstore-checkout.place_order).
+function RosterTab({ store, roster, notOrdered, orders = [], onAdd, onUpdate, onRemove, onInvite, onFlash }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '', position: '' });
+  const [bulk, setBulk] = useState('');
+  const [bulkPos, setBulkPos] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
+  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => onFlash && onFlash(m);
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyMany = (rows, label) => {
+    const withLinks = rows.filter((r) => r.token);
+    if (!withLinks.length) { flash('No links to copy yet.'); return; }
+    const text = withLinks.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n');
+    navigator.clipboard?.writeText(text); flash(`Copied ${withLinks.length} ${label}`);
+  };
+  const emailMany = async (rows, label) => {
+    const ids = rows.filter((r) => r.token && (r.parent_email || '').trim()).map((r) => r.id);
+    if (!ids.length) { flash('No players with an email address to send to.'); return; }
+    if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
+    setBusy(true); await onInvite(ids); setBusy(false);
+  };
+
+  const addSingle = async () => {
+    if (!single.player_name.trim()) { flash('Enter a player name.'); return; }
+    setBusy(true); const r = await onAdd([single]); setBusy(false);
+    if (!r || !r.error) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position });
+  };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => {
+      const parts = line.split(/[,\t]/).map((s) => s.trim());
+      // Columns: Name, Number, Email, Position — a per-line position overrides the
+      // "these are all…" selector; otherwise every pasted player gets bulkPos.
+      return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '', position: parts[3] || bulkPos } : null;
+    }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    setBusy(true); const r = await onAdd(players); setBusy(false);
+    if (!r || !r.error) { setBulk(''); setShowAdd(false); }
+  };
+
+  const fmtDate = (s) => { if (!s) return ''; const d = new Date(s); return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const posName = (p) => p === 'gk' ? 'Goalkeeper' : p === 'field' ? 'Field' : '';
+  const PosSelect = ({ value, onChange, width = 120 }) => (
+    <select className="form-input" value={value || ''} onChange={(e) => onChange(e.target.value || null)} style={{ width, fontSize: 12.5, padding: '5px 8px' }}>
+      <option value="">— Any —</option>
+      <option value="field">Field</option>
+      <option value="gk">Goalkeeper</option>
+    </select>
+  );
+
+  const addPanel = showAdd && (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Add players</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+        <div><div style={rLbl}>Player name</div><input className="form-input" value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Jane Smith" style={{ width: 190 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Number</div><input className="form-input" value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={{ width: 64 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Position</div><PosSelect value={single.position} onChange={(v) => setSingle({ ...single, position: v || '' })} /></div>
+        <div><div style={rLbl}>Parent email (optional)</div><input className="form-input" type="email" value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={{ width: 210 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <button className="btn btn-sm btn-primary" disabled={busy} onClick={addSingle}>Add</button>
+      </div>
+      <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+        <div style={rLbl}>Or paste a list — one player per line, <code>Name, Number, Email, Position</code> (all but name optional)</div>
+        <textarea className="form-input" value={bulk} onChange={(e) => setBulk(e.target.value)} rows={5} placeholder={'Jane Smith, 10, parent@email.com, field\nAlex Kim, 1, alex@email.com, gk\nSam Rivera, 7'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }} />
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#64748b' }}>These are all:</span>
+          <PosSelect value={bulkPos} onChange={(v) => setBulkPos(v || '')} />
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={addBulk}>Add from list</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!roster.length) {
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: '#64748b' }}>Set up a roster so the club can track who’s ordered — each player gets their own store link.</div>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+        {addPanel}
+        {!showAdd && <Empty msg="No players yet. Add a roster to hand each player a private link and see who hasn’t ordered." />}
+      </>
+    );
+  }
+
   return (
     <>
-      <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>{notOrdered.length} of {roster.length} players have not ordered yet.</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>{notOrdered.length} of {roster.length} player{roster.length === 1 ? '' : 's'} {notOrdered.length === 1 ? 'has' : 'have'} not ordered yet.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-secondary" onClick={() => copyMany(roster, 'links')}>Copy all links</button>
+          <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => emailMany(notOrdered, 'not-ordered players their link')}>Email not-ordered</button>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+      </div>
+      {addPanel}
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Parent email</th><th style={th}>Ordered?</th>
+            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Position</th><th style={th}>Parent email</th><th style={th}>Opened?</th><th style={th}>Ordered?</th><th style={th}>Link</th><th style={th}></th>
           </tr></thead>
           <tbody>
             {roster.map((r) => (
               <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={td}>{r.player_name}</td><td style={td}>{r.player_number || '—'}</td><td style={td}>{r.parent_email || '—'}</td>
-                <td style={td}>{r.ordered ? <Chip label="Ordered" tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>{r.player_name}</td>
+                <td style={td}>
+                  <input defaultValue={r.player_number || ''} onBlur={(e) => { const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 4); if (v !== (r.player_number || '')) onUpdate(r.id, { player_number: v || null }); }} placeholder="#" style={{ width: 48, border: '1px solid #e2e8f0', borderRadius: 5, padding: '3px 6px', fontSize: 12.5 }} />
+                </td>
+                <td style={td}><PosSelect value={r.position} width={118} onChange={(v) => onUpdate(r.id, { position: v })} /></td>
+                <td style={td}>{r.parent_email || <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>
+                  {r.last_opened_at
+                    ? <Chip label={`Opened ${fmtDate(r.last_opened_at)}${r.open_count > 1 ? ` ·${r.open_count}×` : ''}`} tone="blue" />
+                    : r.invite_sent_at
+                      ? <Chip label={`Invited ${fmtDate(r.invite_sent_at)}`} tone="gray" />
+                      : <span style={{ color: '#cbd5e1' }}>Not sent</span>}
+                </td>
+                <td style={td}>{r.ordered ? <Chip label={r.ordered_at ? `Ordered ${fmtDate(r.ordered_at)}` : 'Ordered'} tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>
+                  {r.token ? (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => copyOne(r)} title={linkFor(r)}>{copiedId === r.id ? '✓' : 'Copy'}</button>
+                      <button className="btn btn-sm btn-secondary" disabled={busy || !(r.parent_email || '').trim()} title={(r.parent_email || '').trim() ? `Email link to ${r.parent_email}` : 'Add a parent email first'} onClick={async () => { setBusy(true); await onInvite([r.id]); setBusy(false); }}>Email</button>
+                    </div>
+                  ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                </td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <button onClick={() => { if (window.confirm(`Remove ${r.player_name} from the roster?`)) onRemove(r.id); }} title="Remove player" style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -9505,6 +9846,7 @@ function RosterTab({ roster, notOrdered }) {
     </>
   );
 }
+const rLbl = { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4, fontWeight: 600 };
 
 function SettingsTab({ store: s }) {
   const dlv = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';

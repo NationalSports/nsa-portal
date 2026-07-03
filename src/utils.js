@@ -134,7 +134,7 @@ export const _portalAction=async(payload)=>{
   try{
     const r=await fetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status)};
+    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status),code:d.code};
     return{ok:true,...d};
   }catch(e){return{ok:false,error:e.message}}
 };

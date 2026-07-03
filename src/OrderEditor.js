@@ -409,6 +409,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }},[openPOId]);
     const origRef=React.useRef(JSON.stringify(o));
     const markDirty=()=>setDirty(true);const[saved,setSaved]=useState(!!order.customer_id);const[showSend,setShowSend]=useState(false);const[showActionsDD,setShowActionsDD]=useState(false);const actionsRef=useRef(null);const[showPick,setShowPick]=useState(false);const[pickId,setPickId]=useState(()=>{let max=1000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{const m=parseInt((pk.pick_id||'').replace('IF-',''))||0;if(m>max)max=m})));return'IF-'+String(max+1)});const[showPO,setShowPO]=useState(null);const[batchReadyPopup,setBatchReadyPopup]=useState(null);const[sanmarPreviewBatch,setSanMarPreviewBatch]=useState(null);const[poCounter,setPOCounter]=useState(()=>{let max=3000;(allOrders||[]).concat([order]).forEach(so=>safeItems(so).forEach(it=>safePOs(it).forEach(po=>{if(po.preexisting)return;const m=parseInt(((po.po_id||'').match(/^D?PO[\s-]+(\d+)/)||[])[1])||0;if(m>max)max=m})));return max+1});
+    // ── Atomic PO-number reservation ──────────────────────────────────────────
+    // poCounter above seeds from max+1 over the orders THIS tab has loaded, so two sessions (or one
+    // stale tab) could mint the same numbers — PO 3521/3522 were double-issued on 2026-06-30 (CMSF +
+    // OLuST) and PO 3476 on 6/29 (CMSF + EBV). reserve_po_block() atomically claims a 50-number block
+    // from a DB sequence (INCREMENT BY 50: nextval = block start, so concurrent sessions can never
+    // overlap) the first time a PO form opens, and re-arms when the block nears exhaustion. If the RPC
+    // is unavailable (offline, migration not applied yet), the legacy max+1 seed stays in effect.
+    const _poBlockRef=useRef({start:0,reserving:false});
+    const _reservePoBlock=useCallback(async()=>{
+      if(!supabase||_poBlockRef.current.reserving)return;
+      _poBlockRef.current.reserving=true;
+      try{
+        const{data,error}=await supabase.rpc('reserve_po_block');
+        const start=Number(data);
+        if(!error&&Number.isFinite(start)&&start>0){
+          _poBlockRef.current.start=start;
+          setPOCounter(c=>Math.max(c,start));
+        }else{_poBlockRef.current.reserving=false}
+      }catch{_poBlockRef.current.reserving=false}
+    },[supabase]);
+    useEffect(()=>{if(showPO!=null)_reservePoBlock()},[showPO,_reservePoBlock]);
+    // Block nearly spent (>40 of 50 used) — claim a fresh one so the next mints stay collision-free.
+    useEffect(()=>{const b=_poBlockRef.current;if(b.start&&poCounter-b.start>40){b.start=0;b.reserving=false;_reservePoBlock()}},[poCounter,_reservePoBlock]);
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
     const[rosterSendModal,setRosterSendModal]=useState(null);// {idx,di,item,rosterUrl,linkData}
     const[rosterUploadModal,setRosterUploadModal]=useState(null);// {idx,di,item,roster,sizedQtys}
@@ -8934,7 +8957,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Status controls */}
             <div style={{padding:'10px 20px',borderTop:'1px solid #f1f5f9',display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b'}}>Art:</div>
-              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesReady(af2)});if(missingProd){nf('Upload production files for all art first','error');return}}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;const upd={...jj,art_status:ns};/* warehouse must explicitly Move to Deco — no auto-transition */if((ns==='art_complete'||PROD_FILES_STATUSES.includes(ns))&&upd.art_requests)upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* Manually picking Art Complete is an explicit confirmation, so stamp prod_files_attached — keeps the invariant that art_complete means production files are confirmed (not just present). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt,...(ns==='art_complete'?{prod_files_attached:true}:{})}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
+              <select className="form-select" style={{width:150,fontSize:11}} value={j.art_status} onChange={e=>{const ns=e.target.value;const artIds=j._art_ids||[j.art_file_id].filter(Boolean);if(ns==='art_complete'){/* STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) — a stray PDF sitting in prod_files must not satisfy the manual dropdown when every button path requires confirmation. */const missingProd=artIds.some(aid=>{const af2=af.find(a=>a.id===aid);return af2&&!artProdFilesConfirmed(af2)});if(missingProd){nf('Confirm production files for all art first (checkbox, or a .dst for embroidery)','error');return}}if(ns==='waiting_approval'){const missing=skusMissingMockups(j,o);if(missing.length>0){nf('Cannot move to Waiting Approval — mockups missing for: '+missing.join(', '),'error');return}}const updJobs=safeJobs(o).map((jj,i2)=>{if(i2!==ji)return jj;/* A manual forward move supersedes an unaddressed coach rejection in the SAME write — never leave art_status ahead with coach_rejected stranded true (the SO-1199 shape). */const _fwd=ns==='waiting_approval'||ns==='art_complete'||PROD_FILES_STATUSES.includes(ns);const upd={...jj,art_status:ns,...(_fwd&&jj.coach_rejected?{coach_rejected:false}:{})};/* warehouse must explicitly Move to Deco — no auto-transition */if((ns==='art_complete'||PROD_FILES_STATUSES.includes(ns))&&upd.art_requests)upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);return upd});const afSt=ns==='waiting_approval'?'needs_approval':(PROD_FILES_STATUSES.includes(ns)||ns==='art_complete')?'approved':(ns==='needs_art'||ns==='art_requested')?'waiting_for_art':ns==='art_in_progress'?'waiting_for_art':null;/* Manually picking Art Complete is an explicit confirmation, so stamp prod_files_attached — keeps the invariant that art_complete means production files are confirmed (not just present). */const updArt2=afSt?af.map(a=>artIds.includes(a.id)?{...a,status:afSt,...(ns==='art_complete'?{prod_files_attached:true}:{})}:a):af;const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false)}}>
                 {Object.entries(artLabels).map(([k,v])=><option key={k} value={k}>{v}</option>)}</select>
               {(()=>{const _artIds3=j._art_ids||[j.art_file_id].filter(Boolean);const isTbd=_artIds3.length===0||(_artIds3.length===1&&_artIds3[0]==='__tbd');const hasActiveReqs=(j.art_requests||[]).some(r=>r.status!=='recalled');const hasAnyReqs=(j.art_requests||[]).length>0;if(isTbd&&!hasAnyReqs)return null;const activeReq=(j.art_requests||[]).find(r=>r.status==='in_progress'||r.status==='requested');
                 return<>{hasActiveReqs&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:activeReq?'#fef3c7':'#dcfce7',color:activeReq?'#92400e':'#166534',marginRight:4,animation:activeReq?'pulse 2s infinite':'none'}}>
@@ -9354,7 +9377,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Automated follow-ups (server sweep) take priority; else fall back to the manual reminder.
           const _artAuto=cam.followUp&&cam.followUp.auto&&allTargets.length>0;
           const fuAt=_artAuto?new Date(Date.now()+((cam.followUp.firstDays||3)*86400000)).toISOString():(cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null);
-          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null};
+          // Snapshot the mock URLs being sent, so the send record pins WHICH images the coach
+          // was asked to approve — an artist re-upload after this send is detectable instead of
+          // the records describing a different image than the coach saw.
+          const _sentJob=safeJobs(o)[coachApprovalModal.jIdx];
+          const _sentArtIds=_sentJob?(_sentJob._art_ids||[_sentJob.art_file_id].filter(Boolean)):[];
+          const _sentArtFiles=_sentArtIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+          const _smSeen=new Set();
+          const _sentMocks=[..._sentArtFiles.flatMap(a=>a.mockup_files||a.files||[]),..._sentArtFiles.flatMap(a=>Object.values(a.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_smSeen.has(u))return false;_smSeen.add(u);return true});
+          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks};
           const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
           const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry],..._artAutoCols}:jj);
           const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
@@ -11437,6 +11468,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _clr=new Set((dp.item_idxs||[]).filter(ii=>!_stillCovered.has(ii)));
                 const updated={...o,
                   items:safeItems(o).map((it,xi)=>_clr.has(xi)?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'&&(d.fulfillment==='outside'||d.deco_po_id)?{...d,fulfillment:undefined,deco_po_id:undefined,vendor:undefined}:d)}:it),
+                  // Session-scoped tombstone (never persisted — not in _soCols): tells the save layer's
+                  // stale-restore guard this removal is deliberate, so it won't re-inject the entry.
+                  _deletedDecoPoIds:[...(o._deletedDecoPoIds||[]),dp.po_id].filter(Boolean),
                   deco_pos:_remaining,updated_at:new Date().toLocaleString()};
                 setO(updated);onSave(updated);setPoFullPage(null);setDecoEditItems(null);setDecoEditPo(null);nf('Deleted '+(dp.po_id||'decoration PO')+' — covered items returned to in-house');
               }}>🗑 Delete PO</button>

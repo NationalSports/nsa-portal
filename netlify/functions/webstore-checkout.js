@@ -168,6 +168,33 @@ async function checkStock(sb, store, lines) {
   return { error: null, holds };
 }
 
+// Reject a single line for a SIZED product that arrives with no size. The storefront
+// only enables a no-size add for a genuinely one-size item; a sized item reaching here
+// with size=null means it sold out in every size (the client used to still allow the
+// add) or the cart was tampered — either way it's unfulfillable. Mirrors the client's
+// `needSize` rule: a product with a non-empty size scale (available_sizes) or an explicit
+// sizes_offered list requires a size. Read through the storefront view (base
+// webstore_products has no available_sizes). Fail-open on a lookup error, matching
+// checkStock — the drift/stock guards still apply.
+async function checkSizesRequired(sb, store, lines) {
+  const noSize = lines.filter((l) => l.kind === 'single' && !l.size);
+  if (!noSize.length) return null;
+  const ids = [...new Set(noSize.map((l) => l.wp.id))];
+  const { data, error } = await sb.from('webstore_storefront_products')
+    .select('webstore_product_id,name,available_sizes,sizes_offered')
+    .eq('store_id', store.id).in('webstore_product_id', ids);
+  if (error) return null;
+  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  const nonEmpty = (a) => Array.isArray(a) && a.filter((x) => x != null && String(x).trim()).length > 0;
+  for (const l of noSize) {
+    const p = byId[l.wp.id];
+    if (p && (nonEmpty(p.available_sizes) || nonEmpty(p.sizes_offered))) {
+      return `Please choose a size for ${p.name || 'an item in your cart'} — it may have sold out in your size. Please re-add it and try again.`;
+    }
+  }
+  return null;
+}
+
 // Enforce the store's allowed jersey-number range (configured per store but
 // previously unchecked — a tampered or stale cart could submit any number).
 function checkNumberRange(store, lines) {
@@ -294,6 +321,7 @@ exports.handler = async (event) => {
     if (body.action === 'finalize') return await finalize(sb, body);
     if (body.action === 'check_coupon') return await checkCoupon(sb, body);
     if (body.action === 'get_order') return await getOrder(sb, body);
+    if (body.action === 'roster_lookup') return await rosterLookup(sb, body);
     if (body.action === 'track_order') return await trackOrder(sb, body);
     if (body.action === 'update_ship') return await updateShip(sb, body);
     if (body.action === 'post_message') return await postMessage(sb, body);
@@ -354,7 +382,7 @@ async function rollbackOrder(sb, orderId) {
 }
 
 async function placeOrder(sb, body) {
-  const { storeSlug, cart, buyer, ship, payMode, couponCode, expectedTotalCents } = body;
+  const { storeSlug, cart, buyer, ship, payMode, couponCode, expectedTotalCents, rosterToken } = body;
   const clientRef = validClientRef(body.clientRef);
 
   const { data: stores, error: stErr } = await sb.from('webstores').select('*').eq('slug', String(storeSlug || '')).limit(1);
@@ -378,6 +406,9 @@ async function placeOrder(sb, body) {
 
   const numErr = checkNumberRange(store, priced.lines);
   if (numErr) return bad(409, numErr);
+
+  const sizeErr = await checkSizesRequired(sb, store, priced.lines);
+  if (sizeErr) return bad(409, sizeErr, { code: 'size_required' });
 
   const stock = await checkStock(sb, store, priced.lines);
   if (stock.error) return bad(409, stock.error);
@@ -520,6 +551,11 @@ async function placeOrder(sb, body) {
 
   const rollback = () => rollbackOrder(sb, order.id);
 
+  // If the shopper came in through a player's roster link, flag that player as
+  // ordered and point their row at this order. Best-effort: the order is already
+  // committed, so a roster-flag hiccup must never fail (or roll back) the sale.
+  await markRosterOrdered(sb, store.id, rosterToken, order.id);
+
   if (mode === 'paid') {
     const sk = process.env.STRIPE_SECRET_KEY;
     if (!sk) { await rollback(); return bad(500, 'Card payment isn’t configured.'); }
@@ -549,6 +585,53 @@ async function placeOrder(sb, body) {
     if (won && won.length) { try { await sendOrderConfirmation(sb, order); } catch (e) { console.warn('[webstore-checkout] confirmation email failed:', e.message); } }
   }
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals }) };
+}
+
+// ── Roster player links ──────────────────────────────────────────────
+// A club sets up a roster (staff/coach side) and hands each player a private
+// link — /shop/<slug>?player=<token>. These two helpers are the anon-safe
+// gateway to the (locked-down) webstore_roster table: the storefront never
+// reads or writes it directly.
+
+// Resolve a player token to their name/number so the storefront can greet them
+// and prefill personalization. Only browse-safe fields are returned — never the
+// parent email or any other player's row.
+async function rosterLookup(sb, body) {
+  const { storeSlug, token } = body;
+  const tok = String(token || '').trim();
+  if (!tok) return bad(400, 'token required');
+  const { data: stores, error: stErr } = await sb.from('webstores').select('id').eq('slug', String(storeSlug || '')).limit(1);
+  if (stErr) return bad(500, stErr.message);
+  const store = stores && stores[0];
+  if (!store) return bad(404, 'Store not found');
+  const { data: rows, error } = await sb.from('webstore_roster')
+    .select('id,player_name,player_number,position,ordered,open_count,first_opened_at').eq('store_id', store.id).eq('token', tok).limit(1);
+  if (error) return bad(500, error.message);
+  const p = rows && rows[0];
+  if (!p) return bad(404, 'This player link is not valid for this store.', { code: 'roster_not_found' });
+  // Record the open — first + last seen, and a running count. Best-effort: a
+  // tracking hiccup must not break the shopper's page load.
+  try {
+    const now = new Date().toISOString();
+    await sb.from('webstore_roster')
+      .update({ last_opened_at: now, first_opened_at: p.first_opened_at || now, open_count: (Number(p.open_count) || 0) + 1 })
+      .eq('id', p.id);
+  } catch (e) { console.warn('[webstore-checkout] roster open-tracking failed:', e.message); }
+  return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ player: { player_name: p.player_name, player_number: p.player_number || null, position: p.position || null, ordered: !!p.ordered } }) };
+}
+
+// Mark the roster player behind `token` as ordered and link their order. Never
+// throws — a failure here leaves the (already-placed) order untouched.
+async function markRosterOrdered(sb, storeId, token, orderId) {
+  const tok = String(token || '').trim();
+  if (!tok) return;
+  try {
+    await sb.from('webstore_roster')
+      .update({ ordered: true, ordered_at: new Date().toISOString(), order_id: orderId })
+      .eq('store_id', storeId).eq('token', tok);
+  } catch (e) {
+    console.warn('[webstore-checkout] roster mark-ordered failed:', e.message);
+  }
 }
 
 // Price + tax preview (no order written) so the storefront can show the tax line
@@ -788,6 +871,7 @@ async function updateShip(sb, body) {
 module.exports.priceCart = priceCart;
 module.exports.placeOrder = placeOrder;
 module.exports.checkStock = checkStock;
+module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;
 module.exports.couponDiscount = couponDiscount;
 module.exports._availForSize = _availForSize;

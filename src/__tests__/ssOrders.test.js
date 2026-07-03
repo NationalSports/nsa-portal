@@ -161,12 +161,38 @@ describe('resolveSsBillLines', () => {
     expect(r[0].cand.sku).toBe('3023CL');
   });
 
-  test('returns null (no guess) when color + size is ambiguous across two styles', () => {
+  test('breaks a same-size+color tie across two styles by exact unit price (the batch case)', () => {
+    // Real case: batch NSA 4505 holds a $15.44 bra AND a $7.14 tee, both in "L Black".
+    const batchCands = [
+      { sku: 'LUXEBRA', size: 'L', color: 'Black', so_id: 'SO-9', item_id: 'b1', po_id: 'NSA 4505', unit_cost: 15.44 },
+      { sku: 'LUXETEE', size: 'L', color: 'Black', so_id: 'SO-9', item_id: 't1', po_id: 'NSA 4505', unit_cost: 7.14 },
+    ];
+    const r = resolveSsBillLines([
+      { sku: 'B005A2505', size: 'L', color: 'Black', qty: 1, unit_price: 15.44 },
+      { sku: 'B007A2503', size: 'L', color: 'Black', qty: 1, unit_price: 7.14 },
+    ], batchCands);
+    expect(r[0].cand.sku).toBe('LUXEBRA');
+    expect(r[0].via).toBe('color_size_price');
+    expect(r[1].cand.sku).toBe('LUXETEE');
+    expect(r[1].via).toBe('color_size_price');
+  });
+
+  test('returns null (no guess) when color + size is ambiguous and prices also tie', () => {
+    const ambiguous = [
+      cand('L', 6.63),
+      { sku: '18000', size: 'L', color: 'Ivory', so_id: 'SO-1396', item_id: 'it2', po_id: 'PO 3517 OLuST', unit_cost: 6.63 },
+    ];
+    const r = resolveSsBillLines([{ sku: 'B18008335', size: 'L', color: 'Ivory', qty: 10, unit_price: 6.63 }], ambiguous);
+    expect(r[0].cand).toBeNull();
+    expect(r[0].via).toBe('none');
+  });
+
+  test('returns null when color + size is ambiguous and the bill price matches neither', () => {
     const ambiguous = [
       cand('L', 6.63),
       { sku: '18000', size: 'L', color: 'Ivory', so_id: 'SO-1396', item_id: 'it2', po_id: 'PO 3517 OLuST', unit_cost: 4.0 },
     ];
-    const r = resolveSsBillLines([{ sku: 'B18008335', size: 'L', color: 'Ivory', qty: 10 }], ambiguous);
+    const r = resolveSsBillLines([{ sku: 'B18008335', size: 'L', color: 'Ivory', qty: 10, unit_price: 9.99 }], ambiguous);
     expect(r[0].cand).toBeNull();
     expect(r[0].via).toBe('none');
   });
