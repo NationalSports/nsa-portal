@@ -1858,6 +1858,51 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // ── Roster: add players (each gets a unique link token), remove players ──
+  // A url-safe 32-hex token per player backs /shop/<slug>?player=<token>. The DB
+  // has a UNIQUE index on token, so a collision would surface as an insert error.
+  const addRoster = useCallback(async (players) => {
+    const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+    const normPos = (v) => { const s = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(s)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(s)) return 'field'; return null; };
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: sel.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return { error: true }; }
+    const { data, error } = await supabase.from('webstore_roster').insert(rows).select();
+    if (error) { flash('Could not add players: ' + error.message); return { error }; }
+    flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    return { data };
+  }, [sel, flash, loadDetail]);
+
+  const updateRoster = useCallback(async (id, fields) => {
+    const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return { error }; }
+    loadDetail(sel);
+    return {};
+  }, [sel, flash, loadDetail]);
+
+  const removeRoster = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_roster').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Email selected roster players their personal link (initial invite / resend).
+  const inviteRoster = useCallback(async (playerIds) => {
+    const ids = (playerIds || []).filter(Boolean);
+    if (!ids.length) { flash('No players to email.'); return { error: true }; }
+    try {
+      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
+      const skipped = (d.skipped || []).length;
+      flash(`Emailed ${d.sent} link${d.sent === 1 ? '' : 's'}${skipped ? ` · ${skipped} skipped (no email)` : ''}`);
+      loadDetail(sel);
+      return { data: d };
+    } catch (e) { flash('Email failed: ' + e.message); return { error: true }; }
+  }, [sel, flash, loadDetail]);
+
   // Edit an order's line items (size/qty/remove), then recompute its totals.
   const saveOrderEdits = useCallback(async (order, edited) => {
     for (const it of edited) {
@@ -2408,6 +2453,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
+          onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
           onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
@@ -3890,7 +3936,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -4068,7 +4114,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
-          {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
+          {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
@@ -5307,6 +5353,9 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
   const [cardStyle, setCardStyle] = useState(item.card_style || '');
+  // Roster audience: who this item is for — everyone ('all'), field players, or
+  // goalkeepers. Drives per-player bifurcation of the storefront.
+  const [audience, setAudience] = useState(item.roster_audience || 'all');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
@@ -5453,13 +5502,13 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, audience, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
   const save = () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions, card_style: cardStyle || null };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -5650,9 +5699,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
+            <Row label="Who it's for (roster position)">
+              <select className="form-input" value={audience} onChange={(e) => setAudience(e.target.value)}>
+                <option value="all">Everyone</option>
+                <option value="field">Field players only</option>
+                <option value="gk">Goalkeepers only</option>
+              </select>
+            </Row>
             <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout. “Who it's for” hides an item from players whose roster position doesn't match (players who open their personal link).</div>
         </ItemSection>
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
@@ -9648,21 +9704,140 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   );
 }
 
-function RosterTab({ roster, notOrdered }) {
-  if (!roster.length) return <Empty msg="No roster uploaded. Upload one (coming in a later step) to track who hasn't ordered." />;
+// Roster management: add players (each gets a private /shop link), copy links to
+// hand out, and track who has ordered. Marking "ordered" happens automatically
+// when a player checks out through their link (webstore-checkout.place_order).
+function RosterTab({ store, roster, notOrdered, orders = [], onAdd, onUpdate, onRemove, onInvite, onFlash }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '', position: '' });
+  const [bulk, setBulk] = useState('');
+  const [bulkPos, setBulkPos] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
+  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => onFlash && onFlash(m);
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyMany = (rows, label) => {
+    const withLinks = rows.filter((r) => r.token);
+    if (!withLinks.length) { flash('No links to copy yet.'); return; }
+    const text = withLinks.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n');
+    navigator.clipboard?.writeText(text); flash(`Copied ${withLinks.length} ${label}`);
+  };
+  const emailMany = async (rows, label) => {
+    const ids = rows.filter((r) => r.token && (r.parent_email || '').trim()).map((r) => r.id);
+    if (!ids.length) { flash('No players with an email address to send to.'); return; }
+    if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
+    setBusy(true); await onInvite(ids); setBusy(false);
+  };
+
+  const addSingle = async () => {
+    if (!single.player_name.trim()) { flash('Enter a player name.'); return; }
+    setBusy(true); const r = await onAdd([single]); setBusy(false);
+    if (!r || !r.error) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position });
+  };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => {
+      const parts = line.split(/[,\t]/).map((s) => s.trim());
+      // Columns: Name, Number, Email, Position — a per-line position overrides the
+      // "these are all…" selector; otherwise every pasted player gets bulkPos.
+      return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '', position: parts[3] || bulkPos } : null;
+    }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    setBusy(true); const r = await onAdd(players); setBusy(false);
+    if (!r || !r.error) { setBulk(''); setShowAdd(false); }
+  };
+
+  const fmtDate = (s) => { if (!s) return ''; const d = new Date(s); return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const posName = (p) => p === 'gk' ? 'Goalkeeper' : p === 'field' ? 'Field' : '';
+  const PosSelect = ({ value, onChange, width = 120 }) => (
+    <select className="form-input" value={value || ''} onChange={(e) => onChange(e.target.value || null)} style={{ width, fontSize: 12.5, padding: '5px 8px' }}>
+      <option value="">— Any —</option>
+      <option value="field">Field</option>
+      <option value="gk">Goalkeeper</option>
+    </select>
+  );
+
+  const addPanel = showAdd && (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Add players</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+        <div><div style={rLbl}>Player name</div><input className="form-input" value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Jane Smith" style={{ width: 190 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Number</div><input className="form-input" value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={{ width: 64 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Position</div><PosSelect value={single.position} onChange={(v) => setSingle({ ...single, position: v || '' })} /></div>
+        <div><div style={rLbl}>Parent email (optional)</div><input className="form-input" type="email" value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={{ width: 210 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <button className="btn btn-sm btn-primary" disabled={busy} onClick={addSingle}>Add</button>
+      </div>
+      <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+        <div style={rLbl}>Or paste a list — one player per line, <code>Name, Number, Email, Position</code> (all but name optional)</div>
+        <textarea className="form-input" value={bulk} onChange={(e) => setBulk(e.target.value)} rows={5} placeholder={'Jane Smith, 10, parent@email.com, field\nAlex Kim, 1, alex@email.com, gk\nSam Rivera, 7'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }} />
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#64748b' }}>These are all:</span>
+          <PosSelect value={bulkPos} onChange={(v) => setBulkPos(v || '')} />
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={addBulk}>Add from list</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!roster.length) {
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: '#64748b' }}>Set up a roster so the club can track who’s ordered — each player gets their own store link.</div>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+        {addPanel}
+        {!showAdd && <Empty msg="No players yet. Add a roster to hand each player a private link and see who hasn’t ordered." />}
+      </>
+    );
+  }
+
   return (
     <>
-      <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>{notOrdered.length} of {roster.length} players have not ordered yet.</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>{notOrdered.length} of {roster.length} player{roster.length === 1 ? '' : 's'} {notOrdered.length === 1 ? 'has' : 'have'} not ordered yet.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-secondary" onClick={() => copyMany(roster, 'links')}>Copy all links</button>
+          <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => emailMany(notOrdered, 'not-ordered players their link')}>Email not-ordered</button>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+      </div>
+      {addPanel}
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Parent email</th><th style={th}>Ordered?</th>
+            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Position</th><th style={th}>Parent email</th><th style={th}>Opened?</th><th style={th}>Ordered?</th><th style={th}>Link</th><th style={th}></th>
           </tr></thead>
           <tbody>
             {roster.map((r) => (
               <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={td}>{r.player_name}</td><td style={td}>{r.player_number || '—'}</td><td style={td}>{r.parent_email || '—'}</td>
-                <td style={td}>{r.ordered ? <Chip label="Ordered" tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>{r.player_name}</td>
+                <td style={td}>
+                  <input defaultValue={r.player_number || ''} onBlur={(e) => { const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 4); if (v !== (r.player_number || '')) onUpdate(r.id, { player_number: v || null }); }} placeholder="#" style={{ width: 48, border: '1px solid #e2e8f0', borderRadius: 5, padding: '3px 6px', fontSize: 12.5 }} />
+                </td>
+                <td style={td}><PosSelect value={r.position} width={118} onChange={(v) => onUpdate(r.id, { position: v })} /></td>
+                <td style={td}>{r.parent_email || <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>
+                  {r.last_opened_at
+                    ? <Chip label={`Opened ${fmtDate(r.last_opened_at)}${r.open_count > 1 ? ` ·${r.open_count}×` : ''}`} tone="blue" />
+                    : r.invite_sent_at
+                      ? <Chip label={`Invited ${fmtDate(r.invite_sent_at)}`} tone="gray" />
+                      : <span style={{ color: '#cbd5e1' }}>Not sent</span>}
+                </td>
+                <td style={td}>{r.ordered ? <Chip label={r.ordered_at ? `Ordered ${fmtDate(r.ordered_at)}` : 'Ordered'} tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>
+                  {r.token ? (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => copyOne(r)} title={linkFor(r)}>{copiedId === r.id ? '✓' : 'Copy'}</button>
+                      <button className="btn btn-sm btn-secondary" disabled={busy || !(r.parent_email || '').trim()} title={(r.parent_email || '').trim() ? `Email link to ${r.parent_email}` : 'Add a parent email first'} onClick={async () => { setBusy(true); await onInvite([r.id]); setBusy(false); }}>Email</button>
+                    </div>
+                  ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                </td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <button onClick={() => { if (window.confirm(`Remove ${r.player_name} from the roster?`)) onRemove(r.id); }} title="Remove player" style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -9671,6 +9846,7 @@ function RosterTab({ roster, notOrdered }) {
     </>
   );
 }
+const rLbl = { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4, fontWeight: 600 };
 
 function SettingsTab({ store: s }) {
   const dlv = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';

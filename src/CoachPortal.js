@@ -8,6 +8,7 @@ import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinar
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
+import Papa from 'papaparse';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
@@ -125,6 +126,187 @@ function CoachStore({ customer, storeIds }) {
   );
 }
 
+// Coach-facing roster manager — set up players (type, paste, or upload a
+// template), hand each their own store link, and track who's opened / ordered.
+// Runs on the coach's authenticated session, so it reads/writes webstore_roster
+// directly (same RLS access as staff); emails go through the roster-invite fn.
+function CoachRosterManager({ store, initialRoster }) {
+  const [roster, setRoster] = useState(initialRoster || []);
+  const [open, setOpen] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '', position: '' });
+  const [bulk, setBulk] = useState('');
+  const [bulkPos, setBulkPos] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
+  const fileRef = useRef();
+
+  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
+  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => { setNote(m); setTimeout(() => setNote(''), 3500); };
+
+  const reload = async () => {
+    const { data } = await supabase.from('webstore_roster').select('*').eq('store_id', store.id).order('player_name');
+    if (data) setRoster(data);
+  };
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [store.id]);
+
+  const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+  const normPos = (v) => { const x = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(x)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(x)) return 'field'; return null; };
+
+  const addPlayers = async (players) => {
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: store.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return false; }
+    setBusy(true);
+    const { error } = await supabase.from('webstore_roster').insert(rows);
+    setBusy(false);
+    if (error) { flash('Could not add players: ' + error.message); return false; }
+    await reload(); flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); setOpen(true);
+    return true;
+  };
+  const updatePlayer = async (id, fields) => { const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id); if (error) { flash('Error: ' + error.message); return; } reload(); };
+  const removePlayer = async (r) => { if (!window.confirm(`Remove ${r.player_name}?`)) return; const { error } = await supabase.from('webstore_roster').delete().eq('id', r.id); if (error) { flash('Error: ' + error.message); return; } reload(); };
+
+  const addSingle = async () => { if (!single.player_name.trim()) { flash('Enter a player name.'); return; } const ok = await addPlayers([single]); if (ok) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position }); };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => { const parts = line.split(/[,\t]/).map((x) => x.trim()); return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '', position: parts[3] || bulkPos } : null; }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    const ok = await addPlayers(players); if (ok) { setBulk(''); }
+  };
+
+  // Template upload — CSV with a header row (Name, Number, Email, Position) or
+  // the same columns in order without a header. Parsed with papaparse so quoted
+  // fields (e.g. "Smith, Jr.") survive.
+  const parseRows = (rows) => {
+    if (!rows.length) return [];
+    const first = rows[0].map((c) => String(c || '').trim().toLowerCase());
+    const hasHeader = first.some((c) => ['name', 'player', 'player name', 'player_name'].includes(c));
+    const header = hasHeader ? first : null;
+    const findIdx = (names) => header ? header.findIndex((h) => names.includes(h)) : -1;
+    const iName = header ? findIdx(['name', 'player', 'player name', 'player_name']) : 0;
+    const iNum = header ? findIdx(['number', '#', 'jersey', 'jersey number', 'player_number']) : 1;
+    const iEmail = header ? findIdx(['email', 'parent email', 'parent_email', 'parent']) : 2;
+    const iPos = header ? findIdx(['position', 'pos', 'role']) : 3;
+    const get = (row, i) => (i >= 0 && i < row.length) ? String(row[i] || '').trim() : '';
+    return rows.slice(hasHeader ? 1 : 0).map((row) => ({ player_name: get(row, iName), player_number: get(row, iNum), parent_email: get(row, iEmail), position: get(row, iPos) || bulkPos })).filter((p) => p.player_name);
+  };
+  const onFile = (e) => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    Papa.parse(file, { skipEmptyLines: true, complete: async (res) => { const players = parseRows(res.data || []); if (!players.length) { flash('No players found in that file.'); return; } await addPlayers(players); }, error: () => flash('Could not read that file.') });
+    e.target.value = '';
+  };
+  const downloadTemplate = () => {
+    const csv = 'Name,Number,Email,Position\nJane Smith,10,parent@email.com,field\nAlex Kim,1,alex@email.com,gk\nSam Rivera,7,,\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${store.slug || 'roster'}-template.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  };
+
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyAll = () => { const rows = roster.filter((r) => r.token); if (!rows.length) { flash('No links yet.'); return; } navigator.clipboard?.writeText(rows.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n')); flash(`Copied ${rows.length} links`); };
+  const emailPlayers = async (rows, label) => {
+    const ids = rows.filter((r) => r.token && (r.parent_email || '').trim()).map((r) => r.id);
+    if (!ids.length) { flash('No players with an email address to send to.'); return; }
+    if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
+    setBusy(true);
+    try { const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
+    catch (err) { flash('Email failed: ' + err.message); }
+    setBusy(false);
+  };
+
+  const fmtDate = (s) => { if (!s) return ''; const dt = new Date(s); return isNaN(dt) ? '' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const orderedCount = roster.filter((r) => r.ordered).length;
+  const openedCount = roster.filter((r) => r.last_opened_at).length;
+  const posSel = (value, onChange) => (
+    <select value={value || ''} onChange={(e) => onChange(e.target.value || null)} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}>
+      <option value="">Any</option><option value="field">Field</option><option value="gk">Goalkeeper</option>
+    </select>
+  );
+  const chip = (label, bg, fg) => <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: bg, color: fg }}>{label}</span>;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
+        Roster &amp; player links ({roster.length})
+      </button>
+      {roster.length > 0 && <span style={{ marginLeft: 10, fontSize: 12, color: '#64748b' }}>{orderedCount}/{roster.length} ordered · {openedCount} opened their link</span>}
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <button onClick={() => setShowAdd((v) => !v)} style={cpRosBtn('#0b1f3a', '#fff')}>{showAdd ? 'Close' : '+ Add players'}</button>
+            <button onClick={() => fileRef.current && fileRef.current.click()} style={cpRosBtn('#fff', '#0b1f3a', true)}>⬆ Upload template</button>
+            <button onClick={downloadTemplate} style={cpRosBtn('#fff', '#0b1f3a', true)}>Download template</button>
+            {roster.length > 0 && <><button onClick={copyAll} style={cpRosBtn('#fff', '#0b1f3a', true)}>Copy all links</button>
+              <button disabled={busy} onClick={() => emailPlayers(roster.filter((r) => !r.ordered), 'players who haven’t ordered')} style={cpRosBtn('#fff', '#0b1f3a', true)}>Email not-ordered</button></>}
+            <input ref={fileRef} type="file" accept=".csv,text/csv,.txt" onChange={onFile} style={{ display: 'none' }} />
+          </div>
+          {note && <div style={{ fontSize: 12, color: '#0b1f3a', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '6px 10px', marginBottom: 10 }}>{note}</div>}
+
+          {showAdd && (
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, marginBottom: 12, background: '#fafcff' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+                <input value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Player name" style={cpRosInput(170)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                <input value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={cpRosInput(56)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                {posSel(single.position, (v) => setSingle({ ...single, position: v || '' }))}
+                <input value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={cpRosInput(190)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                <button disabled={busy} onClick={addSingle} style={cpRosBtn('#0b1f3a', '#fff')}>Add</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#64748b', marginBottom: 4 }}>Or paste a list — one per line: <code>Name, Number, Email, Position</code></div>
+              <textarea value={bulk} onChange={(e) => setBulk(e.target.value)} rows={4} placeholder={'Jane Smith, 10, parent@email.com, field\nAlex Kim, 1, alex@email.com, gk'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, boxSizing: 'border-box', resize: 'vertical' }} />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>These are all:</span>
+                {posSel(bulkPos, (v) => setBulkPos(v || ''))}
+                <button disabled={busy} onClick={addBulk} style={cpRosBtn('#0b1f3a', '#fff')}>Add from list</button>
+              </div>
+            </div>
+          )}
+
+          {roster.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#64748b', padding: '6px 0' }}>No players yet. Add them above or upload your roster — each player gets a private link to your store.</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>
+                  <th style={cpRosTh}>Player</th><th style={cpRosTh}>#</th><th style={cpRosTh}>Position</th><th style={cpRosTh}>Opened?</th><th style={cpRosTh}>Ordered?</th><th style={cpRosTh}>Link</th><th style={cpRosTh}></th>
+                </tr></thead>
+                <tbody>
+                  {roster.map((r) => (
+                    <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={cpRosTd}>{r.player_name}</td>
+                      <td style={cpRosTd}><input defaultValue={r.player_number || ''} onBlur={(e) => { const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 4); if (v !== (r.player_number || '')) updatePlayer(r.id, { player_number: v || null }); }} placeholder="#" style={{ width: 44, border: '1px solid #e2e8f0', borderRadius: 5, padding: '3px 5px', fontSize: 12 }} /></td>
+                      <td style={cpRosTd}>{posSel(r.position, (v) => updatePlayer(r.id, { position: v }))}</td>
+                      <td style={cpRosTd}>{r.last_opened_at ? chip(`Opened ${fmtDate(r.last_opened_at)}`, '#dbeafe', '#1e40af') : r.invite_sent_at ? chip(`Invited ${fmtDate(r.invite_sent_at)}`, '#f1f5f9', '#64748b') : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                      <td style={cpRosTd}>{r.ordered ? chip('Ordered', '#dcfce7', '#166534') : chip('Not yet', '#f8fafc', '#94a3b8')}</td>
+                      <td style={cpRosTd}>
+                        {r.token ? (
+                          <span style={{ display: 'inline-flex', gap: 6 }}>
+                            <button onClick={() => copyOne(r)} style={cpRosBtn('#fff', '#0b1f3a', true)}>{copiedId === r.id ? '✓' : 'Copy'}</button>
+                            <button disabled={busy || !(r.parent_email || '').trim()} title={(r.parent_email || '').trim() ? `Email ${r.parent_email}` : 'Add a parent email first'} onClick={() => emailPlayers([r], 'this player')} style={cpRosBtn('#fff', '#0b1f3a', true)}>Email</button>
+                          </span>
+                        ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                      </td>
+                      <td style={{ ...cpRosTd, textAlign: 'right' }}><button onClick={() => removePlayer(r)} title="Remove" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: 16 }}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+const cpRosTh = { padding: '6px 8px', whiteSpace: 'nowrap' };
+const cpRosTd = { padding: '6px 8px', verticalAlign: 'middle' };
+const cpRosInput = (w) => ({ width: w, border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 9px', fontSize: 13, boxSizing: 'border-box' });
+const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outline ? '1px solid #cbd5e1' : 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' });
+
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
   const [showOrders, setShowOrders] = useState(false);
@@ -202,10 +384,8 @@ function CoachStoreCard({ store: s, d }) {
           )}
         </div>
 
-        {/* Not-yet-ordered roster */}
-        {notOrdered.length > 0 && <div style={{ marginTop: 14, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px' }}>
-          <b>Not yet ordered ({notOrdered.length}):</b> {notOrdered.map((r) => r.player_name + (r.player_number ? ' #' + r.player_number : '')).join(', ')}
-        </div>}
+        {/* Roster & player links — set up players, hand out links, track who's ordered */}
+        <CoachRosterManager store={s} initialRoster={d.roster || []} />
 
         {/* Player orders — collapsible + searchable */}
         <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
