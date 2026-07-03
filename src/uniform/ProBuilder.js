@@ -407,18 +407,53 @@ function QuickColors({ teamColors, hex, onPick, size = 30 }) {
   );
 }
 
-// One labeled swatch row (PRIMARY / ACCENT …) — several stack inside a single
-// numbered Colors card, matching the pro-configurator panel layout.
-function SwatchGroup({ head, value, hex, onPick, size, last }) {
+// The Team step's single color picker: the coach curates the set of colors that
+// then show up as quick-picks everywhere else. Each chip is removable; the "+"
+// opens the full range to add more. (Replaces the old Primary/Accent1/Accent2
+// role pickers — roles are assigned per-zone on the Jersey step instead.)
+function TeamPaletteEditor({ colors, onAdd, onRemove }) {
+  const [adding, setAdding] = useState(false);
+  const have = new Set(colors.map((c) => c.hex.toUpperCase()));
+  const chip = (hex, size = 46) => ({
+    width: size, height: Math.round(size * 0.86), borderRadius: 3, background: hex, cursor: 'pointer',
+    padding: 0, boxSizing: 'border-box', transform: 'skewX(-12deg)',
+    border: '1px solid ' + C.mid, boxShadow: '0 1px 2px rgba(15,23,42,0.08)',
+  });
   return (
-    <div style={{ marginBottom: last ? 0 : 16 }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
-        <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.4, color: C.textLight }}>{head}</div>
-        <div style={groupVal}>{value}</div>
+    <div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'center', paddingLeft: 4 }}>
+        {colors.map((c) => (
+          <div key={c.hex} style={{ position: 'relative' }}>
+            <button title={c.name} style={chip(c.hex)} onClick={() => onRemove(c.hex)} />
+            {colors.length > 1 && (
+              <span onClick={() => onRemove(c.hex)} title={'Remove ' + c.name}
+                style={{ position: 'absolute', top: -7, right: -5, width: 16, height: 16, borderRadius: '50%', background: '#fff', border: '1px solid ' + C.mid, color: C.textLight, fontFamily: F_BODY, fontSize: 12, lineHeight: '13px', textAlign: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(15,23,42,.22)' }}>×</span>
+            )}
+          </div>
+        ))}
+        <button onClick={() => setAdding((a) => !a)} title="Add a color" style={{
+          width: 46, height: 40, borderRadius: 3, transform: 'skewX(-12deg)', cursor: 'pointer',
+          background: adding ? C.navy : '#fff', color: adding ? '#fff' : C.navy,
+          border: '1px dashed ' + (adding ? C.navy : C.mid), fontFamily: F_DISP, fontWeight: 800, fontSize: 20, lineHeight: '38px', padding: 0,
+        }}>+</button>
       </div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingLeft: 4 }}>
-        {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
-      </div>
+      {adding && (
+        <div style={{ marginTop: 14, padding: '12px 12px 14px', background: C.offWhite, borderRadius: 6, border: '1px solid ' + C.light }}>
+          <div style={{ ...railLabel, marginBottom: 10 }}>Tap to add or remove</div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', paddingLeft: 4 }}>
+            {PALETTE.map((p) => {
+              const on = have.has(p.hex.toUpperCase());
+              return (
+                <button key={p.hex} title={p.name} onClick={() => (on ? onRemove(p.hex) : onAdd(p.hex))} style={{
+                  ...chip(p.hex, 38),
+                  border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
+                  boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)',
+                }} />
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -617,17 +652,38 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     return { ...c, sleevesLinked: true, sections: { ...cur, sleeveR: { ...cur.sleeveL } } }; // re-mirror from the left
   });
   const activeSection = SX[designSection] || SX.body;
-  // The coach's declared colors (Team step) + staples — the quick palette every
-  // later step leads with.
+  // The team's colors — declared once on the Team step and offered as the quick
+  // palette every later step leads with. When the coach hasn't curated a palette
+  // yet (fresh design, a starting preset, or an older autosave), we seed it from
+  // the jersey's own colors so the quick-swatches still make sense; the first
+  // add/remove on the Team step materializes it into an explicit, editable list.
   const teamColors = (() => {
     const seen = new Set(); const out = [];
-    for (const hex of [SX.body.color, SX.body.color2, SX.sleeveL.color, SX.collar.color, config.numberColor, '#FFFFFF', '#0B0B0B']) {
+    const src = (Array.isArray(config.teamPalette) && config.teamPalette.length)
+      ? config.teamPalette
+      : [SX.body.color, SX.body.color2, SX.sleeveL.color, SX.collar.color, config.numberColor, '#FFFFFF', '#0B0B0B'];
+    for (const hex of src) {
       const h = String(hex || '').toUpperCase();
       if (!/^#[0-9A-F]{6}$/.test(h) || seen.has(h)) continue;
       seen.add(h); out.push({ hex: h, name: nameForHex(h) });
     }
     return out;
   })();
+  // Palette edits are explicit from here on. Materialize the current resolved
+  // list on first touch so removing a seeded color sticks.
+  const addTeamColor = (hex) => setConfig((c) => {
+    const H = String(hex || '').toUpperCase();
+    if (!/^#[0-9A-F]{6}$/.test(H)) return c;
+    const cur = (Array.isArray(c.teamPalette) && c.teamPalette.length) ? c.teamPalette.map((x) => x.toUpperCase()) : teamColors.map((t) => t.hex);
+    if (cur.includes(H)) return c;
+    return { ...c, teamPalette: [...cur, H] };
+  });
+  const removeTeamColor = (hex) => setConfig((c) => {
+    const H = String(hex || '').toUpperCase();
+    const cur = (Array.isArray(c.teamPalette) && c.teamPalette.length) ? c.teamPalette.map((x) => x.toUpperCase()) : teamColors.map((t) => t.hex);
+    const next = cur.filter((x) => x !== H);
+    return { ...c, teamPalette: next.length ? next : cur }; // never empty
+  });
 
   // Paired bottom garment (shorts) — linked by default (derives from the top's
   // sections); unlinking freezes the current derived look for independent edits.
@@ -1292,12 +1348,14 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   <RailCard num={1} title="Team Name">
                     <LabeledInput label="" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
                   </RailCard>
-                  {/* Team colors — the working palette every later step leads with,
-                      and the seed for the jersey's sections. */}
-                  <RailCard num={2} title="Colors">
-                    <SwatchGroup head="Primary" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
-                    <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
-                    <SwatchGroup head="Accent 2 · Secondary" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} last />
+                  {/* Team colors — the one palette every later step leads with.
+                      Roles (which color goes where) are assigned per-zone on the
+                      Jersey step; here the coach just declares the set. */}
+                  <RailCard num={2} title="Team Colors" value={`${teamColors.length} color${teamColors.length === 1 ? '' : 's'}`}>
+                    <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 14 }}>
+                      Your team's colors — offered as quick picks everywhere you design. Add or remove to match your program.
+                    </div>
+                    <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} />
                   </RailCard>
                   <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
                     <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]} active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
