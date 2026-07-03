@@ -10,6 +10,14 @@ Updated 2026-06-12 to the expanded spec: full-range discovery (creates missing
 products rows), image/description backfill (fill-empties-only), zero-stock rows,
 weekly full-sweep cadence, and the _unmappedSeen health check — authored by the
 sync bot, reviewed against the spec in this repo.
+
+Updated 2026-07-03 after the 06-25/26 size-map regression: Step 3 seed now
+merges UNDER the table load (table wins — a plain seed assignment clobbering
+the corrected adidas_size_maps row is what caused the recurrence); Step 4 never
+writes unmapped codes (skip + report, the DB guard drops them anyway) and
+clamps the ~9,999,999 sentinel in CURRENT stock, not just future ATP.
+REPLACE the live skill on the Mac Mini (and any other machine running it)
+with this body wholesale — do not hand-merge.
 -->
 ---
 name: adidas-inventory-sync
@@ -109,17 +117,24 @@ don't retry every run, re-test weekly (socks/bags/accessories are Agron-licensed
 **Discovery:** enumerate Cowork's full range via catalog paging (not just `products` SKUs).
 Already in `products` → sync + backfill. NOT in `products` → create the row (Step 4c) then sync.
 
-## Step 3 — Size label maps (table-first, union, never raw codes)
+## Step 3 — Size label maps (table-first, table WINS, never raw codes)
 
-Write sizes as LABELS (`S`,`M`,`2XL`,`4XL`,`XLT`…), never raw numeric codes. **Load the durable
-`adidas_size_maps` table BEFORE processing** so the first write is a label:
+Write sizes as LABELS (`S`,`M`,`2XL`,`4XL`,`XLT`…), never raw numeric codes. Seed the
+bootstrap map FIRST, then **load the durable `adidas_size_maps` table so its entries
+OVERRIDE the seed** — the table is the source of truth (it carries every correction and
+re-learned tail). Never plain-assign a seed after (or instead of) the table load: a stale
+hardcoded seed clobbering the table's corrected `360→ST / 370→MT` is exactly how the
+6XL/7XL regression recurred on 2026-06-26.
 
 ```js
 window._sizeMaps = window._sizeMaps || {};
+// 1) Bootstrap seed for conv 51 (apparel). Spread order matters: anything already
+//    in memory wins over the seed, and the table load below wins over both.
+window._sizeMaps["51"] = { ...{"210":"XS","230":"S","250":"M","270":"L","290":"XL","310":"2XL","320":"3XL","330":"4XL","340":"5XL","360":"ST","370":"MT","380":"LT","390":"XLT","400":"2XLT","410":"3XLT","420":"4XLT","430":"5XLT","450":"LT2","460":"XLT2","470":"2XT2"}, ...(window._sizeMaps["51"]||{}) };
+// 2) Table load — table entries OVERRIDE the in-memory/seed values.
 { const SB='https://hpslkvngulqirmbstlfx.supabase.co'; const SK='<anon key>';
   const res = await fetch(SB+'/rest/v1/adidas_size_maps?select=conversion_id,code_labels',{headers:{'apikey':SK,'Authorization':'Bearer '+SK}});
-  (res.ok?await res.json():[]).forEach(r=>{ window._sizeMaps[r.conversion_id]={...(r.code_labels||{}),...(window._sizeMaps[r.conversion_id]||{})}; }); }
-window._sizeMaps["51"]={"210":"XS","230":"S","250":"M","270":"L","290":"XL","310":"2XL","320":"3XL","330":"4XL","340":"5XL","360":"ST","370":"MT","380":"LT","390":"XLT","400":"2XLT","410":"3XLT","420":"4XLT","430":"5XLT","450":"LT2","460":"XLT2","470":"2XT2"};
+  (res.ok?await res.json():[]).forEach(r=>{ window._sizeMaps[r.conversion_id]={...(window._sizeMaps[r.conversion_id]||{}),...(r.code_labels||{})}; }); }
 ```
 
 > ⚠️ **Codes 360/370 are ST/MT, not 6XL/7XL.** adidas apparel has **no 6XL or 7XL anywhere**
@@ -167,8 +182,17 @@ Install once; cart rotation + UUID `request-id` + 401-aware stop + per-SKU self-
    Store ATP as-is; sentinel `>=1e6` → null. Fully-stocked SKUs make no extra calls.
 4. Upsert per size `{id:sku+'-'+label, sku, size:label, stock_qty, future_delivery_date,
    future_delivery_qty, last_synced, source:'api-materials'}` on conflict `sku,size`.
+   **A code with NO map entry is NEVER written** — skip that size's row, add the code+SKU to
+   `window._unmappedSeen`, and re-learn the conversionId before re-syncing the SKU. (True
+   footwear labels are 1–2 characters — `10`, `10-`, `11K`; a 3-digit size is always a raw
+   code.) The portal DB enforces this: `trg_adidas_inventory_guard` on `adidas_inventory`
+   silently DROPS any write whose size matches `^[0-9]{3}$` or is `6XL`/`7XL`, and clamps
+   `stock_qty >= 1e6` to 9999 — so a 2xx upsert response is NOT proof rows landed; verify
+   with a row-count read-back when the report needs exact numbers.
 5. Self-heal: after upsert, DELETE this SKU's rows whose size is a raw code that now maps to a
-   different label (`sm[code] && sm[code]!==code`), scoped to the SKU — leaves real footwear sizes.
+   different label (`sm[code] && sm[code]!==code`), scoped to the SKU — leaves real footwear
+   sizes. Also drop stale phantom **labels** (a `6XL`/`7XL` row when a labeled tall twin
+   exists), not only raw codes.
 
 Efficiency/safety: the next-inbound DATE is free for all sizes; extra calls driven only by
 out-of-stock dates. Never submit an order. On a call failure leave that size's
@@ -211,12 +235,15 @@ After upserting, report TWO signals:
   catalog-derived expected set (exclude conv `51` and true footwear cids
   `97,S1,S2,K1,8B,8E,AU,AQ,M7,TR,F4,BC`). Expected empty.
 - `window._unmappedSeen` — codes that ACTUALLY appeared in a SKU's response with no map entry at
-  write time (written raw). The stronger signal — catches extended big-&-tall tails
-  (`440/480/500/510/520`) no catalog example advertised. Names an example SKU.
+  write time (their rows were SKIPPED, not written raw — see Step 4.4). The stronger signal —
+  catches extended big-&-tall tails (`440/480/500/510/520`) no catalog example advertised.
+  Names an example SKU.
 
 Either non-empty = a map regressed / new tail appeared → re-learn that conversionId from the
-named SKU and re-sync it before stale `240`-style rows accumulate. A supervised
-`DELETE … WHERE size ~ '^[0-9]{3}$' AND EXISTS(labeled twin)` sweep is the backstop.
+named SKU and re-sync it — until then those sizes are simply MISSING from the portal (the DB
+guard drops raw-code writes), so don't leave the gap standing. A supervised
+`DELETE … WHERE size ~ '^[0-9]{3}$' AND EXISTS(labeled twin)` sweep remains the backstop for
+rows that predate the guard.
 
 Run-end report: SKUs synced, rows written, rows with date / with future_qty, errors,
 discovered/created rows, images/descriptions backfilled, not-found list, and the two health

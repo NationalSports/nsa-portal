@@ -67,18 +67,34 @@ export async function fetchStockMap(rows) {
   const skus = [...new Set(rows.map((r) => r.sku).filter(Boolean))];
   const map = new Map();
   if (!ids.length && !skus.length) return map;
-  const [vend, inhouse] = await Promise.all([
+  // Chunked (URL-safe .in() lists) and paged per chunk: the gateway hard-caps
+  // every response at 1,000 rows, so one unchunked query silently truncated a
+  // big store's stock. .order('id') keeps the pages stable. Errors degrade to
+  // whatever loaded (same soft behavior as before).
+  const chunk = (arr, n) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
+  const drain = async (buildReq) => {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await buildReq().order('id').range(from, from + 999);
+      if (error) { console.warn('[storeInventory] stock fetch failed:', error.message); return out; }
+      out.push(...(data || []));
+      if (!data || data.length < 1000) return out;
+    }
+  };
+  const all = async (items, buildReq) =>
+    (await Promise.all(chunk(items, 400).map((b) => drain(() => buildReq(b))))).flat();
+  const [vendRows, inhouseRows] = await Promise.all([
     skus.length
-      ? supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty').in('sku', skus).or('stock_qty.gt.0,future_delivery_qty.gt.0')
-      : Promise.resolve({ data: [] }),
+      ? all(skus, (b) => supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty').in('sku', b).or('stock_qty.gt.0,future_delivery_qty.gt.0'))
+      : [],
     ids.length
-      ? supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', ids).gt('quantity', 0)
-      : Promise.resolve({ data: [] }),
+      ? all(ids, (b) => supabase.from('product_inventory').select('product_id,size,quantity').in('product_id', b).gt('quantity', 0))
+      : [],
   ]);
   const bySku = {};
-  for (const r of vend.data || []) (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
+  for (const r of vendRows) (bySku[r.sku] = bySku[r.sku] || []).push({ size: r.size, q: r.stock_qty || 0, fd: r.future_delivery_date, fq: r.future_delivery_qty });
   const byPid = {};
-  for (const r of inhouse.data || []) { byPid[r.product_id] = byPid[r.product_id] || {}; byPid[r.product_id][r.size] = (byPid[r.product_id][r.size] || 0) + (r.quantity || 0); }
+  for (const r of inhouseRows) { byPid[r.product_id] = byPid[r.product_id] || {}; byPid[r.product_id][r.size] = (byPid[r.product_id][r.size] || 0) + (r.quantity || 0); }
   for (const row of rows) {
     const sizes = (bySku[row.sku] || []).map((s) => ({ ...s }));
     const ih = byPid[row.id];
