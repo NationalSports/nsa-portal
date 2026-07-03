@@ -22310,9 +22310,9 @@ export default function App(){
                   const key=gi.item_idx;
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
                   safeDecos(it).forEach(d=>{
-                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null});}
-                    else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||''});
-                    else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false});
+                    if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const cwObj2B=d.reversible&&d.color_way_id_b&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id_b):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null,colorWayIdB:d.reversible?(d.color_way_id_b||null):null,cwLabelB:cwObj2B?.garment_color||''});}
+                    else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||'',reversible:d.reversible||false,printColorB:d.print_color_b||''});
+                    else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
                   });
                 });
                 // ── Mock links ── default is one mock per garment; a garment can be linked to USE
@@ -22354,9 +22354,16 @@ export default function App(){
                   // Slot keys are computed identically to the artist modal so uploads from either side line up.
                   const _repSkBase=_mockKey(gi.sku,gi.color);
                   const _repSlots=[];
-                  effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
-                  numDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
-                  nameDecos.forEach((d,i)=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                  // A reversible garment prints on both color ways, so each reversible deco gets TWO
+                  // mockup panels (Side A / Side B). Side A keeps the deco's original slot key so any
+                  // mockup already uploaded stays put and the approval gate is unchanged; Side B gets a
+                  // suffixed key. Non-reversible decos are unchanged (one panel each).
+                  effectiveArtDecos.forEach((d,i)=>{const sides=d.reversible?[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:'Side A'},{cwId:d.colorWayIdB,cwLbl:d.cwLabelB,side:'Side B'}]:[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:''}];
+                    sides.forEach((s,si)=>{const first=i===0&&si===0;const disc=first?'':(s.cwId||('d'+i+(si?('_'+si):'')));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:first,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,s.cwLbl?('CW: '+s.cwLbl):'',d.reversible?('Reversible · '+s.side):''].filter(Boolean).join(' · ')})})});
+                  numDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
+                    sides.forEach(s=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
+                  nameDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
+                    sides.forEach(s=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
                   if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
@@ -22558,14 +22565,16 @@ export default function App(){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
               const cwObj=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;
+              // Reversible art carries a second color way (Side B) — resolve it so the mockup grid can show both sides.
+              const cwObjB=d.reversible&&d.color_way_id_b&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id_b):null;
               const dColors=cwObj?cwObj.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
               const cwLabel=cwObj?.garment_color||'';
-              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null});
+              _perItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,reversible:d.reversible||false,underbase:d.underbase||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||dAf?.title||'',cwLabel,colorWayId:d.color_way_id||null,colorWayIdB:d.reversible?(d.color_way_id_b||null):null,cwLabelB:cwObjB?.garment_color||''});
             }else if(d.kind==='numbers'){
               _perItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),
                 numSize:d.num_size||'—',numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,
                 numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,reversible:d.reversible||false,
-                printColor:d.print_color||''});
+                printColor:d.print_color||'',printColorB:d.print_color_b||''});
             }else if(d.kind==='names'){
               _perItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
             }
@@ -22983,9 +22992,15 @@ export default function App(){
                       // numbers/names each get their own labeled box. The first art deco keeps the bare sku|color
                       // key (backward-compatible + drives the approval gate); others get a suffixed key.
                       const _slots=[];
-                      _effectiveArtDecos.forEach((d,i)=>{const disc=i===0?'':(d.colorWayId||('d'+i));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:!disc,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,d.cwLabel?('CW: '+d.cwLabel):'',d.reversible?'Reversible':''].filter(Boolean).join(' · ')})});
-                      _numDecos.forEach((d,i)=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
-                      _nameDecos.forEach((d,i)=>_slots.push({key:_skBase+'|names'+(i?('_'+i):''),primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':''].filter(Boolean).join(' · ')}));
+                      // Reversible garments print on both color ways → two mockup panels per reversible deco
+                      // (Side A / Side B). Side A keeps the original slot key (existing mockups + approval gate
+                      // unchanged); Side B gets a suffixed key. Non-reversible decos are unchanged.
+                      _effectiveArtDecos.forEach((d,i)=>{const sides=d.reversible?[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:'Side A'},{cwId:d.colorWayIdB,cwLbl:d.cwLabelB,side:'Side B'}]:[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:''}];
+                        sides.forEach((s,si)=>{const first=i===0&&si===0;const disc=first?'':(s.cwId||('d'+i+(si?('_'+si):'')));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:first,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,s.cwLbl?('CW: '+s.cwLbl):'',d.reversible?('Reversible · '+s.side):''].filter(Boolean).join(' · ')})})});
+                      _numDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
+                        sides.forEach(s=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
+                      _nameDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
+                        sides.forEach(s=>_slots.push({key:_skBase+'|names'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
