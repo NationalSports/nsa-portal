@@ -4449,7 +4449,10 @@ export default function App(){
   React.useEffect(()=>{
     if(process.env.NODE_ENV!=='production')return;
     startDeployReloadWatcher({
-      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0,
+      // Bills sitting in Import & Review are memory-only work — hold the reload for them too
+      // (bounded by the watcher's defer cap; past it the review-session snapshot + Resume
+      // banner recover the list, so a forced reload costs one click instead of the session).
+      isSafe:()=>_dbSavingCount===0 && (Date.now()-_dbLastSaveAt>3000) && _dbSaveFailedIds.size===0 && _dbSavePendingIds.size===0 && !_billReviewBusyRef.current,
     });
   },[]);
 
@@ -4695,7 +4698,10 @@ export default function App(){
         const deferStart=Date.now();
         const doReload=()=>{
           const savesIdle=_dbSavePendingIds.size===0&&_bgSync===0&&!dirtyRef.current;
-          const userIdle=document.hidden||Date.now()-lastInput>60000||Date.now()-deferStart>10*60*1000;
+          // An active bill review counts as activity even when the tab is hidden or the mouse
+          // is idle (staff cross-check invoices in other tabs mid-review). Still bounded by the
+          // 10-minute cap; past it the review-session snapshot + Resume banner recover the list.
+          const userIdle=((document.hidden||Date.now()-lastInput>60000)&&!_billReviewBusyRef.current)||Date.now()-deferStart>10*60*1000;
           if(_authErrorDetected||(savesIdle&&userIdle))window.location.reload();
           else setTimeout(doReload,2000);
         };
@@ -24317,6 +24323,21 @@ export default function App(){
   const[siQueueLoading,setSiQueueLoading]=useState(false);
   const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
   const[billFilter,setBillFilter]=useState('all');// review-list filter chip: all | ready | attention | done
+  const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
+  const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
+  useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
+  // Persist the in-review list so a deploy auto-reload (or crash) never costs the session —
+  // the upload step then offers "Resume review". matchedPO/_lineMappings are dropped from the
+  // snapshot and re-derived on resume through the same rematch pipeline a fresh pull uses, so
+  // restored matches can never be stale.
+  useEffect(()=>{
+    if(billImport.step!=='review')return;
+    try{
+      if(!billImport.parsed.length){localStorage.removeItem('nsa_bill_review_session');return}
+      const snap={ts:Date.now(),bills:billImport.parsed.map(b=>({id:b.id,file:b.file,selected:!!b.selected,uploadedAt:b.uploadedAt,uploadedTs:b.uploadedTs,source:b.source||b.parsed?.source||'',portalStatus:b.portalStatus||null,qbStatus:b.qbStatus||null,reviewLater:!!b.reviewLater,parsed:{...b.parsed,matchedPO:undefined,matchedPOSource:undefined,_lineMappings:undefined,_wizard:undefined,rawText:undefined}}))};
+      localStorage.setItem('nsa_bill_review_session',JSON.stringify(snap));
+    }catch(e){/* localStorage quota — resume just won't be offered */}
+  },[billImport.step,billImport.parsed]);
   // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
   // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
   // or the DB is down, the badge just stays hidden — it never blocks the screen.
@@ -25803,6 +25824,27 @@ export default function App(){
         for(let i=0;i<nos.length;i+=200)
           await supabase.from('ss_documents').update({status:'reviewed',updated_at:new Date().toISOString()}).eq('status','new').in('order_number',nos.slice(i,i+200));
       }catch(e){/* badge cleared locally; DB retried on next open */}
+    };
+
+    // Restore a review session cut short by a deploy auto-reload (or crash). Bills come back
+    // through the SAME pipeline a fresh pull uses — PO rematch + S&S line mappings re-derived
+    // against live state — so nothing restored can be stale.
+    const _resumeBillReview=()=>{
+      const rows=(reviewSnap&&Array.isArray(reviewSnap.bills)?reviewSnap.bills:[]).filter(b=>b&&b.parsed);
+      if(!rows.length)return;
+      let cands=null;
+      const bills=rows.map(b=>{
+        let p={...b.parsed};
+        try{p=rematchBill(p)}catch(e){}
+        if((b.source==='ss_orders'||p.source==='ss_orders')&&p.matchedPO){
+          try{const r=_ssResolveLineMappings(p,cands||(cands=_buildMatchCandidates()));if(r){p.items=r.items;p._lineMappings=r._lineMappings}}catch(e){/* stays wizard-matchable */}
+        }
+        return{...b,parsed:p};
+      });
+      setBillFilter('all');
+      setBillImport(x=>({...x,step:'review',parsed:bills,uploading:false,progress:null,files:[]}));
+      setReviewSnap(null);
+      nf(bills.length+' bill(s) restored to review — matches re-checked live','success');
     };
 
     // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
@@ -28094,6 +28136,23 @@ export default function App(){
           </span>
           {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
         </div>
+        {/* Resume banner — a deploy auto-reload (or crash) mid-review lands back on the upload
+            step with the session snapshot intact. Offer to restore it rather than making staff
+            re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
+        {billImport.step==='upload'&&(()=>{
+          const rows=(reviewSnap&&Array.isArray(reviewSnap.bills)?reviewSnap.bills:[]);
+          const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+          if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return null;
+          return<div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',background:'#eff6ff',border:'1px solid #93c5fd'}}>
+            <span style={{fontSize:18}}>⏪</span>
+            <div style={{flex:1,minWidth:220}}>
+              <div style={{fontSize:13,fontWeight:800,color:'#1e40af'}}>Pick up where you left off — {pend.length} bill{pend.length===1?'':'s'} still in review</div>
+              <div style={{fontSize:11,color:'#475569',marginTop:2}}>Saved {new Date(reviewSnap.ts).toLocaleString()} — the page reloaded before these were pushed. Restoring re-checks every match against live orders.</div>
+            </div>
+            <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} onClick={_resumeBillReview}>⏪ Resume review ({pend.length})</button>
+            <button className="btn btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null)}}>Discard</button>
+          </div>;
+        })()}
         {/* Skipped-duplicates drawer — durable record of what a pull dropped and where each doc
             was already applied, so nobody re-pulls hunting for a bill that's already on the Portal. */}
         {(billImport.skipped||[]).length>0&&(()=>{const sk=billImport.skipped;const open=!!billImport.showSkipped;return<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,background:'#f8fafc'}}>
@@ -28228,7 +28287,7 @@ export default function App(){
             const chips=[['all','All',counts.all,'#475569'],['ready','✓ Ready',counts.ready,'#166534'],['attention','⚠ Needs attention',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
             return<div style={{position:'sticky',top:0,zIndex:20,background:'#fff',padding:'8px 0 6px',marginBottom:12,borderBottom:'1px solid #e2e8f0'}}>
               <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <button className="btn btn-secondary" onClick={()=>{setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}}>← Upload More</button>
+                <button className="btn btn-secondary" onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null);setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}}>← Upload More</button>
                 <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
                 <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!ready.length}
                   onClick={()=>pushBillsToPortal()}>
@@ -28415,7 +28474,7 @@ export default function App(){
                         // (what the push will ACTUALLY write), fall back to the live matcher.
                         const mp=(bill._lineMappings||[]).find(m=>m.bill_idx===ii&&safeNum(m.allocated_qty)>0);
                         const hit=!mp&&showMatch?_matchLineToItems(it,targetItems):null;
-                        const via=it._ss_match?({sku_size:'by SKU',color_size:'by color+size',size_only:'by size'})[it._ss_match]||it._ss_match:null;
+                        const via=it._ss_match?({sku_size:'by SKU',color_size:'by color+size',size_only:'by size',sku_size_price:'by SKU+price',color_size_price:'by color+size+price',size_only_price:'by size+price'})[it._ss_match]||it._ss_match:null;
                         return<tr key={ii}>
                         <td style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{it.sku}
                           {it._vendor_sku&&it._vendor_sku!==it.sku&&<div style={{fontSize:9,fontWeight:600,color:'#94a3b8'}}>S&amp;S# {it._vendor_sku}</div>}</td>
@@ -28432,6 +28491,17 @@ export default function App(){
                             {hit.ambiguous?'⚠':'✓'} {(it.sku||'').toUpperCase()!==(hit.item.sku||'').toUpperCase()?<>→ {hit.item.sku} </>:null}
                             {it.size&&hit.item.size&&it.size.toUpperCase()!==String(hit.item.size).toUpperCase()?<>{it.size} → {hit.item.size}</>:hit.item.size}
                             {hit.item.color?' '+hit.item.color:''}{hit.item.so_id&&hit.item.so_id!==bill.matchedPO?.so_id?' · '+hit.item.so_id:''}{hit.ambiguous?' (verify)':''}</span>
+                          :poSrc==='batch'
+                          ?(()=>{
+                            // Batch billed tracking is size-keyed, so an unpinned line still lands on the
+                            // batch's size total — say that, instead of a red "no match" that contradicts
+                            // the header. Red only when the size isn't on the batch at all.
+                            const u=(it.size||'').toUpperCase();const cs=_canonBillSize(u);
+                            const has=targetItems.some(t=>{const ts=String(t.size||'').toUpperCase();return ts===u||_canonBillSize(ts)===cs});
+                            return has
+                              ?<span style={{color:'#d97706',fontWeight:600}} title="Couldn't pin the exact style line (two styles share this size/color) — the qty still lands on the batch's size total. Use Match manually to pin styles.">◦ lands by size · {it.size}</span>
+                              :<span style={{color:'#dc2626',fontWeight:600}}>✗ size not on batch</span>;
+                          })()
                           :<span style={{color:'#dc2626',fontWeight:600}}>{'✗'} no match</span>}</td>}
                         <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
                       </tr>;})}</tbody>

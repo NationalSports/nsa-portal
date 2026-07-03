@@ -133,9 +133,10 @@ export const mapSsOrderToBill = (order) => {
 // pinned the SO — so within that SO, color + size uniquely identify the line.
 //
 // Tiered so an exact SKU still wins when it IS our SKU: (1) SKU + size, (2) color + size,
-// (3) size alone when only one candidate has it. Each tier only accepts an UNAMBIGUOUS hit
-// (exactly one distinct target line) — anything ambiguous returns null so the caller leaves it
-// for the manual match wizard rather than guessing where money lands.
+// (3) size alone when only one candidate has it — each with an exact-price (±$0.02) tie-break
+// when the tier alone is ambiguous. Each tier only accepts an UNAMBIGUOUS hit (exactly one
+// distinct target line) — anything still ambiguous returns null so the caller leaves it for
+// the manual match wizard rather than guessing where money lands.
 //
 //   billItems:  [{ sku, size, color, qty, ... }]                          (the parsed bill lines)
 //   candidates: [{ sku, size, color, so_id, item_id, po_id, unit_cost }]  (open SO/batch size buckets)
@@ -159,12 +160,22 @@ export const resolveSsBillLines = (billItems, candidates, opts = {}) => {
     const size = canon(li.size);
     const color = nColor(li.color);
     const sku = nSku(li.sku);
-    let hit = sku ? only(cands.filter((c) => nSku(c.sku) === sku && canon(c.size) === size)) : null;
-    if (hit) return { cand: hit, via: 'sku_size' };
-    hit = color ? only(cands.filter((c) => canon(c.size) === size && nColor(c.color) === color)) : null;
-    if (hit) return { cand: hit, via: 'color_size' };
-    hit = only(cands.filter((c) => canon(c.size) === size));
-    if (hit) return { cand: hit, via: 'size_only' };
+    const price = (() => { const p = parseFloat(li.unit_price); return isNaN(p) ? 0 : p; })();
+    // Tie-breaker for same size+color across two styles (e.g. a batch holding a $15.44 bra
+    // AND a $7.14 tee in "L Black"): the order's unit cost round-trips on API-ordered S&S
+    // bills, so an exact-price hit (±$0.02) disambiguates — still unambiguous-only.
+    const byPrice = (list) => price > 0 ? list.filter((c) => Math.abs((parseFloat(c.unit_cost) || 0) - price) <= 0.02) : [];
+    const tiers = [
+      sku ? { list: cands.filter((c) => nSku(c.sku) === sku && canon(c.size) === size), via: 'sku_size' } : null,
+      color ? { list: cands.filter((c) => canon(c.size) === size && nColor(c.color) === color), via: 'color_size' } : null,
+      { list: cands.filter((c) => canon(c.size) === size), via: 'size_only' },
+    ].filter(Boolean);
+    for (const t of tiers) {
+      let hit = only(t.list);
+      if (hit) return { cand: hit, via: t.via };
+      hit = only(byPrice(t.list));
+      if (hit) return { cand: hit, via: t.via + '_price' };
+    }
     return { cand: null, via: 'none' };
   });
 };
