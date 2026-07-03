@@ -685,6 +685,7 @@ const _mergeDbEstStatus=async(est)=>{
 };
 const _dbSaveEstimateInner = async (est) => {
   if(!supabase)return;
+  await _ensureFreshSession();// refresh a near-expiry token BEFORE the write, so an idle/slept tab doesn't hit the reactive 401 path (spurious save-failed banner)
   // Never persist a customerless estimate. The "Select Customer *" rule is UI-only and save_estimate
   // permits a null customer, so a draft built before a customer is chosen — or an existing estimate whose
   // customer_id was dropped by a stale background save — would otherwise be written to the shared DB as an
@@ -906,9 +907,9 @@ const _dbSaveEstimateInner = async (est) => {
             console.warn('[DB] Art file columns missing in schema, retrying without extras:',afErr.message);
             const coreRows=afRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('estimate_art_files').upsert(coreRows,{onConflict:'estimate_id,id'});
-            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false}
+            if(afErr2){console.error('[DB] estimate_art_files upsert failed (core):',afErr2.message,afErr2.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr2.message)}
             else if(typeof nf==='function')nf('Some art fields (sizes/colors/mockups) could not be saved — DB schema may need updating','error');
-          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false}
+          }else{console.error('[DB] estimate_art_files upsert failed:',afErr.message,afErr.details);_afOk=false;decoFailed=true;_failMsg=_failMsg||('estimate_art_files: '+afErr.message)}
         }
         // Match the DB trigger's version bump so this client's next save isn't mistaken for stale.
         if(_afOk)_resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
@@ -961,6 +962,7 @@ const _matchRestoreItem=(oi,items)=>{
 };
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
+  await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
   // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
   // rather than only adopting the server version: a bumped server version means ANOTHER session saved
   // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
@@ -1646,19 +1648,47 @@ const _isAuthError=(err)=>{
   const m=(err.message||'').toLowerCase();
   return m.includes('row-level security')||m.includes('jwt expired')||m.includes('jwt is expired')||m.includes('invalid jwt')||m.includes('not authenticated')||m.includes('no api key');
 };
+// Classify a refreshSession() outcome. 'ok' = refreshed; 'transient' = a network/blip failure — retry
+// and DO NOT sign the user out; 'fatal' = the refresh token itself was rejected (invalid / already-used
+// / expired), the ONLY case that should force a re-login. A thrown error is transient (it is almost
+// always "Failed to fetch"). This split is what stops a momentary network hiccup — the single most
+// common cause of the "it randomly logged me out" reports — from bouncing a user with a good session.
+const _classifyRefresh=(error,session,threw)=>{
+  if(!threw&&!error&&session)return 'ok';
+  if(threw)return 'transient';
+  if(error&&_isNetErr(error))return 'transient';
+  return 'fatal';
+};
 // Returns true if the session is healthy/refreshed (caller may retry), false if it's dead.
 const _recoverSession=async()=>{
   if(_sessionDead||!supabase)return false;
   if(!_refreshInFlight){
     _refreshInFlight=(async()=>{
-      try{const{data,error}=await supabase.auth.refreshSession();if(!error&&data?.session)return true}catch{}
-      return false;
+      let fatal=false;
+      for(let attempt=0;attempt<3;attempt++){
+        let cls;
+        try{const{data,error}=await supabase.auth.refreshSession();cls=_classifyRefresh(error,data?.session,false)}
+        catch(_){cls='transient'}
+        if(cls==='ok')return{ok:true};
+        if(cls==='fatal'){fatal=true;break}
+        if(attempt<2)await new Promise(r=>setTimeout(r,400*Math.pow(3,attempt)));// 0.4s, 1.2s backoff on a blip
+      }
+      return{ok:false,fatal};
     })();
     _refreshInFlight.finally(()=>{setTimeout(()=>{_refreshInFlight=null},2000)});
   }
-  const ok=await _refreshInFlight;
-  if(ok){_sessionDead=false;return true}
-  _sessionDead=true;if(_forceReauth)_forceReauth();return false;
+  const res=await _refreshInFlight;
+  if(res&&res.ok){_sessionDead=false;return true}
+  // Only an authoritative refresh-token rejection signs the user out. Before doing so, re-read storage:
+  // the SECOND Supabase client (src/lib/supabase.js, same storage key, its own auto-refresh) may have
+  // just rotated the token out from under us, making our "already used" rejection benign — the session
+  // is actually healthy. A transient/network failure never latches dead: the caller keeps the entity
+  // queued and we retry on the next save / poll / tab-focus instead of forcing a login.
+  if(res&&res.fatal){
+    try{const{data:{session}}=await supabase.auth.getSession();if(session){_sessionDead=false;return true}}catch(_){}
+    _sessionDead=true;if(_forceReauth)_forceReauth();
+  }
+  return false;
 };
 // Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
 // restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
@@ -1818,6 +1848,7 @@ const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify
 const _dbSaveProduct = async (p) => {
   if(!supabase)return;
   if(_dbDuplicateSkuIds.has(p.id))return true;// skip — this ID has a duplicate SKU in DB
+  await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner)
   try{
     const row={id:p.id,vendor_id:p.vendor_id||null,sku:p.sku,name:p.name,brand:p.brand||null,color:p.color||null,
       color_category:p.color_category||null,category:p.category||null,retail_price:p.retail_price||0,nsa_cost:p.nsa_cost||0,
@@ -1836,7 +1867,13 @@ const _dbSaveProduct = async (p) => {
         const{image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,bin,...rowNoExtra}=row;
         const{error:e2}=await supabase.from('products').upsert(rowNoExtra,{onConflict:'id'});
         if(e2){if(e2.message?.includes('products_sku_unique')||e2.message?.includes('duplicate key value')){console.warn('[DB] Skipping duplicate SKU:',p.sku);return false}console.error('[DB] save product (no extra cols):',e2.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+e2.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+e2.message,'error');return false}
-      }else if(error.message?.includes('violates row-level security')||error.code==='42501'||error.status===401||error.message?.includes('JWT')||error.message?.includes('not authenticated')){if(!_authErrorDetected){_authErrorDetected=true;console.error('[DB] Auth/permission error saving product — session expired, stopping retries');if(_dbNotify)_dbNotify('Session expired. Please reload the page to reconnect.','error')}return true}else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
+      }else if(error.message?.includes('violates row-level security')||error.code==='42501'||error.status===401||error.message?.includes('JWT')||error.message?.includes('not authenticated')){
+        // A product edit lost to a transient token expiry must NOT report success — returning true
+        // here cleared the dirty flag and silently dropped the change (gone on next reload, no banner).
+        // Route it through the same mark-failed + session-recover path as estimates/SOs/customers so
+        // the background retry re-saves it once the session refreshes.
+        return _handleAuthSaveFailure(p.id);
+      }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
     const _imgF=p.image_url||p.image_front_url||null;const _imgB=p.back_image_url||p.image_back_url||null;const _imgG=p.images||null;
@@ -2169,4 +2206,6 @@ export {
   _sanitizeArtRow,
   _isNetErr,
   _retryNet,
+  _isAuthError,
+  _classifyRefresh,
 };
