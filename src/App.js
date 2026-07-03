@@ -6072,6 +6072,18 @@ export default function App(){
   React.useEffect(()=>{setOmgPortalStatus(null)},[omgSel?.id]);
   // Step-by-step help modal (opened from the button on the OMG store detail).
   const[omgGuideOpen,setOmgGuideOpen]=useState(false);
+  // Share-for-rebuild modal: generates a token + link + packing list from a previous OMG store.
+  const[omgShareOpen,setOmgShareOpen]=useState(false);const[omgShareCopied,setOmgShareCopied]=useState(false);
+  const[omgShareToken,setOmgShareToken]=useState(null);const[omgShareTokenLoading,setOmgShareTokenLoading]=useState(false);
+  // Review-SKUs modal: opens after "Add Store from OMG Report" so staff confirm/correct every style
+  // number BEFORE the store is committed. While under review the store lives only in omgSel (staged) —
+  // nothing persists to omgStores until "Create Store", so a bad paste is discarded with zero footprint.
+  const[omgReviewOpen,setOmgReviewOpen]=useState(false);
+  const _omgReviewSelRef=React.useRef(null);_omgReviewSelRef.current=omgSel;// latest staged store for the commit handler (avoids a blur→click race)
+  // Copy-OMG-Store modal: a clean, standalone entry point (paste report link → review SKUs → create
+  // store). No coach rebuild links — just copies a previous OMG store's items into a new portal store.
+  const[omgCopyOpen,setOmgCopyOpen]=useState(false);const[omgCopyUrl,setOmgCopyUrl]=useState('');
+  const[omgWebstoreLoading,setOmgWebstoreLoading]=useState(false);// "Create Webstore" (OMG store → draft Club Webstore)
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -6386,6 +6398,111 @@ export default function App(){
     } finally {
       setOmgReportLoading(false);
     }
+  };
+
+  // "Copy OMG Store" entry point: paste a report link → create a shell → import + stage it in omgSel →
+  // open the Review-SKUs modal. Nothing is added to omgStores until the user hits "Create Store" there,
+  // so a bad paste leaves no trace. Standalone from the store-detail page and its coach-link tooling.
+  const startOmgCopy = async (urlRaw) => {
+    const urlStr = (urlRaw || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { nf('Invalid report URL — needs a valid OMG report link', 'error'); return; }
+    setOmgReportLoading(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      const report = await resp.json();
+      const saleCode = report.options?.filter?.find(f => f.key === 'sale_code')?.value || '';
+      const storeName = report.details?.title || 'OMG Store ' + saleCode;
+      const storeId = 'OMG-sale_' + saleCode;
+      // Already in the portal? Just open it instead of re-copying.
+      const existing = omgStores.find(s => s.id === storeId);
+      if (existing) { nf('This store is already in the portal — opening it', 'error'); setOmgCopyOpen(false); setOmgSel(existing); setOmgReportLoading(false); return; }
+      const shell = { id: storeId, store_name: storeName, status: 'open', _omg_source: true, _omg_id: 'sale_' + saleCode, _omg_sale_code: saleCode,
+        _last_synced: new Date().toISOString(), products: [], orders: 0, total_sales: 0, fundraise_total: 0, items_sold: 0, unique_buyers: 0,
+        subdomain: '', channel_type: 'pop-up', _report_url: urlStr };
+      // importOMGReport parses + prices and stages the store in omgSel (its setOmgStores map is a no-op
+      // while the shell isn't in the list, so nothing persists yet). Then hand off to the review modal.
+      const updated = await importOMGReport(shell, urlStr);
+      if (updated) { setOmgCopyOpen(false); setOmgCopyUrl(''); setOmgReviewOpen(true); }
+    } catch (e) { nf('Failed: ' + e.message, 'error'); } finally { setOmgReportLoading(false); }
+  };
+
+  // Turn an OMG store into a draft Club Webstore (separate tables: webstores + webstore_products).
+  // Carries over each item's name, SKU, OMG retail price, sizes and decorated mockup image, and links
+  // to the catalog by SKU where it matches (for stock/SO). Creates a DRAFT — the rep sets shipping,
+  // sale dates, packages and launches from the Webstores builder. Guards against a duplicate by sale code.
+  const createWebstoreFromOmg = async (store) => {
+    if (!supabase) { nf('Not connected', 'error'); return; }
+    const prods = (store.products || []).filter(p => p.sku || p.name);
+    if (!prods.length) { nf('This store has no items to build a webstore from', 'error'); return; }
+    setOmgWebstoreLoading(true);
+    try {
+      const wsName = store.store_name || 'Team Store';
+      // Already converted? A same-named Club Webstore almost certainly means this store was already
+      // turned into one — point the user there rather than silently making a duplicate draft.
+      const { data: existing } = await supabase.from('webstores').select('id,name').eq('source', 'webstore').eq('name', wsName).limit(1);
+      if (existing && existing.length) { nf(`A webstore named "${wsName}" already exists — see Webstores → Draft`, 'warn'); setOmgWebstoreLoading(false); return; }
+      // Unique slug from the store name.
+      const base = (store.store_name || 'team-store').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
+      let slug = base;
+      for (let n = 2; n < 60; n++) {
+        const { data: ex } = await supabase.from('webstores').select('id').eq('slug', slug).limit(1);
+        if (!ex || !ex.length) break;
+        slug = `${base}-${n}`;
+      }
+      // Draft store shell. A converted store is a first-class Club Webstore — deliberately NO
+      // omg_sale_code, so it shows in the Webstores list (which hides omg-coded rows) and isn't
+      // treated as an OMG mirror by checkout / order sync. It's a real webstore now, not OMG.
+      const { data: ws, error: wErr } = await supabase.from('webstores').insert({
+        name: wsName, slug, status: 'draft', source: 'webstore', created_via: 'staff',
+        customer_id: store.customer_id || null, rep_id: store.rep_id || null,
+      }).select('id,slug').single();
+      if (wErr || !ws) { nf('Could not create webstore: ' + (wErr?.message || 'unknown error'), 'error'); setOmgWebstoreLoading(false); return; }
+      // In-house art: the OMG mockup shows the finished garment, but production needs the real
+      // art file (OMG only ever hands over the flattened image). Create one "needs file" record
+      // in the customer's art library and reference it from every item by art_id ONLY — no
+      // art_url, so the storefront never composites a logo over the mockup. The art team attaches
+      // the production file to that record; the store→SO conversion then carries the file plus
+      // the mockup proofs (item_mockups) automatically.
+      let pendingArtId = null;
+      if (store.customer_id) {
+        try {
+          const rec = {
+            id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6),
+            name: wsName + ' — team art (attach production file)',
+            kind: 'art', status: 'pending', deco_type: 'screen_print',
+            files: [], color_ways: [], uploaded: new Date().toLocaleDateString(),
+          };
+          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
+          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', store.customer_id);
+          if (!aErr) {
+            // Also drop it into this store's curated art set so the store's Art tab shows it.
+            await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG rebuild' }] }).eq('id', ws.id);
+            pendingArtId = rec.id;
+          }
+        } catch (e) { console.warn('[OMG→Webstore] art record failed (items created without art):', e); }
+      }
+      // Products: OMG price + decorated image + sizes; link to catalog by SKU where possible.
+      const rows = prods.map((p, i) => {
+        const catId = p.product_id || prod.find(cp => (cp.sku || '').toUpperCase() === (p.sku || '').toUpperCase())?.id || null;
+        const sizes = Object.keys(p.sizes || {});
+        return {
+          store_id: ws.id, product_id: catId, sku: p.sku || null, kind: 'single',
+          display_name: p.name || p.sku || 'Item', image_url: p.image_url || null,
+          retail_price: Number(p.retail) || 0, sizes_offered: sizes.length ? sizes : null,
+          sort_order: i, active: true,
+          ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
+        };
+      });
+      const { error: pErr } = await supabase.from('webstore_products').insert(rows);
+      if (pErr) { nf(`Webstore created but items couldn't be added: ${pErr.message}`, 'error'); setOmgWebstoreLoading(false); return; }
+      const linked = rows.filter(r => r.product_id).length;
+      const artNote = pendingArtId ? ' · in-house art queued — attach the production file in the store’s Art tab'
+        : (store.customer_id ? '' : ' · no customer linked, so no art record was queued');
+      nf(`✓ Draft webstore created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${artNote}. Open Webstores → Draft to set shipping, dates & launch.`, 'success');
+    } catch (e) { nf('Create webstore failed: ' + e.message, 'error'); } finally { setOmgWebstoreLoading(false); }
   };
 
   // Re-pull costs for an already-imported store: check each item against the
@@ -18026,6 +18143,17 @@ export default function App(){
                 {s.open_date&&<span style={{marginLeft:8,fontSize:11,color:'#64748b'}}>📅 {s.open_date} → {s.close_date}</span>}
                 <button onClick={()=>{const el=document.getElementById('omg-parent-portal');if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}} title="Jump to the Parent Order Portal — player report, packing slip, parent emails & tracking" style={{marginLeft:8,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>📦 Parent Order Portal ↓</button>
                 <button onClick={()=>setOmgGuideOpen(true)} title="How to create an OMG store, step by step" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #fcd34d',background:'#fffbeb',color:'#92400e',cursor:'pointer'}}>📖 Step-by-step</button>
+                {(s.products||[]).length>0&&<button onClick={async()=>{
+                  setOmgShareOpen(true);setOmgShareCopied(false);setOmgShareToken(null);setOmgShareTokenLoading(true);
+                  try{
+                    const items=(s.products||[]).filter(p=>p.sku).map(p=>({sku:p.sku,name:p.name||'',image_url:p.image_url||''}));
+                    const{data,error}=await supabase.from('omg_rebuild_tokens').insert({store_name:s.store_name||'',sale_code:s._omg_sale_code||'',items}).select('token').single();
+                    if(!error&&data?.token)setOmgShareToken(data.token);
+                  }catch(e){console.warn('[OMG Rebuild token]',e);}
+                  setOmgShareTokenLoading(false);
+                }} title="Copy a rebuild link (with decorated mockup images) and print a packing list — share with a coach to kick off a new webstore with the same items" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
+                {(s.products||[]).length>0&&<button onClick={()=>setOmgReviewOpen(true)} title="Review & correct every style number for this store — an edited SKU re-sources its cost & vendor automatically" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>🔍 Review SKUs</button>}
+                {(s.products||[]).length>0&&<button disabled={omgWebstoreLoading} onClick={()=>createWebstoreFromOmg(s)} title="Create a draft Club Webstore from this store's items — carries over SKUs, OMG prices, sizes and mockup images, and links to the catalog where SKUs match" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #bbf7d0',background:'#f0fdf4',color:'#166534',cursor:omgWebstoreLoading?'wait':'pointer'}}>{omgWebstoreLoading?'⏳ Creating…':'🌐 Create Webstore'}</button>}
               </div>
             </div>
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
@@ -18542,6 +18670,181 @@ export default function App(){
           </div>
         </div>
 
+        {/* Share-for-Rebuild modal — rebuild link + printable packing list */}
+        {omgShareOpen&&(()=>{
+          const prods=s.products||[];
+          const skuStr=prods.map(p=>p.sku).filter(Boolean).join(',');
+          const rebuildUrl=omgShareToken
+            ?'https://nationalsportsapparel.com/team-stores?rebuild='+omgShareToken
+            :'https://nationalsportsapparel.com/team-stores?skus='+encodeURIComponent(skuStr);
+          const SZ_ORD=['4XS','3XS','2XS','XS/S','XS','S/M','YXS','YS','S','YM','M/L','M','YL','L/XL','L','YXL','XL/XXL','XL','2XL','3XL','4XL','5XL','OS'];
+          const allSizes=[...new Set(prods.flatMap(p=>Object.keys(p.sizes||{})))].sort((a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return(ia<0?99:ia)-(ib<0?99:ib)});
+          const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
+          const copyLink=()=>{
+            navigator.clipboard.writeText(rebuildUrl).then(()=>{setOmgShareCopied(true);setTimeout(()=>setOmgShareCopied(false),2500)}).catch(()=>prompt('Copy this link:',rebuildUrl));
+          };
+          const printPackingList=()=>{
+            const szHead=allSizes.map(sz=>`<th style="text-align:center;padding:6px 5px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">${sz}</th>`).join('');
+            const rows=prods.map(p=>{
+              const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);
+              const szCells=allSizes.map(sz=>`<td style="text-align:center;padding:5px 4px;border-bottom:1px solid #eef1f5;font-size:11px">${(p.sizes||{})[sz]||''}</td>`).join('');
+              return`<tr><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:600;font-size:11px">${p.name||p.sku}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;font-family:monospace;font-size:10px;color:#1e40af">${p.sku||''}</td><td style="padding:5px 8px;border-bottom:1px solid #eef1f5;color:#64748b;font-size:11px">${p.color||''}</td>${szCells}<td style="text-align:center;padding:5px 8px;border-bottom:1px solid #eef1f5;font-weight:700;font-size:11px">${tot}</td></tr>`;
+            }).join('');
+            const w=window.open('','_blank');
+            w.document.write(`<!doctype html><html><head><title>Packing List — ${s.store_name}</title><style>body{font-family:-apple-system,Segoe UI,sans-serif;color:#0f172a;max-width:960px;margin:28px auto;padding:0 20px}h1{font-size:17px;margin:0 0 2px}table{width:100%;border-collapse:collapse}th{text-align:left;font-size:11px;font-weight:700}@media print{body{margin:0}}</style></head><body><h1>Packing List — ${s.store_name}</h1><div style="color:#64748b;font-size:11px;margin-bottom:12px">${s._omg_sale_code?'Sale code: '+s._omg_sale_code+' · ':''} ${prods.length} items · ${totalUnits} units</div><table><thead><tr><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Product</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">SKU</th><th style="text-align:left;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Color</th>${szHead}<th style="text-align:center;padding:6px 8px;background:#f8fafc;border-bottom:2px solid #e2e8f0;font-size:11px">Total</th></tr></thead><tbody>${rows}</tbody><tfoot><tr><td colspan="${3+allSizes.length}" style="text-align:right;padding:9px 8px;font-weight:800;border-top:2px solid #0f172a;font-size:12px">Grand Total</td><td style="text-align:center;padding:9px 8px;font-weight:900;border-top:2px solid #0f172a;font-size:13px">${totalUnits}</td></tr></tfoot></table></body></html>`);
+            w.document.close();w.focus();setTimeout(()=>w.print(),350);
+          };
+          return<div className="modal-overlay" onClick={()=>setOmgShareOpen(false)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:700,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+              <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h2 style={{margin:0}}>📤 Share for Rebuild</h2>
+                <button onClick={()=>setOmgShareOpen(false)} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+              </div>
+              <div className="modal-body" style={{overflowY:'auto',padding:'16px 20px 20px'}}>
+                <div style={{marginBottom:18}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a',marginBottom:5}}>Rebuild link</div>
+                  <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Send this to a coach or rep. Opening it in the new webstore builder pre-selects all <b>{prods.length} items</b> from this store. They can adjust, add branding, and submit a new store request.</div>
+                  <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                    <input readOnly value={omgShareTokenLoading?'Generating link with images…':rebuildUrl} onClick={e=>e.target.select()} style={{flex:1,fontSize:11,fontFamily:'monospace',padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:6,background:'#f8fafc',color:omgShareTokenLoading?'#94a3b8':'#0f172a',cursor:'text'}}/>
+                    <button onClick={copyLink} disabled={omgShareTokenLoading||!omgShareToken&&!skuStr} style={{fontSize:12,fontWeight:700,padding:'8px 16px',borderRadius:6,border:'1px solid #2563eb',background:omgShareCopied?'#166534':omgShareTokenLoading?'#f1f5f9':'',color:omgShareCopied?'#fff':omgShareTokenLoading?'#94a3b8':'#2563eb',cursor:omgShareTokenLoading?'not-allowed':'pointer',whiteSpace:'nowrap',transition:'all 0.2s',minWidth:90}}>{omgShareCopied?'✓ Copied!':omgShareTokenLoading?'Wait…':'Copy link'}</button>
+                  </div>
+                  {omgShareToken&&<div style={{fontSize:11,color:'#0e7490',marginTop:6,display:'flex',alignItems:'center',gap:4}}>🖼 Decorated mockup images included — {prods.filter(p=>p.image_url).length} of {prods.length} items have images</div>}
+                </div>
+                <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>Packing list · {prods.length} items · {totalUnits} units</div>
+                  <button onClick={printPackingList} style={{fontSize:11,fontWeight:700,padding:'5px 12px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#374151',cursor:'pointer'}}>🖨 Print</button>
+                </div>
+                <div style={{overflowX:'auto',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                    <thead><tr style={{background:'#f8fafc'}}>
+                      <th style={{textAlign:'left',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700,whiteSpace:'nowrap'}}>Product</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>SKU</th>
+                      <th style={{textAlign:'left',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Color</th>
+                      {allSizes.map(sz=><th key={sz} style={{textAlign:'center',padding:'7px 5px',borderBottom:'2px solid #e2e8f0',fontWeight:700,fontSize:11}}>{sz}</th>)}
+                      <th style={{textAlign:'center',padding:'7px 10px',borderBottom:'2px solid #e2e8f0',fontWeight:700}}>Total</th>
+                    </tr></thead>
+                    <tbody>
+                      {prods.map((p,i)=>{const tot=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);return<tr key={i} style={{background:i%2?'#fafbfc':'#fff'}}>
+                        <td style={{padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:600,maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={p.name||p.sku}>{p.name||p.sku}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontFamily:'monospace',fontSize:11,color:'#1e40af'}}>{p.sku||'—'}</td>
+                        <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:'#64748b',whiteSpace:'nowrap'}}>{p.color||'—'}</td>
+                        {allSizes.map(sz=><td key={sz} style={{textAlign:'center',padding:'6px 5px',borderBottom:'1px solid #f1f5f9',color:(p.sizes||{})[sz]?'#0f172a':'#e2e8f0'}}>{(p.sizes||{})[sz]||''}</td>)}
+                        <td style={{textAlign:'center',padding:'6px 10px',borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{tot}</td>
+                      </tr>})}
+                    </tbody>
+                    <tfoot><tr style={{background:'#f8fafc'}}>
+                      <td colSpan={3+allSizes.length} style={{textAlign:'right',padding:'8px 10px',fontWeight:800,borderTop:'2px solid #0f172a'}}>Grand Total</td>
+                      <td style={{textAlign:'center',padding:'8px 10px',fontWeight:900,borderTop:'2px solid #0f172a'}}>{totalUnits}</td>
+                    </tr></tfoot>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>;
+        })()}
+
+        {/* Review-SKUs modal — confirm/correct every style number before an OMG-report store is committed (staging), or re-review a saved store. */}
+        {omgReviewOpen&&omgSel&&(()=>{
+          const rv=omgSel;
+          const prods=rv.products||[];
+          const staging=!omgStores.some(st=>st.id===rv.id);// add-flow (not yet committed) vs reopened on a saved store
+          const badSkus=prods.filter(p=>_skuLooksInvalid(p.sku));
+          // A line is "linked" when its cost came from a real catalog/API/manual source — not just the
+          // OMG-reported number. A "WOMENS" section-header SKU resolves to nothing and stays unlinked.
+          const _LINKED_SRC=['catalog','sanmar','ss','richardson','momentec','api','manual'];
+          const isLinked=(p)=>Number(p.cost)>0&&_LINKED_SRC.includes(p._cost_source);
+          const notLinked=prods.filter(p=>!isLinked(p));
+          const totalUnits=prods.reduce((a,p)=>a+Object.values(p.sizes||{}).reduce((a2,v)=>a2+(Number(v)||0),0),0);
+          const chip=(bg,fg)=>({fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:bg,color:fg});
+          const th=(align)=>({textAlign:align||'center',padding:'7px 8px',borderBottom:'2px solid #e2e8f0',fontWeight:700,fontSize:11,whiteSpace:'nowrap'});
+          // Typing a SKU updates the staged store live (setOmgSel); leaving the field re-sources cost+vendor.
+          const onSkuChange=(i,v)=>setOmgSel(prev=>(prev&&prev.id===rv.id)?{...prev,products:(prev.products||[]).map((pr,j)=>j===i?{...pr,sku:v}:pr)}:prev);
+          // Drop a line ("don't bring it over"). While staging this only touches omgSel; for a saved
+          // store it also writes omgStores so the removal persists.
+          const removeRow=(i)=>{const base=_omgReviewSelRef.current;if(!base)return;const upd={...base,products:(base.products||[]).filter((_,j)=>j!==i)};setOmgSel(upd);if(!staging)setOmgStores(prev=>prev.map(st=>st.id===upd.id?upd:st));};
+          const commit=()=>{
+            const cur=_omgReviewSelRef.current;if(!cur){setOmgReviewOpen(false);return}
+            // Adding the store to omgStores is what persists it (the save effect watches omgStores).
+            setOmgStores(prev=>prev.some(st=>st.id===cur.id)?prev.map(st=>st.id===cur.id?cur:st):[cur,...prev]);
+            setOmgReviewOpen(false);
+            const bad=(cur.products||[]).filter(p=>_skuLooksInvalid(p.sku)).length;
+            nf(`Store added — ${(cur.products||[]).length} product${(cur.products||[]).length===1?'':'s'}${bad?` · ${bad} SKU${bad===1?'':'s'} still need fixing`:''}`,bad?'warn':'success');
+          };
+          const cancel=()=>{setOmgReviewOpen(false);if(staging)setOmgSel(null)};// discard the staged store on cancel — nothing was persisted
+          return<div className="modal-overlay" onClick={cancel}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:780,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
+              <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <h2 style={{margin:0,fontSize:17}}>🔍 Review SKUs — {rv.store_name}</h2>
+                <button onClick={cancel} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+              </div>
+              <div className="modal-body" style={{overflowY:'auto',padding:'16px 20px 20px'}}>
+                <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Confirm each style number before {staging?'creating the store':'continuing'}. Fix any that are wrong — the cost and vendor <b>re-source automatically</b> from the catalog and supplier APIs. Getting SKUs right here keeps the Sales Order and the rebuild link matched to the real products.</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:14}}>
+                  <span style={chip('#eef2ff','#4338ca')}>{prods.length} item{prods.length===1?'':'s'} · {totalUnits} units</span>
+                  {badSkus.length>0&&<span style={chip('#fef2f2','#b91c1c')}>⚠ {badSkus.length} invalid SKU{badSkus.length===1?'':'s'}</span>}
+                  {notLinked.length>0&&<span style={chip('#fffbeb','#92400e')}>⚠ {notLinked.length} not linked to catalog/API</span>}
+                  {badSkus.length===0&&notLinked.length===0&&<span style={chip('#f0fdf4','#166534')}>✓ all linked &amp; valid</span>}
+                  {omgPriceLoading&&<span style={chip('#f1f5f9','#64748b')}>⏳ re-sourcing…</span>}
+                </div>
+                <div style={{overflowX:'auto',border:'1px solid #e2e8f0',borderRadius:8}}>
+                  <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                    <thead><tr style={{background:'#f8fafc'}}>
+                      <th style={th('center')}></th>
+                      <th style={th('left')}>Product</th>
+                      <th style={th('left')}>SKU</th>
+                      <th style={th('left')}>Color</th>
+                      <th style={th('center')}>Units</th>
+                      <th style={th('right')}>Cost · source</th>
+                      <th style={th('left')}>Vendor</th>
+                      <th style={th('center')}></th>
+                    </tr></thead>
+                    <tbody>
+                      {prods.map((p,i)=>{
+                        const units=Object.values(p.sizes||{}).reduce((a,v)=>a+(Number(v)||0),0);
+                        const invalid=_skuLooksInvalid(p.sku);
+                        const vName=vend.find(v=>v.id===p.vendor_id)?.name||'';
+                        return<tr key={i} style={{background:invalid?'#fef2f2':i%2?'#fafbfc':'#fff'}}>
+                          <td style={{padding:4,borderBottom:'1px solid #f1f5f9',width:44,textAlign:'center'}}>{p.image_url?<img src={p.image_url} alt="" style={{width:36,height:36,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0'}}/>:<span style={{color:'#cbd5e1',fontSize:16}}>📦</span>}</td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontWeight:600,maxWidth:170,overflow:'hidden'}} title={p.name}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.name||'—'}</div><div style={{fontSize:9,color:'#94a3b8'}}>{p.manufacturer||''}</div></td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9'}}>
+                            <input type="text" value={p.sku||''} title="Edit the style number — leaving the field re-sources the cost & vendor across the catalog and supplier APIs."
+                              onChange={e=>onSkuChange(i,e.target.value)}
+                              onFocus={e=>{e.target.dataset.orig=p.sku||''}}
+                              onKeyDown={e=>{if(e.key==='Enter')e.target.blur()}}
+                              onBlur={e=>{const orig=e.target.dataset.orig||'';if((e.target.value||'').trim()!==orig.trim())omgResolveRowSku(rv,i,e.target.value,orig)}}
+                              style={{fontFamily:'monospace',fontWeight:700,color:invalid?'#b91c1c':'#1e40af',fontSize:12,width:100,padding:'4px 6px',border:'1px solid '+(invalid?'#fca5a5':'#cbd5e1'),borderRadius:4,background:'#fff'}}/>
+                            {invalid&&<div style={{fontSize:8,fontWeight:800,color:'#b91c1c',marginTop:2,whiteSpace:'nowrap'}}>⚠ fix this SKU</div>}
+                          </td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:'#64748b',maxWidth:120,overflow:'hidden'}} title={p.color}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{p.color||'—'}</div></td>
+                          <td style={{textAlign:'center',padding:'6px 8px',borderBottom:'1px solid #f1f5f9',fontWeight:700}}>{units}</td>
+                          <td style={{textAlign:'right',padding:'6px 8px',borderBottom:'1px solid #f1f5f9',whiteSpace:'nowrap'}}>
+                            <div style={{color:Number(p.cost)>0?'#166534':'#b91c1c',fontWeight:700}}>{Number(p.cost)>0?'$'+Number(p.cost).toFixed(2):'—'}</div>
+                            {(()=>{const L={catalog:['✓ Catalog','#15803d','#dcfce7'],sanmar:['✓ SanMar','#1d4ed8','#dbeafe'],ss:['✓ S&S','#6d28d9','#ede9fe'],richardson:['✓ Richardson','#b45309','#fef3c7'],momentec:['✓ Momentec','#0e7490','#cffafe'],api:['✓ API','#475569','#e2e8f0'],manual:['✎ Manual','#475569','#f1f5f9']};
+                              const hit=isLinked(p)&&L[p._cost_source];
+                              return hit?<span style={{fontSize:8,fontWeight:800,color:hit[1],background:hit[2],padding:'1px 5px',borderRadius:8,display:'inline-block',marginTop:2}}>{hit[0]}</span>
+                                :<span title="This SKU didn't match the catalog or any supplier API — the cost shown is the OMG-reported number. Fix the SKU to link it, or remove the line." style={{fontSize:8,fontWeight:800,color:'#b45309',background:'#fef3c7',padding:'1px 5px',borderRadius:8,display:'inline-block',marginTop:2}}>⚠ not linked</span>;
+                            })()}
+                          </td>
+                          <td style={{padding:'6px 8px',borderBottom:'1px solid #f1f5f9',color:vName?'#0f172a':'#94a3b8',fontSize:11,maxWidth:110,overflow:'hidden'}} title={vName}><div style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{vName||'—'}</div></td>
+                          <td style={{padding:'6px 4px',borderBottom:'1px solid #f1f5f9',textAlign:'center'}}><button onClick={()=>removeRow(i)} title="Don't bring this item over — remove it from the store" style={{background:'none',border:'none',color:'#cbd5e1',fontSize:16,lineHeight:1,cursor:'pointer',padding:2}} onMouseEnter={e=>e.currentTarget.style.color='#dc2626'} onMouseLeave={e=>e.currentTarget.style.color='#cbd5e1'}>✕</button></td>
+                        </tr>;
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {badSkus.length>0&&<div style={{marginTop:12,padding:'8px 12px',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,fontSize:11,color:'#b91c1c'}}>⚠ {badSkus.length} item{badSkus.length===1?'':'s'} still {badSkus.length===1?'has':'have'} an invalid SKU (blank or a compound like <span style={{fontFamily:'monospace'}}>IP9746//IS1111</span>). You can still {staging?'create the store':'continue'}, but the Sales Order stays blocked until every SKU is a single valid style number.</div>}
+                {notLinked.length>0&&<div style={{marginTop:12,padding:'8px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>{notLinked.length} item{notLinked.length===1?'':'s'} {notLinked.length===1?'isn’t':'aren’t'} linked to a catalog or supplier-API item — the cost shown is the OMG-reported number, not a verified one. Fixing the SKU re-sources it live (catalog → S&S / SanMar / Richardson / Momentec); or use ✕ to leave it out.</div>}
+              </div>
+              <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}}>
+                <button onClick={cancel} style={{fontSize:12,fontWeight:600,padding:'8px 16px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:'pointer'}}>{staging?'Cancel — don’t add':'Close'}</button>
+                {staging
+                  ?<button onClick={commit} disabled={prods.length===0} style={{fontSize:13,fontWeight:800,padding:'8px 22px',borderRadius:6,border:'none',background:prods.length===0?'#94a3b8':'#166534',color:'#fff',cursor:prods.length===0?'not-allowed':'pointer',boxShadow:'0 1px 2px rgba(0,0,0,0.15)'}}>✓ Create Store · {prods.length} item{prods.length===1?'':'s'}</button>
+                  :<button onClick={()=>setOmgReviewOpen(false)} style={{fontSize:13,fontWeight:800,padding:'8px 22px',borderRadius:6,border:'none',background:'#2563eb',color:'#fff',cursor:'pointer'}}>Done</button>}
+              </div>
+            </div>
+          </div>;
+        })()}
+
         {/* Step-by-step help modal */}
         {omgGuideOpen&&<div className="modal-overlay" onClick={()=>setOmgGuideOpen(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:720,maxHeight:'90vh',display:'flex',flexDirection:'column'}}>
@@ -18589,45 +18892,31 @@ export default function App(){
       }
     };
     return(<>
-      {/* Add Store from Report */}
-      <div className="card" style={{marginBottom:12,border:'2px solid #166534'}}>
-        <div style={{padding:16}}>
-          <div style={{fontSize:15,fontWeight:700,color:'#166534',marginBottom:4}}>Add Store from OMG Report</div>
-          <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Paste the shared report link from OMG to create a new store with products, sizes, and artwork.</div>
-          <div style={{display:'flex',gap:8,alignItems:'center'}}>
-            <input type="text" placeholder="https://report.ordermygear.com/..." value={omgReportUrl} onChange={e=>setOmgReportUrl(e.target.value)}
-              style={{flex:1,padding:'8px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace'}}/>
-            <button className="btn btn-primary" disabled={omgReportLoading||!omgReportUrl.trim()} style={{background:'#166534',whiteSpace:'nowrap'}} onClick={async()=>{
-              // Create a new store shell, then import the report into it
-              const urlStr=omgReportUrl.trim();
-              const uuidMatch=urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
-              if(!uuidMatch){nf('Invalid report URL — needs a valid OMG report link','error');return}
-              setOmgReportLoading(true);
-              try{
-                const resp=await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
-                if(!resp.ok)throw new Error('Report fetch failed: '+resp.status);
-                const report=await resp.json();
-                const saleCode=report.options?.filter?.find(f=>f.key==='sale_code')?.value||'';
-                const storeName=report.details?.title||'OMG Store '+saleCode;
-                const storeId='OMG-sale_'+saleCode;
-                // Check if store already exists
-                if(omgStores.find(s=>s.id===storeId)){
-                  nf('Store already exists — opening it','error');
-                  setOmgSel(omgStores.find(s=>s.id===storeId));setOmgReportLoading(false);return;
-                }
-                // Create shell store
-                const shell={id:storeId,store_name:storeName,status:'open',_omg_source:true,_omg_id:'sale_'+saleCode,_omg_sale_code:saleCode,
-                  _last_synced:new Date().toISOString(),products:[],orders:0,total_sales:0,fundraise_total:0,items_sold:0,unique_buyers:0,
-                  subdomain:'',channel_type:'pop-up',_report_url:urlStr};
-                setOmgStores(prev=>[shell,...prev]);
-                // Now import report into it
-                const updated=await importOMGReport(shell,urlStr);
-                if(updated){setOmgSel(updated);setOmgReportUrl('')}
-              }catch(e){nf('Failed: '+e.message,'error')}finally{setOmgReportLoading(false)}
-            }}>{omgReportLoading?'⏳ Importing…':'+ Add Store'}</button>
+      {/* Copy OMG Store — standalone entry: paste report link → review SKUs → create store. */}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,flexWrap:'wrap'}}>
+        <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgCopyUrl('');setOmgCopyOpen(true)}} title="Paste an OMG report link to copy its items into a new store — review & fix SKUs, then create it">📋 Copy OMG Store</button>
+        <span style={{fontSize:12,color:'#64748b'}}>Copy a previous OMG store's items into a new store — you'll review &amp; fix SKUs, then it's created.</span>
+      </div>
+
+      {/* Copy OMG Store modal */}
+      {omgCopyOpen&&<div className="modal-overlay" onClick={()=>{if(!omgReportLoading)setOmgCopyOpen(false)}}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2 style={{margin:0,fontSize:17}}>📋 Copy OMG Store</h2>
+            <button onClick={()=>{if(!omgReportLoading)setOmgCopyOpen(false)}} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:'16px 20px 20px'}}>
+            <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Paste the shared OMG report link. It copies every product, size, color and mockup image, then opens a review so you can confirm and fix SKUs — the store is created when you finish.</div>
+            <input type="text" autoFocus placeholder="https://report.ordermygear.com/..." value={omgCopyUrl} onChange={e=>setOmgCopyUrl(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'&&omgCopyUrl.trim()&&!omgReportLoading)startOmgCopy(omgCopyUrl)}}
+              style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace',boxSizing:'border-box'}}/>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',justifyContent:'flex-end',gap:10}}>
+            <button onClick={()=>setOmgCopyOpen(false)} disabled={omgReportLoading} style={{fontSize:12,fontWeight:600,padding:'8px 16px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:omgReportLoading?'not-allowed':'pointer'}}>Cancel</button>
+            <button onClick={()=>startOmgCopy(omgCopyUrl)} disabled={omgReportLoading||!omgCopyUrl.trim()} style={{fontSize:13,fontWeight:800,padding:'8px 20px',borderRadius:6,border:'none',background:(omgReportLoading||!omgCopyUrl.trim())?'#94a3b8':'#166534',color:'#fff',cursor:(omgReportLoading||!omgCopyUrl.trim())?'not-allowed':'pointer'}}>{omgReportLoading?'⏳ Importing…':'Import & Review'}</button>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
