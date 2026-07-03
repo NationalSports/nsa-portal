@@ -138,17 +138,21 @@ const _availForSize = (p, size) => {
 // twin), with incoming/ETA items allowed as backorders. Read through the storefront
 // view — whose vendor stock/ETA now span every synced vendor (inventory_unified, not
 // just Adidas), so non-Adidas items are validated against real vendor availability.
+// Returns { error, holds }: error blocks checkout; holds are the (product, size,
+// qty, max_avail) lines the place_webstore_order transaction reserves for 30
+// minutes (migration 00171), closing the read-then-insert oversell race. Only
+// tracked, not-incoming lines get holds — the same lines this check can block on.
 async function checkStock(sb, store, lines) {
   const singles = lines.filter((l) => l.kind === 'single' && l.size);
-  if (!singles.length) return null;
+  if (!singles.length) return { error: null, holds: [] };
   const ids = [...new Set(singles.map((l) => l.wp.id))];
   const { data, error } = await sb.from('webstore_storefront_products')
     .select('webstore_product_id,name,size_stock,vendor_size_stock,vendor_on_hand,on_order_qty,earliest_eta,vendor_eta,track_inventory,inventory_source')
     .eq('store_id', store.id).in('webstore_product_id', ids);
-  if (error) return null; // parity with the client: don't block checkout on a lookup failure
+  if (error) return { error: null, holds: [] }; // parity with the client: don't block checkout on a lookup failure
   const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
   const need = {}; singles.forEach((l) => { const k = l.wp.id + '|' + l.size; need[k] = (need[k] || 0) + l.qty; });
-  const short = [];
+  const short = []; const holds = [];
   Object.entries(need).forEach(([k, q]) => {
     const [wid, size] = k.split('|'); const p = byId[wid]; if (!p) return;
     // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
@@ -157,10 +161,11 @@ async function checkStock(sb, store, lines) {
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
-    if (avail < q) short.push(`${p.name || 'item'} (size ${size})`);
+    if (avail < q) { short.push(`${p.name || 'item'} (size ${size})`); return; }
+    holds.push({ webstore_product_id: wid, size, qty: q, max_avail: avail, label: `${p.name || 'item'} (size ${size})` });
   });
-  if (short.length) return `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`;
-  return null;
+  if (short.length) return { error: `Sorry — these just sold out while you were shopping: ${short.join(', ')}. Please remove or change them and try again.`, holds: [] };
+  return { error: null, holds };
 }
 
 // Enforce the store's allowed jersey-number range (configured per store but
@@ -337,6 +342,17 @@ async function replayOrder(order) {
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ order, totals, replayed: true }) };
 }
 
+// Compensation delete for failures AFTER the order exists (e.g. PaymentIntent
+// creation fails). Items, claims, and stock holds all cascade from the order row;
+// the explicit deletes are belt-and-braces parity with the pre-transaction code.
+async function rollbackOrder(sb, orderId) {
+  try {
+    await sb.from('webstore_number_claims').delete().eq('order_id', orderId);
+    await sb.from('webstore_order_items').delete().eq('order_id', orderId);
+    await sb.from('webstore_orders').delete().eq('id', orderId);
+  } catch (e) { console.error('[webstore-checkout] rollback failed for order', orderId, e.message); }
+}
+
 async function placeOrder(sb, body) {
   const { storeSlug, cart, buyer, ship, payMode, couponCode, expectedTotalCents } = body;
   const clientRef = validClientRef(body.clientRef);
@@ -363,8 +379,8 @@ async function placeOrder(sb, body) {
   const numErr = checkNumberRange(store, priced.lines);
   if (numErr) return bad(409, numErr);
 
-  const stockErr = await checkStock(sb, store, priced.lines);
-  if (stockErr) return bad(409, stockErr);
+  const stock = await checkStock(sb, store, priced.lines);
+  if (stock.error) return bad(409, stock.error);
 
   const coup = await loadCoupon(sb, store, couponCode);
   if (coup.error) return bad(409, coup.error);
@@ -400,7 +416,7 @@ async function placeOrder(sb, body) {
   if (mode === 'unpaid' && total > 0 && !allowUnpaid) return bad(409, 'This store requires card payment.');
   if (mode === 'paid' && Math.round(total * 100) < 50) return bad(409, 'Card payments must be at least $0.50 — use the team tab for this order.');
 
-  // ── Insert order + items + number claims, rolling back everything on failure ──
+  // ── Build every row up front; nothing is written until all checks pass ──
   const orderRow = {
     store_id: store.id, status: mode === 'paid' ? 'pending_payment' : 'unpaid', payment_mode: mode, order_kind: 'individual',
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
@@ -409,49 +425,26 @@ async function placeOrder(sb, body) {
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   };
-  let ins = await sb.from('webstore_orders').insert(clientRef ? { ...orderRow, client_ref: clientRef } : orderRow).select().single();
-  if (ins.error && clientRef) {
-    if (isMissingColumnErr(ins.error)) {
-      // Migration 00170 not applied yet — place the order without the token.
-      ins = await sb.from('webstore_orders').insert(orderRow).select().single();
-    } else if (/duplicate|unique/i.test(ins.error.message || '')) {
-      // Concurrent double-submit lost the insert race — return the winner's order.
-      const winner = await findOrderByClientRef(sb, clientRef);
-      if (winner) return replayOrder(winner);
-      return bad(502, 'Could not create the order: ' + ins.error.message);
-    }
-  }
-  const { data: order, error: ordErr } = ins;
-  if (ordErr) return bad(502, 'Could not create the order: ' + ordErr.message);
 
-  const rollback = async () => {
-    try {
-      await sb.from('webstore_number_claims').delete().eq('order_id', order.id);
-      await sb.from('webstore_order_items').delete().eq('order_id', order.id);
-      await sb.from('webstore_orders').delete().eq('id', order.id);
-    } catch (e) { console.error('[webstore-checkout] rollback failed for order', order.id, e.message); }
-  };
-
-  const items = [];
+  const items = []; // no order_id yet — the transaction (or legacy path) injects it
   for (const l of priced.lines) {
     if (l.kind === 'bundle') {
       const bref = require('crypto').randomUUID();
-      items.push({ order_id: order.id, product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ order_id: order.id, product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
-      items.push({ order_id: order.id, product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
   }
-  const { error: itemErr } = await sb.from('webstore_order_items').insert(items);
-  if (itemErr) { await rollback(); return bad(502, 'Could not save your order items: ' + itemErr.message); }
 
+  // A number is one-per-player across the store. Within one checkout the same
+  // number legitimately repeats across a single player's bundle components
+  // (jersey + shorts share #10), so group by player identity — but assigning
+  // one number to two DIFFERENT players violates the unique rule. Pure check on
+  // the built rows, so it runs BEFORE anything is written (it used to insert the
+  // order + items first and compensate). Claims record the player's name, not the buyer's.
+  let claims = [];
   if (store.number_unique) {
-    // A number is one-per-player across the store. Within one checkout the same
-    // number legitimately repeats across a single player's bundle components
-    // (jersey + shorts share #10), so group by player identity — but assigning
-    // one number to two DIFFERENT players violates the unique rule and is caught
-    // here rather than silently collapsing to a single claim (which used to let
-    // two kids share #10). Claims record the player's name, not the buyer's.
     const numbered = items.filter((i) => !i.is_bundle_parent && i.player_number);
     const identsByNum = {}; // number -> Set(player identity)
     const nameByNum = {};   // number -> player name to record on the claim
@@ -462,16 +455,70 @@ async function placeOrder(sb, body) {
       if (!nameByNum[num]) nameByNum[num] = (i.player_name && i.player_name.trim()) || String(buyer.name).trim();
     });
     const conflict = Object.entries(identsByNum).find(([, set]) => set.size > 1);
-    if (conflict) { await rollback(); return bad(409, `Number ${conflict[0]} can't go to two different players — each number in this store is unique. Please give each player a different number.`, { code: 'number_conflict', number: conflict[0] }); }
-    for (const [n, pname] of Object.entries(nameByNum)) {
-      const { error: ce } = await sb.from('webstore_number_claims').insert({ store_id: store.id, player_number: n, order_id: order.id, player_name: pname });
+    if (conflict) return bad(409, `Number ${conflict[0]} can't go to two different players — each number in this store is unique. Please give each player a different number.`, { code: 'number_conflict', number: conflict[0] });
+    claims = Object.entries(nameByNum).map(([n, pname]) => ({ player_number: n, player_name: pname }));
+  }
+
+  // ── Preferred path: ONE transaction — order + items + number claims + 30-minute
+  // stock holds via place_webstore_order (migration 00171). Everything commits or
+  // nothing does, and the per-(product,size) holds close the read-then-insert
+  // oversell race. Falls back to the legacy sequential writes until the migration
+  // is applied (missing-function detection), so deploy order doesn't matter.
+  let order = null;
+  const rpc = await sb.rpc('place_webstore_order', {
+    p_order: clientRef ? { ...orderRow, client_ref: clientRef } : orderRow,
+    p_items: items, p_claims: claims, p_holds: stock.holds, p_hold_minutes: 30,
+  });
+  if (!rpc.error) {
+    order = rpc.data && rpc.data.order;
+    if (!order) return bad(502, 'Could not create the order.');
+  } else {
+    const msg = rpc.error.message || '';
+    const taken = msg.match(/NSA_NUMBER_TAKEN:([^\s]+)/);
+    if (taken) return bad(409, `Number ${taken[1]} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: taken[1] });
+    const sold = msg.match(/NSA_SOLD_OUT:(.+)/);
+    if (sold) return bad(409, `Sorry — these just sold out while you were shopping: ${sold[1].trim()}. Please remove or change them and try again.`);
+    if (clientRef && /duplicate|unique/i.test(msg) && /client_ref/.test(msg)) {
+      // Concurrent double-submit lost the transaction race — return the winner's order.
+      const winner = await findOrderByClientRef(sb, clientRef);
+      if (winner) return replayOrder(winner);
+      return bad(502, 'Could not create the order: ' + msg);
+    }
+    const missingFn = /place_webstore_order/.test(msg) && /(function|schema cache)/i.test(msg);
+    if (!missingFn) return bad(502, 'Could not create the order: ' + msg);
+  }
+
+  // ── Legacy sequential writes (pre-00171 DBs): insert order → items → claims,
+  // compensating on failure. Identical behavior to the pre-transaction code.
+  if (!order) {
+    let ins = await sb.from('webstore_orders').insert(clientRef ? { ...orderRow, client_ref: clientRef } : orderRow).select().single();
+    if (ins.error && clientRef) {
+      if (isMissingColumnErr(ins.error)) {
+        // Migration 00170 not applied yet — place the order without the token.
+        ins = await sb.from('webstore_orders').insert(orderRow).select().single();
+      } else if (/duplicate|unique/i.test(ins.error.message || '')) {
+        const winner = await findOrderByClientRef(sb, clientRef);
+        if (winner) return replayOrder(winner);
+        return bad(502, 'Could not create the order: ' + ins.error.message);
+      }
+    }
+    if (ins.error) return bad(502, 'Could not create the order: ' + ins.error.message);
+    order = ins.data;
+
+    const { error: itemErr } = await sb.from('webstore_order_items').insert(items.map((r) => ({ ...r, order_id: order.id })));
+    if (itemErr) { await rollbackOrder(sb, order.id); return bad(502, 'Could not save your order items: ' + itemErr.message); }
+
+    for (const c of claims) {
+      const { error: ce } = await sb.from('webstore_number_claims').insert({ store_id: store.id, player_number: c.player_number, order_id: order.id, player_name: c.player_name });
       if (ce) {
-        await rollback();
-        if (/duplicate|unique/i.test(ce.message || '')) return bad(409, `Number ${n} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: n });
+        await rollbackOrder(sb, order.id);
+        if (/duplicate|unique/i.test(ce.message || '')) return bad(409, `Number ${c.player_number} was just taken by someone else — please pick a different number.`, { code: 'number_taken', number: c.player_number });
         return bad(502, 'Could not reserve your number: ' + ce.message);
       }
     }
   }
+
+  const rollback = () => rollbackOrder(sb, order.id);
 
   if (mode === 'paid') {
     const sk = process.env.STRIPE_SECRET_KEY;
