@@ -4076,7 +4076,10 @@ export default function App(){
   const[issues,setIssues]=useState(()=>loadState('issues',[]));
   const[quoteRequests,setQuoteRequests]=useState([]);
   // Sales Tools page state (must be at App level to avoid conditional hook calls)
-  const[stTab,setStTab]=useState('quotes');
+  const[stTab,setStTab]=useState('myday');
+  // My Day recap window controls
+  const[stMdWin,setStMdWin]=useState(3);       // activity look-back in days
+  const[stMdDeadline,setStMdDeadline]=useState(14); // deadline look-ahead in days
   const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
   const[qrView,setQrView]=useState(null);
   const[qrSearch,setQrSearch]=useState('');
@@ -5737,6 +5740,11 @@ export default function App(){
         const pr=prod.find(x=>x.id===prodId);
         if(pr){setSelP(pr);setPg('products')}
         u.searchParams.delete('prod');changed=true;
+      }
+      // Sales Tools sub-tab deep link (used by the rep ops digest email CTA, e.g. ?pg=sales_tools&st=myday).
+      const stParam=p.get('st');
+      if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
+        setStTab(stParam);u.searchParams.delete('st');changed=true;
       }
       if(changed)window.history.replaceState({},'',u);
     }catch{}
@@ -31655,13 +31663,187 @@ export default function App(){
     const emSell=emP(dcStitches,dcQty,true);const emCost=emP(dcStitches,dcQty,false);
     const npSell=npP(dcQty,dcTwoColor,true);const npCost=npP(dcQty,dcTwoColor,false);
 
+    // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
+    const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
+    const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
+    const _mdMine=(...ids)=>_mdAdmin||ids.some(id=>id&&id===cu.id);
+    const _mdCustName=(id)=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||'—'};
+    const _mdNow=Date.now();
+    const _mdWinStart=_mdNow-stMdWin*864e5;
+    const _mdInWin=(d)=>{const dt=parseDate(d);if(!dt)return false;const t=dt.getTime();return !isNaN(t)&&t>=_mdWinStart&&t<=_mdNow+6e4};
+    const _mdUnits=(pk)=>SZ_ORD.reduce((a,sz)=>a+safeNum(pk[sz]),0)+safeNum(pk.QTY);
+    const _mdWhen=d=>{const dt=parseDate(d);if(!dt||isNaN(dt))return'';const days=Math.floor((_mdNow-dt.getTime())/864e5);return days<=0?'Today':days===1?'Yesterday':days+'d ago'};
+
+    // Estimates approved in the window (mine = created it or own the customer)
+    const mdApproved=ests.filter(e=>{
+      if(e.status!=='approved'||e.deleted_at)return false;
+      if(!_mdInWin(e.approved_at||e.updated_at))return false;
+      const cRep=cust.find(x=>x.id===e.customer_id)?.primary_rep_id;
+      return _mdMine(e.created_by,cRep);
+    }).sort((a,b)=>parseDate(b.approved_at||b.updated_at)-parseDate(a.approved_at||a.updated_at));
+
+    // Per-SO short-on-pull (exact if_short rule: warehouse done, stock came up short, no covering PO)
+    const _mdShortOf=(so)=>{
+      let units=0;const parts=[];
+      safeItems(so).forEach(it=>{
+        const picks=safePicks(it);
+        if(picks.length===0||picks.some(pk=>pk.status!=='pulled'))return;
+        const pulledKeys=new Set();picks.forEach(pk=>Object.keys(pk).forEach(k=>{if(SZ_ORD.includes(k))pulledKeys.add(k)}));
+        const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
+        if(szKeys.some(sz=>(it.sizes[sz]||0)>0&&!pulledKeys.has(sz)))return; // edited after pull → not a short
+        let itShort=0;const bySz={};
+        szKeys.forEach(sz=>{const ordered=it.sizes[sz]||0;if(ordered<=0)return;
+          const pulled=picks.reduce((a,pk)=>a+(pk.status==='pulled'?(pk[sz]||0):0),0);
+          const onPO=safePOs(it).reduce((a,po)=>a+(po[sz]||0)-((po.cancelled||{})[sz]||0),0);
+          const sh=Math.max(0,ordered-pulled-onPO);if(sh>0){itShort+=sh;bySz[sz]=sh}});
+        if(itShort>0){units+=itShort;parts.push((it.sku||it.name||'Item')+' ('+Object.entries(bySz).map(([s,n])=>s+':'+n).join(', ')+')')}
+      });
+      return units>0?{units,detail:parts.join(' · ')}:null;
+    };
+
+    // IFs picked (pick lines pulled in the window), grouped by pick_id per SO
+    const mdPicked=[];let mdShortCount=0;
+    sos.forEach(so=>{
+      if(!_mdMine(_mdRepOf(so)))return;
+      const groups={};
+      safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{
+        if(pk.status!=='pulled'||!_mdInWin(pk.pulled_at))return;
+        const key=pk.pick_id||('line:'+(it.sku||it.name||''));
+        const g=groups[key]||(groups[key]={pickId:pk.pick_id||null,units:0,skus:new Set(),latest:pk.pulled_at});
+        g.units+=_mdUnits(pk);if(it.sku||it.name)g.skus.add(it.sku||it.name);
+        if(parseDate(pk.pulled_at)>parseDate(g.latest))g.latest=pk.pulled_at;
+      }));
+      const gk=Object.values(groups);if(!gk.length)return;
+      const short=_mdShortOf(so);if(short)mdShortCount++;
+      gk.forEach(g=>mdPicked.push({so,pickId:g.pickId,units:g.units,skus:[...g.skus],latest:g.latest,short}));
+    });
+    mdPicked.sort((a,b)=>parseDate(b.latest)-parseDate(a.latest));
+
+    // Orders all checked in (all goods received/pulled, not yet in production/shipped) — recent
+    const mdCheckedIn=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      if(calcSOStatus(so)!=='items_received')return false;
+      return _mdInWin(so.updated_at);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Orders shipped (all jobs shipped / delivery complete) — recent
+    const mdShipped=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
+      if(calcSOStatus(so)!=='complete')return false;
+      return _mdInWin(so._ship_date||so.updated_at);
+    }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
+
+    // Deadlines approaching (open orders due within the look-ahead window, incl. overdue)
+    const _mdDeadlineCut=_mdNow+stMdDeadline*864e5;
+    const mdDeadlines=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so)))return false;
+      if(so.deleted_at||so.status==='cancelled')return false;
+      if(calcSOStatus(so)==='complete')return false;
+      const dt=parseDate(so.expected_date);return dt&&!isNaN(dt)&&dt.getTime()<=_mdDeadlineCut;
+    }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
+      .sort((a,b)=>a.dt-b.dt);
+
+    const _mdOpenSO=(so,soTab)=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);if(soTab)setESOTab(soTab);setPg('orders')};
+    const _mdOpenEst=(e)=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')};
+
     return(<>
       {/* Tab bar */}
       <div style={{display:'flex',gap:4,marginBottom:16,flexWrap:'wrap'}}>
-        {[{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
+        {[{id:'myday',label:'My Day',icon:'home'},{id:'quotes',label:'Quote Forms',icon:'send'},{id:'numbers',label:'Numbers List',icon:'grid'},{id:'size_sort',label:'Size Sorter',icon:'grid'},{id:'reorder',label:'Quick Reorder',icon:'cart'},{id:'deco_calc',label:'Deco Calculator',icon:'dollar'},{id:'mockup',label:'Mockup Helper',icon:'image'},{id:'vectorizer',label:'Image Vectorizer',icon:'pen-tool'}].map(t=>
           <button key={t.id} className={`btn ${stTab===t.id?'btn-primary':'btn-secondary'}`} onClick={()=>setStTab(t.id)} style={{fontSize:13,padding:'8px 16px'}}>
             <Icon name={t.icon} size={14}/> {t.label}</button>)}
       </div>
+
+      {/* ═══ MY DAY — daily ops recap ═══ */}
+      {stTab==='myday'&&(()=>{
+        const tiles=[
+          {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
+          {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
+          {id:'picked',label:'IFs Picked',icon:'package',color:'#b45309',n:mdPicked.length,sub:mdShortCount>0?mdShortCount+' short on pull':''},
+          {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
+          {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
+        ];
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdDeadlines.length;
+        const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
+          <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
+          <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
+        </div>;
+        return<>
+          <div className="card" style={{marginBottom:16}}>
+            <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
+              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · All Reps':''}</h2>
+              <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
+                <span>Activity in last</span>
+                <select className="form-input" value={stMdWin} onChange={e=>setStMdWin(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[1,3,7,14].map(d=><option key={d} value={d}>{d} day{d>1?'s':''}</option>)}</select>
+                <span>· deadlines next</span>
+                <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
+                  {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+              </div>
+            </div>
+            <div className="card-body" style={{padding:16}}>
+              <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:12}}>
+                {tiles.map(t=><div key={t.id} className="stat-card" style={{borderLeft:'3px solid '+t.color,cursor:'pointer'}} onClick={()=>{const el=document.getElementById('md-'+t.id);if(el)el.scrollIntoView({behavior:'smooth',block:'start'})}}>
+                  <div className="stat-label"><Icon name={t.icon} size={12}/> {t.label}</div>
+                  <div className="stat-value" style={{color:t.color}}>{t.n}</div>
+                  {t.sub&&<div style={{fontSize:11,color:'#dc2626',fontWeight:700}}>⚠️ {t.sub}</div>}
+                </div>)}
+              </div>
+              {total===0&&<div style={{padding:'24px 8px 4px',textAlign:'center',color:'#94a3b8',fontSize:13}}>Nothing in this window yet. Widen the range, or check back after the day gets going.</div>}
+            </div>
+          </div>
+
+          {mdShipped.length>0&&<Section id="shipped" title="🚚 Orders Shipped" count={mdShipped.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Shipped</th><th></th></tr></thead>
+              <tbody>{mdShipped.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdApproved.length>0&&<Section id="approved" title="✅ Estimates Approved" count={mdApproved.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Estimate</th><th>Customer</th><th>Approved by</th><th>When</th><th></th></tr></thead>
+              <tbody>{mdApproved.map(e=>{const converted=sos.some(s=>s.estimate_id===e.id);return<tr key={e.id}>
+                <td style={{fontWeight:600}}>{e.id}{e.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{e.memo}</div>}</td>
+                <td>{_mdCustName(e.customer_id)}</td>
+                <td style={{color:'#64748b'}}>{e.approved_by||'—'}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(e.approved_at||e.updated_at)}</td>
+                <td>{converted?<span style={{fontSize:10,color:'#059669',fontWeight:700}}>Ordered ✓</span>:<button className="btn btn-sm" style={{fontSize:10,background:'#065f46',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenEst(e)}>Convert to SO</button>}</td>
+              </tr>})}</tbody></table></Section>}
+
+          {mdPicked.length>0&&<Section id="picked" title="📦 IFs Picked" count={mdPicked.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>IF / Order</th><th>Customer</th><th>Units</th><th>Items</th><th>Pulled</th><th></th></tr></thead>
+              <tbody>{mdPicked.map((r,i)=><tr key={r.so.id+':'+(r.pickId||i)} style={r.short?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{r.pickId||r.so.id}<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{r.so.id}{r.short?<span style={{color:'#dc2626',fontWeight:700}}> · ⚠️ Short {r.short.units}: {r.short.detail}</span>:''}</div></td>
+                <td>{_mdCustName(r.so.customer_id)}</td>
+                <td>{r.units}</td>
+                <td style={{fontSize:11,color:'#475569'}}>{r.skus.slice(0,3).join(', ')}{r.skus.length>3?' +'+(r.skus.length-3):''}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(r.latest)}</td>
+                <td style={{display:'flex',gap:4}}><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(r.so,'items')}>Open</button>{r.short&&<button className="btn btn-sm" style={{fontSize:10,background:'#b91c1c',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenSO(r.so,'items')}>Create PO</button>}</td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdCheckedIn.length>0&&<Section id="checkedin" title="🏬 Orders All Checked In" count={mdCheckedIn.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Ready</th><th></th></tr></thead>
+              <tbody>{mdCheckedIn.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdDeadlines.length>0&&<Section id="deadlines" title="⏰ Deadlines Approaching" count={mdDeadlines.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Due</th><th>Status</th><th></th></tr></thead>
+              <tbody>{mdDeadlines.map(({so,dt,daysOut})=>{const overdue=daysOut<0;const soon=daysOut>=0&&daysOut<=3;return<tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:overdue?'#fee2e2':soon?'#fef3c7':'#e0f2fe',color:overdue?'#991b1b':soon?'#92400e':'#075985'}}>{dt.toLocaleDateString()}{' · '}{overdue?Math.abs(daysOut)+'d overdue':daysOut===0?'today':daysOut+'d out'}</span></td>
+                <td style={{fontSize:11,color:'#64748b'}}>{calcSOStatus(so).replace(/_/g,' ')}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>})}</tbody></table></Section>}
+        </>;
+      })()}
 
       {/* ═══ CUSTOMER QUOTE FORMS ═══ */}
       {stTab==='quotes'&&<>

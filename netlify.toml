@@ -93,6 +93,13 @@
 [functions."rep-daily-digest"]
   schedule = "11 9 * * *"
 
+# Rep daily OPS recap — ~2 AM PT (09:21 UTC, after the store digest). Emails each
+# rep the prior PT day across THEIR orders: shipped, estimates approved, IFs picked
+# (flagging shorts), orders all checked in, plus deadlines coming up. Links to the
+# in-app "My Day" tab (Sales Tools). Reps with no activity/deadlines get nothing.
+[functions."rep-ops-digest"]
+  schedule = "21 9 * * *"
+
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
 # style from the S&S API into products + adidas_inventory for /adidas.
