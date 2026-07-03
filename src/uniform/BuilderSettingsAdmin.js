@@ -15,7 +15,7 @@ import {
   DEFAULT_NUMBER_STYLES, DEFAULT_PALETTE, DEFAULT_PRESETS,
   loadBuilderSettings, saveBuilderSetting,
 } from './builderSettings';
-import { FONTS as FONT_LIBRARY, fontShorthand, ensureFontsReady } from './fonts';
+import { FONTS as FONT_LIBRARY, fontShorthand, ensureFontsReady, registerCustomFonts, allFonts } from './fonts';
 import { renderToDataURL } from './renderCanvas';
 import * as ds from './designSpec';
 
@@ -45,6 +45,8 @@ export default function BuilderSettingsAdmin() {
   const [presets, setPresets] = useState(null);
   const [styles, setStyles] = useState(null);
   const [palette, setPalette] = useState(null);
+  const [customFonts, setCustomFonts] = useState(null);
+  const [fontsRev, setFontsRev] = useState(0); // bump when an upload registers, so previews re-render
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState('');
   const [err, setErr] = useState('');
@@ -56,6 +58,7 @@ export default function BuilderSettingsAdmin() {
       setPresets(s.presets.map((p) => ({ ...p, config: { ...p.config, sections: { ...p.config.sections } } })));
       setStyles(s.numberStyles.map((x) => ({ ...x })));
       setPalette(s.palette.map((x) => ({ ...x })));
+      setCustomFonts((s.customFonts || []).map((x) => ({ ...x })));
     });
   }, []);
 
@@ -91,6 +94,25 @@ export default function BuilderSettingsAdmin() {
     ...p, config: { ...p.config, sections: { ...p.config.sections, [zoneKey]: { ...p.config.sections[zoneKey], ...patch } } },
   } : p)));
   const setPresetNumber = (i, hex) => setPresets((ps) => ps.map((p, ix) => (ix === i ? { ...p, config: { ...p.config, numberColor: hex } } : p)));
+
+  // Read an uploaded font file into a data: URL and register it immediately so
+  // the preview row renders in the real face before the admin even saves.
+  const onFontFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 1_400_000) { setErr('Font file too large — keep it under 1.4MB (WOFF2 is smallest).'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const id = 'cf_' + Date.now().toString(36);
+      const label = file.name.replace(/\.(ttf|otf|woff2?)$/i, '').slice(0, 24) || 'Custom Font';
+      const entry = { id, label, data: reader.result, weight: 400 };
+      registerCustomFonts([entry]);
+      setCustomFonts((fs) => [...(fs || []), entry]);
+      setFontsRev((r) => r + 1);
+    };
+    reader.readAsDataURL(file);
+  };
 
   if (!presets || !styles || !palette) return <div style={{ padding: 30, color: '#5A6075' }}>Loading…</div>;
 
@@ -182,7 +204,7 @@ export default function BuilderSettingsAdmin() {
                     <input style={{ ...input, marginBottom: 6 }} value={st.label} maxLength={18} onChange={(e) => setStyles((xs) => xs.map((x, ix) => (ix === i ? { ...x, label: e.target.value } : x)))} />
                     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                       <select value={st.font} onChange={(e) => setStyles((xs) => xs.map((x, ix) => (ix === i ? { ...x, font: e.target.value } : x)))} style={{ ...input, flex: 1, padding: '5px 6px', fontSize: 12 }}>
-                        {FONT_LIBRARY.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                        {allFonts().map((f) => <option key={f.id} value={f.id}>{f.custom ? f.label + ' (uploaded)' : f.label}</option>)}
                       </select>
                       <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, color: '#3d4356', whiteSpace: 'nowrap' }}>
                         <input type="checkbox" checked={!!st.hollow} onChange={(e) => setStyles((xs) => xs.map((x, ix) => (ix === i ? { ...x, hollow: e.target.checked } : x)))} /> Outline
@@ -199,6 +221,44 @@ export default function BuilderSettingsAdmin() {
             <button className="btn btn-sm btn-secondary" onClick={() => setStyles(DEFAULT_NUMBER_STYLES.map((x) => ({ ...x })))}>Restore defaults</button>
             <div style={{ flex: 1 }} />
             <button className="btn btn-sm btn-primary" disabled={busy === 'numberStyles' || styles.length === 0} onClick={() => save('numberStyles', styles, setStyles)}>{busy === 'numberStyles' ? 'Saving…' : 'Save styles'}</button>
+          </div>
+
+          {/* uploaded fonts — usable in any style above once saved */}
+          <div style={{ marginTop: 30, paddingTop: 20, borderTop: '1px solid #e2e5ec' }} data-fonts-rev={fontsRev}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: '#192853', marginBottom: 4 }}>Custom Fonts</div>
+            <div style={{ fontSize: 13, color: '#5A6075', marginBottom: 4 }}>
+              Upload TTF, OTF, WOFF, or WOFF2 files to use in the styles above. WOFF2 is smallest — keep files under 1.4MB.
+            </div>
+            <div style={{ fontSize: 12, color: '#962C32', marginBottom: 14 }}>
+              You are responsible for the font's license — only upload fonts National Sports has the right to use commercially on printed apparel.
+            </div>
+            {(customFonts || []).length > 0 && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 12, marginBottom: 14 }}>
+                {customFonts.map((cf, i) => (
+                  <div key={cf.id} style={{ ...card, display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{ width: 74, height: 58, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#192853', borderRadius: 6, flexShrink: 0 }}>
+                      <span style={{ font: fontShorthand(cf.id, 30), color: '#fff' }}>23</span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <input style={{ ...input, marginBottom: 6 }} value={cf.label} maxLength={24} onChange={(e) => setCustomFonts((fs) => fs.map((x, ix) => (ix === i ? { ...x, label: e.target.value } : x)))} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ fontSize: 11, color: '#98a0b3' }}>{Math.round(cf.data.length * 0.75 / 1024)}KB</span>
+                        <div style={{ flex: 1 }} />
+                        <button className="btn btn-xs btn-secondary" style={{ color: '#962C32' }} onClick={() => setCustomFonts((fs) => fs.filter((_, ix) => ix !== i))}>✕ Remove</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <label className="btn btn-sm btn-secondary" style={{ cursor: 'pointer', marginBottom: 0 }}>
+                + Upload font
+                <input type="file" accept=".ttf,.otf,.woff,.woff2" onChange={onFontFile} style={{ display: 'none' }} />
+              </label>
+              <div style={{ flex: 1 }} />
+              <button className="btn btn-sm btn-primary" disabled={busy === 'customFonts'} onClick={() => save('customFonts', customFonts || [], setCustomFonts)}>{busy === 'customFonts' ? 'Saving…' : 'Save fonts'}</button>
+            </div>
           </div>
         </div>
       )}

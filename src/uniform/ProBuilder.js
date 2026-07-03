@@ -247,7 +247,7 @@ const DEFAULT_CONFIG = {
   outlineColor: 'auto', numberSize: 1, nameSize: 1,
   nameArch: 'arched', nameSpacing: 8,
   neckStyle: 'vneck', frontNumber: 'right',
-  program: 'mens',
+  program: 'mens', outline2Color: 'none',
 };
 
 // ── persistence ──────────────────────────────────────────────────────────────
@@ -298,6 +298,9 @@ function specFromConfig(cfg) {
   const outline = fontDef.hollow ? numColor : (oc === 'auto' ? ds.contrastInk(numColor) : oc);
   const fill = fontDef.hollow ? '#ffffff' : numColor;
   const outlineWidth = fontDef.hollow ? 8 : (oc === 'none' ? 0 : 5);
+  // Second outline rings the first — only meaningful when there IS a first.
+  const oc2 = cfg.outline2Color || 'none';
+  const outline2 = (outlineWidth && oc2 !== 'none') ? oc2 : 'none';
   const numScale = Number.isFinite(cfg.numberSize) ? cfg.numberSize : 1;
   const nameScale = Number.isFinite(cfg.nameSize) ? cfg.nameSize : 1;
   const num = (cfg.playerNumber || '').toString();
@@ -334,12 +337,12 @@ function specFromConfig(cfg) {
         // the anchor per design; 'none' drops the front number entirely.
         number: (cfg.frontNumber === 'none')
           ? { value: '' }
-          : { value: num, font, fill, outline, outlineWidth, size: 0.95 * numScale,
+          : { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 3, size: 0.95 * numScale,
               ...(cfg.frontNumber === 'left' ? { x: 0.64, y: 0.3 } : cfg.frontNumber === 'center' ? { x: 0.5, y: 0.33 } : {}) },
         name: { value: '', font: 'saira' },
       },
       back: {
-        number: { value: num, font, fill, outline, outlineWidth: outlineWidth ? outlineWidth + 1 : 0, size: 1.3 * numScale },
+        number: { value: num, font, fill, outline, outlineWidth: outlineWidth ? outlineWidth + 1 : 0, outline2, outline2Width: 3, size: 1.3 * numScale },
         // The name follows the chosen lettering style (it used to be pinned to
         // one condensed font) and arches over the number by default.
         name: { value: (cfg.playerName || '').toUpperCase(), font, fill, outline, outlineWidth: Math.max(2, outlineWidth - 2), size: 0.7 * nameScale,
@@ -709,42 +712,98 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiNote, setAiNote] = useState('');
+  // 2-3 looks per brief, each a ready-to-apply config patch + thumbnail — the
+  // coach compares and picks instead of getting one take forced on them.
+  const [aiCandidates, setAiCandidates] = useState([]);
+
+  // Turn one AI design (spec + styling) into a wizard config patch. Everything
+  // is validated here: unknown patterns/fonts/colors just don't make it in.
+  const aiDesignToPatch = (d) => {
+    const spec = d.spec || {}; const zones = spec.zones || {};
+    const zoneToSection = (z) => {
+      const color = ds.toHex(z && z.color);
+      if (!color) return null;
+      const sec = { color, color2: ds.toHex(z && z.color2) || '#FFFFFF', pattern: (z && z.pattern) || 'solid' };
+      const c3 = ds.toHex(z && z.color3); if (c3) sec.color3 = c3;
+      const c4 = ds.toHex(z && z.color4); if (c4) sec.color4 = c4;
+      // A named print from the shop library beats a built-in pattern.
+      if (z && z.printPattern) {
+        const lib = printLib.find((p) => (p.name || '').toLowerCase() === String(z.printPattern).toLowerCase());
+        if (lib) Object.assign(sec, { pattern: 'custom', patternImage: lib.image, patternName: lib.name, patternTint: !!lib.tintable, patternTintMode: lib.tint_mode || 'solid' });
+      }
+      return sec;
+    };
+    const sections = {};
+    const bodySec = zoneToSection(zones.body); if (bodySec) sections.body = bodySec;
+    const sl = zoneToSection(zones.sleeveL || zones.sleeveR); if (sl) sections.sleeveL = sl;
+    const sr = zoneToSection(zones.sleeveR || zones.sleeveL); if (sr) sections.sleeveR = sr;
+    const collarSec = zoneToSection(zones.collar); if (collarSec) sections.collar = collarSec;
+    const patch = { sections };
+    const st = d.styling || {};
+    if (st.neckStyle === 'vneck' || st.neckStyle === 'crew') patch.neckStyle = st.neckStyle;
+    if (['right', 'left', 'center', 'none'].includes(st.frontNumber)) patch.frontNumber = st.frontNumber;
+    if (st.nameArch === 'arched' || st.nameArch === 'straight') patch.nameArch = st.nameArch;
+    if (Number.isFinite(st.nameSpacing)) patch.nameSpacing = Math.min(30, Math.max(0, st.nameSpacing));
+    if (['matte', 'mesh', 'heather', 'sublimated', 'gloss'].includes(spec.fabric)) patch.fabric = spec.fabric;
+    const t = spec.text || {};
+    const numSrc = (t.back && t.back.number) || (t.front && t.front.number);
+    const nameSrc = (t.back && t.back.name) || (t.front && t.front.name);
+    if (numSrc) {
+      const fill = ds.toHex(numSrc.fill); if (fill) patch.numberColor = fill;
+      if (numSrc.outline === 'auto' || numSrc.outline === 'none') patch.outlineColor = numSrc.outline;
+      else { const o = ds.toHex(numSrc.outline); if (o) patch.outlineColor = o; }
+      if (numSrc.outline2 === 'none') patch.outline2Color = 'none';
+      else { const o2 = ds.toHex(numSrc.outline2); if (o2) patch.outline2Color = o2; }
+      // The AI names a raw font; the wizard stores a lettering STYLE — pick the
+      // first admin style built on that font.
+      if (numSrc.font) { const styleDef = FONTS.find((f) => f.font === numSrc.font && !f.hollow) || FONTS.find((f) => f.font === numSrc.font); if (styleDef) patch.font = styleDef.id; }
+      if (numSrc.value) { const n = String(numSrc.value).replace(/[^0-9]/g, '').slice(0, 2); if (n) patch.playerNumber = n; }
+    }
+    if (nameSrc && nameSrc.value) patch.playerName = String(nameSrc.value).slice(0, 14);
+    if (spec.meta && spec.meta.teamName) patch.teamName = String(spec.meta.teamName).slice(0, 24);
+    return patch;
+  };
+
+  const applyAICandidate = (cand) => {
+    setConfig((c) => ({ ...c, ...cand.patch, sections: { ...normSections(c.sections), ...cand.patch.sections } }));
+    setAiNote(`"${cand.name}" applied — fine-tune anything below, or try another look.`);
+  };
+
   const runAIDesign = async () => {
     const prompt = aiPrompt.trim();
     if (!prompt) return;
-    setAiBusy(true); setAiError(''); setAiNote('');
+    setAiBusy(true); setAiError(''); setAiNote(''); setAiCandidates([]);
     try {
       const res = await fetch('/.netlify/functions/uniform-ai-design', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, garmentId: 'crew_jersey' }),
+        body: JSON.stringify({
+          prompt, garmentId: 'sahrul_jersey', count: 3,
+          context: {
+            sport: config.sport || '', program: config.program || 'mens',
+            teamColors: teamColors.map((c) => c.hex),
+            printPatterns: printLib.map((p) => ({ name: p.name, tintable: !!p.tintable, tintMode: p.tint_mode || 'solid' })),
+          },
+        }),
       });
       const data = await res.json();
       if (!data.ok) { setAiError(data.error || 'AI design is not available right now.'); return; }
-      const zones = (data.spec && data.spec.zones) || {};
-      const zoneToSection = (z) => {
-        const color = ds.toHex(z && z.color);
-        if (!color) return null;
-        const color2 = ds.toHex(z && z.color2) || '#FFFFFF';
-        return { color, color2, pattern: (z && z.pattern) || 'solid' };
-      };
-      const patch = {};
-      const bodySec = zoneToSection(zones.body); if (bodySec) patch.body = bodySec;
-      const sleeveSecL = zoneToSection(zones.sleeveL || zones.sleeveR); if (sleeveSecL) patch.sleeveL = sleeveSecL;
-      const sleeveSecR = zoneToSection(zones.sleeveR || zones.sleeveL); if (sleeveSecR) patch.sleeveR = sleeveSecR;
-      const collarSec = zoneToSection(zones.collar); if (collarSec) patch.collar = collarSec;
-      const t = data.spec && data.spec.text;
-      const numSrc = (t && t.back && t.back.number) || (t && t.front && t.front.number);
-      const nameSrc = (t && t.back && t.back.name) || (t && t.front && t.front.name);
-      const meta = data.spec && data.spec.meta;
-      setConfig((c) => {
-        const next = { ...c, sections: { ...normSections(c.sections), ...patch } };
-        if (meta && meta.teamName) next.teamName = String(meta.teamName).slice(0, 24);
-        if (numSrc && numSrc.value) { const n = String(numSrc.value).replace(/[^0-9]/g, '').slice(0, 2); if (n) next.playerNumber = n; }
-        if (nameSrc && nameSrc.value) next.playerName = String(nameSrc.value).slice(0, 14);
-        const numColor = numSrc && ds.toHex(numSrc.fill); if (numColor) next.numberColor = numColor;
-        return next;
-      });
-      setAiNote(data.rationale || 'Design applied — fine-tune the colors below, or move on to Jersey for patterns.');
+      const raw = Array.isArray(data.designs) && data.designs.length ? data.designs : [{ name: 'Design', spec: data.spec, styling: {}, rationale: data.rationale || '' }];
+      const cands = [];
+      for (const d of raw.slice(0, 3)) {
+        const patch = aiDesignToPatch(d);
+        if (!patch.sections.body) continue; // a look with no body color isn't a look
+        let thumb = '';
+        try {
+          // Thumbnail from the exact spec Apply would produce, so what the coach
+          // picks is what they get.
+          thumb = await renderToDataURL(specFromConfig({ ...config, ...patch, sections: { ...normSections(config.sections), ...patch.sections } }), { view: 'front', width: 200 });
+        } catch (_e) { /* thumb optional */ }
+        cands.push({ name: d.name || 'Design', rationale: d.rationale || '', patch, thumb });
+      }
+      if (!cands.length) { setAiError('The AI came back empty — try rewording the brief.'); return; }
+      setAiCandidates(cands);
+      if (cands.length === 1) { applyAICandidate(cands[0]); setAiCandidates([]); }
+      else setAiNote('Pick the look you like — every one stays fully editable.');
     } catch (e) {
       setAiError('Could not reach the AI design service. Please try again.');
     } finally { setAiBusy(false); }
@@ -1243,6 +1302,22 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
                     </div>
                     {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
+                    {aiCandidates.length > 1 && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${aiCandidates.length}, 1fr)`, gap: 8 }}>
+                          {aiCandidates.map((cand, i) => (
+                            <button key={i} onClick={() => applyAICandidate(cand)} title={cand.rationale}
+                              style={{ background: '#fff', border: '1px solid ' + C.mid, borderRadius: 6, padding: 0, cursor: 'pointer', overflow: 'hidden', textAlign: 'center' }}>
+                              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
+                                {cand.thumb ? <img src={cand.thumb} alt={cand.name} style={{ width: '92%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>…</span>}
+                              </span>
+                              <span style={{ display: 'block', padding: '6px 4px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: C.navy, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cand.name}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <button onClick={() => setAiCandidates([])} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss suggestions</button>
+                      </div>
+                    )}
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                     <div style={{ ...railLabel, marginBottom: 0 }}>Section Design</div>
@@ -1385,6 +1460,19 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                         <Pills options={[{ id: 'auto', label: 'Auto' }, { id: 'none', label: 'None' }]} active={(config.outlineColor || 'auto')} onPick={(v) => set({ outlineColor: v })} />
                       </div>
                       <QuickColors teamColors={teamColors} size={26} hex={config.outlineColor || ''} onPick={(h) => set({ outlineColor: h })} />
+                      {/* second outline — the pro "double border" look; needs a first outline to ring */}
+                      {(config.outlineColor || 'auto') !== 'none' && (
+                        <div style={{ marginTop: 16 }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
+                            <div style={groupHead}>Second Outline</div>
+                            <div style={groupVal}>{(config.outline2Color || 'none') === 'none' ? 'None' : nameForHex(config.outline2Color)}</div>
+                          </div>
+                          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                            <Pills options={[{ id: 'none', label: 'None' }]} active={(config.outline2Color || 'none')} onPick={(v) => set({ outline2Color: v })} />
+                          </div>
+                          <QuickColors teamColors={teamColors} size={26} hex={config.outline2Color === 'none' ? '' : (config.outline2Color || '')} onPick={(h) => set({ outline2Color: h })} />
+                        </div>
+                      )}
                     </div>
                   )}
                   <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>

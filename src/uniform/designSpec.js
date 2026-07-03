@@ -129,6 +129,7 @@ const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', color3: '#ffffff', c
 // that contrasts the fill until the user overrides it.
 const DEFAULT_TEXT = {
   value: '', font: 'anton', fill: '#ffffff', outline: 'auto', outlineWidth: 5,
+  outline2: 'none', outline2Width: 3,
   size: 1, x: null, y: null, letterSpacing: 0, arch: 0,
 };
 
@@ -227,6 +228,9 @@ function cleanText(t, base = DEFAULT_TEXT) {
     if (t.outline === 'auto' || t.outline === 'none') out.outline = t.outline;
     else { const o = toHex(t.outline); if (o) out.outline = o; }
     if (Number.isFinite(t.outlineWidth)) out.outlineWidth = clamp(t.outlineWidth, 0, 20);
+    if (t.outline2 === 'none') out.outline2 = 'none';
+    else { const o2 = toHex(t.outline2); if (o2) out.outline2 = o2; }
+    if (Number.isFinite(t.outline2Width)) out.outline2Width = clamp(t.outline2Width, 0, 20);
     if (Number.isFinite(t.size)) out.size = clamp(t.size, 0.2, 3);
     if (Number.isFinite(t.x)) out.x = clamp(t.x, 0, 1);
     if (Number.isFinite(t.y)) out.y = clamp(t.y, 0, 1);

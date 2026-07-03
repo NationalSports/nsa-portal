@@ -11,7 +11,7 @@
 // on a flaky connection) always still gets a working builder. Values are
 // sanitized on load: a half-edited row can never crash the coach flow.
 
-import { FONTS as FONT_LIBRARY } from './fonts';
+import { FONTS as FONT_LIBRARY, registerCustomFonts } from './fonts';
 
 export const DEFAULT_NUMBER_STYLES = [
   { id: 'block', label: 'Block', font: 'anton', hollow: false },
@@ -42,10 +42,12 @@ const FONT_IDS = new Set(FONT_LIBRARY.map((f) => f.id));
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
 // ── sanitizers — a broken admin row must never break the coach builder ──────
+// Styles may reference an uploaded font by its cf_ id; if that font is later
+// deleted, the renderer falls back to the default block face.
 function cleanStyles(raw) {
   if (!Array.isArray(raw)) return null;
   const out = raw
-    .filter((s) => s && typeof s === 'object' && FONT_IDS.has(s.font))
+    .filter((s) => s && typeof s === 'object' && (FONT_IDS.has(s.font) || /^cf_[a-z0-9]+$/.test(s.font || '')))
     .map((s, i) => ({
       id: typeof s.id === 'string' && s.id ? s.id : `style${i}`,
       label: (typeof s.label === 'string' && s.label.trim()) ? s.label.trim().slice(0, 18) : 'Style',
@@ -87,13 +89,34 @@ function cleanPresets(raw) {
   return out.length ? out : null;
 }
 
+// Staff-uploaded lettering fonts. The font binary travels as a data: URL in the
+// JSONB row (fonts are ~30–300KB; fine for a handful). Licensing is on the
+// uploader — the admin UI states that plainly.
+function cleanCustomFonts(raw) {
+  if (!Array.isArray(raw)) return null;
+  return raw
+    .filter((f) => f && typeof f === 'object'
+      && /^cf_[a-z0-9]+$/.test(f.id || '')
+      && typeof f.data === 'string'
+      && /^data:(font\/|application\/)[a-z0-9.+-]+;base64,/.test(f.data)
+      && f.data.length < 2_000_000)
+    .slice(0, 12)
+    .map((f) => ({
+      id: f.id,
+      label: (typeof f.label === 'string' && f.label.trim()) ? f.label.trim().slice(0, 24) : 'Custom Font',
+      data: f.data,
+      weight: Number.isFinite(f.weight) ? Math.min(900, Math.max(100, f.weight)) : 400,
+    }));
+}
+
 export const SETTINGS_DEFAULTS = {
   numberStyles: DEFAULT_NUMBER_STYLES,
   palette: DEFAULT_PALETTE,
   presets: DEFAULT_PRESETS,
+  customFonts: [],
 };
 
-const CLEANERS = { numberStyles: cleanStyles, palette: cleanPalette, presets: cleanPresets };
+const CLEANERS = { numberStyles: cleanStyles, palette: cleanPalette, presets: cleanPresets, customFonts: cleanCustomFonts };
 
 let _cache = null;
 let _inflight = null;
@@ -116,6 +139,8 @@ export function loadBuilderSettings() {
         }
       }
     } catch (_e) { /* defaults stand */ }
+    // Make uploaded fonts renderable before anything draws with them.
+    try { registerCustomFonts(out.customFonts); } catch (_e) { /* optional */ }
     _cache = out;
     _inflight = null;
     return out;

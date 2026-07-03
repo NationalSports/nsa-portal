@@ -286,7 +286,9 @@ function decalTextCanvas(el) {
   // 3D decals want a beefier stroke than the 2D proof (small on screen);
   // matches the old S/24 scaling via outlineWidth × 2 in the engine.
   const ow = el.outlineWidth > 0 ? (el.outlineWidth * (S / 24)) / 2 : 0;
-  const opts = { value: val, font: el.font, size: S, fill, outline, outlineWidth: ow, letterSpacing: el.letterSpacing || 0, arch: el.arch || 0 };
+  const outline2 = (el.outline2 && el.outline2 !== 'none') ? ds.toHex(el.outline2, '#111827') : 'none';
+  const ow2 = el.outline2Width > 0 ? (el.outline2Width * (S / 24)) / 2 : 0;
+  const opts = { value: val, font: el.font, size: S, fill, outline, outlineWidth: ow, outline2, outline2Width: ow2, letterSpacing: el.letterSpacing || 0, arch: el.arch || 0 };
   const meas = document.createElement('canvas').getContext('2d');
   const m = measureAthleticText(meas, opts);
   const pad = Math.ceil(S * 0.4);

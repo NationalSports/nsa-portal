@@ -130,8 +130,10 @@ function drawText(ctx, el, view, vb) {
   let outline = el.outline;
   if (outline === 'auto') outline = ds.contrastInk(fill);
   if (outline && outline !== 'none') outline = ds.toHex(outline, '#111827');
+  const outline2 = (el.outline2 && el.outline2 !== 'none') ? ds.toHex(el.outline2, '#111827') : 'none';
   drawAthleticText(ctx, {
     value, font: el.font, size, fill, outline, outlineWidth: el.outlineWidth,
+    outline2, outline2Width: el.outline2Width || 0,
     letterSpacing: el.letterSpacing || 0, arch: el.arch || 0, x: px, y: py,
   });
   ctx.restore();

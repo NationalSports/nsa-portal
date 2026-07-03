@@ -25,12 +25,35 @@ export const FONTS = [
 
 const BY_ID = Object.fromEntries(FONTS.map((f) => [f.id, f]));
 
-export function fontStack(id) { return (BY_ID[id] || FONTS[0]).stack; }
-export function fontWeight(id) { return (BY_ID[id] || FONTS[0]).weight; }
+// Staff-uploaded fonts (Settings → Uniform Builder → Numbering). Registered at
+// runtime via the Font Loading API; ids are stable so specs referencing a font
+// that was later deleted just fall back to the default block face.
+const CUSTOM = {};
+
+export function registerCustomFonts(list) {
+  if (typeof document === 'undefined' || !document.fonts || !window.FontFace) return;
+  for (const f of list || []) {
+    if (!f || !f.id || !f.data || CUSTOM[f.id]) continue;
+    const family = 'NSACustom-' + f.id;
+    try {
+      const face = new FontFace(family, `url(${f.data})`);
+      face.load().then((loaded) => document.fonts.add(loaded)).catch(() => {});
+      CUSTOM[f.id] = { id: f.id, label: f.label || 'Custom', stack: `'${family}', Impact, sans-serif`, weight: Number.isFinite(f.weight) ? f.weight : 400, custom: true };
+    } catch (_e) { /* malformed font file — skip, defaults stand */ }
+  }
+}
+
+// Everything selectable in admin screens: built-ins + registered uploads.
+export function allFonts() { return [...FONTS, ...Object.values(CUSTOM)]; }
+
+function resolve(id) { return BY_ID[id] || CUSTOM[id] || FONTS[0]; }
+
+export function fontStack(id) { return resolve(id).stack; }
+export function fontWeight(id) { return resolve(id).weight; }
 
 // Build a canvas/CSS `font` shorthand string for a given font id + pixel size.
 export function fontShorthand(id, px) {
-  const f = BY_ID[id] || FONTS[0];
+  const f = resolve(id);
   return `${f.weight} ${Math.round(px)}px ${f.stack}`;
 }
 
@@ -42,7 +65,7 @@ export async function ensureFontsReady() {
   if (typeof document === 'undefined' || !document.fonts) return;
   try {
     await Promise.all(
-      FONTS.map((f) => {
+      [...FONTS, ...Object.values(CUSTOM)].map((f) => {
         // The first quoted family in the stack is the webfont we want to prime.
         const m = f.stack.match(/'([^']+)'/);
         const fam = m ? m[1] : f.stack.split(',')[0];

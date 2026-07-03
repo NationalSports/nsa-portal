@@ -33,14 +33,18 @@ export function measureAthleticText(ctx, { value, font, size, letterSpacing = 0,
 // upward so the CENTER letter stays at y and the ends fall below it — the
 // classic "name over number" curve.
 export function drawAthleticText(ctx, opts) {
-  const { value, font, size, fill, outline, outlineWidth = 0, letterSpacing = 0, arch = 0, x, y } = opts;
+  const { value, font, size, fill, outline, outlineWidth = 0, outline2, outline2Width = 0, letterSpacing = 0, arch = 0, x, y } = opts;
   const m = measureAthleticText(ctx, opts);
   ctx.font = fontShorthand(font, size);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
   const strokeW = (outline && outline !== 'none' && outlineWidth > 0) ? outlineWidth * 2 : 0;
+  // Second outline rings the first: its stroke is widened by the inner
+  // stroke's width so exactly outline2Width of it shows past the inner ring.
+  const stroke2W = (strokeW && outline2 && outline2 !== 'none' && outline2Width > 0) ? (outlineWidth + outline2Width) * 2 : 0;
   const paint = (ch, px, py) => {
+    if (stroke2W) { ctx.strokeStyle = outline2; ctx.lineWidth = stroke2W; ctx.strokeText(ch, px, py); }
     if (strokeW) { ctx.strokeStyle = outline; ctx.lineWidth = strokeW; ctx.strokeText(ch, px, py); }
     ctx.fillStyle = fill; ctx.fillText(ch, px, py);
   };
