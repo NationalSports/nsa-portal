@@ -184,7 +184,7 @@ function hx(h) {
 // Cached per (src, mode, colors); alpha preserved.
 const _tintCache = new Map();
 export function tintedTile(img, src, color1, color2, color3, color4, mode) {
-  const m = mode === 'blend' ? 'blend' : 'solid';
+  const m = (mode === 'blend' || mode === 'mono') ? mode : 'solid';
   const c3 = color3 || '#ffffff';
   const c4 = color4 || '#ffffff';
   const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3 + '|' + c4;
@@ -208,6 +208,14 @@ export function tintedTile(img, src, color1, color2, color3, color4, mode) {
       if (sat > 60) S = (g > r ? C4 : C3);
       else S = (lum >= 128 ? A : B);
       d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
+    } else if (m === 'mono') {
+      // One base color (color1); the tile's value shades it. Mid-gray = the
+      // base as picked, lighter → toward white (tint), darker → toward black
+      // (shade). Coach picks a single color and gets the whole tonal set.
+      const t = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
+      const k = (t - 0.5) * 2; // -1 (black) .. +1 (white)
+      if (k >= 0) { const f = k * 0.8; d[i] = A[0] + (255 - A[0]) * f; d[i + 1] = A[1] + (255 - A[1]) * f; d[i + 2] = A[2] + (255 - A[2]) * f; }
+      else { const f = 1 + k * 0.7; d[i] = A[0] * f; d[i + 1] = A[1] * f; d[i + 2] = A[2] * f; }
     } else {
       const t = (r * 0.299 + g * 0.587 + b * 0.114) / 255;
       d[i] = Math.round(B[0] + (A[0] - B[0]) * t);

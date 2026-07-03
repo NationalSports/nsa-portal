@@ -423,7 +423,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
               {printLib.map((p) => {
                 const on = active.pattern === 'custom' && active.patternImage === p.image;
                 return (
-                  <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: p.tint_mode === 'blend' ? 'blend' : 'solid' })}
+                  <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: (p.tint_mode === 'blend' || p.tint_mode === 'mono') ? p.tint_mode : 'solid' })}
                     style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
                       border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
                       boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
@@ -443,7 +443,10 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             <QuickColors teamColors={teamColors} hex={active.color2} onPick={(h) => onPatch({ color2: h })} />
           </>
         )}
-        {active.pattern === 'custom' && active.patternTint && (
+        {active.pattern === 'custom' && active.patternTint && active.patternTintMode === 'mono' && (
+          <div style={{ marginTop: 12, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Monochrome print — shades derive automatically from the section color above.</div>
+        )}
+        {active.pattern === 'custom' && active.patternTint && active.patternTintMode !== 'mono' && (
           <>
             <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Secondary</div>
             <QuickColors teamColors={teamColors} hex={active.color2} onPick={(h) => onPatch({ color2: h })} />

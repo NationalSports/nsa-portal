@@ -212,7 +212,7 @@ function cleanZone(z, base = DEFAULT_ZONE) {
       out.patternImage = pimg;
       if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
       if (z.patternTint) out.patternTint = true; // tile → recolor with zone colors
-      if (z.patternTintMode === 'blend' || z.patternTintMode === 'solid') out.patternTintMode = z.patternTintMode;
+      if (['blend', 'solid', 'mono'].includes(z.patternTintMode)) out.patternTintMode = z.patternTintMode;
     }
   }
   return out;

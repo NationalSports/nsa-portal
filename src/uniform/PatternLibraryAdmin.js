@@ -65,7 +65,7 @@ export default function PatternLibraryAdmin() {
     if (!pendingImg || !name.trim()) return;
     setBusy(true);
     try {
-      const { error } = await supabase.from('uniform_patterns').insert({ name: name.trim(), image: pendingImg, active: true, tintable: pendingTint !== 'none', tint_mode: pendingTint === 'blend' ? 'blend' : 'solid' });
+      const { error } = await supabase.from('uniform_patterns').insert({ name: name.trim(), image: pendingImg, active: true, tintable: pendingTint !== 'none', tint_mode: (pendingTint === 'blend' || pendingTint === 'mono') ? pendingTint : 'solid' });
       if (error) throw error;
       setName(''); setPendingImg(null); setPendingTint('solid');
       await load();
@@ -117,8 +117,9 @@ export default function PatternLibraryAdmin() {
               <label title="Solid: white=primary, black=secondary, pure red=accent — every pixel snaps to one team color. Blend: grayscale fades between primary and secondary. Fixed: renders exactly as uploaded." style={{ display: 'flex', flexDirection: 'column', gap: 4, fontSize: 12, fontWeight: 600, color: '#334155' }}>
                 Team colors
                 <select value={pendingTint} onChange={(e) => setPendingTint(e.target.value)} style={{ padding: '7px 8px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13 }}>
-                  <option value="solid">Solid tint (white/black/red → team colors)</option>
-                  <option value="blend">Blend tint (grayscale fade)</option>
+                  <option value="solid">Solid tint (white/black/red/green → team colors)</option>
+                  <option value="blend">Blend tint (grayscale fade, 2 colors)</option>
+                  <option value="mono">Monochrome (shades of one color)</option>
                   <option value="none">Fixed colors (as uploaded)</option>
                 </select>
               </label>
@@ -140,7 +141,7 @@ export default function PatternLibraryAdmin() {
                 <div style={{ height: 84, backgroundImage: `url(${r.image})`, backgroundSize: '42px 42px', backgroundRepeat: 'repeat' }} />
                 <div style={{ padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}{r.tintable && <span title="Recolors with team colors" style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: '#0B6E4F', border: '1px solid #0B6E4F', borderRadius: 3, padding: '1px 4px', verticalAlign: 'middle' }}>{r.tint_mode === 'blend' ? 'BLEND' : 'TINT'}</span>}</div>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.name}{r.tintable && <span title="Recolors with team colors" style={{ marginLeft: 6, fontSize: 10, fontWeight: 800, color: '#0B6E4F', border: '1px solid #0B6E4F', borderRadius: 3, padding: '1px 4px', verticalAlign: 'middle' }}>{r.tint_mode === 'blend' ? 'BLEND' : r.tint_mode === 'mono' ? 'MONO' : 'TINT'}</span>}</div>
                     <div style={{ fontSize: 11, color: r.active ? '#15803d' : '#64748b' }}>{r.active ? 'Live in builder' : 'Hidden'}</div>
                   </div>
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
