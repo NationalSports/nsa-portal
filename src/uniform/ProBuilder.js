@@ -359,12 +359,32 @@ const railLabel = { fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTrans
 const groupHead = { fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.6, color: C.navy };
 const groupVal = { fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.4, color: C.red };
 
+// The rail is broken into numbered cards (1 · COLORS, 2 · CUT & STYLE …) so
+// each decision reads as its own little panel instead of one long scroll.
+function RailCard({ num, title, value, action, children, style }) {
+  return (
+    <div style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: '15px 16px 17px', marginBottom: 12, boxShadow: '0 1px 4px rgba(15,23,42,.05)', ...style }}>
+      {title != null && (
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 13 }}>
+          <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 13, textTransform: 'uppercase', letterSpacing: 1.6, color: C.navy }}>
+            {num != null && <span style={{ color: C.red }}>{num} · </span>}{title}
+          </div>
+          {action || (value != null && <div style={groupVal}>{value}</div>)}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+// Slanted chip — the NSA "speed slant" carried into every selectable swatch.
 function Swatch({ hex, active, onClick, size = 42 }) {
   return (
     <button onClick={onClick} title={nameForHex(hex)} style={{
-      width: size, height: size, borderRadius: 6, background: hex, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
-      border: active ? '3px solid ' + C.navy : '1px solid ' + C.mid,
-      boxShadow: active ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
+      width: size, height: Math.round(size * 0.86), borderRadius: 3, background: hex, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
+      transform: 'skewX(-12deg)',
+      border: active ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
+      boxShadow: active ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)',
     }} />
   );
 }
@@ -377,9 +397,9 @@ function QuickColors({ teamColors, hex, onPick, size = 30 }) {
   const shown = more ? PALETTE : teamColors;
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingLeft: 4 }}>
         {shown.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
-        <button onClick={() => setMore((m) => !m)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight, background: 'none', border: '1px dashed ' + C.mid, borderRadius: 4, padding: '6px 9px', cursor: 'pointer' }}>
+        <button onClick={() => setMore((m) => !m)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight, background: 'none', border: '1px dashed ' + C.mid, borderRadius: 3, padding: '6px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
           {more ? 'Team colors' : 'More…'}
         </button>
       </div>
@@ -387,13 +407,16 @@ function QuickColors({ teamColors, hex, onPick, size = 30 }) {
   );
 }
 
-function SwatchGroup({ head, value, hex, onPick, size }) {
+// One labeled swatch row (PRIMARY / ACCENT …) — several stack inside a single
+// numbered Colors card, matching the pro-configurator panel layout.
+function SwatchGroup({ head, value, hex, onPick, size, last }) {
   return (
-    <div style={{ padding: '22px 0', borderBottom: '1px solid ' + C.light }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-        <div style={groupHead}>{head}</div><div style={groupVal}>{value}</div>
+    <div style={{ marginBottom: last ? 0 : 16 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.4, color: C.textLight }}>{head}</div>
+        <div style={groupVal}>{value}</div>
       </div>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingLeft: 4 }}>
         {PALETTE.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
       </div>
     </div>
@@ -401,12 +424,14 @@ function SwatchGroup({ head, value, hex, onPick, size }) {
 }
 function Pills({ options, active, onPick }) {
   return (
-    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+    <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', paddingLeft: 4 }}>
       {options.map((o) => {
         const on = o.id === active;
         return <button key={o.id} onClick={() => onPick(o.id)} style={{
-          fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.6, padding: '7px 13px',
-          borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer',
+          fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, padding: '7px 14px',
+          borderRadius: 2, transform: 'skewX(-12deg)',
+          background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer',
+          boxShadow: on ? '0 2px 6px rgba(25,40,83,0.25)' : 'none',
         }}>{o.label}</button>;
       })}
     </div>
@@ -418,17 +443,17 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
   const active = sections[activeKey] || sections[sectionDefs[0].key];
   return (
     <div>
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 7, marginBottom: 16, flexWrap: 'wrap', paddingLeft: 4 }}>
         {sectionDefs.map((s) => {
           const on = s.key === activeKey;
           return (
-            <button key={s.key} onClick={() => onSelect(s.key)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7 }}>
-              <span style={{ width: 11, height: 11, borderRadius: 3, background: sections[s.key].color, border: '1px solid ' + (on ? 'rgba(255,255,255,.5)' : C.mid) }} />{s.label}
+            <button key={s.key} onClick={() => onSelect(s.key)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 12px', borderRadius: 2, transform: 'skewX(-12deg)', background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 7, boxShadow: on ? '0 2px 6px rgba(25,40,83,0.25)' : 'none' }}>
+              <span style={{ width: 11, height: 11, borderRadius: 2, background: sections[s.key].color, border: '1px solid ' + (on ? 'rgba(255,255,255,.5)' : C.mid) }} />{s.label}
             </button>
           );
         })}
       </div>
-      <div style={{ paddingBottom: 20, marginBottom: 20, borderBottom: '1px solid ' + C.light }}>
+      <div>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
           <div style={groupHead}>{(sectionDefs.find((s) => s.key === activeKey) || sectionDefs[0]).label}</div>
           <div style={groupVal}>{nameForHex(active.color)} · {active.pattern === 'custom' ? (active.patternName || 'Print') : ((PATTERNS.find((p) => p.id === active.pattern) || {}).label || 'Solid')}</div>
@@ -445,9 +470,9 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                 const on = active.pattern === 'custom' && active.patternImage === p.image;
                 return (
                   <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => onPatch({ pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: (p.tint_mode === 'blend' || p.tint_mode === 'mono') ? p.tint_mode : 'solid' })}
-                    style={{ width: 44, height: 44, borderRadius: 6, cursor: 'pointer', padding: 0, boxSizing: 'border-box',
-                      border: on ? '3px solid ' + C.navy : '1px solid ' + C.mid,
-                      boxShadow: on ? '0 2px 8px rgba(25,40,83,0.25)' : 'none',
+                    style={{ width: 46, height: 40, borderRadius: 3, cursor: 'pointer', padding: 0, boxSizing: 'border-box', transform: 'skewX(-12deg)',
+                      border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
+                      boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)',
                       backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
                 );
               })}
@@ -489,7 +514,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
 function LabeledInput({ label, value, onChange, maxLength }) {
   return (
     <label style={{ display: 'block' }}>
-      <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.2, color: C.textLight, marginBottom: 7 }}>{label}</span>
+      {label ? <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.2, color: C.textLight, marginBottom: 7 }}>{label}</span> : null}
       <input value={value} onChange={(e) => onChange(e.target.value)} maxLength={maxLength} style={{
         width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '11px 12px',
         fontFamily: F_BODY, fontSize: 15, color: C.text,
@@ -1260,40 +1285,35 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
 
             {/* RIGHT PANEL — stacks under the stage on narrow screens */}
             <div style={narrow
-              ? { flex: 1, minHeight: 0, borderTop: '1px solid ' + C.light, padding: '18px 16px 28px', overflowY: 'auto' }
-              : { width: 320, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '24px 22px', overflowY: 'auto' }}>
+              ? { flex: 1, minHeight: 0, borderTop: '1px solid ' + C.light, padding: '16px 14px 28px', overflowY: 'auto', background: C.offWhite }
+              : { width: 330, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '18px 16px 28px', overflowY: 'auto', background: C.offWhite }}>
               {step === 'team' && (
                 <div>
-                  <LabeledInput label="Team / Design Name" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
-                  <div style={{ height: 18 }} />
+                  <RailCard num={1} title="Team Name">
+                    <LabeledInput label="" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
+                  </RailCard>
                   {/* Team colors — the working palette every later step leads with,
                       and the seed for the jersey's sections. */}
-                  <SwatchGroup head="Primary Color" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
-                  <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
-                  <SwatchGroup head="Accent 2 · Secondary" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} />
-                  <div style={{ padding: '22px 0', borderBottom: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                      <div style={groupHead}>Cut &amp; Style</div>
-                      <div style={groupVal}>{config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}</div>
-                    </div>
+                  <RailCard num={2} title="Colors">
+                    <SwatchGroup head="Primary" value={nameForHex(SX.body.color)} hex={SX.body.color} onPick={(h) => setSection('body', { color: h })} />
+                    <SwatchGroup head="Accent 1 · Trim" value={nameForHex(SX.sleeveL.color)} hex={SX.sleeveL.color} onPick={(h) => { setSection('sleeveL', { color: h }); setSection('sleeveR', { color: h }); setSection('collar', { color: h }); }} />
+                    <SwatchGroup head="Accent 2 · Secondary" value={nameForHex(SX.body.color2)} hex={SX.body.color2} onPick={(h) => setSection('body', { color2: h })} last />
+                  </RailCard>
+                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
                     <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]} active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
-                  </div>
-                  <div style={{ padding: '22px 0' }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                      <div style={groupHead}>Fabric</div>
-                      <button onClick={() => setFabricGuide(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Fabric guide →</button>
-                    </div>
+                  </RailCard>
+                  <RailCard num={4} title="Fabric"
+                    action={<button onClick={() => setFabricGuide(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Fabric guide →</button>}>
                     <Pills options={ds.FABRICS} active={config.fabric || 'sublimated'} onPick={(f) => set({ fabric: f })} />
                     <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>
                       {(FABRIC_DETAILS.find((f) => f.id === (config.fabric || 'sublimated')) || FABRIC_DETAILS[0]).blurb}
                     </div>
-                  </div>
+                  </RailCard>
                 </div>
               )}
               {step === 'jersey' && (
                 <div>
-                  <div style={{ padding: '14px 16px', background: C.offWhite, border: '1px solid ' + C.light, borderRadius: 8, marginBottom: 20 }}>
-                    <div style={{ ...railLabel, marginBottom: 8 }}>✨ AI Design Assist</div>
+                  <RailCard num={1} title="✨ AI Design Assist">
                     <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} maxLength={800}
                       placeholder="e.g. Aggressive red and black with camo sleeves, bold block number"
                       style={{ width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '9px 10px', fontFamily: F_BODY, fontSize: 13, color: C.text, resize: 'vertical' }} />
@@ -1318,14 +1338,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                         <button onClick={() => setAiCandidates([])} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss suggestions</button>
                       </div>
                     )}
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-                    <div style={{ ...railLabel, marginBottom: 0 }}>Section Design</div>
-                    <button onClick={toggleSleevesLinked}
-                      style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '4px 9px', cursor: 'pointer' }}>
+                  </RailCard>
+                  <RailCard num={2} title="Sections"
+                    action={<button onClick={toggleSleevesLinked}
+                      style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
-                    </button>
-                  </div>
+                    </button>}>
                   <SectionEditor
                     sectionDefs={sleevesLinked
                       ? [{ key: 'body', label: 'Body' }, { key: 'sleeveL', label: 'Sleeves' }, { key: 'collar', label: 'Collar & Cuffs' }]
@@ -1334,14 +1352,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
                     onPatch={(patch) => setSection(sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection, patch)} printLib={printLib} teamColors={teamColors} />
-                  <div style={{ marginTop: 8, paddingTop: 20, borderTop: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: bottom.enabled ? 14 : 0 }}>
-                      <div style={{ ...railLabel, marginBottom: 0 }}>Shorts</div>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
+                  </RailCard>
+                  <RailCard num={3} title="Shorts"
+                    action={<label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
                         <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
                         <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Include shorts</span>
-                      </label>
-                    </div>
+                      </label>}>
                     {bottom.enabled && (
                       <>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 16, padding: '10px 12px', background: C.offWhite, borderRadius: 6 }}>
@@ -1356,22 +1372,18 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                         )}
                       </>
                     )}
-                  </div>
+                  </RailCard>
                 </div>
               )}
               {step === 'numbers' && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-                  <div>
-                  <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <div style={{ ...railLabel, marginBottom: 0 }}>Team Logos</div>
-                    {logoCount > 0 && <div style={groupVal}>{logoCount} placed</div>}
-                  </div>
+                <div>
+                  <RailCard num={1} title="Team Logos" value={logoCount > 0 ? `${logoCount} placed` : null}>
                   {/* slot selector */}
-                  <div style={{ display: 'flex', gap: 6, marginBottom: 14, flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', gap: 7, marginBottom: 14, flexWrap: 'wrap', paddingLeft: 4 }}>
                     {LOGO_SLOTS.map((s) => {
                       const on = s.key === logoSlot; const has = config.logos && config.logos[s.key] && config.logos[s.key].src;
                       return (
-                        <button key={s.key} onClick={() => setLogoSlot(s.key)} style={{ position: 'relative', fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 11px', borderRadius: 4, background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer' }}>
+                        <button key={s.key} onClick={() => setLogoSlot(s.key)} style={{ position: 'relative', fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, padding: '7px 12px', borderRadius: 2, transform: 'skewX(-12deg)', background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy, border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', boxShadow: on ? '0 2px 6px rgba(25,40,83,0.25)' : 'none' }}>
                           {s.label}{has && <span style={{ position: 'absolute', top: -4, right: -4, width: 9, height: 9, borderRadius: '50%', background: C.red, border: '1.5px solid #fff' }} />}
                         </button>
                       );
@@ -1418,23 +1430,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       <input ref={logoInputRef} type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                     </label>
                   )}
-
-                  </div>
-                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                      <div style={groupHead}>Front Number</div>
-                      <div style={groupVal}>{({ right: 'Right Chest', left: 'Left Chest', center: 'Center', none: 'None' })[config.frontNumber || 'right']}</div>
-                    </div>
+                  </RailCard>
+                  <RailCard num={2} title="Front Number" value={({ right: 'Right Chest', left: 'Left Chest', center: 'Center', none: 'None' })[config.frontNumber || 'right']}>
                     <Pills options={[{ id: 'right', label: 'Right Chest' }, { id: 'left', label: 'Left Chest' }, { id: 'center', label: 'Center' }, { id: 'none', label: 'None' }]}
                       active={config.frontNumber || 'right'} onPick={(v) => set({ frontNumber: v })} />
-                  </div>
-                  <LabeledInput label="Player Name (Back)" value={config.playerName} onChange={(v) => set({ playerName: v })} maxLength={14} />
-                  <LabeledInput label="Player Number" value={config.playerNumber} onChange={(v) => set({ playerNumber: v.replace(/[^0-9]/g, '').slice(0, 2) })} maxLength={2} />
-                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                      <div style={groupHead}>Name Style</div>
-                      <div style={groupVal}>{config.nameArch === 'straight' ? 'Straight' : 'Arched'}</div>
-                    </div>
+                  </RailCard>
+                  <RailCard num={3} title="Name &amp; Number">
+                    <LabeledInput label="Player Name (Back)" value={config.playerName} onChange={(v) => set({ playerName: v })} maxLength={14} />
+                    <div style={{ height: 12 }} />
+                    <LabeledInput label="Player Number" value={config.playerNumber} onChange={(v) => set({ playerNumber: v.replace(/[^0-9]/g, '').slice(0, 2) })} maxLength={2} />
+                  </RailCard>
+                  <RailCard num={4} title="Name Style" value={config.nameArch === 'straight' ? 'Straight' : 'Arched'}>
                     <div style={{ marginBottom: 12 }}>
                       <Pills options={[{ id: 'arched', label: 'Arched' }, { id: 'straight', label: 'Straight' }]} active={config.nameArch || 'arched'} onPick={(v) => set({ nameArch: v })} />
                     </div>
@@ -1443,62 +1449,56 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       <span style={groupVal}>{Number.isFinite(config.nameSpacing) ? config.nameSpacing : 8}%</span>
                     </div>
                     <input type="range" min={0} max={30} step={1} value={Number.isFinite(config.nameSpacing) ? config.nameSpacing : 8} onChange={(e) => set({ nameSpacing: parseInt(e.target.value, 10) })} style={{ width: '100%', accentColor: C.navy }} />
-                  </div>
-                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                      <div style={groupHead}>Number Color</div><div style={groupVal}>{nameForHex(config.numberColor)}</div>
-                    </div>
+                  </RailCard>
+                  <RailCard num={5} title="Number Color" value={nameForHex(config.numberColor)}>
                     <QuickColors teamColors={teamColors} size={38} hex={config.numberColor} onPick={(h) => set({ numberColor: h })} />
-                  </div>
+                  </RailCard>
                   {config.font !== 'outline' && (
-                    <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
-                      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                        <div style={groupHead}>Outline</div>
-                        <div style={groupVal}>{(config.outlineColor || 'auto') === 'auto' ? 'Auto' : config.outlineColor === 'none' ? 'None' : nameForHex(config.outlineColor)}</div>
-                      </div>
-                      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                    <RailCard num={6} title="Outline" value={(config.outlineColor || 'auto') === 'auto' ? 'Auto' : config.outlineColor === 'none' ? 'None' : nameForHex(config.outlineColor)}>
+                      <div style={{ marginBottom: 10 }}>
                         <Pills options={[{ id: 'auto', label: 'Auto' }, { id: 'none', label: 'None' }]} active={(config.outlineColor || 'auto')} onPick={(v) => set({ outlineColor: v })} />
                       </div>
                       <QuickColors teamColors={teamColors} size={26} hex={config.outlineColor || ''} onPick={(h) => set({ outlineColor: h })} />
                       {/* second outline — the pro "double border" look; needs a first outline to ring */}
                       {(config.outlineColor || 'auto') !== 'none' && (
-                        <div style={{ marginTop: 16 }}>
-                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 12 }}>
-                            <div style={groupHead}>Second Outline</div>
-                            <div style={groupVal}>{(config.outline2Color || 'none') === 'none' ? 'None' : nameForHex(config.outline2Color)}</div>
+                        <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px dashed ' + C.light }}>
+                          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+                            <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight }}>Second Outline</span>
+                            <span style={groupVal}>{(config.outline2Color || 'none') === 'none' ? 'None' : nameForHex(config.outline2Color)}</span>
                           </div>
-                          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+                          <div style={{ marginBottom: 10 }}>
                             <Pills options={[{ id: 'none', label: 'None' }]} active={(config.outline2Color || 'none')} onPick={(v) => set({ outline2Color: v })} />
                           </div>
                           <QuickColors teamColors={teamColors} size={26} hex={config.outline2Color === 'none' ? '' : (config.outline2Color || '')} onPick={(h) => set({ outline2Color: h })} />
                         </div>
                       )}
-                    </div>
+                    </RailCard>
                   )}
-                  <div style={{ paddingBottom: 22, borderBottom: '1px solid ' + C.light }}>
+                  <RailCard num={config.font !== 'outline' ? 7 : 6} title="Lettering Size">
                     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 6 }}>
-                      <div style={groupHead}>Number Size</div><div style={groupVal}>{Math.round((config.numberSize || 1) * 100)}%</div>
+                      <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight }}>Number Size</span>
+                      <span style={groupVal}>{Math.round((config.numberSize || 1) * 100)}%</span>
                     </div>
                     <input type="range" min={0.7} max={1.3} step={0.05} value={config.numberSize || 1} onChange={(e) => set({ numberSize: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: C.navy }} />
                     <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', margin: '14px 0 6px' }}>
-                      <div style={groupHead}>Name Size</div><div style={groupVal}>{Math.round((config.nameSize || 1) * 100)}%</div>
+                      <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight }}>Name Size</span>
+                      <span style={groupVal}>{Math.round((config.nameSize || 1) * 100)}%</span>
                     </div>
                     <input type="range" min={0.7} max={1.3} step={0.05} value={config.nameSize || 1} onChange={(e) => set({ nameSize: parseFloat(e.target.value) })} style={{ width: '100%', accentColor: C.navy }} />
-                  </div>
-                  <div>
-                    <div style={railLabel}>Number &amp; Name Font</div>
-                    <div style={{ display: 'flex', gap: 8 }}>
+                  </RailCard>
+                  <RailCard num={config.font !== 'outline' ? 8 : 7} title="Number Style" style={{ marginBottom: 0 }}>
+                    <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap', paddingLeft: 4 }}>
                       {FONTS.map((f) => {
                         const on = f.id === config.font;
                         return (
-                          <button key={f.id} onClick={() => set({ font: f.id })} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 14px', borderRadius: 4, background: on ? C.navy : '#fff', border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer' }}>
+                          <button key={f.id} onClick={() => set({ font: f.id })} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, padding: '10px 14px', borderRadius: 2, transform: 'skewX(-12deg)', background: on ? C.navy : '#fff', border: '1px solid ' + (on ? C.navy : C.mid), cursor: 'pointer', boxShadow: on ? '0 2px 6px rgba(25,40,83,0.25)' : 'none' }}>
                             <span style={{ fontWeight: 800, fontSize: 18, color: on ? '#fff' : C.navy, WebkitTextStroke: f.hollow ? ('1px ' + (on ? '#fff' : C.navy)) : undefined, WebkitTextFillColor: f.hollow ? 'transparent' : undefined }}>23</span>
                             <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 9, textTransform: 'uppercase', letterSpacing: 0.6, color: on ? '#fff' : C.navy }}>{f.label}</span>
                           </button>
                         );
                       })}
                     </div>
-                  </div>
+                  </RailCard>
                 </div>
               )}
             </div>
