@@ -6221,12 +6221,11 @@ export default function App(){
     if (!prods.length) { nf('This store has no items to build a webstore from', 'error'); return; }
     setOmgWebstoreLoading(true);
     try {
-      const saleCode = store._omg_sale_code || '';
-      // Already converted? Point the user at the existing draft rather than duplicating.
-      if (saleCode) {
-        const { data: existing } = await supabase.from('webstores').select('id,name').eq('omg_sale_code', saleCode).limit(1);
-        if (existing && existing.length) { nf(`A webstore already exists for this store ("${existing[0].name}") — see Webstores`, 'warn'); setOmgWebstoreLoading(false); return; }
-      }
+      const wsName = store.store_name || 'Team Store';
+      // Already converted? A same-named Club Webstore almost certainly means this store was already
+      // turned into one — point the user there rather than silently making a duplicate draft.
+      const { data: existing } = await supabase.from('webstores').select('id,name').eq('source', 'webstore').eq('name', wsName).limit(1);
+      if (existing && existing.length) { nf(`A webstore named "${wsName}" already exists — see Webstores → Draft`, 'warn'); setOmgWebstoreLoading(false); return; }
       // Unique slug from the store name.
       const base = (store.store_name || 'team-store').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
       let slug = base;
@@ -6235,10 +6234,12 @@ export default function App(){
         if (!ex || !ex.length) break;
         slug = `${base}-${n}`;
       }
-      // Draft store shell.
+      // Draft store shell. A converted store is a first-class Club Webstore — deliberately NO
+      // omg_sale_code, so it shows in the Webstores list (which hides omg-coded rows) and isn't
+      // treated as an OMG mirror by checkout / order sync. It's a real webstore now, not OMG.
       const { data: ws, error: wErr } = await supabase.from('webstores').insert({
-        name: store.store_name || 'Team Store', slug, status: 'draft', source: 'webstore', created_via: 'staff',
-        customer_id: store.customer_id || null, rep_id: store.rep_id || null, omg_sale_code: saleCode || null,
+        name: wsName, slug, status: 'draft', source: 'webstore', created_via: 'staff',
+        customer_id: store.customer_id || null, rep_id: store.rep_id || null,
       }).select('id,slug').single();
       if (wErr || !ws) { nf('Could not create webstore: ' + (wErr?.message || 'unknown error'), 'error'); setOmgWebstoreLoading(false); return; }
       // Products: OMG price + decorated image + sizes; link to catalog by SKU where possible.
