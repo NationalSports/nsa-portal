@@ -182,6 +182,47 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
   return [];
 };
 
+// SINGLE SOURCE OF TRUTH for per-garment mockup slot keys. A garment gets one mockup
+// slot per decoration; reversible decorations get TWO (Side A / Side B — a reversible
+// garment prints on both color ways). Slot keys extend the garment's `sku|color` base:
+//   • first art deco, Side A → bare base key (backward-compatible, drives the approval gate)
+//   • other art slots        → base|<color_way_id>  (falling back to base|d<i> / base|d<i>_1)
+//   • numbers / names        → base|numbers, base|numbers_b, base|names_1, …
+// Accepts raw SO decorations (color_way_id) or the enriched view models the mockup
+// screens build (colorWayId). Returns [{key, primary, kind, idx, di, side, reversible}]
+// where idx counts within the deco's kind and di is the index in the ORIGINAL decos
+// array (so callers can scope slots to a job via deco_idxs). The renderers in App.js
+// (rep art-detail grid + artist modal) and the approval gate below must all agree on
+// these keys — that's why this lives here.
+export const mockSlotKeys = (base, decos) => {
+  const slots = [];
+  let ai = 0, ni = 0, mi = 0;
+  safeArr(decos).forEach((d, di) => {
+    if (!d || typeof d !== 'object') return;
+    const rev = !!d.reversible;
+    if (d.kind === 'art') {
+      const cwA = d.color_way_id !== undefined ? d.color_way_id : d.colorWayId;
+      const cwB = d.color_way_id_b !== undefined ? d.color_way_id_b : d.colorWayIdB;
+      const sides = rev ? [{ cw: cwA, side: 'A' }, { cw: cwB, side: 'B' }] : [{ cw: cwA, side: rev ? 'A' : '' }];
+      sides.forEach((s, si) => {
+        const first = ai === 0 && si === 0;
+        const disc = first ? '' : (s.cw || ('d' + ai + (si ? ('_' + si) : '')));
+        slots.push({ key: base + (disc ? ('|' + disc) : ''), primary: first, kind: 'art', idx: ai, di, side: s.side, reversible: rev });
+      });
+      ai++;
+    } else if (d.kind === 'numbers') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|numbers' + (ni ? ('_' + ni) : '') + sfx, primary: false, kind: 'numbers', idx: ni, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      ni++;
+    } else if (d.kind === 'names') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|names' + (mi ? ('_' + mi) : '') + sfx, primary: false, kind: 'names', idx: mi, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      mi++;
+    }
+  });
+  return slots;
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
@@ -252,7 +293,23 @@ export const skusMissingMockups = (job, so) => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
       return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
     });
-    if (perSku.length > 0) return;
+    if (perSku.length > 0) {
+      // Primary mock present — additionally require every slot a REVERSIBLE decoration
+      // creates (Side B art, both numbers/names sides). A reversible garment approved
+      // with only one color way mocked is exactly the SO-1116 rejection. Scoped to
+      // reversible decos this job owns (deco_idxs), and only for garments already on
+      // the per-item workflow — legacy jobs whose mocks live in the general
+      // mockup_files bucket (handled below) are left alone.
+      const _idxs = jobItemDecoIdxs(gi);
+      const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const missSlots = mockSlotKeys(mockKey, safeDecos(it))
+        .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
+        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
+      if (missSlots.length > 0 && mSku) {
+        missing.push(mSku + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
+      }
+      return;
+    }
     // Only fall back to the shared mockup_files/files bucket for art that carries NO
     // per-garment mockups at all (legacy single-design art). Once an art file has
     // per-garment mockups for OTHER garments, this garment needs its own — otherwise a

@@ -4019,6 +4019,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                               <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
                             </div>
+                            {deco.color_way_id&&deco.color_way_id_b&&deco.color_way_id===deco.color_way_id_b&&<div style={{fontSize:9,color:'#dc2626',fontWeight:700}}>⚠ Side A and Side B should be different color ways</div>}
                           </div>;
                         }
                         return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>

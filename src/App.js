@@ -18,7 +18,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
@@ -22355,15 +22355,16 @@ export default function App(){
                   const _repSkBase=_mockKey(gi.sku,gi.color);
                   const _repSlots=[];
                   // A reversible garment prints on both color ways, so each reversible deco gets TWO
-                  // mockup panels (Side A / Side B). Side A keeps the deco's original slot key so any
-                  // mockup already uploaded stays put and the approval gate is unchanged; Side B gets a
-                  // suffixed key. Non-reversible decos are unchanged (one panel each).
-                  effectiveArtDecos.forEach((d,i)=>{const sides=d.reversible?[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:'Side A'},{cwId:d.colorWayIdB,cwLbl:d.cwLabelB,side:'Side B'}]:[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:''}];
-                    sides.forEach((s,si)=>{const first=i===0&&si===0;const disc=first?'':(s.cwId||('d'+i+(si?('_'+si):'')));_repSlots.push({key:_repSkBase+(disc?('|'+disc):''),primary:first,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,s.cwLbl?('CW: '+s.cwLbl):'',d.reversible?('Reversible · '+s.side):''].filter(Boolean).join(' · ')})})});
-                  numDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
-                    sides.forEach(s=>_repSlots.push({key:_repSkBase+'|numbers'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
-                  nameDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
-                    sides.forEach(s=>_repSlots.push({key:_repSkBase+'|names'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
+                  // mockup panels (Side A / Side B). Slot keys come from mockSlotKeys (safeHelpers) —
+                  // the single source shared with the artist modal and the approval gate — so uploads
+                  // and the send-for-approval check always line up.
+                  mockSlotKeys(_repSkBase,[...effectiveArtDecos,...numDecos,...nameDecos]).forEach(sd=>{
+                    if(sd.kind==='art'){const d=effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
+                      _repSlots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                    else if(sd.kind==='numbers'){const d=numDecos[sd.idx];
+                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                    else{const d=nameDecos[sd.idx];
+                      _repSlots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                   if(_repSlots.length===0&&af)_repSlots.push({key:_repSkBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                   return<div key={gii} style={{marginBottom:gii<itemDetails.length-1?16:0,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden',background:'white'}}>
                     {/* Item header */}
@@ -22993,14 +22994,16 @@ export default function App(){
                       // key (backward-compatible + drives the approval gate); others get a suffixed key.
                       const _slots=[];
                       // Reversible garments print on both color ways → two mockup panels per reversible deco
-                      // (Side A / Side B). Side A keeps the original slot key (existing mockups + approval gate
-                      // unchanged); Side B gets a suffixed key. Non-reversible decos are unchanged.
-                      _effectiveArtDecos.forEach((d,i)=>{const sides=d.reversible?[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:'Side A'},{cwId:d.colorWayIdB,cwLbl:d.cwLabelB,side:'Side B'}]:[{cwId:d.colorWayId,cwLbl:d.cwLabel,side:''}];
-                        sides.forEach((s,si)=>{const first=i===0&&si===0;const disc=first?'':(s.cwId||('d'+i+(si?('_'+si):'')));_slots.push({key:_skBase+(disc?('|'+disc):''),primary:first,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,s.cwLbl?('CW: '+s.cwLbl):'',d.reversible?('Reversible · '+s.side):''].filter(Boolean).join(' · ')})})});
-                      _numDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
-                        sides.forEach(s=>_slots.push({key:_skBase+'|numbers'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
-                      _nameDecos.forEach((d,i)=>{const sides=d.reversible?[{side:'Side A',sfx:''},{side:'Side B',sfx:'_b'}]:[{side:'',sfx:''}];
-                        sides.forEach(s=>_slots.push({key:_skBase+'|names'+(i?('_'+i):'')+s.sfx,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?s.side:''].filter(Boolean).join(' · ')}))});
+                      // (Side A / Side B). Slot keys come from mockSlotKeys (safeHelpers) — the single source
+                      // shared with the rep grid and the approval gate — so uploads and the send-for-approval
+                      // check always line up.
+                      mockSlotKeys(_skBase,[..._effectiveArtDecos,..._numDecos,..._nameDecos]).forEach(sd=>{
+                        if(sd.kind==='art'){const d=_effectiveArtDecos[sd.idx];const cwLbl=sd.side==='B'?d.cwLabelB:d.cwLabel;
+                          _slots.push({key:sd.key,primary:sd.primary,artId:(d.artFile&&d.artFile.id)||af?.id,artFile:d.artFile||af,label:d.artName||d.artFile?.name||'Art',sub:[(d.type||'').replace(/_/g,' '),d.size,cwLbl?('CW: '+cwLbl):'',d.reversible?('Reversible · Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                        else if(sd.kind==='numbers'){const d=_numDecos[sd.idx];
+                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Numbers',sub:[d.position,d.numSize&&d.numSize!=='—'?('size '+d.numSize):'',d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}
+                        else{const d=_nameDecos[sd.idx];
+                          _slots.push({key:sd.key,primary:false,artId:af?.id,artFile:af,label:'Names',sub:[d.position,d.frontAndBack?'F+B':'',d.reversible?('Side '+sd.side):''].filter(Boolean).join(' · ')});}});
                       if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
