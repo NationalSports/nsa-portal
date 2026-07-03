@@ -1693,9 +1693,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const front = arr.find((m) => !m.side || m.side === 'front') || arr[0];
       if (!front || !front.url) continue;
       const item = cat.find((c) => c.sku === sku && (sbw[c.id]?.color || '') === color) || cat.find((c) => c.sku === sku);
-      // The baked mock becomes the item image; clear any overlay decoration so the
-      // logo isn't stamped twice (baked + CSS overlay).
-      if (item) { await supabase.from('webstore_products').update({ image_url: front.url, decorations: [] }).eq('id', item.id); applied++; }
+      // The baked mock becomes the item image. Don't DROP the placed art — the store→SO
+      // conversion reads webstore_products.decorations to build the production art lines,
+      // so clearing them left production with a "no decoration" line for a garment that
+      // clearly shows a logo. Instead mark each art decoration `baked: true`: the storefront
+      // skips the CSS overlay for baked decorations (the logo is already in the image, so no
+      // double-stamp), while the SO conversion still emits the art file + placement to print.
+      if (item) {
+        const prev = Array.isArray(item.decorations) ? item.decorations : [];
+        const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked }).eq('id', item.id); applied++;
+      }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
     loadDetail(sel);
@@ -3852,7 +3860,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     const color = st.color || '';
     const key = (c.sku || '') + '|' + color;
     (Array.isArray(c.decorations) ? c.decorations : []).forEach((d) => {
-      if (!d || d.kind !== 'art') return;
+      if (!d || d.kind !== 'art' || d.baked) return; // baked art is already in the item image — don't re-place it
       const url = decoUrlForColor(d, color, _qmWebLogos(d)) || d.art_url || d.web_url || '';
       if (!url || !_qmIsImg(url)) return;
       const artId = d.art_file_id || d.art_id || ('deco-' + url);
@@ -4166,8 +4174,9 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
         <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
-          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
-          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup.
+              Skip `baked` decorations — already rendered into the item image (a Quick Mock). */}
+          {(p.decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
             <img key={i} src={decoUrlForColor(d, stock?.color, _webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
           ); })}
         </div>

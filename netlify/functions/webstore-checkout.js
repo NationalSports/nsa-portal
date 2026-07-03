@@ -168,6 +168,33 @@ async function checkStock(sb, store, lines) {
   return { error: null, holds };
 }
 
+// Reject a single line for a SIZED product that arrives with no size. The storefront
+// only enables a no-size add for a genuinely one-size item; a sized item reaching here
+// with size=null means it sold out in every size (the client used to still allow the
+// add) or the cart was tampered — either way it's unfulfillable. Mirrors the client's
+// `needSize` rule: a product with a non-empty size scale (available_sizes) or an explicit
+// sizes_offered list requires a size. Read through the storefront view (base
+// webstore_products has no available_sizes). Fail-open on a lookup error, matching
+// checkStock — the drift/stock guards still apply.
+async function checkSizesRequired(sb, store, lines) {
+  const noSize = lines.filter((l) => l.kind === 'single' && !l.size);
+  if (!noSize.length) return null;
+  const ids = [...new Set(noSize.map((l) => l.wp.id))];
+  const { data, error } = await sb.from('webstore_storefront_products')
+    .select('webstore_product_id,name,available_sizes,sizes_offered')
+    .eq('store_id', store.id).in('webstore_product_id', ids);
+  if (error) return null;
+  const byId = {}; (data || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+  const nonEmpty = (a) => Array.isArray(a) && a.filter((x) => x != null && String(x).trim()).length > 0;
+  for (const l of noSize) {
+    const p = byId[l.wp.id];
+    if (p && (nonEmpty(p.available_sizes) || nonEmpty(p.sizes_offered))) {
+      return `Please choose a size for ${p.name || 'an item in your cart'} — it may have sold out in your size. Please re-add it and try again.`;
+    }
+  }
+  return null;
+}
+
 // Enforce the store's allowed jersey-number range (configured per store but
 // previously unchecked — a tampered or stale cart could submit any number).
 function checkNumberRange(store, lines) {
@@ -378,6 +405,9 @@ async function placeOrder(sb, body) {
 
   const numErr = checkNumberRange(store, priced.lines);
   if (numErr) return bad(409, numErr);
+
+  const sizeErr = await checkSizesRequired(sb, store, priced.lines);
+  if (sizeErr) return bad(409, sizeErr, { code: 'size_required' });
 
   const stock = await checkStock(sb, store, priced.lines);
   if (stock.error) return bad(409, stock.error);
@@ -788,6 +818,7 @@ async function updateShip(sb, body) {
 module.exports.priceCart = priceCart;
 module.exports.placeOrder = placeOrder;
 module.exports.checkStock = checkStock;
+module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;
 module.exports.couponDiscount = couponDiscount;
 module.exports._availForSize = _availForSize;
