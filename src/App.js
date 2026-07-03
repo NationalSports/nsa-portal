@@ -21988,16 +21988,20 @@ export default function App(){
         // blocks a numbers/names job.
         if(jobHasUnresolvedArt(j,so,{archivedIsUnresolved:true})){nf('This job still has Art TBD — assign real artwork before marking it complete','error');return false;}
         const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
-        const missing=afs.filter(a=>!artProdFilesReady(a));
-        if(missing.length){nf('Upload production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
+        // STRICT gate: explicit prod_files_attached confirmation (or an embroidery .dst) —
+        // a stray PDF in prod_files must not satisfy the board move when every button path
+        // requires confirmation (same gate the Approve buttons use).
+        const missing=afs.filter(a=>!artProdFilesConfirmed(a));
+        if(missing.length){nf('Confirm production files for: '+missing.map(a=>a.name||'Unnamed').join(', '),'error');return false;}
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
         if(jj.id!==j.id)return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
-        // Re-submitting a mockup for approval supersedes any prior coach rejection — clear the flag so the
-        // workboard status and coach_rejected stay consistent (rejections[] keeps the history).
-        if(newStatus==='waiting_approval')upd.coach_rejected=false;
+        // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
+        // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
+        // it set with art_status ahead is the SO-1199 contradictory shape.
+        if(newStatus==='waiting_approval'||newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))upd.coach_rejected=false;
         if((newStatus==='art_complete'||PROD_FILES_STATUSES.includes(newStatus))&&upd.art_requests){
           upd.art_requests=upd.art_requests.map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'completed'}:r);
         }

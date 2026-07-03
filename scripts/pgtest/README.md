@@ -1,8 +1,17 @@
-# place_webstore_order verification harness
+# Stored-procedure verification harnesses
 
-Executable proof for `supabase/migrations/00171_place_webstore_order_txn.sql`,
-run against a **scratch PostgreSQL — never a real database** (the fixture
-CREATEs the webstore tables from their production definitions).
+Executable proof for the transactional RPCs, run against a **scratch
+PostgreSQL — never a real database** (each fixture CREATEs its tables from
+their production definitions).
+
+Harnesses:
+- `schema_fixture.sql` + `place_webstore_order_scenarios.sql` — migration `00171`
+- `art_decision_fixture.sql` + `art_decision_scenarios.sql` — migration `00172`
+  (coach art decision: H1 stale-link guard, H2 mock pinning, complete
+  reject/approve write sets, SO-1199 contradictory-state heal). Same runner
+  recipe as below, substituting the art fixture/scenarios and migration 00172.
+
+## place_webstore_order (00171)
 
 ```sh
 initdb -D /tmp/pgtest/data -U postgres -A trust

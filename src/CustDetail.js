@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
+import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
@@ -1635,14 +1635,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                const artId=j.art_file_id;if(artId&&onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
+                {/* Mirror the coach portal's approve write set exactly: deco-specific prod-files stage
+                    (dtf→transfers, embroidery→emb files) and coach_rejected cleared in the SAME write —
+                    this path used to hardcode production_files_needed and leave the rejection flag stranded. */}
+                const artId=j.art_file_id;if(artId&&onSaveSO){const _apSt=prodFilesStatusFor((so.art_files||[]).find(af3=>af3.id===artId)?.deco_type||j.deco_type);const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_rejected:false}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
                 setPortalJobView(null)}}>✅ Approve</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
                 if(portalComment.trim()){
                   const artId=j.art_file_id;if(artId&&onSaveSO){
-                    const rej={reason:portalComment.trim(),by:'Coach',at:new Date().toISOString()};
-                    const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',rejections:[...(jj.rejections||[]),rej]}:jj);
-                    const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'waiting_for_art'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                    {/* Mirror the coach portal's reject write set: coach_rejected SET, send timestamp and
+                        seps confirmation cleared, timestamp under both key spellings (portal reads `at`,
+                        the dashboard todo reads `rejected_at`). This path used to omit coach_rejected entirely. */}
+                    const _rejAt=new Date().toISOString();
+                    const rej={reason:portalComment.trim(),by:'Coach',at:_rejAt,rejected_at:_rejAt};
+                    const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
+                    const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'waiting_for_art',prod_files_attached:false}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
                     onSaveSO(updatedSO)}
                   setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment explaining what needs to change.')}
               }}>❌ Request Changes</button>
