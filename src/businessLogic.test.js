@@ -166,14 +166,16 @@ describe('Pricing Functions', () => {
   });
 
   describe('Embroidery Pricing (emP)', () => {
-    test('8000 stitches, 6 qty: $8 cost → sell = cost × 1.6', () => {
-      expect(emP(8000, 6, false)).toBe(8);
-      expect(emP(8000, 6, true)).toBe(rT(8 * EM.mk));
+    test('8000 stitches, 6 qty: $4.80 cost → sell floors at EM.fl', () => {
+      expect(emP(8000, 6, false)).toBe(4.8);
+      // rT(4.8 × 1.6) = 7.7 sits below the $8 minimum, so the floor wins
+      expect(emP(8000, 6, true)).toBe(Math.max(rT(4.8 * EM.mk), EM.fl));
+      expect(emP(8000, 6, true)).toBe(8);
     });
 
-    test('15000 stitches, 24 qty: $8.5 cost → sell = cost × 1.6', () => {
-      expect(emP(15000, 24, false)).toBe(8.5);
-      expect(emP(15000, 24, true)).toBe(rT(8.5 * EM.mk));
+    test('15000 stitches, 24 qty: $5.10 cost → sell = cost × 1.6', () => {
+      expect(emP(15000, 24, false)).toBe(5.1);
+      expect(emP(15000, 24, true)).toBe(rT(5.1 * EM.mk)); // 8.2, above the floor
     });
 
     test('cost × markup (1.6) = sell', () => {
