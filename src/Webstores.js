@@ -2682,7 +2682,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
           onCancel={() => { setPendingStartTpl(null); setEditing(null); }}
-          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }} />
+          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }}
+          onImportFromOmg={editing === 'new' ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
@@ -3778,7 +3779,7 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg }) {
   const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
   // Once the name is hand-edited we stop auto-naming from the linked customer.
@@ -3961,10 +3962,13 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
           <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? "Update this store's setup." : "Set it up here — add products and artwork after it's created."}</div>
         </div>
-        <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
-          {['team', 'club'].map((t) => (
-            <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {onImportFromOmg && <button type="button" onClick={onImportFromOmg} title="Skip this blank form — paste a shared OMG report link instead and build the store from its items" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>📥 Import from OMG instead</button>}
+          <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
+            {['team', 'club'].map((t) => (
+              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
+            ))}
+          </div>
         </div>
       </div>
       {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
