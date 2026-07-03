@@ -998,9 +998,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const setLogo = (patch) => setConfig((c) => ({ ...c, logos: { ...c.logos, [logoSlot]: { ...c.logos[logoSlot], ...patch } } }));
   const logoCount = LOGO_SLOTS.filter((s) => config.logos && config.logos[s.key] && config.logos[s.key].src).length;
 
-  const onLogoFile = (e) => {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
+  const handleLogoFile = (file) => {
+    if (!file || !/^image\//.test(file.type || '')) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
       const img = new Image();
@@ -1019,6 +1018,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  };
+  const onLogoFile = (e) => { handleLogoFile(e.target.files && e.target.files[0]); e.target.value = ''; };
+  // Drag-and-drop an image straight onto the logo area (in addition to click-to-
+  // upload). Prevent-default on dragover is required for a drop to fire.
+  const [logoDragOver, setLogoDragOver] = useState(false);
+  const onLogoDragOver = (e) => { e.preventDefault(); if (!logoDragOver) setLogoDragOver(true); };
+  const onLogoDragLeave = (e) => { e.preventDefault(); setLogoDragOver(false); };
+  const onLogoDrop = (e) => {
+    e.preventDefault(); setLogoDragOver(false);
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    handleLogoFile(file);
   };
 
   // Pad backgrounds = front/back proofs WITHOUT logos (the draggable box shows
@@ -1535,9 +1545,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   {activeLogo.src ? (
                     <div>
                       <div ref={padRef} onPointerDown={onPadDown} onPointerMove={onPadMove} onPointerUp={onPadUp} onPointerLeave={onPadUp}
-                        style={{ position: 'relative', width: '100%', aspectRatio: '760 / 940', background: (proofs[slotDef.view] ? `#fff url(${proofs[slotDef.view]}) center/contain no-repeat` : C.offWhite), border: '1px solid ' + C.mid, borderRadius: 8, overflow: 'hidden', touchAction: 'none', cursor: 'grab' }}>
+                        onDragOver={onLogoDragOver} onDragLeave={onLogoDragLeave} onDrop={onLogoDrop}
+                        style={{ position: 'relative', width: '100%', aspectRatio: '760 / 940', background: (proofs[slotDef.view] ? `#fff url(${proofs[slotDef.view]}) center/contain no-repeat` : C.offWhite), border: '1px solid ' + (logoDragOver ? C.red : C.mid), borderRadius: 8, overflow: 'hidden', touchAction: 'none', cursor: 'grab' }}>
                         <img src={activeLogo.src} alt="logo" draggable={false} style={{ position: 'absolute', left: ((activeLogo.x || 0.5) * 100) + '%', top: ((activeLogo.y || 0.4) * 100) + '%', width: (22 * (activeLogo.scale || 1)) + '%', transform: `translate(-50%,-50%) rotate(${activeLogo.rot || 0}deg)`, pointerEvents: 'none', userSelect: 'none' }} />
-                        <div style={{ position: 'absolute', bottom: 6, left: 0, right: 0, textAlign: 'center', fontFamily: F_BODY, fontSize: 11, color: C.textLight, textShadow: '0 1px 2px #fff' }}>drag to reposition · {slotDef.label} ({slotDef.view})</div>
+                        <div style={{ position: 'absolute', bottom: 6, left: 0, right: 0, textAlign: 'center', fontFamily: F_BODY, fontSize: 11, color: C.textLight, textShadow: '0 1px 2px #fff' }}>{logoDragOver ? 'Drop image to replace' : `drag to reposition · ${slotDef.label} (${slotDef.view})`}</div>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14 }}>
                         <span style={{ width: 46, fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.navy }}>Size</span>
@@ -1567,9 +1578,10 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                       <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to place the {slotDef.label.toLowerCase()} logo; it appears live on the 3D jersey and the proof.</div>
                     </div>
                   ) : (
-                    <label style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%', height: 150, border: '2px dashed ' + C.mid, borderRadius: 8, cursor: 'pointer', color: C.textLight, fontFamily: F_BODY, fontSize: 13, textAlign: 'center', padding: 16, boxSizing: 'border-box' }}>
+                    <label onDragOver={onLogoDragOver} onDragLeave={onLogoDragLeave} onDrop={onLogoDrop}
+                      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%', height: 150, border: '2px dashed ' + (logoDragOver ? C.red : C.mid), background: logoDragOver ? 'rgba(150,44,50,0.05)' : 'transparent', borderRadius: 8, cursor: 'pointer', color: logoDragOver ? C.red : C.textLight, fontFamily: F_BODY, fontSize: 13, textAlign: 'center', padding: 16, boxSizing: 'border-box' }}>
                       <span style={{ fontSize: 24 }}>⬆︎</span>
-                      <span>Upload a logo for the <strong style={{ color: C.navy }}>{slotDef.label}</strong></span>
+                      <span>{logoDragOver ? 'Drop your image here' : <>Drag an image here, or <strong style={{ color: C.navy }}>click to upload</strong> for the {slotDef.label}</>}</span>
                       <input ref={logoInputRef} type="file" accept="image/*" onChange={onLogoFile} style={{ display: 'none' }} />
                     </label>
                   )}

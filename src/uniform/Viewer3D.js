@@ -202,6 +202,32 @@ function gradientTexture(a, b) {
   const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
 }
 
+// How much of the 0–1 UV range this mesh's shell actually occupies. A pattern's
+// texture.repeat is applied over UV space, so the number of pattern tiles the
+// coach SEES across a panel is repeat × uvSpan. Small panels (sleeves) tend to
+// pack into a small UV region, so a fixed repeat lands only ~1 tile on them and
+// the pattern looks blown up. Targeting a tile COUNT (repeat = tiles / uvSpan)
+// keeps every panel — and both garment models, whose UV scales differ — showing
+// a sensible amount of pattern.
+function zoneUvSpan(mesh) {
+  const geo = mesh.geometry;
+  const uv = geo.attributes && geo.attributes.uv;
+  if (!uv || !uv.count) return null;
+  let uMin = Infinity, uMax = -Infinity, vMin = Infinity, vMax = -Infinity;
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i), v = uv.getY(i);
+    if (u < uMin) uMin = u; if (u > uMax) uMax = u;
+    if (v < vMin) vMin = v; if (v > vMax) vMax = v;
+  }
+  const span = Math.max(uMax - uMin, vMax - vMin);
+  return span > 1e-4 ? span : null;
+}
+function zoneRepeat(mesh, targetTiles, fallback) {
+  const span = zoneUvSpan(mesh);
+  if (!span) return fallback;
+  return Math.max(2, Math.min(60, targetTiles / span));
+}
+
 function applyDesign(st, rawSpec) {
   const spec = ds.normalizeSpec(rawSpec);
   for (const entry of st.meshes) {
@@ -226,9 +252,9 @@ function applyDesign(st, rawSpec) {
         const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
         const tex = new THREE.CanvasTexture(source);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        // Sleeves have much less UV area than the body — keep the print roughly
-        // the same physical size on both instead of blowing it up on the sleeve.
-        const rep = entry.zone === 'body' ? 4 : 4;
+        // Same tile-count logic as the built-ins: ~2.5 print repeats across each
+        // panel so a print never balloons on the sleeves.
+        const rep = zoneRepeat(entry.mesh, 2.5, 4);
         tex.repeat.set(rep, rep);
         tex.anisotropy = 8;
         tex.colorSpace = THREE.SRGBColorSpace;
@@ -252,12 +278,16 @@ function applyDesign(st, rawSpec) {
       if (tile) {
         const tex = new THREE.CanvasTexture(tile);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        // Fine patterns need a higher repeat or they read as broad bands on the
-        // body panel — keep the 3D stripe density close to the 2D proof's. The
-        // sleeve/collar panels have far less UV area than the body, so they need
-        // a comparable (not lower) repeat or the tile blows up huge on them.
+        // Repeat derives from the panel's real UV-to-world density so a tile is
+        // the same physical size on the body and the sleeves, and on either
+        // garment model. Fine patterns (stripes/pinstripe/…) target a smaller
+        // physical tile than coarse ones (chevron/camo/…).
         const fine = pat === 'stripes' || pat === 'pinstripe' || pat === 'dots' || pat === 'carbon' || pat === 'hex';
-        const rep = entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 10 : 6);
+        // Aim for ~this many pattern tiles across the panel's larger UV axis —
+        // calibrated so the density matches the good V-neck look and the crew
+        // model (whose sleeves pack into a much smaller UV span) no longer blows
+        // the pattern up.
+        const rep = zoneRepeat(entry.mesh, fine ? 6 : 2.6, entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 10 : 6));
         tex.repeat.set(rep, rep);
         tex.anisotropy = 8; // crisp the pattern at grazing angles (was blurry/blown up)
         tex.colorSpace = THREE.SRGBColorSpace;
@@ -461,6 +491,16 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     controls.enableDamping = true; controls.dampingFactor = 0.08;
     controls.enablePan = false;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
+    // Lens shift: move the rendered image right by `shiftPx` CSS px without
+    // moving the camera or orbit target. Re-applied on resize so the shift
+    // tracks the current canvas size.
+    const applyShift = (w, h) => {
+      if (w < 2 || h < 2) return;
+      camera.aspect = w / h;
+      if (shiftPx) camera.setViewOffset(w, h, -shiftPx, 0, w, h);
+      else if (camera.view && camera.view.enabled) camera.clearViewOffset();
+      camera.updateProjectionMatrix();
+    };
 
     // Directional-heavy rig: the flatter the fill, the faster a white garment
     // disappears into a white page. Shape comes from the key + AO; hemi stays
@@ -498,19 +538,18 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       rootObj.position.sub(center);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       const dist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * fit;
-      // Pan the model horizontally so it can sit under the whole page's center
-      // even though the 3D stage stops at the control rail. worldPerPx is
-      // isotropic at the target plane, derived from the vertical fov + canvas
-      // height; a negative x on both camera and target shifts the model right.
-      const curH = (mount && mount.clientHeight) || H || 700;
-      const worldPerPx = (2 * dist * Math.tan((camera.fov * Math.PI / 180) / 2)) / curH;
-      const panX = -(shiftPx || 0) * worldPerPx;
       // tiltDeg orbits the camera up (keeping the model center as the target) so
-      // the garment reads with a more dramatic 3/4 angle but stays framed.
+      // the garment reads with a more dramatic 3/4 angle but stays framed. Camera
+      // and target both stay on the model center so OrbitControls pivots around
+      // the middle of the garment.
       const tiltRad = (tiltDeg || 0) * Math.PI / 180;
-      camera.position.set(panX, dist * Math.sin(tiltRad), dist * Math.cos(tiltRad));
-      camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix();
-      controls.target.set(panX, 0, 0);
+      camera.position.set(0, dist * Math.sin(tiltRad), dist * Math.cos(tiltRad));
+      camera.near = dist / 100; camera.far = dist * 100;
+      controls.target.set(0, 0, 0);
+      // The horizontal shift (to sit the model under the whole page's center,
+      // past the control rail) is a lens shift via setViewOffset — it moves the
+      // image, NOT the camera/target, so the orbit pivot stays centered.
+      applyShift(mount.clientWidth || W, mount.clientHeight || H);
       // Distance limits must scale with the model (units vary per asset), or the
       // camera gets clamped inside the mesh.
       controls.minDistance = dist * 0.35; controls.maxDistance = dist * 4;
@@ -571,7 +610,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       if (w < 2 || h < 2) return;
       renderer.setSize(w, h, false);
       composer.setSize(w, h);
-      camera.aspect = w / h; camera.updateProjectionMatrix();
+      applyShift(w, h);
     };
     let ro = null;
     if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(resize); ro.observe(mount); }
