@@ -4172,7 +4172,6 @@ export default function App(){
   // Copy-OMG-Store modal: a clean, standalone entry point (paste report link → review SKUs → create
   // store). No coach rebuild links — just copies a previous OMG store's items into a new portal store.
   const[omgCopyOpen,setOmgCopyOpen]=useState(false);const[omgCopyUrl,setOmgCopyUrl]=useState('');
-  const[omgWebstoreLoading,setOmgWebstoreLoading]=useState(false);// "Create Webstore" (OMG store → draft Club Webstore)
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -4517,82 +4516,6 @@ export default function App(){
     } catch (e) { nf('Failed: ' + e.message, 'error'); } finally { setOmgReportLoading(false); }
   };
 
-  // Turn an OMG store into a draft Club Webstore (separate tables: webstores + webstore_products).
-  // Carries over each item's name, SKU, OMG retail price, sizes and decorated mockup image, and links
-  // to the catalog by SKU where it matches (for stock/SO). Creates a DRAFT — the rep sets shipping,
-  // sale dates, packages and launches from the Webstores builder. Guards against a duplicate by sale code.
-  const createWebstoreFromOmg = async (store) => {
-    if (!supabase) { nf('Not connected', 'error'); return; }
-    const prods = (store.products || []).filter(p => p.sku || p.name);
-    if (!prods.length) { nf('This store has no items to build a webstore from', 'error'); return; }
-    setOmgWebstoreLoading(true);
-    try {
-      const wsName = store.store_name || 'Team Store';
-      // Already converted? A same-named Club Webstore almost certainly means this store was already
-      // turned into one — point the user there rather than silently making a duplicate draft.
-      const { data: existing } = await supabase.from('webstores').select('id,name').eq('source', 'webstore').eq('name', wsName).limit(1);
-      if (existing && existing.length) { nf(`A webstore named "${wsName}" already exists — see Webstores → Draft`, 'warn'); setOmgWebstoreLoading(false); return; }
-      // Unique slug from the store name.
-      const base = (store.store_name || 'team-store').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
-      let slug = base;
-      for (let n = 2; n < 60; n++) {
-        const { data: ex } = await supabase.from('webstores').select('id').eq('slug', slug).limit(1);
-        if (!ex || !ex.length) break;
-        slug = `${base}-${n}`;
-      }
-      // Draft store shell. A converted store is a first-class Club Webstore — deliberately NO
-      // omg_sale_code, so it shows in the Webstores list (which hides omg-coded rows) and isn't
-      // treated as an OMG mirror by checkout / order sync. It's a real webstore now, not OMG.
-      const { data: ws, error: wErr } = await supabase.from('webstores').insert({
-        name: wsName, slug, status: 'draft', source: 'webstore', created_via: 'staff',
-        customer_id: store.customer_id || null, rep_id: store.rep_id || null,
-      }).select('id,slug').single();
-      if (wErr || !ws) { nf('Could not create webstore: ' + (wErr?.message || 'unknown error'), 'error'); setOmgWebstoreLoading(false); return; }
-      // In-house art: the OMG mockup shows the finished garment, but production needs the real
-      // art file (OMG only ever hands over the flattened image). Create one "needs file" record
-      // in the customer's art library and reference it from every item by art_id ONLY — no
-      // art_url, so the storefront never composites a logo over the mockup. The art team attaches
-      // the production file to that record; the store→SO conversion then carries the file plus
-      // the mockup proofs (item_mockups) automatically.
-      let pendingArtId = null;
-      if (store.customer_id) {
-        try {
-          const rec = {
-            id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6),
-            name: wsName + ' — team art (attach production file)',
-            kind: 'art', status: 'pending', deco_type: 'screen_print',
-            files: [], color_ways: [], uploaded: new Date().toLocaleDateString(),
-          };
-          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
-          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
-          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', store.customer_id);
-          if (!aErr) {
-            // Also drop it into this store's curated art set so the store's Art tab shows it.
-            await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG rebuild' }] }).eq('id', ws.id);
-            pendingArtId = rec.id;
-          }
-        } catch (e) { console.warn('[OMG→Webstore] art record failed (items created without art):', e); }
-      }
-      // Products: OMG price + decorated image + sizes; link to catalog by SKU where possible.
-      const rows = prods.map((p, i) => {
-        const catId = p.product_id || prod.find(cp => (cp.sku || '').toUpperCase() === (p.sku || '').toUpperCase())?.id || null;
-        const sizes = Object.keys(p.sizes || {});
-        return {
-          store_id: ws.id, product_id: catId, sku: p.sku || null, kind: 'single',
-          display_name: p.name || p.sku || 'Item', image_url: p.image_url || null,
-          retail_price: Number(p.retail) || 0, sizes_offered: sizes.length ? sizes : null,
-          sort_order: i, active: true,
-          ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
-        };
-      });
-      const { error: pErr } = await supabase.from('webstore_products').insert(rows);
-      if (pErr) { nf(`Webstore created but items couldn't be added: ${pErr.message}`, 'error'); setOmgWebstoreLoading(false); return; }
-      const linked = rows.filter(r => r.product_id).length;
-      const artNote = pendingArtId ? ' · in-house art queued — attach the production file in the store’s Art tab'
-        : (store.customer_id ? '' : ' · no customer linked, so no art record was queued');
-      nf(`✓ Draft webstore created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${artNote}. Open Webstores → Draft to set shipping, dates & launch.`, 'success');
-    } catch (e) { nf('Create webstore failed: ' + e.message, 'error'); } finally { setOmgWebstoreLoading(false); }
-  };
 
   // Re-pull costs for an already-imported store: check each item against the
   // NSA catalog, then the catalog table in Supabase, then the supplier's API
@@ -16242,7 +16165,6 @@ export default function App(){
                   setOmgShareTokenLoading(false);
                 }} title="Copy a rebuild link (with decorated mockup images) and print a packing list — share with a coach to kick off a new webstore with the same items" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #a5f3fc',background:'#ecfeff',color:'#0e7490',cursor:'pointer'}}>📤 Share for Rebuild</button>}
                 {(s.products||[]).length>0&&<button onClick={()=>setOmgReviewOpen(true)} title="Review & correct every style number for this store — an edited SKU re-sources its cost & vendor automatically" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #c7d2fe',background:'#eef2ff',color:'#4338ca',cursor:'pointer'}}>🔍 Review SKUs</button>}
-                {(s.products||[]).length>0&&<button disabled={omgWebstoreLoading} onClick={()=>createWebstoreFromOmg(s)} title="Create a draft Club Webstore from this store's items — carries over SKUs, OMG prices, sizes and mockup images, and links to the catalog where SKUs match" style={{marginLeft:6,fontSize:11,fontWeight:700,padding:'2px 10px',borderRadius:6,border:'1px solid #bbf7d0',background:'#f0fdf4',color:'#166534',cursor:omgWebstoreLoading?'wait':'pointer'}}>{omgWebstoreLoading?'⏳ Creating…':'🌐 Create Webstore'}</button>}
               </div>
             </div>
             {s.status==='closed'&&sos.some(so=>so.omg_store_id===s.id)&&<div style={{padding:'6px 12px',background:'#f0fdf4',borderRadius:6,fontSize:11,color:'#166534',fontWeight:600}}>
