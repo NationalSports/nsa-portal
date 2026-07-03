@@ -39,6 +39,9 @@
 
 [functions]
   directory = "netlify/functions"
+  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js);
+  # make sure the file ships inside the function bundle.
+  included_files = ["src/lib/opsRecap.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).

@@ -23,6 +23,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups } from './lib/opsRecap';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -5703,8 +5704,11 @@ export default function App(){
       const u=new URL(window.location);let changed=false;
       if(soId&&sos.length>0){
         const so=sos.find(s=>s.id===soId);
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setPg('orders')}
-        u.searchParams.delete('so');changed=true;
+        // so_tab lets an email deep-link land on a specific SO tab (e.g. the ops digest's
+        // "Create PO" link opens straight to Items for a short-on-pull order).
+        const soTab=p.get('so_tab');
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);if(soTab)setESOTab(soTab);setPg('orders')}
+        u.searchParams.delete('so');u.searchParams.delete('so_tab');changed=true;
       }
       if(poId&&sos.length>0){
         const so=sos.find(s=>(s.items||[]).some(it=>(it.po_lines||[]).some(pl=>pl.po_id===poId))||(s.deco_pos||[]).some(dp=>dp.po_id===poId));
@@ -31671,7 +31675,6 @@ export default function App(){
     const _mdNow=Date.now();
     const _mdWinStart=_mdNow-stMdWin*864e5;
     const _mdInWin=(d)=>{const dt=parseDate(d);if(!dt)return false;const t=dt.getTime();return !isNaN(t)&&t>=_mdWinStart&&t<=_mdNow+6e4};
-    const _mdUnits=(pk)=>SZ_ORD.reduce((a,sz)=>a+safeNum(pk[sz]),0)+safeNum(pk.QTY);
     const _mdWhen=d=>{const dt=parseDate(d);if(!dt||isNaN(dt))return'';const days=Math.floor((_mdNow-dt.getTime())/864e5);return days<=0?'Today':days===1?'Yesterday':days+'d ago'};
 
     // Estimates approved in the window (mine = created it or own the customer)
@@ -31682,55 +31685,34 @@ export default function App(){
       return _mdMine(e.created_by,cRep);
     }).sort((a,b)=>parseDate(b.approved_at||b.updated_at)-parseDate(a.approved_at||a.updated_at));
 
-    // Per-SO short-on-pull (exact if_short rule: warehouse done, stock came up short, no covering PO)
-    const _mdShortOf=(so)=>{
-      let units=0;const parts=[];
-      safeItems(so).forEach(it=>{
-        const picks=safePicks(it);
-        if(picks.length===0||picks.some(pk=>pk.status!=='pulled'))return;
-        const pulledKeys=new Set();picks.forEach(pk=>Object.keys(pk).forEach(k=>{if(SZ_ORD.includes(k))pulledKeys.add(k)}));
-        const szKeys=Object.keys(it.sizes||{}).filter(k=>SZ_ORD.includes(k)||(it.sizes[k]>0));
-        if(szKeys.some(sz=>(it.sizes[sz]||0)>0&&!pulledKeys.has(sz)))return; // edited after pull → not a short
-        let itShort=0;const bySz={};
-        szKeys.forEach(sz=>{const ordered=it.sizes[sz]||0;if(ordered<=0)return;
-          const pulled=picks.reduce((a,pk)=>a+(pk.status==='pulled'?(pk[sz]||0):0),0);
-          const onPO=safePOs(it).reduce((a,po)=>a+(po[sz]||0)-((po.cancelled||{})[sz]||0),0);
-          const sh=Math.max(0,ordered-pulled-onPO);if(sh>0){itShort+=sh;bySz[sz]=sh}});
-        if(itShort>0){units+=itShort;parts.push((it.sku||it.name||'Item')+' ('+Object.entries(bySz).map(([s,n])=>s+':'+n).join(', ')+')')}
-      });
-      return units>0?{units,detail:parts.join(' · ')}:null;
-    };
+    // Category rules live in src/lib/opsRecap.js — shared verbatim with the emailed
+    // rep-ops-digest (netlify function) so the tab and the email always agree.
+    const _mdFFCache=new Map();const _mdFF=(so)=>{let f=_mdFFCache.get(so.id);if(!f){f=opsFulfillment(so);_mdFFCache.set(so.id,f)}return f};
+    const _md$=(n)=>'$'+Math.round(safeNum(n)).toLocaleString();
 
     // IFs picked (pick lines pulled in the window), grouped by pick_id per SO
     const mdPicked=[];let mdShortCount=0;
     sos.forEach(so=>{
-      if(!_mdMine(_mdRepOf(so)))return;
-      const groups={};
-      safeItems(so).forEach(it=>safePicks(it).forEach(pk=>{
-        if(pk.status!=='pulled'||!_mdInWin(pk.pulled_at))return;
-        const key=pk.pick_id||('line:'+(it.sku||it.name||''));
-        const g=groups[key]||(groups[key]={pickId:pk.pick_id||null,units:0,skus:new Set(),latest:pk.pulled_at});
-        g.units+=_mdUnits(pk);if(it.sku||it.name)g.skus.add(it.sku||it.name);
-        if(parseDate(pk.pulled_at)>parseDate(g.latest))g.latest=pk.pulled_at;
-      }));
-      const gk=Object.values(groups);if(!gk.length)return;
-      const short=_mdShortOf(so);if(short)mdShortCount++;
-      gk.forEach(g=>mdPicked.push({so,pickId:g.pickId,units:g.units,skus:[...g.skus],latest:g.latest,short}));
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return;
+      const gs=opsPulledGroups(so,_mdInWin);if(!gs.length)return;
+      const short=opsShortOnPull(so);if(short)mdShortCount++;
+      gs.forEach(g=>mdPicked.push({so,pickId:g.pickId,units:g.units,skus:g.skus,latest:g.latest,short}));
     });
     mdPicked.sort((a,b)=>parseDate(b.latest)-parseDate(a.latest));
 
-    // Orders all checked in (all goods received/pulled, not yet in production/shipped) — recent
+    // Orders all checked in — every unit in, nothing on press yet, not shipped. Explicit
+    // rule (not calcSOStatus==='items_received', which reports fully-received no-deco
+    // orders as 'ready_to_invoice' and would silently skip them here).
     const mdCheckedIn=sos.filter(so=>{
       if(!_mdMine(_mdRepOf(so)))return false;
       if(so.deleted_at||so.status==='cancelled')return false;
-      if(calcSOStatus(so)!=='items_received')return false;
-      return _mdInWin(so.updated_at);
+      return opsCheckedIn(so,_mdFF(so))&&_mdInWin(so.updated_at);
     }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
 
-    // Orders shipped (all jobs shipped / delivery complete) — recent
+    // Orders shipped (ShipStation, all jobs shipped, delivered, or closed out) — recent
     const mdShipped=sos.filter(so=>{
-      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
-      if(calcSOStatus(so)!=='complete')return false;
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
+      if(!opsShippedOut(so,_mdFF(so)))return false;
       return _mdInWin(so._ship_date||so.updated_at);
     }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
 
@@ -31739,7 +31721,7 @@ export default function App(){
     const mdDeadlines=sos.filter(so=>{
       if(!_mdMine(_mdRepOf(so)))return false;
       if(so.deleted_at||so.status==='cancelled')return false;
-      if(calcSOStatus(so)==='complete')return false;
+      if(opsShippedOut(so,_mdFF(so)))return false;
       const dt=parseDate(so.expected_date);return dt&&!isNaN(dt)&&dt.getTime()<=_mdDeadlineCut;
     }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
       .sort((a,b)=>a.dt-b.dt);
@@ -31780,6 +31762,15 @@ export default function App(){
                 <span>· deadlines next</span>
                 <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
                   {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+                {(()=>{const me=REPS.find(r=>r.id===cu.id);const off=me?.ops_digest_opt_out===true;
+                  return<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Toggle the daily recap email of this page" onClick={async()=>{
+                    const next=!off;
+                    try{
+                      if(supabase){const{error}=await supabase.from('team_members').update({ops_digest_opt_out:next}).eq('id',cu.id);if(error)throw error}
+                      setREPS(prev=>prev.map(r=>r.id===cu.id?{...r,ops_digest_opt_out:next}:r));
+                      nf(next?'Daily recap email turned off':'Daily recap email turned on');
+                    }catch(e){nf('Could not save email preference: '+e.message,'error')}
+                  }}>{off?'📭 Daily email: Off':'📬 Daily email: On'}</button>})()}
               </div>
             </div>
             <div className="card-body" style={{padding:16}}>
@@ -31795,19 +31786,21 @@ export default function App(){
           </div>
 
           {mdShipped.length>0&&<Section id="shipped" title="🚚 Orders Shipped" count={mdShipped.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Shipped</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
               <tbody>{mdShipped.map(so=><tr key={so.id}>
                 <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
                 <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0e7490'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
               </tr>)}</tbody></table></Section>}
 
           {mdApproved.length>0&&<Section id="approved" title="✅ Estimates Approved" count={mdApproved.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Estimate</th><th>Customer</th><th>Approved by</th><th>When</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Estimate</th><th>Customer</th><th>Value</th><th>Approved by</th><th>When</th><th></th></tr></thead>
               <tbody>{mdApproved.map(e=>{const converted=sos.some(s=>s.estimate_id===e.id);return<tr key={e.id}>
                 <td style={{fontWeight:600}}>{e.id}{e.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{e.memo}</div>}</td>
                 <td>{_mdCustName(e.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(calcOrderMargin(e,ests).rev)}</td>
                 <td style={{color:'#64748b'}}>{e.approved_by||'—'}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(e.approved_at||e.updated_at)}</td>
                 <td>{converted?<span style={{fontSize:10,color:'#059669',fontWeight:700}}>Ordered ✓</span>:<button className="btn btn-sm" style={{fontSize:10,background:'#065f46',color:'#fff',border:'none',borderRadius:4}} onClick={()=>_mdOpenEst(e)}>Convert to SO</button>}</td>
@@ -31825,19 +31818,21 @@ export default function App(){
               </tr>)}</tbody></table></Section>}
 
           {mdCheckedIn.length>0&&<Section id="checkedin" title="🏬 Orders All Checked In" count={mdCheckedIn.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Ready</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Ready</th><th></th></tr></thead>
               <tbody>{mdCheckedIn.map(so=><tr key={so.id}>
                 <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
                 <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#7c3aed'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
               </tr>)}</tbody></table></Section>}
 
           {mdDeadlines.length>0&&<Section id="deadlines" title="⏰ Deadlines Approaching" count={mdDeadlines.length}>
-            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Due</th><th>Status</th><th></th></tr></thead>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Due</th><th>Status</th><th></th></tr></thead>
               <tbody>{mdDeadlines.map(({so,dt,daysOut})=>{const overdue=daysOut<0;const soon=daysOut>=0&&daysOut<=3;return<tr key={so.id}>
                 <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}</td>
                 <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#be123c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:overdue?'#fee2e2':soon?'#fef3c7':'#e0f2fe',color:overdue?'#991b1b':soon?'#92400e':'#075985'}}>{dt.toLocaleDateString()}{' · '}{overdue?Math.abs(daysOut)+'d overdue':daysOut===0?'today':daysOut+'d out'}</span></td>
                 <td style={{fontSize:11,color:'#64748b'}}>{calcSOStatus(so).replace(/_/g,' ')}</td>
                 <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>

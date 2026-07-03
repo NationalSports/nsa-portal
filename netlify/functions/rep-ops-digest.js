@@ -1,33 +1,39 @@
 // Scheduled (see netlify.toml): once a day (~2 AM PT) emails each sales rep a
 // branded operations recap of the prior PT day across THEIR orders —
-//   • Orders shipped
+//   • Orders shipped (with billed value where an invoice exists)
 //   • Estimates approved
-//   • IFs picked (flagging any that came up short on the stock pull)
+//   • IFs picked (flagging any that came up short on the stock pull, with a
+//     one-click "Create PO" link)
 //   • Orders all checked in (every unit received / pulled)
 //   • Deadlines approaching (open orders due soon, incl. overdue)
 // This is the emailed twin of the in-app "My Day" tab (Sales Tools). Each email
 // links straight to that page (?pg=sales_tools&st=myday) for the live, clickable
-// view. Reps with no activity and no upcoming deadlines get no email.
+// view. Reps with no activity and no upcoming deadlines get no email; reps who
+// turned the email off (team_members.ops_digest_opt_out) never do. On weekend
+// mornings, deadline-only digests are suppressed (the same deadlines re-appear
+// Monday) — real activity still sends.
 //
-// Category rules mirror the client (src/App.js rSalesTools / the todo builders)
-// exactly. Because sales_orders.updated_at and pick pulled_at are stored as TEXT
-// in mixed locale/ISO formats they can't be range-filtered in SQL, so we load the
-// working set of live orders and window in JS with new Date() (parses both).
+// Category rules live in src/lib/opsRecap.js, shared verbatim with the My Day tab
+// so the two surfaces can never drift. Because sales_orders.updated_at and pick
+// pulled_at are stored as TEXT in mixed locale/ISO formats they can't be
+// range-filtered in SQL, so we window in JS with new Date() (parses both) — but
+// the heavy child-table loads are bounded to the working set: orders still open,
+// plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
+const money = (n) => '$' + Math.round(num(n)).toLocaleString('en-US');
 const TZ = 'America/Los_Angeles';
-// Orders in one of these statuses are done/dead and never part of the live working set.
+// Orders in one of these statuses are dead and never part of the recap. 'complete'
+// is handled separately: closed orders stay in the working set only while their
+// ship/update stamp is inside the window (so "shipped yesterday, closed" shows).
 const DEAD_STATUS = new Set(['cancelled', 'deleted', 'void', 'archived']);
-// Keys on a pick/PO size map that aren't sizes.
-const NON_SIZE = new Set(['pulled_at', 'status', 'pick_id', 'memo', 'ship_dest', 'ship_addr', 'deco_vendor', 'created_at', 'id', 'so_item_id', 'po_id', 'vendor', 'expected_date', 'received', 'cancelled', 'billed', 'shipments', 'tracking_numbers']);
 
 const parseDate = (d) => { if (!d) return null; const dt = new Date(d); return isNaN(dt.getTime()) ? null : dt; };
-const sizeUnits = (m) => Object.entries(m || {}).reduce((a, [k, v]) => a + (NON_SIZE.has(k) ? 0 : num(v)), 0);
-const sizeKeys = (m) => Object.keys(m || {}).filter((k) => !NON_SIZE.has(k));
 
-// ── PT day-that-just-ended window (copied from rep-daily-digest) ──
+// ── PT day-that-just-ended window (same as rep-daily-digest) ──
 function ptOffsetMinutes(d) {
   const p = new Intl.DateTimeFormat('en-US', { timeZone: TZ, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).formatToParts(d);
   const m = {}; p.forEach((x) => { m[x.type] = x.value; });
@@ -44,7 +50,7 @@ function yesterdayPTWindow(now) {
   return { start, end, dayLabel };
 }
 
-// ── Load every row of a filtered table, 1000 at a time ──
+// ── Load every row of a table, 1000 at a time ──
 async function loadAll(admin, table, cols, apply) {
   const out = []; let from = 0; const PAGE = 1000;
   for (;;) {
@@ -71,49 +77,6 @@ async function loadIn(admin, table, cols, col, ids) {
   return out;
 }
 
-// ── Category status (faithful subset of businessLogic.calcSOStatus) ──
-// Returns { totalSz, fulfilledSz, coveredSz, allJobsShipped, anyActiveJob }.
-function soFulfillment(so) {
-  let totalSz = 0, coveredSz = 0, fulfilledSz = 0;
-  so.items.forEach((it) => {
-    let entries = Object.entries(it.sizes || {}).filter(([k, v]) => !NON_SIZE.has(k) && num(v) > 0);
-    if (entries.length === 0 && num(it.est_qty) > 0) entries = [['QTY', num(it.est_qty)]];
-    entries.forEach(([sz, v]) => {
-      totalSz += v;
-      const picked = it.picks.reduce((a, pk) => a + num(pk[sz]), 0);
-      const poOrd = it.pos.reduce((a, pk) => a + num(pk[sz]) - num((pk.cancelled || {})[sz]), 0);
-      coveredSz += Math.min(v, picked + poOrd);
-      const pulledQty = it.picks.filter((pk) => pk.status === 'pulled').reduce((a, pk) => a + num(pk[sz]), 0);
-      const rcvdQty = it.pos.reduce((a, pk) => a + num((pk.received || {})[sz]), 0);
-      fulfilledSz += Math.min(v, pulledQty + rcvdQty);
-    });
-  });
-  const jobs = (so.jobs || []).filter((j) => j.prod_status !== 'draft');
-  const allJobsShipped = jobs.length > 0 && jobs.every((j) => j.prod_status === 'shipped');
-  const anyActiveJob = jobs.some((j) => j.prod_status === 'staging' || j.prod_status === 'in_process');
-  return { totalSz, coveredSz, fulfilledSz, allJobsShipped, anyActiveJob };
-}
-// Short-on-pull, per the exact if_short rule (warehouse done, stock short, no covering PO).
-function shortOf(so) {
-  let units = 0; const parts = [];
-  so.items.forEach((it) => {
-    const picks = it.picks;
-    if (picks.length === 0 || picks.some((pk) => pk.status !== 'pulled')) return;
-    const pulledKeys = new Set(); picks.forEach((pk) => sizeKeys(pk).forEach((k) => pulledKeys.add(k)));
-    const szKeys = sizeKeys(it.sizes).filter((k) => num(it.sizes[k]) > 0);
-    if (szKeys.some((sz) => num(it.sizes[sz]) > 0 && !pulledKeys.has(sz))) return; // edited after pull → not a short
-    let itShort = 0; const bySz = {};
-    szKeys.forEach((sz) => {
-      const ordered = num(it.sizes[sz]); if (ordered <= 0) return;
-      const pulled = picks.reduce((a, pk) => a + (pk.status === 'pulled' ? num(pk[sz]) : 0), 0);
-      const onPO = it.pos.reduce((a, po) => a + num(po[sz]) - num((po.cancelled || {})[sz]), 0);
-      const sh = Math.max(0, ordered - pulled - onPO); if (sh > 0) { itShort += sh; bySz[sz] = sh; }
-    });
-    if (itShort > 0) { units += itShort; parts.push(`${it.sku || it.name || 'Item'} (${Object.entries(bySz).map(([s, n]) => `${s}:${n}`).join(', ')})`); }
-  });
-  return units > 0 ? { units, detail: parts.join(' · ') } : null;
-}
-
 exports.handler = async () => {
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
   const portal = (process.env.PORTAL_PUBLIC_URL || process.env.URL || 'https://nsa-portal.netlify.app').replace(/\/+$/, '');
@@ -121,15 +84,21 @@ exports.handler = async () => {
   let admin;
   try { admin = getSupabaseAdmin(); } catch (e) { console.error('[ops-digest]', e.message); return { statusCode: 500, body: 'Not configured' }; }
 
-  const { start, end, dayLabel } = yesterdayPTWindow(new Date());
+  const now = new Date();
+  const { start, end, dayLabel } = yesterdayPTWindow(now);
   const inWin = (d) => { const dt = parseDate(d); return !!dt && dt >= start && dt < end; };
   const DEADLINE_DAYS = 14;
   const deadlineCut = new Date(end.getTime() + DEADLINE_DAYS * 864e5);
+  // Weekend send mornings (Sat/Sun PT): suppress deadline-only digests — the same
+  // deadlines re-surface in Monday's email; real activity still goes out.
+  const sendDow = new Intl.DateTimeFormat('en-US', { timeZone: TZ, weekday: 'short' }).format(now);
+  const weekendSend = sendDow === 'Sat' || sendDow === 'Sun';
 
   try {
-    // People + customer → rep mapping.
+    // People + customer → rep mapping. select('*') so the opt-out flag is picked up
+    // when the column exists and silently absent when the migration hasn't run yet.
     const [members, customers] = await Promise.all([
-      loadAll(admin, 'team_members', 'id,name,email,role,is_active'),
+      loadAll(admin, 'team_members', '*'),
       loadAll(admin, 'customers', 'id,name,alpha_tag,primary_rep_id'),
     ]);
     const repById = {}; members.forEach((m) => { repById[m.id] = m; });
@@ -142,24 +111,31 @@ exports.handler = async () => {
       (q) => q.eq('status', 'approved').gte('approved_at', start.toISOString()).lt('approved_at', end.toISOString())))
       .filter((e) => !e.deleted_at && inWin(e.approved_at));
 
-    // Live working set of orders (exclude only dead ones) + their children.
-    const orders = (await loadAll(admin, 'sales_orders', 'id,customer_id,created_by,status,expected_date,updated_at,memo,_shipping_status,_ship_date'))
-      .filter((o) => !DEAD_STATUS.has(o.status));
+    // Working set: header row for every order is cheap; child tables are the heavy
+    // part, so bound them to orders that can still appear in a recap — anything not
+    // closed, plus closed ones stamped inside the window ("shipped yesterday").
+    const headers = await loadAll(admin, 'sales_orders',
+      'id,customer_id,created_by,status,expected_date,updated_at,memo,deleted_at,_shipping_status,_ship_date,ship_preference,delivered');
+    const orders = headers.filter((o) => !o.deleted_at && !DEAD_STATUS.has(o.status) &&
+      (o.status !== 'complete' || inWin(o._ship_date) || inWin(o.updated_at)));
     const soIds = orders.map((o) => o.id);
+    // so_items via select('*') so qty_only items (est_qty) count wherever the column
+    // lives, without erroring on schema drift.
     const [items, jobs] = await Promise.all([
-      loadIn(admin, 'so_items', 'id,so_id,sku,name,sizes', 'so_id', soIds),
-      loadIn(admin, 'so_jobs', 'so_id,prod_status', 'so_id', soIds),
+      loadIn(admin, 'so_items', '*', 'so_id', soIds),
+      loadIn(admin, 'so_jobs', 'so_id,id,prod_status', 'so_id', soIds),
     ]);
     const itemIds = items.map((it) => it.id);
     const [picks, pos] = await Promise.all([
       loadIn(admin, 'so_item_pick_lines', 'so_item_id,pick_id,sizes,status', 'so_item_id', itemIds),
       loadIn(admin, 'so_item_po_lines', 'so_item_id,sizes,received,cancelled', 'so_item_id', itemIds),
     ]);
-    // Index children.
+    // Index children into the shared-module shape (flattened size maps + meta keys,
+    // matching the client's pick_lines/po_lines).
     const picksByItem = {}; picks.forEach((p) => (picksByItem[p.so_item_id] || (picksByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), status: p.status, pick_id: p.pick_id }));
     const posByItem = {}; pos.forEach((p) => (posByItem[p.so_item_id] || (posByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), received: p.received || {}, cancelled: p.cancelled || {} }));
-    const itemsBySo = {}; items.forEach((it) => (itemsBySo[it.so_id] || (itemsBySo[it.so_id] = [])).push({ sku: it.sku, name: it.name, sizes: it.sizes || {}, picks: picksByItem[it.id] || [], pos: posByItem[it.id] || [] }));
-    const jobsBySo = {}; jobs.forEach((j) => (jobsBySo[j.so_id] || (jobsBySo[j.so_id] = [])).push({ prod_status: j.prod_status }));
+    const itemsBySo = {}; items.forEach((it) => (itemsBySo[it.so_id] || (itemsBySo[it.so_id] = [])).push({ sku: it.sku, name: it.name, sizes: it.sizes || {}, est_qty: it.est_qty, picks: picksByItem[it.id] || [], pos: posByItem[it.id] || [] }));
+    const jobsBySo = {}; jobs.forEach((j) => (jobsBySo[j.so_id] || (jobsBySo[j.so_id] = [])).push({ id: j.id, prod_status: j.prod_status }));
     orders.forEach((o) => { o.items = itemsBySo[o.id] || []; o.jobs = jobsBySo[o.id] || []; });
 
     // ── Categorize into per-rep buckets ──
@@ -174,47 +150,43 @@ exports.handler = async () => {
     orders.forEach((so) => {
       const rep = repOf(so); if (!rep) return;
       const ff = soFulfillment(so);
-      const isShipped = so._shipping_status === 'shipped' || ff.allJobsShipped;
+      const shippedOut = isShippedOut(so, ff);
 
-      // Orders shipped (recently).
-      if (isShipped && inWin(so._ship_date || so.updated_at)) cell(rep).shipped.push(so);
+      if (shippedOut && inWin(so._ship_date || so.updated_at)) cell(rep).shipped.push(so);
+      if (isCheckedIn(so, ff) && inWin(so.updated_at)) cell(rep).checkedIn.push(so);
 
-      // Orders all checked in — every unit in, not yet shipped, reached that state recently.
-      if (!isShipped && ff.totalSz > 0 && ff.fulfilledSz >= ff.totalSz && !ff.anyActiveJob && inWin(so.updated_at)) cell(rep).checkedIn.push(so);
-
-      // IFs picked — pull lines pulled inside the window, grouped by pick_id.
-      const groups = {};
-      so.items.forEach((it) => it.picks.forEach((pk) => {
-        if (pk.status !== 'pulled' || !inWin(pk.pulled_at)) return;
-        const key = pk.pick_id || `line:${it.sku || it.name || ''}`;
-        const g = groups[key] || (groups[key] = { pickId: pk.pick_id || null, units: 0, skus: new Set(), latest: pk.pulled_at });
-        g.units += sizeUnits(pk); if (it.sku || it.name) g.skus.add(it.sku || it.name);
-        if (parseDate(pk.pulled_at) > parseDate(g.latest)) g.latest = pk.pulled_at;
-      }));
-      const gs = Object.values(groups);
+      const gs = pulledGroups(so, inWin);
       if (gs.length) {
-        const short = shortOf(so);
-        gs.forEach((g) => cell(rep).picked.push({ so, pickId: g.pickId, units: g.units, skus: [...g.skus], short }));
+        const short = shortOnPull(so);
+        gs.forEach((g) => cell(rep).picked.push({ so, pickId: g.pickId, units: g.units, skus: g.skus, latest: g.latest, short }));
       }
 
-      // Deadlines approaching — open order due within the look-ahead (incl. overdue).
-      if (!isShipped) {
+      if (!shippedOut) {
         const due = parseDate(so.expected_date);
         if (due && due < deadlineCut) cell(rep).deadlines.push({ so, due, daysOut: Math.ceil((due.getTime() - end.getTime()) / 864e5) });
       }
     });
 
+    // Billed value for shipped orders (exact where an invoice exists; blank otherwise).
+    const shippedIds = [...new Set(Object.values(byRep).flatMap((b) => b.shipped.map((so) => so.id)))];
+    const invTotalBySo = {};
+    (await loadIn(admin, 'invoices', 'so_id,total,status', 'so_id', shippedIds)).forEach((inv) => {
+      if (inv.status === 'void' || !inv.so_id) return;
+      invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
+    });
+
     // ── Send ──
-    let sent = 0;
+    let sent = 0, skippedOptOut = 0;
     for (const [repId, b] of Object.entries(byRep)) {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
+      if (rep.ops_digest_opt_out === true) { skippedOptOut++; continue; }
       const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length;
-      if (activity === 0 && b.deadlines.length === 0) continue;
+      if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
 
-      const html = buildOpsHtml({ rep, b, dayLabel, portal, custName });
+      const html = buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo });
       const shortN = b.picked.filter((p) => p.short).length;
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -228,7 +200,7 @@ exports.handler = async () => {
       });
       if (res.ok) sent++; else console.error('[ops-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
     }
-    console.log(`[ops-digest] ${dayLabel}: ${Object.keys(byRep).length} reps with activity, ${sent} emailed`);
+    console.log(`[ops-digest] ${dayLabel}: ${orders.length}/${headers.length} orders in working set, ${Object.keys(byRep).length} reps bucketed, ${sent} emailed, ${skippedOptOut} opted out`);
     return { statusCode: 200, body: `Emailed ${sent}` };
   } catch (e) {
     console.error('[ops-digest]', e);
@@ -246,12 +218,12 @@ function opsSubject(b, shortN, dayLabel) {
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
 }
 
-function buildOpsHtml({ rep, b, dayLabel, portal, custName }) {
+function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo }) {
   const NAVY = '#16223F', ACCENT = '#B6985A', INK = '#2A2F3E', SUB = '#6B6256', LINE = '#E7DFD0', CREAM = '#FAF6EF';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
   const myDay = `${portal}/?pg=sales_tools&st=myday`;
-  const soLink = (id) => `${portal}/?so=${encodeURIComponent(id)}`;
+  const soLink = (id, tab) => `${portal}/?so=${encodeURIComponent(id)}${tab ? `&so_tab=${tab}` : ''}`;
   const estLink = (id) => `${portal}/?est=${encodeURIComponent(id)}`;
 
   const tile = (label, value, sub) => `<td align="center" style="padding:14px 8px;background:#fff;border:1px solid ${LINE};border-radius:8px">
@@ -263,22 +235,27 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName }) {
       ${tile('Shipped', String(b.shipped.length))}${tile('Approved', String(b.approved.length))}${tile('IFs Picked', String(b.picked.length), shortN ? `${shortN} short` : '')}${tile('Checked In', String(b.checkedIn.length))}${tile('Deadlines', String(b.deadlines.length))}</tr></table>`;
 
   const sectionHead = (t) => `<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin:18px 0 8px">${t}</div>`;
-  const row = (main, sub, right, link) => `<tr>
+  const row = (main, sub, right, link, linkLabel) => `<tr>
       <td style="padding:8px 0;border-bottom:1px solid #f1ece1;vertical-align:top">
         <div style="font-weight:700;color:${INK};font-size:14px">${main}</div>${sub ? `<div style="font-size:12px;color:${SUB}">${sub}</div>` : ''}</td>
       <td align="right" style="padding:8px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">${right || ''}
-        <a href="${link}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a></td></tr>`;
+        <a href="${link}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">${linkLabel || 'Open →'}</a></td></tr>`;
   const table = (rows) => `<table width="100%" style="border-collapse:collapse"><tbody>${rows}</tbody></table>`;
 
-  const shippedBlock = b.shipped.length ? sectionHead('🚚 Orders Shipped') + table(b.shipped.map((so) =>
-    row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : ''), '', soLink(so.id))).join('')) : '';
+  const shippedBlock = b.shipped.length ? sectionHead('🚚 Orders Shipped') + table(b.shipped.map((so) => {
+    const billed = invTotalBySo[so.id];
+    const val = billed > 0 ? `<span style="font-size:13px;font-weight:800;color:${NAVY}">${money(billed)}</span> &nbsp;` : '';
+    return row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : ''), val, soLink(so.id));
+  }).join('')) : '';
   const approvedBlock = b.approved.length ? sectionHead('✅ Estimates Approved') + table(b.approved.map((e) =>
     row(esc(e.id), `${esc(custName(e.customer_id))}${e.approved_by ? ` · approved by ${esc(e.approved_by)}` : ''}`, '', estLink(e.id))).join('')) : '';
   const pickedBlock = b.picked.length ? sectionHead('📦 IFs Picked') + table(b.picked.map((p) => {
     const shortTag = p.short ? `<div style="font-size:12px;color:#B91C1C;font-weight:700">⚠️ Short ${p.short.units}: ${esc(p.short.detail)}</div>` : '';
     const sku = p.skus.slice(0, 3).join(', ') + (p.skus.length > 3 ? ` +${p.skus.length - 3}` : '');
+    // Shorts deep-link straight to the SO's Items tab, where the Create PO flow lives.
     return row(`${esc(p.pickId || p.so.id)} <span style="color:${SUB};font-weight:600">· ${p.units} unit${p.units === 1 ? '' : 's'}</span>`,
-      `${esc(custName(p.so.customer_id))} · ${esc(p.so.id)}${sku ? ` · ${esc(sku)}` : ''}${shortTag}`, '', soLink(p.so.id));
+      `${esc(custName(p.so.customer_id))} · ${esc(p.so.id)}${sku ? ` · ${esc(sku)}` : ''}${shortTag}`, '',
+      soLink(p.so.id, p.short ? 'items' : ''), p.short ? 'Create PO →' : 'Open →');
   }).join('')) : '';
   const checkedBlock = b.checkedIn.length ? sectionHead('🏬 Orders All Checked In') + table(b.checkedIn.map((so) =>
     row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · every unit in, ready to build', '', soLink(so.id))).join('')) : '';
@@ -306,7 +283,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName }) {
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
       ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${deadlineBlock}
-      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}14 days ahead.</p>
+      <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}${14} days ahead. Turn this email off any time from Sales Tools → My Day.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>
   </div></div>`;
