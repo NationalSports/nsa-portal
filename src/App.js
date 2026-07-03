@@ -23,7 +23,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -31742,6 +31742,15 @@ export default function App(){
       const dpd=opsInvoiceDaysPastDue(iv,_mdTodayYmd);return dpd!=null&&dpd>=1;
     }).map(iv=>({iv,balance:opsInvoiceBalance(iv),dpd:opsInvoiceDaysPastDue(iv,_mdTodayYmd)})).sort((a,b)=>b.dpd-a.dpd);
 
+    // Invoices fully paid within the activity window (most recent payment date in range).
+    const _mdWinStartYmd=new Date(_mdWinStart-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPaid=invs.filter(iv=>{
+      if(!opsFullyPaid(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const ymd=opsPaymentsLatestYmd(iv.payments);return ymd&&ymd>=_mdWinStartYmd&&ymd<=_mdTodayYmd;
+    }).map(iv=>({iv,ymd:opsPaymentsLatestYmd(iv.payments),amount:safeNum(iv.total)})).sort((a,b)=>(b.ymd||'').localeCompare(a.ymd||''));
+
     const _mdOpenSO=(so,soTab)=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);if(soTab)setESOTab(soTab);setPg('orders')};
     const _mdOpenInv=(iv)=>{setViewInvoice(iv);setPg('invoices')};
     const _mdOpenEst=(e)=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')};
@@ -31757,16 +31766,18 @@ export default function App(){
       {/* ═══ MY DAY — daily ops recap ═══ */}
       {stTab==='myday'&&(()=>{
         const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
+        const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
           {id:'picked',label:'IFs Picked',icon:'package',color:'#b45309',n:mdPicked.length,sub:mdShortCount>0?mdShortCount+' short on pull':''},
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
+          {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
           {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
           {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
-        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
         const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
           <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
@@ -31845,6 +31856,16 @@ export default function App(){
                 <td style={{fontWeight:700,color:'#7c3aed'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPaid.length>0&&<Section id="paid" title="💰 Paid" count={mdPaid.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Amount</th><th>Paid</th><th></th></tr></thead>
+              <tbody>{mdPaid.map(({iv,ymd,amount})=><tr key={iv.id}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#047857'}}>{_md$(amount)}</td>
+                <td style={{color:'#64748b'}}>{ymd?_mdWhen(ymd):''}</td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
               </tr>)}</tbody></table></Section>}
 
           {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>

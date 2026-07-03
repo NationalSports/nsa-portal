@@ -20,7 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
-const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isOpenInvoice, invoiceBalance, invoiceDaysPastDue } = require('../../src/lib/opsRecap');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -101,6 +101,8 @@ exports.handler = async (event) => {
   const { start, end, dayLabel } = yesterdayPTWindow(now);
   const inWin = (d) => { const dt = parseDate(d); return !!dt && dt >= start && dt < end; };
   const todayPTYmd = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now); // YYYY-MM-DD
+  // The PT calendar day that just ended — used to match date-only payment stamps.
+  const yesterdayPTYmd = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(end.getTime() - 12 * 3600 * 1000));
   const DEADLINE_DAYS = 14;
   const deadlineCut = new Date(end.getTime() + DEADLINE_DAYS * 864e5);
   // Weekend send mornings (Sat/Sun PT): suppress deadline-only digests — the same
@@ -163,10 +165,16 @@ exports.handler = async (event) => {
       invoicedSoIds.add(inv.so_id);
       invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
     });
+    // Payments for fully-paid invoices, so we can tell which were settled yesterday.
+    const paidInvIds = invoices.filter(isFullyPaidInvoice).map((inv) => inv.id);
+    const paymentsByInv = {};
+    (await loadIn(admin, 'invoice_payments', 'invoice_id,amount,date', 'invoice_id', paidInvIds)).forEach((p) => {
+      (paymentsByInv[p.invoice_id] || (paymentsByInv[p.invoice_id] = [])).push(p);
+    });
 
     // ── Categorize into per-rep buckets ──
-    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, pastDue }
-    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [] }));
+    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, pastDue, paid }
+    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [], paid: [] }));
 
     approvedEsts.forEach((e) => {
       const rep = e.created_by || custById[e.customer_id]?.primary_rep_id;
@@ -204,6 +212,15 @@ exports.handler = async (event) => {
       if (rep) cell(rep).pastDue.push({ inv, balance: invoiceBalance(inv), dpd: NEWLY_PAST_DUE_DAYS });
     });
 
+    // Paid yesterday — invoices fully settled whose most recent payment landed on
+    // the PT day that just ended.
+    invoices.forEach((inv) => {
+      if (!isFullyPaidInvoice(inv)) return;
+      if (paymentsLatestYmd(paymentsByInv[inv.id]) !== yesterdayPTYmd) return;
+      const rep = custById[inv.customer_id]?.primary_rep_id || inv.created_by;
+      if (rep) cell(rep).paid.push({ inv, amount: num(inv.total) });
+    });
+
     // Single-recipient test send (manual ?test=<email>[&rep=<id|name>]). Renders a
     // specific rep's own digest — exactly what they'd receive — and delivers only to
     // the test address, bypassing the skip/opt-out/weekend gates so a test always
@@ -224,10 +241,10 @@ exports.handler = async (event) => {
         || members.find((m) => lc(m.email).split('@')[0] === localPart)
         || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
       if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's digest to render for ${testTo}. Pass &rep=<name or id>.` };
-      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [] };
+      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [], paid: [] };
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.pastDue.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.pastDue.length + b.paid.length;
       const html = buildOpsHtml({ rep: testRep, b, dayLabel, portal, custName, invTotalBySo,
         testNote: `Test send to ${testRep.name || testRep.email} · this is ${(testRep.name || '').split(/\s+/)[0] || 'their'}'s own recap for ${dayLabel}${activity === 0 ? ' (no activity or deadlines in this window).' : '.'}` });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -251,7 +268,7 @@ exports.handler = async (event) => {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
       if (rep.ops_digest_opt_out === true) { skippedOptOut++; continue; }
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.pastDue.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.pastDue.length + b.paid.length;
       if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
@@ -284,6 +301,7 @@ function opsSubject(b, shortN, dayLabel) {
   if (b.approved.length) bits.push(`${b.approved.length} approved`);
   if (b.picked.length) bits.push(`${b.picked.length} picked${shortN ? ` (${shortN} short)` : ''}`);
   if (b.checkedIn.length) bits.push(`${b.checkedIn.length} checked in`);
+  if (b.paid.length) bits.push(`${b.paid.length} paid`);
   if (b.readyInv.length) bits.push(`${b.readyInv.length} ready to invoice`);
   if (b.pastDue.length) bits.push(`${b.pastDue.length} newly past due`);
   if (!bits.length && b.deadlines.length) return `${b.deadlines.length} deadline${b.deadlines.length === 1 ? '' : 's'} coming up (${dayLabel})`;
@@ -304,11 +322,12 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       ${sub ? `<div style="font-size:10px;color:#B91C1C;font-weight:700;margin-top:2px">${esc(sub)}</div>` : ''}</td>`;
   const shortN = b.picked.filter((p) => p.short).length;
   const pastDueTotal = b.pastDue.reduce((a, p) => a + p.balance, 0);
-  // Two rows of tiles so seven categories stay readable on a phone.
+  const paidTotal = b.paid.reduce((a, p) => a + p.amount, 0);
+  // Two rows of tiles so the eight categories stay readable on a phone.
   const summary = `<table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 6px"><tr>
       ${tile('Shipped', String(b.shipped.length))}${tile('Approved', String(b.approved.length))}${tile('IFs Picked', String(b.picked.length), shortN ? `${shortN} short` : '')}${tile('Checked In', String(b.checkedIn.length))}</tr></table>
     <table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 14px"><tr>
-      ${tile('Ready to Invoice', String(b.readyInv.length))}${tile('Newly Past Due', String(b.pastDue.length), pastDueTotal > 0 ? money(pastDueTotal) : '')}${tile('Deadlines', String(b.deadlines.length))}</tr></table>`;
+      ${tile('Paid', String(b.paid.length), paidTotal > 0 ? money(paidTotal) : '')}${tile('Ready to Invoice', String(b.readyInv.length))}${tile('Newly Past Due', String(b.pastDue.length), pastDueTotal > 0 ? money(pastDueTotal) : '')}${tile('Deadlines', String(b.deadlines.length))}</tr></table>`;
 
   const sectionHead = (t) => `<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin:18px 0 8px">${t}</div>`;
   const row = (main, sub, right, link, linkLabel) => `<tr>
@@ -338,6 +357,9 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
   const readyBlock = b.readyInv.length ? sectionHead('🧾 Ready to Invoice') + table(b.readyInv.map((so) =>
     row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · production done, not invoiced yet', '', soLink(so.id), 'Invoice →')).join('')) : '';
   const invLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}`;
+  const paidBlock = b.paid.length ? sectionHead('💰 Paid Yesterday') + table(b.paid.map(({ inv, amount }) =>
+    row(esc(inv.id), esc(custName(inv.customer_id)) + (inv.memo ? ` · ${esc(inv.memo)}` : '') + ' · paid in full',
+      `<span style="font-size:13px;font-weight:800;color:#047857">${money(amount)}</span> &nbsp;`, invLink(inv.id))).join('')) : '';
   const pastDueBlock = b.pastDue.length ? sectionHead(`💸 New Past Due Invoices <span style="font-weight:600;color:${SUB};font-size:12px">· ${NEWLY_PAST_DUE_DAYS} days overdue</span>`) + table(b.pastDue.map(({ inv, balance, dpd }) =>
     row(`${esc(inv.id)} <span style="color:${SUB};font-weight:600">· ${money(balance)} due</span>`,
       `${esc(custName(inv.customer_id))} · due ${esc(String(inv.due_date).slice(0, 10))}`,
@@ -366,7 +388,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
-      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${readyBlock}${pastDueBlock}${deadlineBlock}
+      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${paidBlock}${readyBlock}${pastDueBlock}${deadlineBlock}
       <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}${14} days ahead. Turn this email off any time from Sales Tools → My Day.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>

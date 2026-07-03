@@ -164,10 +164,35 @@ const invoiceDaysPastDue = (inv, todayYmd) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || !/^\d{4}-\d{2}-\d{2}$/.test(todayYmd || '')) return null;
   return Math.round((Date.parse(todayYmd + 'T00:00:00Z') - Date.parse(due + 'T00:00:00Z')) / 864e5);
 };
+// Calendar date (YYYY-MM-DD) from a payment/invoice date string. Payments are
+// usually stored date-only (toLocaleDateString → "M/D/YYYY"), sometimes ISO — take
+// the literal calendar date from either so there's no timezone shift.
+const dateYmd = (dstr) => {
+  const s = String(dstr == null ? '' : dstr).trim();
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})/); if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  const dt = new Date(s); if (isNaN(dt.getTime())) return null;
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+};
+// Most recent payment's calendar date across a payments array ([{amount,date}]).
+const paymentsLatestYmd = (payments) => {
+  let best = null;
+  (payments || []).forEach((p) => { const y = dateYmd(p && p.date); if (y && (!best || y > best)) best = y; });
+  return best;
+};
+// An invoice whose balance is fully settled (status paid, or paid covers total).
+const isFullyPaidInvoice = (inv) => {
+  if (!inv || inv.deleted_at) return false;
+  const st = String(inv.status || '').toLowerCase();
+  if (st === 'void') return false;
+  const total = Number(inv.total) || 0, paid = Number(inv.paid) || 0;
+  return st === 'paid' || (total > 0 && paid >= total - 0.005);
+};
 const AGING_BUCKETS = ['1-30', '31-60', '61-90', '90+'];
 const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '1-30' : dpd <= 60 ? '31-60' : dpd <= 90 ? '61-90' : '90+');
 
 module.exports = {
   NON_SIZE, isSizeKey, sizeUnits, sizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
   isReadyToInvoice, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
+  dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
 };
