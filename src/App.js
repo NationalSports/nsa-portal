@@ -6970,12 +6970,15 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
       ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
+      // Club fundraising collected through the store is money owed to the team, not NSA margin.
+      // Booked as an SO-level cost so calcGP excludes it from the GP rep commission pays on.
+      _webstore_fundraise:Math.round((Number(fundraise_cost)||0)*100)/100,
       source:'webstore',webstore_id:webstore_id||null};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
@@ -17178,7 +17181,9 @@ export default function App(){
       const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
       const inboundFreight=safeNum(so._inbound_freight||0);
-      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+      // Club fundraising passthrough (webstore SOs) — money owed to the team, not rep margin.
+      const fundraiseCost=safeNum(so._webstore_fundraise||0);
+      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
       return{rev:invRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
@@ -17261,7 +17266,8 @@ export default function App(){
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
-        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
+        const fundraiseCost=safeNum(so._webstore_fundraise||0);// club fundraising passthrough, not rep margin
+        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
         const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
         const soStatus=calcSOStatus(so);
         const expRate=0.30;// assume on-time since not yet invoiced
