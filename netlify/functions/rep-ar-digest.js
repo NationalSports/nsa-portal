@@ -16,6 +16,13 @@ const num = (v) => (Number(v) || 0);
 const money = (n) => '$' + Math.round(num(n)).toLocaleString('en-US');
 const TZ = 'America/Los_Angeles';
 
+// Extra recipients: an account-team member who should also receive a given rep's
+// weekly A/R recap. Keyed by rep team_member id → [extra team_member ids].
+const WEEKLY_EXTRA_RECIPIENTS = {
+  '00000000-0000-0000-0000-000000000022': ['00000000-0000-0000-0000-000000000031'], // Mike "Merc" Mercuriali → Rachel Najara
+  '00000000-0000-0000-0000-000000000025': ['00000000-0000-0000-0000-000000000030'], // Kelly Bean → Sharon Day-Monroe
+};
+
 async function loadAll(admin, table, cols, apply) {
   const out = []; let from = 0; const PAGE = 1000;
   for (;;) {
@@ -85,20 +92,24 @@ exports.handler = async (event) => {
         || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
       if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's A/R to render for ${testTo}. Pass &rep=<name or id>.` };
       const rows = (byRep[testRep.id] || []).slice().sort((a, b) => b.dpd - a.dpd);
-      const html = buildArHtml({ rep: testRep, rows, dateLabel, portal, custName, testNote: `Test send to ${testTo} · ${(testRep.name || '').split(/\s+/)[0] || 'this rep'}'s past-due A/R as of ${dateLabel}${rows.length ? '.' : ' (nothing past due right now).'}` });
+      const live = qs.live === '1' || qs.live === 'true';
+      const isCc = String(testTo).toLowerCase() !== String(testRep.email || '').toLowerCase();
+      const html = buildArHtml({ rep: testRep, rows, dateLabel, portal, custName,
+        ccFor: isCc ? testRep.name : null,
+        testNote: live ? null : `Test send to ${testTo} · ${(testRep.name || '').split(/\s+/)[0] || 'this rep'}'s past-due A/R as of ${dateLabel}${rows.length ? '.' : ' (nothing past due right now).'}` });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
           sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
           to: [{ email: testTo, name: testRep.name || '' }],
-          subject: `[TEST] ${arSubject(byRep[testRep.id] || [])}`,
+          subject: `${live ? '' : '[TEST] '}${isCc ? testRep.name + ': ' : ''}${arSubject(rows)}`,
           htmlContent: html,
         }),
       });
       const ok = res.ok; const errTxt = ok ? '' : await res.text().catch(() => '');
-      console.log(`[ar-digest] TEST → ${testTo}: ${ok ? 'sent' : 'FAILED ' + res.status + ' ' + errTxt}`);
-      return { statusCode: ok ? 200 : 502, body: ok ? `Test A/R digest sent to ${testTo} (${rows.length} past-due)` : `Brevo error ${res.status}: ${errTxt}` };
+      console.log(`[ar-digest] ${live ? 'LIVE' : 'TEST'} → ${testTo} (${testRep.name}): ${ok ? 'sent' : 'FAILED ' + res.status + ' ' + errTxt}`);
+      return { statusCode: ok ? 200 : 502, body: ok ? `${live ? 'Live' : 'Test'} A/R digest sent to ${testTo} — ${testRep.name}'s A/R (${rows.length} past-due)` : `Brevo error ${res.status}: ${errTxt}` };
     }
 
     // ── Scheduled all-reps send ──
@@ -121,6 +132,23 @@ exports.handler = async (event) => {
         }),
       });
       if (res.ok) sent++; else console.error('[ar-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+
+      // Copy this rep's A/R recap to any configured account-team members.
+      for (const extraId of (WEEKLY_EXTRA_RECIPIENTS[repId] || [])) {
+        const ex = repById[extraId];
+        if (!ex || !ex.email || ex.is_active === false || ex.ar_digest_opt_out === true || !/.+@.+\..+/.test(ex.email)) continue;
+        const exRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+          body: JSON.stringify({
+            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            to: [{ email: ex.email, name: ex.name || '' }],
+            subject: `${rep.name}: ${arSubject(rows)}`,
+            htmlContent: buildArHtml({ rep, rows, dateLabel, portal, custName, ccFor: rep.name }),
+          }),
+        });
+        if (exRes.ok) sent++; else console.error('[ar-digest] brevo(cc)', ex.email, exRes.status, await exRes.text().catch(() => ''));
+      }
     }
     console.log(`[ar-digest] ${dateLabel}: ${Object.keys(byRep).length} reps with past-due, ${sent} emailed`);
     return { statusCode: 200, body: `Emailed ${sent}` };
@@ -135,7 +163,7 @@ function arSubject(rows) {
   return `Past-due A/R — ${money(total)} across ${rows.length} invoice${rows.length === 1 ? '' : 's'}`;
 }
 
-function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote }) {
+function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }) {
   const NAVY = '#16223F', ACCENT = '#B6985A', INK = '#2A2F3E', SUB = '#6B6256', LINE = '#E7DFD0', CREAM = '#FAF6EF', RED = '#B91C1C';
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
@@ -179,6 +207,7 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote }) {
       <div style="font-size:14px;color:rgba(255,255,255,.82);margin-top:4px">${rows.length} open invoice${rows.length === 1 ? '' : 's'} on your accounts need a nudge.</div>
     </div>
     <div style="background:#fff;border:1px solid ${LINE};border-top:none;border-radius:0 0 10px 10px;padding:18px 18px 22px">
+      ${ccFor ? `<div style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1E40AF;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">📋 You're receiving ${esc(ccFor)}'s weekly A/R recap — you're on their account team.</div>` : ''}
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <table width="100%" style="border-collapse:collapse"><tbody>${rowsHtml}</tbody></table>
