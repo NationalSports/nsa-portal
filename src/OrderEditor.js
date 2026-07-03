@@ -96,7 +96,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -2423,11 +2423,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const omgCostFees=safeNum(o._omg_omg_fees||0)+safeNum(o._omg_cc_fees||0);cost+=omgCostFees; // OMG + CC fees = cost
     const omgFee=omgCostFees; // back-compat alias used elsewhere in this component
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
+    // Prior shipping carried onto this order (a Manual Ship recorded against the customer when
+    // they had no open order). Billed on top of the order's own shipping; not taxed.
+    const priorShip=safeNum(o.pending_ship_applied?o.pending_ship_amount:0);
     // Actual outbound shipping (from ShipStation) + inbound freight roll into cost so margin reflects real spend
     const actualShipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0));
     const inboundFreight=safeNum(o._inbound_freight||0);
     cost+=actualShipCost+inboundFreight;
-    return{rev,cost,ship,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
+    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -3096,7 +3099,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
-            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays:totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
+            ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
+            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
             ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
             <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
@@ -3210,12 +3214,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 });
               });
               const shipAmt=o.shipping_type==='pct'?subTotal*(o.shipping_value||0)/100:(o.shipping_value||0);
+              const priorShipAmt=o.pending_ship_applied?safeNum(o.pending_ship_amount):0;
               const _pdfCredit=o.credit_applied?safeNum(o.credit_amount):0;
               const _pdfCreditOnSub=Math.min(_pdfCredit,subTotal);
               const _pdfReducedSub=Math.max(0,subTotal-_pdfCreditOnSub);
               const taxAmt=_pdfCredit>0?_pdfReducedSub*taxRate:subTotal*taxRate;
-              const _pdfCreditApplied=Math.min(_pdfCredit,subTotal+shipAmt+taxAmt);
-              const total=subTotal+shipAmt+taxAmt-_pdfCreditApplied;
+              const _pdfCreditApplied=Math.min(_pdfCredit,subTotal+shipAmt+priorShipAmt+taxAmt);
+              const total=subTotal+shipAmt+priorShipAmt+taxAmt-_pdfCreditApplied;
               const ddBillAddr=cust?.shipping_address_line1?cust.shipping_address_line1+(cust.shipping_city?'<br/>'+cust.shipping_city+(cust.shipping_state?' '+cust.shipping_state:'')+(cust.shipping_zip?' '+cust.shipping_zip:''):'')+'<br/>United States':(cust?.billing_address_line1?cust.billing_address_line1+(cust.billing_city?'<br/>'+cust.billing_city+(cust.billing_state?' '+cust.billing_state:'')+(cust.billing_zip?' '+cust.billing_zip:''):'')+'<br/>United States':'');
               // Ship To on the SO PDF: honor the order's selected ship-to (SO-1134 shipped to a
               // coach's house but the PDF only ever showed Bill To), falling back to the customer
@@ -3237,6 +3242,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   rows:[...rows,
                     {cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Subtotal</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'},{value:'<strong>'+_$(subTotal)+'</strong>',style:'text-align:right;border-top:2px solid #ccc;padding-top:8px'}]},
                     ...(shipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Shipping</strong>',style:'text-align:right;border:none'},{value:_$(shipAmt),style:'text-align:right;border:none'}]}]:[]),
+                    ...(priorShipAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Prior Shipping</strong>',style:'text-align:right;border:none'},{value:_$(priorShipAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(taxAmt>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(taxRate*100).toFixed(3)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(taxAmt),style:'text-align:right;border:none'}]}]:[]),
                     ...(_pdfCreditApplied>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Credit</strong>',style:'text-align:right;border:none;color:#065f46'},{value:'<strong style="color:#065f46">-'+_$(_pdfCreditApplied)+'</strong>',style:'text-align:right;border:none'}]}]:[]),
                     {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong style="font-size:14px">'+_$(total)+'</strong>',style:'text-align:right'}]},
@@ -3506,6 +3512,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {/* Promo Active Badge (toggle moved to Actions dropdown) */}
         {o.promo_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>}
         {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
+        {o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#eff6ff',color:'#1e40af'}}>📦 PRIOR SHIP ${safeNum(o.pending_ship_amount).toFixed(2)}</span>}
       </div>
       {/* Promo Summary */}
       {o.promo_applied&&promoTotals&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -3525,6 +3532,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12}}>Order Total: <strong>${totals.grand.toFixed(2)}</strong></span>
         <span style={{fontSize:12,fontWeight:700,color:'#065f46'}}>After Credit: ${Math.max(0,totals.grand-safeNum(o.credit_amount)).toFixed(2)}</span>
         {(()=>{if(!cust)return null;const _bal=(cust.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);return<span style={{fontSize:11,color:'#64748b'}}>Account Balance: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+      </div>}
+      {/* Prior Shipping Summary */}
+      {o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#eff6ff',borderRadius:8,border:'1px solid #bfdbfe',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
+        <span style={{fontSize:11,fontWeight:700,color:'#1e40af'}}>📦 PRIOR SHIPPING CARRIED</span>
+        <span style={{fontSize:12}}>From an earlier Manual Ship recorded when {cust?.name||'this customer'} had no open order.</span>
+        <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>Billed on this order: ${safeNum(o.pending_ship_amount).toFixed(2)}</span>
+        {onReleasePendingShip&&<button className="btn btn-sm" style={{fontSize:10,color:'#dc2626',border:'1px solid #fca5a5',background:'white'}} onClick={()=>{if(window.confirm('Remove the $'+safeNum(o.pending_ship_amount).toFixed(2)+" prior shipping charge from this order? It returns to the customer's balance and will attach to their next order instead."))onReleasePendingShip(o)}}>Remove</button>}
       </div>}
       {/* SO STATUS — fully auto-calculated from items/jobs */}
       {isSO&&(()=>{
@@ -6236,6 +6250,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _billingAll=invType==='deposit';
       const invShip=_billingAll?nonPromoShip:Math.round(nonPromoShip*selFraction*100)/100;
       let invTax=_billingAll?nonPromoTax:Math.round(nonPromoTax*selFraction*100)/100;
+      // Prior shipping carried onto this order (Manual Ship with no open order) bills in FULL,
+      // once, on the first invoice for the SO — folded into the invoice's shipping line.
+      const _priorShipBill=(o.pending_ship_applied&&!(allInvoices||[]).some(i=>i.so_id===o.id))?safeNum(o.pending_ship_amount):0;
       // Credit: subtract from subtotal and recalculate tax on reduced amount
       const creditAmt=o.credit_applied?safeNum(o.credit_amount):0;
       let invCredit=0;
@@ -6253,7 +6270,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // non-deposit invoices so the new bill only charges the remaining balance.
       const depositApplied=(invType==='partial'||invType==='full'||invType==='final')?Math.min(depositCredit,grossTotal):0;
       const fullTotal=Math.max(0,grossTotal-depositApplied);
-      const invTotal=invType==='deposit'?Math.round(grossTotal*invDepositPct/100*100)/100:fullTotal;
+      const invTotal=(invType==='deposit'?Math.round(grossTotal*invDepositPct/100*100)/100:fullTotal)+_priorShipBill;
 
       // Existing invoices on this SO
       const soInvs=(allInvoices||[]).filter(i=>i.so_id===o.id);
@@ -6436,7 +6453,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
             const invShipAmt=invType==='deposit'?Math.round(invShip*invDepositPct/100*100)/100:invShip;
             const invTaxAmt=invType==='deposit'?Math.round(invTax*invDepositPct/100*100)/100:invTax;
-            const defaultMemo=invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo;
+            const defaultMemo=(invType==='deposit'?invDepositPct+'% Deposit — '+o.memo:invType==='partial'?'Partial — '+o.memo:invType==='full'?'Invoice — '+o.memo:'Final Invoice — '+o.memo)+(_priorShipBill>0?' (incl. $'+_priorShipBill.toFixed(2)+' prior shipping)':'');
             const billingOverride=invBilling?JSON.parse(invBilling):null;
             // Snapshot the SO's selected ship-to (alt/custom address) onto the invoice so it
             // prints the address the order actually ships to, not the customer default.
@@ -6445,7 +6462,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
               date:_invDateStr,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
               memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
-              tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round(invShipAmt*100)/100,
+              tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round((invShipAmt+_priorShipBill)*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
               ...(shippingOverride||{}),

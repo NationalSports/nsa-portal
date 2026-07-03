@@ -625,8 +625,10 @@ function calcTotals(o, cust) {
     cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
   });
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
+  // Prior shipping carried from a Manual Ship recorded when the customer had no open order.
+  const priorShip = safeNum(o.pending_ship_applied ? o.pending_ship_amount : 0);
   const tax = rev * (cust?.tax_rate || 0);
-  return { rev, cost, ship, tax, grand: rev + ship + tax, margin: rev - cost, pct: rev > 0 ? ((rev - cost) / rev * 100) : 0 };
+  return { rev, cost, ship, priorShip, tax, grand: rev + ship + priorShip + tax, margin: rev - cost, pct: rev > 0 ? ((rev - cost) / rev * 100) : 0 };
 }
 
 // ── Invoice Creation Logic ──
