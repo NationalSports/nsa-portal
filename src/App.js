@@ -6242,6 +6242,31 @@ export default function App(){
         customer_id: store.customer_id || null, rep_id: store.rep_id || null,
       }).select('id,slug').single();
       if (wErr || !ws) { nf('Could not create webstore: ' + (wErr?.message || 'unknown error'), 'error'); setOmgWebstoreLoading(false); return; }
+      // In-house art: the OMG mockup shows the finished garment, but production needs the real
+      // art file (OMG only ever hands over the flattened image). Create one "needs file" record
+      // in the customer's art library and reference it from every item by art_id ONLY — no
+      // art_url, so the storefront never composites a logo over the mockup. The art team attaches
+      // the production file to that record; the store→SO conversion then carries the file plus
+      // the mockup proofs (item_mockups) automatically.
+      let pendingArtId = null;
+      if (store.customer_id) {
+        try {
+          const rec = {
+            id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6),
+            name: wsName + ' — team art (attach production file)',
+            kind: 'art', status: 'pending', deco_type: 'screen_print',
+            files: [], color_ways: [], uploaded: new Date().toLocaleDateString(),
+          };
+          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', store.customer_id).maybeSingle();
+          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', store.customer_id);
+          if (!aErr) {
+            // Also drop it into this store's curated art set so the store's Art tab shows it.
+            await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG rebuild' }] }).eq('id', ws.id);
+            pendingArtId = rec.id;
+          }
+        } catch (e) { console.warn('[OMG→Webstore] art record failed (items created without art):', e); }
+      }
       // Products: OMG price + decorated image + sizes; link to catalog by SKU where possible.
       const rows = prods.map((p, i) => {
         const catId = p.product_id || prod.find(cp => (cp.sku || '').toUpperCase() === (p.sku || '').toUpperCase())?.id || null;
@@ -6251,12 +6276,15 @@ export default function App(){
           display_name: p.name || p.sku || 'Item', image_url: p.image_url || null,
           retail_price: Number(p.retail) || 0, sizes_offered: sizes.length ? sizes : null,
           sort_order: i, active: true,
+          ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
         };
       });
       const { error: pErr } = await supabase.from('webstore_products').insert(rows);
       if (pErr) { nf(`Webstore created but items couldn't be added: ${pErr.message}`, 'error'); setOmgWebstoreLoading(false); return; }
       const linked = rows.filter(r => r.product_id).length;
-      nf(`✓ Draft webstore created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked). Open Webstores → Draft to set shipping, dates & launch.`, 'success');
+      const artNote = pendingArtId ? ' · in-house art queued — attach the production file in the store’s Art tab'
+        : (store.customer_id ? '' : ' · no customer linked, so no art record was queued');
+      nf(`✓ Draft webstore created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${artNote}. Open Webstores → Draft to set shipping, dates & launch.`, 'success');
     } catch (e) { nf('Create webstore failed: ' + e.message, 'error'); } finally { setOmgWebstoreLoading(false); }
   };
 
