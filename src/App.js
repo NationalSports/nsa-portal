@@ -5095,6 +5095,7 @@ export default function App(){
   // Called from the save layer when a session refresh fails: clear the dead session and bounce to login
   // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
     _setForceReauth(()=>{
+    window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before we unmount it to the login screen
     setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
     try{_sbSignOut()}catch{}
     setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so your changes can save to the cloud.','error')},150);
@@ -5109,7 +5110,10 @@ export default function App(){
     // (double dash). Those origins don't carry a valid Supabase session, so the stale-session
     // guard would kick testers to login a few seconds after load. Skip it there so the UI is
     // testable; production (custom domain / single-label host) keeps the guard intact.
-    const isPreviewHost=typeof window!=='undefined'&&/--/.test(window.location.hostname||'');
+    // Anchored to the *.netlify.app preview shape so it can't fail-open on an unrelated host that
+    // merely contains "--" — e.g. a punycode/IDN domain (xn--…) or a custom domain with a double dash,
+    // where a bare /--/ match would silently DISABLE the guard on real production.
+    const isPreviewHost=typeof window!=='undefined'&&/--[a-z0-9-]+\.netlify\.app$/i.test(window.location.hostname||'');
     if(isPreviewHost)return;
     let cancelled=false;
     (async()=>{
@@ -5122,7 +5126,19 @@ export default function App(){
         await new Promise(r=>setTimeout(r,300));
       }
       if(cancelled)return;
+      // Last-chance recovery before booting to login. Two things can leave getSession() null through
+      // the whole ~9s loop without the session being truly dead: (1) it never *restored* yet on a slow
+      // first load / many-tab refresh contention, and (2) a login just completed on another path. So
+      // actively refresh, then re-read storage; only force re-login if BOTH still show nothing. This is
+      // what stops a valid user being bounced to login on a transient blip, and the guard loop from
+      // nuking a concurrent successful login.
+      try{await supabase.auth.refreshSession()}catch(_){}
+      if(cancelled)return;
+      let _finalSession=null;
+      try{const{data:_fd}=await supabase.auth.getSession();_finalSession=_fd?.session||null}catch(_){}
+      if(_finalSession||cancelled)return;
       console.warn('[Auth] Cached user has no Supabase session — forcing re-login to restore RLS access');
+      window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before unmount
       setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
       setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so saves can sync to the cloud.','error')},150);
     })();
