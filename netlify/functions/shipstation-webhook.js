@@ -34,9 +34,17 @@ exports.handler = async (event) => {
   // Authenticate the caller. The endpoint is otherwise open to the internet, so we
   // require a shared secret that only ShipStation's configured webhook URL carries
   // (append ?token=<SHIPSTATION_WEBHOOK_SECRET> to the URL in ShipStation's settings).
-  // Enforced whenever the secret is configured.
+  // FAIL-CLOSED: an unset secret rejects every call rather than silently accepting
+  // all of them — an unauthenticated caller could otherwise drive order/shipment
+  // writes and buyer emails off forged payloads. If shipping emails ever stop after
+  // a deploy, check that SHIPSTATION_WEBHOOK_SECRET is set in Netlify AND the same
+  // token is on the webhook URL in ShipStation → Settings → Integrations → Webhooks.
   const whSecret = process.env.SHIPSTATION_WEBHOOK_SECRET;
-  if (whSecret) {
+  if (!whSecret) {
+    console.error('[shipstation-webhook] SHIPSTATION_WEBHOOK_SECRET not configured — rejecting all calls (fail-closed)');
+    return { statusCode: 401, body: 'Webhook secret not configured' };
+  }
+  {
     const q = event.queryStringParameters || {};
     const provided = q.token || q.secret || '';
     if (provided !== whSecret) return { statusCode: 401, body: 'Unauthorized' };
