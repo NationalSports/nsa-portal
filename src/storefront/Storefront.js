@@ -375,7 +375,7 @@ export default function Storefront() {
         })()}
         {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
-        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
+        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
       </main>
       <Footer store={store} theme={theme} />
@@ -762,7 +762,10 @@ const decoUrlForColor = (d, colorName) => {
 // per-color web logo so the right color way shows for the active variant.
 function DecoOverlay({ decorations, side = 'front', colorName }) {
   if (!Array.isArray(decorations)) return null;
-  return <>{decorations.filter((d) => d && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
+  // Skip `baked` decorations — their logo is already rendered into the garment image (a
+  // Quick Mock), so overlaying it again would double-stamp. They're retained on the record
+  // only so the store→SO conversion still knows what art to print.
+  return <>{decorations.filter((d) => d && !d.baked && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
     const pl = placementById(d.placement);
     // A decoration may carry its own x/y/w (editable placement) overriding the preset.
     const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
@@ -1021,9 +1024,16 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = isFitGroup ? true : sizesArr.length > 0;
+  // A product that inherently has sizes (a real size scale, or a rep-added
+  // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
+  // not restocking. Its size list is empty, so needSize is false — without this guard
+  // the button would enable and add it with size=null (unfulfillable). Block it; the
+  // server rejects the same case (checkSizesRequired) as defense in depth.
+  const inherentlySized = !isFitGroup && (foldScale(p.available_sizes).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
+  const soldOutNoSize = inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number;
   const isPersonalized = needNumber || !!p.takes_name;
-  const canAdd = isOpen && (!needSize || size) && (!needNumber || num.trim());
+  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim());
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
@@ -1132,7 +1142,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
               </div>
             )}
             <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: 1, minWidth: 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
-              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
+              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
             </button>
           </div>
           {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
@@ -1394,6 +1404,46 @@ async function checkoutCall(payload) {
   } catch (e) { return { error: { message: e.message } }; }
 }
 
+// After a `totals_changed` rejection the cart's snapshot prices are stale — a rep changed
+// a price, the store's fundraising, or a size upcharge while items sat in the cart. Re-read
+// the live prices for every product in the cart from the same public view the storefront
+// prices from, and rebuild each line's price fields so the next submit computes the exact
+// total the server will accept. Turns a permanent dead-end (retrying the stale total 409s
+// forever) into a "prices updated — review and place again" flow. Returns a NEW cart array;
+// on any lookup failure returns the original cart unchanged (never worse than before).
+async function repriceCart(store, cart) {
+  try {
+    const ids = [...new Set(cart.map((l) => l.webstore_product_id).filter(Boolean))];
+    if (!ids.length) return cart;
+    const [{ data: prods }, { data: bitems }] = await Promise.all([
+      supabase.from('webstore_storefront_products')
+        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge')
+        .eq('store_id', store.id).in('webstore_product_id', ids),
+      supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
+    ]);
+    const byId = {}; (prods || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+    const biById = {}; (bitems || []).forEach((b) => { biById[b.id] = b; });
+    return cart.map((l) => {
+      const p = byId[l.webstore_product_id];
+      if (!p) return l; // product gone/deactivated — leave as-is; the server surfaces its own error
+      const unit_price = Number(p.retail_price) || 0;
+      const fundraise = Number(p.fundraise_amount) || 0;
+      if (l.kind === 'bundle') {
+        // Bundle name upcharge = sum over selected components that take a name and have one.
+        const name_extra = (l.components || []).reduce((a, c) => {
+          const bi = c.bundle_item_id ? biById[c.bundle_item_id] : null;
+          const hasName = c.player_name && String(c.player_name).trim();
+          return a + ((bi && bi.takes_name && hasName) ? (Number(bi.name_upcharge) || 0) : 0);
+        }, 0);
+        return { ...l, unit_price, fundraise, name_extra };
+      }
+      const size_extra = l.size ? (Number((p.size_upcharges || {})[l.size]) || 0) : 0;
+      const name_extra = (l.player_name && String(l.player_name).trim()) ? (Number(p.name_upcharge) || 0) : 0;
+      return { ...l, unit_price, fundraise, size_extra, name_extra };
+    });
+  } catch (e) { return cart; }
+}
+
 // Percent coupons discount the order; whether shipping is included is per-coupon
 // (cover_shipping, default on). Free shipping is handled by zeroing the fee.
 function couponDiscount(coupon, cart, shipping = 0) {
@@ -1402,7 +1452,7 @@ function couponDiscount(coupon, cart, shipping = 0) {
   return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
-function CheckoutPage({ store, theme, cart, onClear }) {
+function CheckoutPage({ store, theme, cart, onUpdate, onClear }) {
   const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [stripePromise, setStripePromise] = useState(null);
@@ -1417,6 +1467,13 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [couponInput, setCouponInput] = useState('');
   const [coupon, setCoupon] = useState(null);
   const [couponErr, setCouponErr] = useState('');
+  // Shown after a `totals_changed` rejection once we've refreshed the cart to live prices.
+  const [priceNotice, setPriceNotice] = useState(false);
+  // Once the PaymentIntent exists (card form is mounted), the order + charge amount are
+  // fixed server-side. Freeze the inputs that would change the price/method so the buyer
+  // can't (e.g.) apply a coupon that lowers the displayed total while the card still
+  // charges the original amount, or switch to team-tab and mint a duplicate order.
+  const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
@@ -1466,18 +1523,28 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const comped = payable <= 0; // fully covered by a code → no card, invoice the program
 
   const applyCoupon = async () => {
-    setCouponErr(''); const code = couponInput.trim(); if (!code) return;
+    setCouponErr(''); setPriceNotice(false); const code = couponInput.trim(); if (!code) return;
     const r = await checkoutCall({ action: 'check_coupon', storeSlug: store.slug, code });
     if (r.error) { setCoupon(null); setCouponErr(r.error.message); return; }
     setCoupon(r.coupon); setCouponErr('');
   };
 
+  // A `totals_changed` 409 means the cart's snapshot prices went stale (a price/fundraise
+  // change while items sat in the cart). Refresh the cart to live prices — so the next
+  // attempt computes the total the server accepts — and show a notice, instead of the
+  // dead-end error the shopper could never clear by retrying.
+  const onTotalsChanged = async () => {
+    const repriced = await repriceCart(store, cart);
+    onUpdate(repriced);
+    setPriceNotice(true); setErr('');
+  };
+
   const submitUnpaid = async () => {
-    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid') });
     setBusy(false);
-    if (r.error) { setErr(r.error.message); return; }
+    if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
   };
@@ -1487,10 +1554,10 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid') });
-    if (r.error) { setErr(r.error.message); setBusy(false); return; }
+    if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
     if (r.alreadyPaid) {
       // Replay of an order whose payment already went through — finalize and land
       // on the confirmation instead of showing a card form for a settled intent.
@@ -1522,25 +1589,26 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Checkout<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>
       {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
+      {priceNotice && <div style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>Prices changed while you were shopping, so we refreshed your cart to the current prices. Please review your new total below and place your order again.</div>}
 
-      <Field label="Your name"><input style={inp} value={buyer.name} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
+      <Field label="Your name"><input style={inp} value={buyer.name} disabled={locked} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
       <div style={{ display: 'flex', gap: 12 }}>
-        <Field label="Email"><input style={inp} value={buyer.email} onChange={(e) => setBuyer({ ...buyer, email: e.target.value })} /></Field>
-        <Field label="Phone (optional)"><input style={inp} value={buyer.phone} onChange={(e) => setBuyer({ ...buyer, phone: e.target.value })} /></Field>
+        <Field label="Email"><input style={inp} value={buyer.email} disabled={locked} onChange={(e) => setBuyer({ ...buyer, email: e.target.value })} /></Field>
+        <Field label="Phone (optional)"><input style={inp} value={buyer.phone} disabled={locked} onChange={(e) => setBuyer({ ...buyer, phone: e.target.value })} /></Field>
       </div>
 
       {needAddr ? (
         <><div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', margin: '12px 0 6px' }}>Ship to home</div>
-        <Field label="Street"><input style={inp} value={ship.street1} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
-        <Field label="Apt / unit (optional)"><input style={inp} value={ship.street2} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
+        <Field label="Street"><input style={inp} value={ship.street1} disabled={locked} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
+        <Field label="Apt / unit (optional)"><input style={inp} value={ship.street2} disabled={locked} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Field label="City"><input style={inp} value={ship.city} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
-          <Field label="State"><input style={inp} value={ship.state} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
-          <Field label="ZIP"><input style={inp} value={ship.zip} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
+          <Field label="City"><input style={inp} value={ship.city} disabled={locked} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
+          <Field label="State"><input style={inp} value={ship.state} disabled={locked} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
+          <Field label="ZIP"><input style={inp} value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
         </div></>
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
-        <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
+        <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -1548,9 +1616,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
         {coupon ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
             <span style={{ color: '#166534', fontWeight: 700 }}>Code {coupon.code} applied{coupon.kind === 'free_shipping' ? ' — free shipping' : ` — ${coupon.value}% off`}</span>
-            <button onClick={() => { setCoupon(null); setCouponInput(''); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>
+            {!locked && <button onClick={() => { setCoupon(null); setCouponInput(''); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>}
           </div>
-        ) : (
+        ) : locked ? null : (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input style={{ ...inp, maxWidth: 220 }} placeholder="Discount / scholarship code" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') applyCoupon(); }} />
             <button onClick={applyCoupon} style={{ background: '#fff', border: '2px solid #e2e8f0', borderRadius: 8, padding: '10px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>Apply</button>
@@ -1572,7 +1640,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {comped ? (
         <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — covered by code'}</button>
       ) : (<>
-      {store.payment_mode === 'either' && (
+      {store.payment_mode === 'either' && !locked && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, marginTop: 14 }}>
           {allowPaid && stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
           {allowUnpaid && <button onClick={() => { setMethod('unpaid'); setClientSecret(null); }} style={methodBtn(theme, method === 'unpaid')}>Put on team tab</button>}
@@ -1582,9 +1650,14 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {method === 'paid' && allowPaid ? (
         stripePromise ? (
           clientSecret ? (
-            <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-              <CardForm theme={theme} onPaid={confirmPaid} />
-            </Elements>
+            <>
+              <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
+                <CardForm theme={theme} onPaid={confirmPaid} />
+              </Elements>
+              {/* Escape hatch: go back to change the cart/coupon/details. Resuming with the
+                  same order reuses its PaymentIntent (idempotent clientRef) — no duplicate. */}
+              <button onClick={() => { setClientSecret(null); setPendingOrder(null); }} style={{ marginTop: 12, background: 'none', border: 'none', color: theme.subText || '#64748b', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}>← Edit order details</button>
+            </>
           ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 14 }}>Card payment isn’t set up for this store yet — please contact us.</div>
       ) : allowUnpaid ? (
