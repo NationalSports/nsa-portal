@@ -488,7 +488,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       rootObj.position.sub(center);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       const dist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * fit;
-      camera.position.set(0, size.y * 0.02, dist);
+      // Straight-on, no elevation → the model's center projects to the exact
+      // center of the canvas (dead-center framing).
+      camera.position.set(0, 0, dist);
       camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix();
       controls.target.set(0, 0, 0);
       // Distance limits must scale with the model (units vary per asset), or the

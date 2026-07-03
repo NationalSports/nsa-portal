@@ -1309,7 +1309,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               : { flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
               <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
-                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.16} />
+                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.34} />
                 </React.Suspense>
               </div>
               {/* floating info card — top left */}
