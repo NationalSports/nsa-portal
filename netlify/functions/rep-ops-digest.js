@@ -61,6 +61,7 @@ async function loadAll(admin, table, cols, apply) {
 // Load rows where `col` ∈ ids, chunked so the IN list never gets too long.
 async function loadIn(admin, table, cols, col, ids) {
   const out = []; const CH = 200;
+  if (!ids.length) return out;
   for (let i = 0; i < ids.length; i += CH) {
     const chunk = ids.slice(i, i + CH);
     const { data, error } = await admin.from(table).select(cols).in(col, chunk);
@@ -87,8 +88,8 @@ function soFulfillment(so) {
       fulfilledSz += Math.min(v, pulledQty + rcvdQty);
     });
   });
-  const jobs = so.jobs || [];
-  const allJobsShipped = jobs.length > 0 && jobs.filter((j) => j.prod_status !== 'draft').every((j) => j.prod_status === 'shipped');
+  const jobs = (so.jobs || []).filter((j) => j.prod_status !== 'draft');
+  const allJobsShipped = jobs.length > 0 && jobs.every((j) => j.prod_status === 'shipped');
   const anyActiveJob = jobs.some((j) => j.prod_status === 'staging' || j.prod_status === 'in_process');
   return { totalSz, coveredSz, fulfilledSz, allJobsShipped, anyActiveJob };
 }
