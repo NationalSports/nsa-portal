@@ -1094,42 +1094,52 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const coachComment=comment.trim();
                 const _apDeco=(safeArt(liveSO).find(a=>jArtIds.includes(a.id))?.deco_type)||j.deco_type;const _apSt=prodFilesStatusFor(_apDeco);
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                // Email the assigned rep
-                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                // Pin the approval to the artwork on screen: every mock URL in view must still
+                // exist server-side, or the approve conflicts instead of recording an approval
+                // for an image the artist has since replaced.
+                const _sm=new Set();const _seenMocks=[...mockups,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
+                // Rep to notify: creator → customer's primary rep → monitored inbox, so a rep
+                // missing an email never silently swallows the decision (mirrors the estimate path).
+                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const _apprTo=rep?.email||'steve@nationalsportsapparel.com';
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
-                // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
+                // Server FIRST — apply_coach_art_decision (portal-action) verifies the job is
+                // still awaiting the coach and applies the whole write set in one transaction;
+                // local state only flips after it commits, so a stale tab never shows a phantom approval.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
-                  jobs:[{so_id:liveSO.id,id:j.id,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
-                  artFiles:jArtIds.map(aid=>({so_id:liveSO.id,id:aid,status:'approved'})),
-                  touchSO:liveSO.id,
-                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                  artDecision:{so_id:liveSO.id,job_id:j.id,decision:'approve',comment:coachComment||null,art_ids:jArtIds,approved_status:_apSt,seen_mocks:_seenMocks},
+                  email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
-                if(!_res.ok){alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                if(!_res.ok){alert(_res.error||'Could not save your approval — please try again or contact your rep.');return}
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const _fb=comment.trim();
-                const rej={reason:_fb,by:'Coach',at:new Date().toISOString()};
+                const _rejAt=new Date().toISOString();
+                // Both key spellings on purpose: the portal reads `at`, the dashboard todo reads `rejected_at`.
+                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
                 const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const _curJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id);
                 const _newRejections=[...((_curJob&&_curJob.rejections)||[]),rej];
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const _rejTo=rep?.email||'steve@nationalsportsapparel.com';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_fb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
+                // Server FIRST — the guarded transaction sends the job back to the artist with the
+                // COMPLETE write set (send timestamp cleared, seps confirmation cleared) or conflicts
+                // if this tab is stale; local state only flips after it commits.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
-                  jobs:[{so_id:liveSO.id,id:j.id,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}],
-                  artFiles:rArtIds.map(aid=>{const a=safeArt(liveSO).find(x=>x.id===aid);return{so_id:liveSO.id,id:aid,status:'waiting_for_art',notes:((a&&a.notes)?a.notes+'\n':'')+'Coach feedback: '+_fb}}),
-                  touchSO:liveSO.id,
-                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                  artDecision:{so_id:liveSO.id,job_id:j.id,decision:'reject',comment:_fb,art_ids:rArtIds},
+                  email:{to:[{email:_rejTo}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
-                if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                if(!_res.ok){alert(_res.error||'Could not send your request — please try again or contact your rep.');return}
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "changes requested" banner
               }}>❌ Request Changes</button>
             </div>
