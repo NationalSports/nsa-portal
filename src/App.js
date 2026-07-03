@@ -29277,9 +29277,9 @@ export default function App(){
         const totalValue=totalQty*safeNum(p.nsa_cost);
         // Sanitize the name QB will display — strip control chars QB chokes on,
         // collapse whitespace, trim, cap at 100. Same for description.
-        const cleanName=String(p.name||'').replace(/[ -]/g,' ').replace(/\s+/g,' ').trim();
+        const cleanName=String(p.name||'').replace(/[\x00-\x1f\x7f]/g,' ').replace(/\s+/g,' ').trim();
         const itemName=(p.sku+' '+cleanName).slice(0,100).trim();
-        const cleanColor=String(p.color||'').replace(/[ -]/g,' ').trim();
+        const cleanColor=String(p.color||'').replace(/[\x00-\x1f\x7f]/g,' ').trim();
         // Match existing QB item by name or stored ID
         let qbId=existingQBId;let syncToken=null;let existingType=null;
         if(qbId){
