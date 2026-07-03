@@ -127,4 +127,47 @@ function pulledGroups(so, inWin) {
   return Object.values(groups);
 }
 
-module.exports = { NON_SIZE, isSizeKey, sizeUnits, sizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups };
+// ── Ready to invoice ──
+// Production is finished but the order hasn't shipped/closed and isn't a promo
+// (promos skip the invoicing funnel). Mirrors the two calcSOStatus branches that
+// yield 'ready_to_invoice': every production job done, or a pure no-deco stock
+// order with all units in. The "already invoiced?" test lives at the call site
+// (needs the invoices table), so callers should also exclude SOs that already
+// have a non-void invoice.
+function isReadyToInvoice(so, ff) {
+  if (!so || so.status === 'complete' || so.promo_applied) return false;
+  if (isShippedOut(so, ff)) return false;
+  if (ff.totalSz <= 0) return false;
+  const jobs = jobsOf(so);
+  if (jobs.length > 0) return jobs.every((j) => j.prod_status === 'completed' || j.prod_status === 'shipped');
+  return itemsOf(so).every((it) => it.no_deco === true) && ff.fulfilledSz >= ff.totalSz;
+}
+
+// ── Invoice A/R helpers ──
+const invoiceBalance = (inv) => {
+  if (!inv) return 0;
+  const st = String(inv.status || '').toLowerCase();
+  if (st === 'void' || st === 'paid') return 0;
+  return (Number(inv.total) || 0) - (Number(inv.paid) || 0);
+};
+// An open, collectable invoice: not void/paid/deleted, not a credit memo, balance left.
+const isOpenInvoice = (inv) => {
+  if (!inv || inv.deleted_at) return false;
+  if (String(inv.type || 'invoice').toLowerCase() === 'credit_memo') return false;
+  return invoiceBalance(inv) > 0.005;
+};
+// Whole-day count from due date to a reference YYYY-MM-DD (both parsed at UTC
+// midnight so there's no timezone drift). >0 = past due. null when no due date.
+const invoiceDaysPastDue = (inv, todayYmd) => {
+  if (!inv || !inv.due_date) return null;
+  const due = String(inv.due_date).slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(due) || !/^\d{4}-\d{2}-\d{2}$/.test(todayYmd || '')) return null;
+  return Math.round((Date.parse(todayYmd + 'T00:00:00Z') - Date.parse(due + 'T00:00:00Z')) / 864e5);
+};
+const AGING_BUCKETS = ['1-30', '31-60', '61-90', '90+'];
+const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '1-30' : dpd <= 60 ? '31-60' : dpd <= 90 ? '61-90' : '90+');
+
+module.exports = {
+  NON_SIZE, isSizeKey, sizeUnits, sizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
+  isReadyToInvoice, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
+};

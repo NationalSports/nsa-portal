@@ -20,7 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
-const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups } = require('../../src/lib/opsRecap');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isOpenInvoice, invoiceBalance, invoiceDaysPastDue } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -30,6 +30,7 @@ const TZ = 'America/Los_Angeles';
 // is handled separately: closed orders stay in the working set only while their
 // ship/update stamp is inside the window (so "shipped yesterday, closed" shows).
 const DEAD_STATUS = new Set(['cancelled', 'deleted', 'void', 'archived']);
+const NEWLY_PAST_DUE_DAYS = 10; // an invoice is "newly past due" the day it crosses this many days overdue
 
 const parseDate = (d) => { if (!d) return null; const dt = new Date(d); return isNaN(dt.getTime()) ? null : dt; };
 
@@ -99,6 +100,7 @@ exports.handler = async (event) => {
   const now = new Date();
   const { start, end, dayLabel } = yesterdayPTWindow(now);
   const inWin = (d) => { const dt = parseDate(d); return !!dt && dt >= start && dt < end; };
+  const todayPTYmd = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now); // YYYY-MM-DD
   const DEADLINE_DAYS = 14;
   const deadlineCut = new Date(end.getTime() + DEADLINE_DAYS * 864e5);
   // Weekend send mornings (Sat/Sun PT): suppress deadline-only digests — the same
@@ -150,9 +152,21 @@ exports.handler = async (event) => {
     const jobsBySo = {}; jobs.forEach((j) => (jobsBySo[j.so_id] || (jobsBySo[j.so_id] = [])).push({ id: j.id, prod_status: j.prod_status }));
     orders.forEach((o) => { o.items = itemsBySo[o.id] || []; o.jobs = jobsBySo[o.id] || []; });
 
+    // Portal invoices (bounded — excludes the large NetSuite-imported history in
+    // customer_invoices). Drives billed value on shipped rows, the "already
+    // invoiced?" test for ready-to-invoice, and the newly-past-due section.
+    const invoices = await loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,deleted_at',
+      (q) => q.is('deleted_at', null));
+    const invTotalBySo = {}; const invoicedSoIds = new Set();
+    invoices.forEach((inv) => {
+      if (String(inv.status || '').toLowerCase() === 'void' || !inv.so_id) return;
+      invoicedSoIds.add(inv.so_id);
+      invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
+    });
+
     // ── Categorize into per-rep buckets ──
-    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines }
-    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [] }));
+    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, pastDue }
+    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [] }));
 
     approvedEsts.forEach((e) => {
       const rep = e.created_by || custById[e.customer_id]?.primary_rep_id;
@@ -173,18 +187,21 @@ exports.handler = async (event) => {
         gs.forEach((g) => cell(rep).picked.push({ so, pickId: g.pickId, units: g.units, skus: g.skus, latest: g.latest, short }));
       }
 
+      // Ready to invoice (production done) and not yet invoiced.
+      if (isReadyToInvoice(so, ff) && !invoicedSoIds.has(so.id)) cell(rep).readyInv.push(so);
+
       if (!shippedOut) {
         const due = parseDate(so.expected_date);
         if (due && due < deadlineCut) cell(rep).deadlines.push({ so, due, daysOut: Math.ceil((due.getTime() - end.getTime()) / 864e5) });
       }
     });
 
-    // Billed value for shipped orders (exact where an invoice exists; blank otherwise).
-    const shippedIds = [...new Set(Object.values(byRep).flatMap((b) => b.shipped.map((so) => so.id)))];
-    const invTotalBySo = {};
-    (await loadIn(admin, 'invoices', 'so_id,total,status', 'so_id', shippedIds)).forEach((inv) => {
-      if (inv.status === 'void' || !inv.so_id) return;
-      invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
+    // Newly past-due invoices — crossed exactly NEWLY_PAST_DUE_DAYS overdue today.
+    invoices.forEach((inv) => {
+      if (!isOpenInvoice(inv)) return;
+      if (invoiceDaysPastDue(inv, todayPTYmd) !== NEWLY_PAST_DUE_DAYS) return;
+      const rep = custById[inv.customer_id]?.primary_rep_id || inv.created_by;
+      if (rep) cell(rep).pastDue.push({ inv, balance: invoiceBalance(inv), dpd: NEWLY_PAST_DUE_DAYS });
     });
 
     // Single-recipient test send (manual ?test=<email>[&rep=<id|name>]). Renders a
@@ -207,10 +224,10 @@ exports.handler = async (event) => {
         || members.find((m) => lc(m.email).split('@')[0] === localPart)
         || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
       if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's digest to render for ${testTo}. Pass &rep=<name or id>.` };
-      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [] };
+      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [] };
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.pastDue.length;
       const html = buildOpsHtml({ rep: testRep, b, dayLabel, portal, custName, invTotalBySo,
         testNote: `Test send to ${testRep.name || testRep.email} · this is ${(testRep.name || '').split(/\s+/)[0] || 'their'}'s own recap for ${dayLabel}${activity === 0 ? ' (no activity or deadlines in this window).' : '.'}` });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
@@ -234,7 +251,7 @@ exports.handler = async (event) => {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
       if (rep.ops_digest_opt_out === true) { skippedOptOut++; continue; }
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.pastDue.length;
       if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
@@ -267,6 +284,8 @@ function opsSubject(b, shortN, dayLabel) {
   if (b.approved.length) bits.push(`${b.approved.length} approved`);
   if (b.picked.length) bits.push(`${b.picked.length} picked${shortN ? ` (${shortN} short)` : ''}`);
   if (b.checkedIn.length) bits.push(`${b.checkedIn.length} checked in`);
+  if (b.readyInv.length) bits.push(`${b.readyInv.length} ready to invoice`);
+  if (b.pastDue.length) bits.push(`${b.pastDue.length} newly past due`);
   if (!bits.length && b.deadlines.length) return `${b.deadlines.length} deadline${b.deadlines.length === 1 ? '' : 's'} coming up (${dayLabel})`;
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
 }
@@ -284,8 +303,12 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       <div style="font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:${SUB};margin-top:4px;font-weight:700">${esc(label)}</div>
       ${sub ? `<div style="font-size:10px;color:#B91C1C;font-weight:700;margin-top:2px">${esc(sub)}</div>` : ''}</td>`;
   const shortN = b.picked.filter((p) => p.short).length;
-  const summary = `<table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 14px"><tr>
-      ${tile('Shipped', String(b.shipped.length))}${tile('Approved', String(b.approved.length))}${tile('IFs Picked', String(b.picked.length), shortN ? `${shortN} short` : '')}${tile('Checked In', String(b.checkedIn.length))}${tile('Deadlines', String(b.deadlines.length))}</tr></table>`;
+  const pastDueTotal = b.pastDue.reduce((a, p) => a + p.balance, 0);
+  // Two rows of tiles so seven categories stay readable on a phone.
+  const summary = `<table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 6px"><tr>
+      ${tile('Shipped', String(b.shipped.length))}${tile('Approved', String(b.approved.length))}${tile('IFs Picked', String(b.picked.length), shortN ? `${shortN} short` : '')}${tile('Checked In', String(b.checkedIn.length))}</tr></table>
+    <table width="100%" style="border-collapse:separate;border-spacing:6px 0;margin:0 0 14px"><tr>
+      ${tile('Ready to Invoice', String(b.readyInv.length))}${tile('Newly Past Due', String(b.pastDue.length), pastDueTotal > 0 ? money(pastDueTotal) : '')}${tile('Deadlines', String(b.deadlines.length))}</tr></table>`;
 
   const sectionHead = (t) => `<div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;letter-spacing:.4px;text-transform:uppercase;color:${NAVY};margin:18px 0 8px">${t}</div>`;
   const row = (main, sub, right, link, linkLabel) => `<tr>
@@ -312,6 +335,13 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
   }).join('')) : '';
   const checkedBlock = b.checkedIn.length ? sectionHead('🏬 Orders All Checked In') + table(b.checkedIn.map((so) =>
     row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · every unit in, ready to build', '', soLink(so.id))).join('')) : '';
+  const readyBlock = b.readyInv.length ? sectionHead('🧾 Ready to Invoice') + table(b.readyInv.map((so) =>
+    row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · production done, not invoiced yet', '', soLink(so.id), 'Invoice →')).join('')) : '';
+  const invLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}`;
+  const pastDueBlock = b.pastDue.length ? sectionHead(`💸 New Past Due Invoices <span style="font-weight:600;color:${SUB};font-size:12px">· ${NEWLY_PAST_DUE_DAYS} days overdue</span>`) + table(b.pastDue.map(({ inv, balance, dpd }) =>
+    row(`${esc(inv.id)} <span style="color:${SUB};font-weight:600">· ${money(balance)} due</span>`,
+      `${esc(custName(inv.customer_id))} · due ${esc(String(inv.due_date).slice(0, 10))}`,
+      `<span style="font-size:12px;font-weight:800;color:#B91C1C">${dpd}d past due</span> &nbsp;`, invLink(inv.id))).join('')) : '';
   const deadlineBlock = b.deadlines.length ? sectionHead('⏰ Deadlines Approaching') + table(b.deadlines.map(({ so, due, daysOut }) => {
     const overdue = daysOut < 0;
     const badge = `<span style="font-size:12px;font-weight:800;color:${overdue ? '#B91C1C' : daysOut <= 3 ? '#B45309' : '#075985'}">${overdue ? `${Math.abs(daysOut)}d overdue` : daysOut === 0 ? 'due today' : `${daysOut}d out`}</span> &nbsp;`;
@@ -336,7 +366,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
-      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${deadlineBlock}
+      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${readyBlock}${pastDueBlock}${deadlineBlock}
       <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}${14} days ahead. Turn this email off any time from Sales Tools → My Day.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>

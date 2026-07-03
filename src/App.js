@@ -23,7 +23,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue } from './lib/opsRecap';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -31726,7 +31726,24 @@ export default function App(){
     }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))
       .sort((a,b)=>a.dt-b.dt);
 
+    // Orders ready to invoice (production done) that haven't been invoiced yet.
+    const _mdInvoicedSoIds=new Set(invs.filter(iv=>(iv.status||'').toLowerCase()!=='void'&&iv.so_id).map(iv=>iv.so_id));
+    const mdReadyInv=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at)return false;
+      return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+    }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
+
+    // Past-due invoices for my customers (live view — every currently-overdue open invoice).
+    const _mdTodayYmd=new Date(_mdNow-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+    const mdPastDue=invs.filter(iv=>{
+      if(!opsOpenInvoice(iv))return false;
+      const rep=cust.find(x=>x.id===iv.customer_id)?.primary_rep_id||iv.created_by;
+      if(!_mdMine(rep))return false;
+      const dpd=opsInvoiceDaysPastDue(iv,_mdTodayYmd);return dpd!=null&&dpd>=1;
+    }).map(iv=>({iv,balance:opsInvoiceBalance(iv),dpd:opsInvoiceDaysPastDue(iv,_mdTodayYmd)})).sort((a,b)=>b.dpd-a.dpd);
+
     const _mdOpenSO=(so,soTab)=>{setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);if(soTab)setESOTab(soTab);setPg('orders')};
+    const _mdOpenInv=(iv)=>{setViewInvoice(iv);setPg('invoices')};
     const _mdOpenEst=(e)=>{setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);setPg('estimates')};
 
     return(<>
@@ -31739,14 +31756,17 @@ export default function App(){
 
       {/* ═══ MY DAY — daily ops recap ═══ */}
       {stTab==='myday'&&(()=>{
+        const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
           {id:'picked',label:'IFs Picked',icon:'package',color:'#b45309',n:mdPicked.length,sub:mdShortCount>0?mdShortCount+' short on pull':''},
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
+          {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
+          {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
-        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdDeadlines.length;
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
         const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
           <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
@@ -31825,6 +31845,26 @@ export default function App(){
                 <td style={{fontWeight:700,color:'#7c3aed'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
                 <td style={{color:'#64748b'}}>{_mdWhen(so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Open</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdReadyInv.length>0&&<Section id="readyinv" title="🧾 Ready to Invoice" count={mdReadyInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th></th></tr></thead>
+              <tbody>{mdReadyInv.map(so=><tr key={so.id}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdPastDue.length>0&&<Section id="pastdue" title="💸 Past Due Invoices" count={mdPastDue.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Invoice</th><th>Customer</th><th>Balance</th><th>Due</th><th>Overdue</th><th></th></tr></thead>
+              <tbody>{mdPastDue.map(({iv,balance,dpd})=><tr key={iv.id} style={dpd>=30?{background:'#fef2f2'}:undefined}>
+                <td style={{fontWeight:600}}>{iv.id}{iv.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{iv.memo}</div>}</td>
+                <td>{_mdCustName(iv.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#b91c1c'}}>{_md$(balance)}</td>
+                <td style={{color:'#64748b'}}>{iv.due_date?String(iv.due_date).slice(0,10):'—'}</td>
+                <td><span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:dpd>=60?'#fee2e2':dpd>=30?'#fef3c7':'#fee2e2',color:dpd>=60?'#7f1d1d':dpd>=30?'#92400e':'#991b1b'}}>{dpd}d</span></td>
+                <td><button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>_mdOpenInv(iv)}>Open</button></td>
               </tr>)}</tbody></table></Section>}
 
           {mdDeadlines.length>0&&<Section id="deadlines" title="⏰ Deadlines Approaching" count={mdDeadlines.length}>
