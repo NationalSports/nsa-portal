@@ -577,7 +577,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [screen, setScreen] = useState('sports'); // sports | designs | wizard
   // Admin-managed palette/styles/presets: hydrate once per session, then bump
   // to re-render everything reading the module-level registries.
-  const [, setSettingsRev] = useState(0);
+  const [settingsRev, setSettingsRev] = useState(0);
   useEffect(() => {
     let alive = true;
     loadBuilderSettings().then((sx) => {
@@ -593,6 +593,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   const [step, setStep] = useState('team');
   const [spin, setSpin] = useState(false);
   const [fabricGuide, setFabricGuide] = useState(false);
+  const [changeOpen, setChangeOpen] = useState(false); // "Change Design" dropdown
+  const [changeThumbs, setChangeThumbs] = useState({});
   const narrow = useNarrow();
 
   // Roster / sizes
@@ -746,9 +748,55 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // A preset replaces the design (colors/pattern/number color) but keeps the
   // coach's team name, players, logos, and roster.
   const pickDesign = (pz) => {
-    if (pz) set({ ...pz.config, ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}) });
+    if (pz) set({ ...pz.config, designId: pz ? pz.id : null, ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}) });
     setScreen('wizard'); setStep('team');
   };
+
+  // "Change Design" (in-wizard): re-skin the jersey with a different starting
+  // design but keep the coach's own colors, numbers, name, logos and fabric.
+  // The preset defines the pattern per zone and a primary/secondary/accent color
+  // relationship; we remap those three roles onto the colors the coach has
+  // already chosen so each alternative shows up in *their* colors.
+  const recolorSectionsFrom = (pz, cur) => {
+    const ps = normSections(pz.config.sections);
+    const pPrimary = String(ps.body.color || '').toUpperCase();
+    const pSecondary = String(ps.body.color2 || '').toUpperCase();
+    const pAccent = String(ps.sleeveL.color || '').toUpperCase();
+    const uPrimary = cur.body.color, uSecondary = cur.body.color2, uAccent = cur.sleeveL.color;
+    const map = new Map([[pPrimary, uPrimary], [pSecondary, uSecondary], [pAccent, uAccent]]);
+    const rc = (c) => map.get(String(c || '').toUpperCase()) || uPrimary;
+    const zone = (z) => {
+      const out = { color: rc(z.color), color2: rc(z.color2), pattern: z.pattern || 'solid' };
+      // Preset patterns are always built-ins, so clear any custom-print fields.
+      return out;
+    };
+    return { body: zone(ps.body), sleeveL: zone(ps.sleeveL), sleeveR: zone(ps.sleeveR), collar: zone(ps.collar) };
+  };
+  const applyDesignPort = (pz) => {
+    setConfig((c) => ({ ...c, designId: pz.id, sections: recolorSectionsFrom(pz, normSections(c.sections)) }));
+    setChangeOpen(false);
+  };
+  // Render the alt-design thumbnails in the coach's current colors while the
+  // dropdown is open (regenerated when colors change so they stay in sync).
+  const changeDesigns = useMemo(
+    () => DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)),
+    [config.sport, settingsRev] // eslint-disable-line
+  );
+  useEffect(() => {
+    if (!changeOpen) return;
+    let alive = true;
+    (async () => {
+      for (const pz of changeDesigns) {
+        try {
+          const secs = recolorSectionsFrom(pz, SX);
+          const tspec = specFromConfig({ ...config, sections: secs, playerName: '', teamName: '' });
+          const url = await renderToDataURL(tspec, { view: 'front', width: 190 });
+          if (alive) setChangeThumbs((t) => ({ ...t, [pz.id]: url }));
+        } catch (_e) { /* thumb optional */ }
+      }
+    })();
+    return () => { alive = false; };
+  }, [changeOpen, SX.body.color, SX.sleeveL.color, SX.body.color2]); // eslint-disable-line
 
   // ── My Designs (browser-local; a coach's saves are only ever on their own
   // device — nothing here is pulled from the shared uniform_designs table) ──
@@ -1309,7 +1357,7 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               : { flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
               <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
-                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.34} />
+                  <Viewer3D spec={spec} modelUrl={tpl.model3d} autoRotate={spin} fit={1.41} tiltDeg={8} shiftPx={narrow ? 0 : 165} />
                 </React.Suspense>
               </div>
               {/* floating info card — top left */}
@@ -1322,7 +1370,44 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   ))}
                   {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginLeft: 2 }}>{nameForHex(SX.body.color)} / {nameForHex(SX.sleeveL.color)} / {nameForHex(SX.collar.color)}</span>}
                 </div>
+                {/* Change Design — re-skins the jersey with a different starting
+                    design while keeping the coach's colors, numbers and logos. */}
+                <div style={{ position: 'relative', marginTop: 12, pointerEvents: 'auto' }}>
+                  <button onClick={() => setChangeOpen((o) => !o)} style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                    fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1,
+                    color: changeOpen ? '#fff' : C.navy, background: changeOpen ? C.navy : 'rgba(255,255,255,0.9)',
+                    border: '1.5px solid ' + C.navy, borderRadius: 3, padding: '9px 15px', transform: 'skewX(-12deg)',
+                    boxShadow: '0 2px 8px rgba(15,23,42,0.14)',
+                  }}>
+                    <span style={{ transform: 'skewX(12deg)', display: 'inline-flex', alignItems: 'center', gap: 7 }}>
+                      <span style={{ fontSize: 13 }}>⇆</span> Change Design
+                      <span style={{ fontSize: 9, opacity: 0.8 }}>{changeOpen ? '▲' : '▼'}</span>
+                    </span>
+                  </button>
+                  {changeOpen && (
+                    <div style={{ position: 'absolute', top: 'calc(100% + 10px)', left: 0, width: 300, maxHeight: '58vh', overflowY: 'auto', background: '#fff', border: '1px solid ' + C.light, borderRadius: 10, boxShadow: '0 18px 50px rgba(15,23,42,.28)', padding: 14, zIndex: 30 }}>
+                      <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, marginBottom: 3 }}>Swap the Design</div>
+                      <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 12, lineHeight: 1.4 }}>Shown in your colors. Your numbers, name and logos carry over.</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                        {changeDesigns.map((pz) => {
+                          const on = config.designId === pz.id;
+                          return (
+                            <button key={pz.id} onClick={() => applyDesignPort(pz)} style={{ background: '#fff', border: '1.5px solid ' + (on ? C.navy : C.light), borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', textAlign: 'center', boxShadow: on ? '0 2px 8px rgba(25,40,83,0.2)' : 'none' }}>
+                              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: C.offWhite, overflow: 'hidden' }}>
+                                {changeThumbs[pz.id] ? <img src={changeThumbs[pz.id]} alt={pz.name} style={{ width: '92%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>…</span>}
+                              </span>
+                              <span style={{ display: 'block', padding: '7px 4px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: on ? C.red : C.navy, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pz.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
+              {/* click-away layer closes the Change Design dropdown */}
+              {changeOpen && <div onClick={() => setChangeOpen(false)} style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'auto' }} />}
               {/* floating shorts chip — bottom left */}
               {bottom.enabled && (
                 <div style={{ position: 'absolute', left: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 10 }}>

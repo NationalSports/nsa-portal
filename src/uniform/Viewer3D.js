@@ -226,8 +226,11 @@ function applyDesign(st, rawSpec) {
         const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
         const tex = new THREE.CanvasTexture(source);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        const rep = entry.zone === 'body' ? 4 : 2.5;
+        // Sleeves have much less UV area than the body — keep the print roughly
+        // the same physical size on both instead of blowing it up on the sleeve.
+        const rep = entry.zone === 'body' ? 4 : 4;
         tex.repeat.set(rep, rep);
+        tex.anisotropy = 8;
         tex.colorSpace = THREE.SRGBColorSpace;
         const m = entry.mesh.material;
         if (m.map) m.map.dispose();
@@ -250,10 +253,13 @@ function applyDesign(st, rawSpec) {
         const tex = new THREE.CanvasTexture(tile);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         // Fine patterns need a higher repeat or they read as broad bands on the
-        // body panel — keep the 3D stripe density close to the 2D proof's.
+        // body panel — keep the 3D stripe density close to the 2D proof's. The
+        // sleeve/collar panels have far less UV area than the body, so they need
+        // a comparable (not lower) repeat or the tile blows up huge on them.
         const fine = pat === 'stripes' || pat === 'pinstripe' || pat === 'dots' || pat === 'carbon' || pat === 'hex';
-        const rep = entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 5 : 3);
+        const rep = entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 10 : 6);
         tex.repeat.set(rep, rep);
+        tex.anisotropy = 8; // crisp the pattern at grazing angles (was blurry/blown up)
         tex.colorSpace = THREE.SRGBColorSpace;
         mat.map = tex; mat.color.set('#ffffff');
       } else { mat.color.set(color); }
@@ -412,7 +418,11 @@ function updateDecals(st, rawSpec) {
 
 // `fit` scales the initial camera distance: 1.5 leaves generous margin (editor
 // default); smaller values frame the garment closer for hero/stage layouts.
-export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
+// `tiltDeg` orbits the camera up for a more dramatic 3/4 look (target stays on
+// the model center so it stays framed). `shiftPx` pans the model horizontally by
+// N screen pixels — the wizard uses it to sit the jersey under the whole page's
+// center even though the 3D stage only occupies the area left of the rail.
+export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0 }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
   const [status, setStatus] = useState('loading');
@@ -488,11 +498,19 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5 }) {
       rootObj.position.sub(center);
       const maxDim = Math.max(size.x, size.y, size.z) || 1;
       const dist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2) * fit;
-      // Straight-on, no elevation → the model's center projects to the exact
-      // center of the canvas (dead-center framing).
-      camera.position.set(0, 0, dist);
+      // Pan the model horizontally so it can sit under the whole page's center
+      // even though the 3D stage stops at the control rail. worldPerPx is
+      // isotropic at the target plane, derived from the vertical fov + canvas
+      // height; a negative x on both camera and target shifts the model right.
+      const curH = (mount && mount.clientHeight) || H || 700;
+      const worldPerPx = (2 * dist * Math.tan((camera.fov * Math.PI / 180) / 2)) / curH;
+      const panX = -(shiftPx || 0) * worldPerPx;
+      // tiltDeg orbits the camera up (keeping the model center as the target) so
+      // the garment reads with a more dramatic 3/4 angle but stays framed.
+      const tiltRad = (tiltDeg || 0) * Math.PI / 180;
+      camera.position.set(panX, dist * Math.sin(tiltRad), dist * Math.cos(tiltRad));
       camera.near = dist / 100; camera.far = dist * 100; camera.updateProjectionMatrix();
-      controls.target.set(0, 0, 0);
+      controls.target.set(panX, 0, 0);
       // Distance limits must scale with the model (units vary per asset), or the
       // camera gets clamped inside the mesh.
       controls.minDistance = dist * 0.35; controls.maxDistance = dist * 4;
