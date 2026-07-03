@@ -5921,6 +5921,31 @@ export default function App(){
   React.useEffect(()=>{if(selP)addRecent('product',selP.id,(selP.sku||'')+' — '+selP.name)},[selP?.id]); // eslint-disable-line
 
   const[gQ,setGQ]=useState('');const[gOpen,setGOpen]=useState(false);const[gProdResults,setGProdResults]=useState([]);const _gProdTimer=useRef(null);const[gSearchQ,setGSearchQ]=useState('');
+  // Supplier invoices (si_documents) aren't held in memory — the Sports Inc queue is lazy-loaded on
+  // demand — so global search reaches them with its own debounced DB query. The longest query token
+  // drives an ilike across the PO#/supplier/invoice#/matched-PO columns; rSearch then applies the
+  // same all-tokens-must-match narrowing as every other section. Only runs on the search page.
+  const[siSearchResults,setSiSearchResults]=useState([]);const _siSearchTimer=useRef(null);
+  useEffect(()=>{
+    if(!supabase||pg!=='search'){setSiSearchResults([]);return}
+    const q=(gSearchQ||'').trim();
+    if(q.length<2){setSiSearchResults([]);return}
+    const toks=q.toLowerCase().split(/\s+/).filter(Boolean);
+    const drive=(toks.slice().sort((a,b)=>b.length-a.length)[0]||q).replace(/[,()%]/g,'').trim();
+    if(!drive){setSiSearchResults([]);return}
+    if(_siSearchTimer.current)clearTimeout(_siSearchTimer.current);
+    _siSearchTimer.current=setTimeout(async()=>{
+      try{
+        const like='%'+drive+'%';
+        const{data,error}=await supabase.from('si_documents')
+          .select('si_doc_number,po_number,supplier,supplier_doc_number,si_doc_date,doc_total,matched_po_id,matched_so_id,status')
+          .or('po_number.ilike.'+like+',supplier.ilike.'+like+',supplier_doc_number.ilike.'+like+',matched_po_id.ilike.'+like)
+          .order('si_doc_date',{ascending:false}).limit(50);
+        setSiSearchResults(error?[]:(data||[]));
+      }catch{setSiSearchResults([])}
+    },250);
+    return ()=>{if(_siSearchTimer.current)clearTimeout(_siSearchTimer.current)};
+  },[gSearchQ,pg]);
   useEffect(()=>{
     if(_gProdTimer.current)clearTimeout(_gProdTimer.current);
     if(!gQ||gQ.length<2){setGProdResults([]);return}
@@ -24030,6 +24055,50 @@ export default function App(){
     return ()=>{cancelled=true};
   },[billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
+  // ── Sports Inc Bills queue loader (hoisted to component scope) ──────────────────────
+  // Lives here rather than inside rImport() so both the Bills page AND a global-search
+  // supplier-invoice deep-link can trigger it. Builds PO-match candidates from the live orders
+  // (every portal PO line + deco PO, tagged with customer alpha_tag + SKUs) so the matcher can
+  // triangulate (PO# + customer + supplier + SKUs).
+  const _siBuildCandidates=()=>{
+    const out=[];
+    for(const so of sos){
+      const c=cust.find(x=>x.id===so.customer_id);
+      const alpha=(c?.alpha_tag||'').toUpperCase();
+      const cname=c?.name||so.customer_name||'';
+      const skus=[...new Set((so.items||[]).map(it=>it.sku).filter(Boolean))];
+      const push=(po_id,vendor)=>{if(!po_id)return;out.push({po_id,po_core:(String(po_id).match(/\d{3,6}/)||[''])[0],vendor:vendor||'',customer_alpha_tag:alpha,customer_name:cname,skus,so_id:so.id})};
+      (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>push(po.po_id,po.vendor||it.vendor)));
+      (so.deco_pos||[]).forEach(dp=>push(dp.po_id,dp.deco_vendor||dp.vendor));
+    }
+    return out;
+  };
+  // Triage one queue row → {bucket, parsed, match}. Buckets: captured|outside|grab|approve|review.
+  const _siTriage=(row,cands)=>{
+    const parsed=mapSportsLinkDocToBill(row.raw||{});
+    if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
+    if(siPoOrigin(row.po_number)==='old')return{bucket:'outside',parsed,match:null};// no-space PO = old system
+    if(row.source_type!=='edi')return{bucket:'grab',parsed,match:null};// scanned/OCR → grab the PDF
+    const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
+    if(best&&(best.confidence==='high'||best.confidence==='medium'))return{bucket:'approve',parsed,match:best};
+    return{bucket:'review',parsed,match:best};
+  };
+  const loadSiQueue=async()=>{
+    if(!supabase){nf('Database not connected','error');return}
+    setSiQueueLoading(true);
+    try{
+      const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
+      if(error)throw error;
+      const cands=_siBuildCandidates();
+      setSiQueue((data||[]).map(row=>({...row,_t:_siTriage(row,cands)})));
+    }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
+    setSiQueueLoading(false);
+  };
+  // Auto-load the queue when the user lands on the Sports Inc view — whether by clicking the tab or
+  // via a programmatic deep-link (global-search supplier-invoice result). Guarded so it fires once.
+  useEffect(()=>{
+    if(supabase&&pg==='import'&&billView==='sportsinc'&&!siQueue.length&&!siQueueLoading)loadSiQueue();
+  },[pg,billView]);// eslint-disable-line react-hooks/exhaustive-deps
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
@@ -25506,44 +25575,9 @@ export default function App(){
       }catch(e){/* badge cleared locally; DB retried on next open */}
     };
 
-    // ── Sports Inc Bills queue (shared si_documents table) ──────────────────────
-    // Build PO-match candidates from the live orders: every portal PO line + deco PO, tagged
-    // with its customer alpha_tag and the SO's SKUs, so the matcher can triangulate (PO# +
-    // customer + supplier + SKUs).
-    const _siBuildCandidates=()=>{
-      const out=[];
-      for(const so of sos){
-        const c=cust.find(x=>x.id===so.customer_id);
-        const alpha=(c?.alpha_tag||'').toUpperCase();
-        const cname=c?.name||so.customer_name||'';
-        const skus=[...new Set((so.items||[]).map(it=>it.sku).filter(Boolean))];
-        const push=(po_id,vendor)=>{if(!po_id)return;out.push({po_id,po_core:(String(po_id).match(/\d{3,6}/)||[''])[0],vendor:vendor||'',customer_alpha_tag:alpha,customer_name:cname,skus,so_id:so.id})};
-        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>push(po.po_id,po.vendor||it.vendor)));
-        (so.deco_pos||[]).forEach(dp=>push(dp.po_id,dp.deco_vendor||dp.vendor));
-      }
-      return out;
-    };
-    // Triage one queue row → {bucket, parsed, match}. Buckets: captured|outside|grab|approve|review.
-    const _siTriage=(row,cands)=>{
-      const parsed=mapSportsLinkDocToBill(row.raw||{});
-      if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
-      if(siPoOrigin(row.po_number)==='old')return{bucket:'outside',parsed,match:null};// no-space PO = old system
-      if(row.source_type!=='edi')return{bucket:'grab',parsed,match:null};// scanned/OCR → grab the PDF
-      const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
-      if(best&&(best.confidence==='high'||best.confidence==='medium'))return{bucket:'approve',parsed,match:best};
-      return{bucket:'review',parsed,match:best};
-    };
-    const loadSiQueue=async()=>{
-      if(!supabase){nf('Database not connected','error');return}
-      setSiQueueLoading(true);
-      try{
-        const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
-        if(error)throw error;
-        const cands=_siBuildCandidates();
-        setSiQueue((data||[]).map(row=>({...row,_t:_siTriage(row,cands)})));
-      }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
-      setSiQueueLoading(false);
-    };
+    // ── Sports Inc Bills queue ──────────────────────
+    // _siBuildCandidates / _siTriage / loadSiQueue are hoisted to component scope (near the siExpand
+    // state) so global search can deep-link into this queue too. Referenced by closure below.
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
     // The daily cron does the same server-side; this lets staff refresh on demand + seed testing.
@@ -27781,7 +27815,7 @@ export default function App(){
         {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&r._t.bucket!=='captured').length;return<div style={{display:'flex',gap:6,marginBottom:14,borderBottom:'1px solid #e2e8f0',paddingBottom:10}}>
           {[['import','📥 Import & Review'],['sportsinc','🏀 Sports Inc'+(siOpen?' ('+siOpen+')':'')],['later','🕒 Look at Later'+(parked?' ('+parked+')':'')]].map(([id,label])=>{
             const accent=id==='later'?'#f59e0b':id==='sportsinc'?'#2563eb':'#7c3aed';
-            return <button key={id} onClick={()=>{setBillView(id);if(id==='sportsinc'&&!siQueue.length)loadSiQueue()}} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
+            return <button key={id} onClick={()=>setBillView(id)} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
               border:'1px solid '+(billView===id?accent:'#e2e8f0'),
               background:billView===id?accent:'#fff',color:billView===id?'#fff':'#475569'}}>{label}</button>;})}
         </div>;})()}
@@ -33201,7 +33235,11 @@ export default function App(){
     const rj=allJobs2;
     const ri=invs.filter(i=>(i.id+' '+(i.memo||'')+' '+(cust.find(c=>c.id===i.customer_id)?.name||'')).toLowerCase().includes(s));
     const rv=vend.filter(v=>((v.name||'')+' '+(v.rep_name||'')).toLowerCase().includes(s));
-    const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length;
+    // Supplier invoices (si_documents) — fetched into siSearchResults by the debounced effect above;
+    // apply the same all-tokens-must-match narrowing so "PO 3522 CMSF" matches "PO3522CMSF" etc.
+    const _siHay=(d)=>((d.po_number||'')+' '+(d.supplier||'')+' '+(d.supplier_doc_number||'')+' '+(d.matched_po_id||'')+' '+(d.matched_so_id||'')+' '+(d.si_doc_number||'')).toLowerCase();
+    const rsi=(siSearchResults||[]).filter(d=>_toks.every(t=>_siHay(d).includes(t)));
+    const tot=rc.length+re.length+rs.length+rp.length+rpk.length+rpo.length+rj.length+ri.length+rv.length+rsi.length;
     const row=(children,onClick,key)=><div key={key} style={{padding:'10px 14px',cursor:'pointer',fontSize:13,display:'flex',gap:8,alignItems:'center',borderTop:'1px solid #f1f5f9'}} onClick={onClick}>{children}</div>;
     const section=(label,items,render)=>items.length>0&&<div className="card" style={{marginBottom:12}}>
       <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
@@ -33228,6 +33266,7 @@ export default function App(){
         {section('Products',rp,p=>row(<><Icon name="package" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{p.sku}</span><span>{p.name}</span>{p.color&&<span style={{color:'#64748b',fontSize:11}}>{p.color}</span>}</>,()=>{setSelP(p);setPg('products');setQ('')},p.id))}
         {section('Item Fulfillments',rpk,pk=>{const cc=cust.find(x=>x.id===pk.so?.customer_id);return row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{pk.pick_id}</span><span>→ {pk.so_id}</span><span className={`badge ${pk.status==='pulled'?'badge-green':'badge-amber'}`}>{pk.status}</span></>,()=>{setESO(pk.so);setESOC(cc);setPg('orders')},pk.pick_id)})}
         {section('Purchase Orders',rpo,po=>row(<><Icon name="cart" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af'}}>{po.po_id}</span><span>{po.vendor}</span>{po.isInvPO&&<span style={{fontSize:9,padding:'1px 4px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700}}>INV</span>}{po.so_id&&<span style={{color:'#64748b'}}>→ {po.so_id}</span>}<span className={`badge ${po.status==='received'||po.status==='shipped'?'badge-green':po.status==='partial'?'badge-amber':'badge-blue'}`}>{po.status==='received'?'Received':po.status==='shipped'?'Shipped':po.status==='partial'?'Partially Received':po.status==='waiting'?'Waiting':po.status}</span></>,()=>{if(po.isInvPO){setPOF(f=>({...f,search:po.po_id,status:'all',booking:false}));setPg('purchase_orders')}else if(po.isBatch){setBatchScan(po.po_id);setPg('batch_pos')}else if(po.so){const cc=cust.find(x=>x.id===po.so.customer_id);setESOOpenPO(po.po_id);setESO(po.so);setESOC(cc);setPg('orders')}else{setPg('purchase_orders')}},po.po_id))}
+        {section('Supplier Invoices',rsi,d=>row(<><Icon name="file" size={14}/><span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed'}}>{d.po_number||'(no PO)'}</span><span style={{fontWeight:600}}>{d.supplier||''}</span><span style={{color:'#64748b',fontSize:11}}>Inv {d.supplier_doc_number||d.si_doc_number}</span><span style={{fontWeight:700}}>${(Number(d.doc_total)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}</span><span className={`badge ${d.status==='approved'||d.status==='manual_done'?'badge-green':d.matched_po_id?'badge-blue':'badge-amber'}`}>{d.status==='approved'?'Captured':d.status==='manual_done'?'Grabbed':d.status==='outside_portal'?'Outside':d.matched_po_id?'Matched':'Unmatched'}</span></>,()=>{setSiExpand(d.si_doc_number);setImpTab('bills');setBillView('sportsinc');setPg('import')},'si-'+d.si_doc_number))}
         {section('Jobs',rj,j=>row(<><Icon name="grid" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{j.id}</span><span>{j.art_name||j.deco_type}</span><span style={{color:'#64748b'}}>→ {j.so_id}</span></>,()=>{const ji2=safeJobs(j.so).findIndex(jj=>jj.id===j.id);setESOTab('jobs');setESOScrollJob(ji2>=0?ji2:null);setESO(j.so);setESOC(cust.find(c2=>c2.id===j.so.customer_id));setPg('orders')},j.id+j.so_id))}
         {section('Invoices',ri,inv=>row(<><Icon name="file" size={14}/><span style={{fontWeight:700,color:'#1e40af'}}>{inv.id}</span><span>{cust.find(c=>c.id===inv.customer_id)?.name||''}</span><span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`}>{inv.status}</span></>,()=>{setViewInvoice(inv);setPg('invoices')},inv.id))}
         {section('Vendors',rv,v=>row(<><Icon name="building" size={14}/><span style={{fontWeight:600}}>{v.name}</span>{v.rep_name&&<span style={{color:'#64748b',fontSize:11}}>{v.rep_name}</span>}</>,()=>{setSelV(v);setPg('vendors')},v.id))}
