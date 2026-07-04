@@ -323,6 +323,10 @@ import {
   _dbSaveCredit,
   _dbDeleteCredit,
   _dbSaveCreditUsage,
+  _dbSavePendingShip,
+  _dbDeletePendingShip,
+  _dbSavePendingShipUsage,
+  _dbDeletePendingShipUsage,
   _dbSaveProduct,
   _dbPropagateVendorToOpenItems,
   _dbSaveMessage,
@@ -5297,9 +5301,60 @@ export default function App(){
     if(prev){setEstHistory(h=>{const existing=h[e2.id]||[];return{...h,[e2.id]:[{ts:new Date().toLocaleString(),user:cu?.name||'Portal Coach',snapshot:JSON.parse(JSON.stringify(prev))},...existing].slice(0,20)}})}
     setEsts(p=>{const ex=p.find(x=>x.id===e2.id);return ex?p.map(x=>x.id===e2.id?e2:x):[...p,e2]});
     logChange(prev?'updated':'created','Estimate',e2.id,e2.memo||'');return e2};
+  // ── Pending shipping charge carryover ──
+  // A billable shipping charge recorded against a customer via Manual Ship when
+  // they had no open order. It auto-attaches to the customer's next rep-created
+  // SO (New SO / estimate→SO): billed as pending_ship_amount, with the label cost
+  // folded into the SO's shipping cost so margin stays honest.
+  const pendingShipBalance=(c)=>{
+    const rows=(c?.pending_shipping||[]);
+    let amount=0,cost=0;
+    rows.forEach(r=>{const bal=Math.max(0,safeNum(r.amount)-safeNum(r.used));if(bal<=0)return;amount+=bal;cost+=safeNum(r.amount)>0?bal/safeNum(r.amount)*safeNum(r.cost):0});
+    return{amount:Math.round(amount*100)/100,cost:Math.round(cost*100)/100};
+  };
+  // Shape a freshly-created SO to carry the customer's pending shipping balance. Pure — no DB/state writes.
+  const applyPendingShipToSO=(so,c)=>{
+    if(!c||so?.pending_ship_applied)return so;
+    const{amount,cost}=pendingShipBalance(c);
+    if(amount<=0)return so;
+    const newCost=Math.round((safeNum(so._shipping_cost||so._shipstation_cost||0)+cost)*100)/100;
+    return{...so,pending_ship_applied:true,pending_ship_amount:amount,
+      ...(newCost>0?{_shipping_cost:newCost,_shipstation_cost:newCost}:{})};
+  };
+  // Consume the customer's pending shipping rows against an SO that now carries the charge:
+  // write usage rows, bump `used`, update state + DB. Idempotent — no-op if this SO already
+  // has pending-shipping usage recorded (guards against double-billing on re-save/reload).
+  const _consumePendingShipForSO=(so)=>{
+    if(!so||!so.pending_ship_applied||safeNum(so.pending_ship_amount)<=0)return;
+    const c=cust.find(x=>x.id===so.customer_id);
+    if(!c)return;
+    if((c.pending_shipping_usage||[]).some(u=>u.so_id===so.id))return;
+    let remaining=safeNum(so.pending_ship_amount);const newUsages=[];
+    const updatedRows=(c.pending_shipping||[]).map(r=>{
+      if(remaining<=0)return r;
+      const bal=Math.max(0,safeNum(r.amount)-safeNum(r.used));if(bal<=0)return r;
+      const take=Math.min(bal,remaining);remaining=Math.round((remaining-take)*100)/100;
+      const takeCost=safeNum(r.amount)>0?Math.round(take/safeNum(r.amount)*safeNum(r.cost)*100)/100:0;
+      const usageRec={pending_id:r.id,so_id:so.id,amount:take,cost:takeCost,description:'Shipping carried to '+so.id,created_by:cu?.name||'System',created_at:new Date().toISOString()};
+      _dbSavePendingShipUsage(usageRec);newUsages.push(usageRec);
+      const updated={...r,used:Math.round((safeNum(r.used)+take)*100)/100};_dbSavePendingShip(updated);
+      return updated;
+    });
+    if(newUsages.length===0)return;
+    setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,pending_shipping:updatedRows,pending_shipping_usage:[...(cc.pending_shipping_usage||[]),...newUsages]}:cc));
+    setSelC(s=>s&&s.id===c.id?{...s,pending_shipping:updatedRows,pending_shipping_usage:[...(s.pending_shipping_usage||[]),...newUsages]}:s);
+  };
   const savSO=(s,opts)=>{const sl=lockPrices(s);const skipMerge=opts?.skipMerge;
     // Save version history before overwriting
     const prev=sos.find(x=>x.id===sl.id);
+    // First persist of a brand-new SO (e.g. from newSOFn, which doesn't hit the DB until the
+    // editor's first save): auto-attach any pending shipping charge the customer is carrying.
+    if(!prev&&sl.customer_id&&!sl.pending_ship_applied){
+      const _psc=cust.find(x=>x.id===sl.customer_id);const _pb=_psc?pendingShipBalance(_psc):{amount:0,cost:0};
+      if(_pb.amount>0){sl.pending_ship_applied=true;sl.pending_ship_amount=_pb.amount;
+        const _nc=Math.round((safeNum(sl._shipping_cost||sl._shipstation_cost||0)+_pb.cost)*100)/100;
+        if(_nc>0){sl._shipping_cost=_nc;sl._shipstation_cost=_nc;}}
+    }
     // Last-line client guard: refuse to silently drop items. If the previous in-memory state had items but the
     // incoming save has none, alert the user and abort. This catches the OrderEditor "Print/Pack-Slip after a
     // race-loaded empty editor" failure mode that wiped SO-1001 before this guard existed.
@@ -5352,7 +5407,27 @@ export default function App(){
     else if(sl.webstore_id)pushWebstoreStatusSync(sl);
     // Promo usage is recorded in convertSO only — savSO does not duplicate it
     // Invoices are created explicitly via the Create Invoice modal — no auto-generation on status change.
+    // Consume any pending shipping charge this SO carries (idempotent — safe on every save).
+    if(sl.pending_ship_applied&&safeNum(sl.pending_ship_amount)>0)_consumePendingShipForSO(sl);
     return sl;
+  };
+  // Remove a carried pending shipping charge from an SO: restore the customer's balance (so it
+  // re-attaches to their next order), back out the carried label cost, and clear the SO flags.
+  const releasePendingShipFromSO=(so)=>{
+    const c=cust.find(x=>x.id===so.customer_id);
+    const usage=(c?.pending_shipping_usage||[]).filter(u=>u.so_id===so.id);
+    let restoredCost=0;
+    if(usage.length&&c){
+      const byRow={};usage.forEach(u=>{byRow[u.pending_id]=(byRow[u.pending_id]||0)+safeNum(u.amount);restoredCost+=safeNum(u.cost)});
+      Object.entries(byRow).forEach(([pid,amt])=>{const row=(c.pending_shipping||[]).find(r=>r.id===pid);if(row)_dbSavePendingShip({...row,used:Math.max(0,safeNum(row.used)-amt)})});
+      _dbDeletePendingShipUsage(so.id);
+      const _restore=cc=>({...cc,pending_shipping:(cc.pending_shipping||[]).map(r=>byRow[r.id]?{...r,used:Math.max(0,safeNum(r.used)-byRow[r.id])}:r),pending_shipping_usage:(cc.pending_shipping_usage||[]).filter(u=>u.so_id!==so.id)});
+      setCust(prev=>prev.map(cc=>cc.id===c.id?_restore(cc):cc));setSelC(s=>s&&s.id===c.id?_restore(s):s);
+    }
+    const newShipCost=Math.max(0,Math.round((safeNum(so._shipping_cost||so._shipstation_cost||0)-restoredCost)*100)/100);
+    const locked=savSO({...so,pending_ship_applied:false,pending_ship_amount:0,_shipping_cost:newShipCost,_shipstation_cost:newShipCost});
+    setESO(prev=>prev&&prev.id===so.id?locked:prev);
+    nf('Prior shipping charge removed — returned to '+(c?.name||'the customer')+"'s balance");
   };
   // Lightweight art-file-only update for the artwork library (add/remove/tag a mockup or production file).
   // Persists ONLY so_art_files — never re-persists items/decorations/PO lines — so a file change can't trip the
@@ -5539,10 +5614,15 @@ export default function App(){
     }
     const _convCust=cust.find(c=>c.id===est.customer_id);
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
+    // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
+    if(_convCust){const _pb=pendingShipBalance(_convCust);if(_pb.amount>0){so.pending_ship_applied=true;so.pending_ship_amount=_pb.amount;
+      const _nc=Math.round((safeNum(so._shipping_cost||0)+_pb.cost)*100)/100;if(_nc>0){so._shipping_cost=_nc;so._shipstation_cost=_nc;}}}
     const convertedEst={...est,status:'converted',updated_at:new Date().toLocaleString()};
     setSOs(p=>[...p,so]);setEsts(p=>p.map(e=>e.id===est.id?convertedEst:e));setEEst(null);
     // Explicitly save to DB immediately — don't rely solely on useEffect chain
     _dbSaveSO(so);_dbSaveEstimate(convertedEst);
+    // Consume the attached pending shipping charge (persisted SO — safe to record usage now).
+    if(so.pending_ship_applied)_consumePendingShipForSO(so);
     const c=cust.find(x=>x.id===so.customer_id);
     // Promo already deducted on the estimate — carry the usage onto the SO instead of deducting again.
     if(_promoAlreadyDeducted&&c){
@@ -6377,6 +6457,15 @@ export default function App(){
         _dbDeletePromoUsage(pid,soId);
       });
       setCust(prev=>prev.map(cc=>_isFam(cc)?{...cc,promo_periods:(cc.promo_periods||[]).map(p=>_byPeriod[p.id]?{...p,used:Math.max(0,safeNum(p.used)-_byPeriod[p.id])}:p),promo_usage:(cc.promo_usage||[]).filter(u=>u.so_id!==soId)}:cc));
+    }
+    // Release any pending shipping charge this SO consumed so it returns to the customer's balance
+    // and re-attaches to their next order (a deleted order was never billed).
+    const _soPendUsage=(_soCust?.pending_shipping_usage||[]).filter(u=>u.so_id===soId);
+    if(_soPendUsage.length&&_soCust){
+      const _byRow={};_soPendUsage.forEach(u=>{_byRow[u.pending_id]=(_byRow[u.pending_id]||0)+safeNum(u.amount)});
+      Object.entries(_byRow).forEach(([pid,amt])=>{const row=(_soCust.pending_shipping||[]).find(r=>r.id===pid);if(row)_dbSavePendingShip({...row,used:Math.max(0,safeNum(row.used)-amt)})});
+      _dbDeletePendingShipUsage(soId);
+      setCust(prev=>prev.map(cc=>cc.id===_soCust.id?{...cc,pending_shipping:(cc.pending_shipping||[]).map(r=>_byRow[r.id]?{...r,used:Math.max(0,safeNum(r.used)-_byRow[r.id])}:r),pending_shipping_usage:(cc.pending_shipping_usage||[]).filter(u=>u.so_id!==soId)}:cc));
     }
     logChange('deleted','SO',soId,so.memo||'');
     nf('Sales order '+soId+' deleted'+(linkedInvs.length?' ('+linkedInvs.filter(i=>i.paid===0).length+' invoices also removed)':''));
@@ -7963,7 +8052,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -8056,6 +8145,8 @@ export default function App(){
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onSaveCredit={async(credit)=>{await _dbSaveCredit(credit);const updated={...selC,credits:[...(selC.credits||[]).filter(c=>c.id!==credit.id),credit]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit saved')}}
       onDeleteCredit={async(id)=>{await _dbDeleteCredit(id);const updated={...selC,credits:(selC.credits||[]).filter(c=>c.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Credit removed')}}
+      onSavePendingShip={async(rec)=>{await _dbSavePendingShip(rec);const updated={...selC,pending_shipping:[...(selC.pending_shipping||[]).filter(r=>r.id!==rec.id),rec]};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge saved')}}
+      onDeletePendingShip={async(id)=>{await _dbDeletePendingShip(id);const updated={...selC,pending_shipping:(selC.pending_shipping||[]).filter(r=>r.id!==id)};setSelC(updated);setCust(prev=>prev.map(c=>c.id===updated.id?updated:c));nf('Pending shipping charge removed')}}
       onRefreshCustomer={c=>{setSelC(c);setCust(prev=>prev.map(pp=>pp.id===c.id?c:pp))}} onOpenWebstore={id=>{try{const u=new URL(window.location);u.searchParams.set('store',id);window.history.replaceState({},'',u)}catch(e){}setPg('webstores')}} onOpenOmgStore={id=>{const st=omgStores.find(s=>s.id===id);if(st){setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}}
       onReceivePayment={c=>{const portalOpen=(invs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&safeNum(i.total)>safeNum(i.paid));const histOpen=(histInvs||[]).filter(i=>i.customer_id===c.id&&i.status!=='paid'&&i.status!=='void'&&safeNum(i.total)>0);if(portalOpen.length+histOpen.length===0){nf('No open invoices for this customer','error');return}setPg('invoices');setInvF(f=>({...f,search:c.name||'',status:'open',group:'list',aging:'all',rep:'all'}))}}
       nf={nf}
@@ -19156,7 +19247,121 @@ export default function App(){
             ⚠️ Manual override — use when items need to ship outside the normal workflow. Cost and tracking are entered manually.
           </div>
 
-          {!manualShipModal.so?<>
+          {manualShipModal.noSo?(()=>{
+            // ── No-SO Manual Ship: record a shipping CHARGE against the customer that
+            // auto-attaches to their next sales order (customer had no open order). ──
+            const c=manualShipModal.cust||manualShipModal.custFilter;
+            const _da=manualShipModal.destAddr||{};
+            const _lbl={fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2};
+            const canLabel=manualShipModal.carrier!=='rep_delivery'&&manualShipModal.carrier!=='other';
+            const _doNoSoShip=async()=>{
+              if(!c){nf('No customer selected','error');return}
+              const cost=parseFloat(manualShipModal.cost)||0;
+              const charge=(manualShipModal.charge!==''&&manualShipModal.charge!=null)?(parseFloat(manualShipModal.charge)||0):cost;
+              if(charge<=0&&cost<=0&&!(manualShipModal.tracking||'').trim()){nf('Enter a shipping charge, cost, or tracking number','error');return}
+              const rec={id:'ps_'+Date.now(),customer_id:c.id,amount:Math.round(charge*100)/100,used:0,cost:Math.round(cost*100)/100,
+                source:'Manual ship '+new Date().toLocaleDateString()+(manualShipModal.itemDesc?' · '+manualShipModal.itemDesc:'')+(manualShipModal.notes?' — '+manualShipModal.notes:''),
+                tracking_number:(manualShipModal.tracking||'').trim(),carrier:manualShipModal.carrier||'',label_url:manualShipModal.labelUrl||null,
+                created_by:cu?.name||'',created_at:new Date().toISOString()};
+              await _dbSavePendingShip(rec);
+              setCust(prev=>prev.map(cc=>cc.id===c.id?{...cc,pending_shipping:[...(cc.pending_shipping||[]),rec]}:cc));
+              setSelC(s=>s&&s.id===c.id?{...s,pending_shipping:[...(s.pending_shipping||[]),rec]}:s);
+              addWhAction({type:'manual_ship_no_so',customer:c.name||'',charge:charge?'$'+charge.toFixed(2):'',cost:cost?'$'+cost.toFixed(2):'',tracking:(manualShipModal.tracking||'').trim(),carrier:manualShipModal.carrier||'',itemDesc:manualShipModal.itemDesc||'',notes:manualShipModal.notes||'',by:cu?.id||'warehouse'});
+              nf('Recorded — $'+charge.toFixed(2)+' shipping will be added to '+(c.name||'the customer')+"'s next order");
+              setManualShipModal(null);
+            };
+            return<>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                <button style={{background:'none',border:'none',cursor:'pointer',fontSize:14,color:'#64748b',padding:0}} onClick={()=>setManualShipModal({...manualShipModal,noSo:false,labelUrl:null})}>←</button>
+                <span style={{fontWeight:800,color:'#1e3a5f',fontSize:14}}>{c?.name||'Customer'}</span>
+                <span style={{fontSize:10,color:'#64748b'}}>— ship without an order</span>
+              </div>
+              <div style={{padding:'8px 10px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:6,fontSize:11,color:'#1e40af',marginBottom:12}}>
+                No open sales order — this records the shipping <strong>charge</strong> on {c?.name||'this customer'}, and it will be <strong>automatically added to their next sales order</strong>. The label cost is tracked so margin stays accurate.
+              </div>
+              {/* What's being shipped */}
+              <div style={{marginBottom:12}}>
+                <label style={_lbl}>What are you shipping? (optional)</label>
+                <input className="form-input" value={manualShipModal.itemDesc||''} placeholder="e.g. Sample jerseys, replacement item, coach package..." style={{fontSize:11}}
+                  onChange={e=>setManualShipModal({...manualShipModal,itemDesc:e.target.value})}/>
+              </div>
+              {/* Ship-to */}
+              <div style={{marginBottom:12,padding:10,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Ship To</div>
+                <div style={{display:'grid',gap:6}}>
+                  <div style={{display:'flex',gap:6}}>
+                    <div style={{flex:1}}><label style={_lbl}>Company / Recipient</label>
+                      <input className="form-input" style={{fontSize:11}} value={_da.company||''} placeholder="Recipient name" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),company:e.target.value}}))}/></div>
+                    <div style={{flex:1}}><label style={_lbl}>Attention (optional)</label>
+                      <input className="form-input" style={{fontSize:11}} value={_da.attn||''} placeholder="ATTN: name" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),attn:e.target.value}}))}/></div>
+                  </div>
+                  <input className="form-input" style={{fontSize:11}} value={_da.street1||''} placeholder="Street address" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),street1:e.target.value}}))}/>
+                  <input className="form-input" style={{fontSize:11}} value={_da.street2||''} placeholder="Suite / Unit (optional)" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),street2:e.target.value}}))}/>
+                  <div style={{display:'flex',gap:6}}>
+                    <input className="form-input" style={{fontSize:11,flex:2}} value={_da.city||''} placeholder="City" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),city:e.target.value}}))}/>
+                    <input className="form-input" style={{fontSize:11,width:60}} value={_da.state||''} placeholder="ST" maxLength={2} onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),state:e.target.value.toUpperCase()}}))}/>
+                    <input className="form-input" style={{fontSize:11,width:90}} value={_da.zip||''} placeholder="Zip" onChange={e=>setManualShipModal(m=>({...m,destAddr:{...(m.destAddr||{}),zip:e.target.value}}))}/>
+                  </div>
+                </div>
+              </div>
+              {/* Package & shipping */}
+              <div style={{display:'grid',gap:8,marginBottom:12}}>
+                <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                  <div style={{flex:1}}><label style={_lbl}>Carrier</label>
+                    <select className="form-select" value={manualShipModal.carrier||'fedex'} style={{width:'100%',fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
+                      <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
+                    </select></div>
+                  <div style={{flex:2}}><label style={_lbl}>Tracking Number</label>
+                    <input className="form-input" value={manualShipModal.tracking||''} placeholder="Enter tracking or create a label below..." style={{fontSize:11,fontFamily:'monospace'}} onChange={e=>setManualShipModal({...manualShipModal,tracking:e.target.value})}/></div>
+                </div>
+                <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
+                  <div><label style={_lbl}>Weight (lbs)</label>
+                    <input className="form-input" type="number" min="0.1" step="0.5" value={manualShipModal.weight===''||manualShipModal.weight===undefined?'':manualShipModal.weight} placeholder="5" style={{width:70,fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,weight:e.target.value===''?'':parseFloat(e.target.value)})}/></div>
+                  <div style={{display:'flex',alignItems:'center',gap:3}}>
+                    <label style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:2}}>Box (in)</label>
+                    <input className="form-input" type="number" min="1" placeholder="L" value={(manualShipModal.dimensions||{}).length||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}} onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),length:e.target.value}})}/>
+                    <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                    <input className="form-input" type="number" min="1" placeholder="W" value={(manualShipModal.dimensions||{}).width||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}} onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),width:e.target.value}})}/>
+                    <span style={{fontSize:10,color:'#94a3b8'}}>×</span>
+                    <input className="form-input" type="number" min="1" placeholder="H" value={(manualShipModal.dimensions||{}).height||''} style={{width:48,fontSize:11,padding:'4px 4px',textAlign:'center'}} onChange={e=>setManualShipModal({...manualShipModal,dimensions:{...(manualShipModal.dimensions||{}),height:e.target.value}})}/>
+                  </div>
+                  {canLabel&&ssConnected&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',whiteSpace:'nowrap',fontWeight:700}}
+                    onClick={async()=>{
+                      try{
+                        const w=parseFloat(manualShipModal.weight)||5;if(!w||w<=0){nf('Please enter package weight','error');return}
+                        const dims=manualShipModal.dimensions||{};if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
+                        const _org=(_da.company||'').trim()||(c?.name||'');const _attn=(_da.attn||'').trim();
+                        const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:true};
+                        if(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
+                        nf('Creating ShipStation label...');
+                        const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
+                        const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
+                        const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
+                        setManualShipModal(prev=>({...prev,tracking:label.trackingNumber||prev.tracking||'',carrier:label.carrierCode||prev.carrier,cost:cost!=null?cost.toString():prev.cost,charge:(prev.charge===''||prev.charge==null)&&cost!=null?cost.toString():prev.charge,labelUrl:label.labelDownload||labelUrl||null}));
+                        nf('Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
+                        addWhAction({type:'manual_label_created',customer:c?.name||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||manualShipModal.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                      }catch(err){nf('Label creation failed: '+err.message,'error')}
+                    }}>🏷️ Create Label</button>}
+                </div>
+                {manualShipModal.labelUrl&&<div style={{fontSize:10,color:'#166534',fontWeight:700}}>✓ Label created — printed/downloaded from the package view</div>}
+                <div style={{display:'flex',gap:8}}>
+                  <div style={{flex:1}}><label style={_lbl}>Shipping Cost ($) — what we paid</label>
+                    <input className="form-input" type="number" min="0" step="0.01" value={manualShipModal.cost} placeholder="0.00" style={{fontSize:11}}
+                      onChange={e=>setManualShipModal(m=>({...m,cost:e.target.value,charge:(m.charge===''||m.charge==null)?e.target.value:m.charge}))}/></div>
+                  <div style={{flex:1}}><label style={{...(_lbl),color:'#166534'}}>Charge to bill customer ($)</label>
+                    <input className="form-input" type="number" min="0" step="0.01" value={manualShipModal.charge==null?'':manualShipModal.charge} placeholder="defaults to cost" style={{fontSize:11,fontWeight:700,borderColor:'#a7f3d0'}}
+                      onChange={e=>setManualShipModal({...manualShipModal,charge:e.target.value})}/></div>
+                </div>
+                <div><label style={_lbl}>Notes</label>
+                  <input className="form-input" value={manualShipModal.notes||''} placeholder="Reason for manual ship..." style={{fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,notes:e.target.value})}/></div>
+              </div>
+              <div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,flexWrap:'wrap',alignItems:'center'}}>
+                <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800}} onClick={_doNoSoShip}>💾 Record Shipping Charge</button>
+                <button className="btn btn-secondary" onClick={()=>setManualShipModal(null)}>Cancel</button>
+                <span style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Adds to {c?.name||'customer'}'s next order</span>
+              </div>
+            </>;
+          })():!manualShipModal.so?<>
             {!manualShipModal.custFilter?<>
               {/* Step 1: Club / Customer Search */}
               <label style={{fontSize:12,fontWeight:700,color:'#334155',marginBottom:4,display:'block'}}>Search Customer / Club</label>
@@ -19207,8 +19412,12 @@ export default function App(){
                   if(st==='complete')return false;
                   return so.customer_id===manualShipModal.custFilter.id;
                 });
-                if(custSos.length===0)return<div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>;
-                return<div style={{display:'grid',gap:4}}>
+                const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
+                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
+                  📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
+                </button>;
+                if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
+                return<><div style={{display:'grid',gap:4}}>
                   {custSos.map(so=>{
                     const st=calcSOStatus(so);
                     const itemCount=safeItems(so).length;
@@ -19243,7 +19452,7 @@ export default function App(){
                       {so.memo&&<div style={{fontSize:10,color:'#64748b',marginTop:2,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{so.memo}</div>}
                     </div>;
                   })}
-                </div>;
+                </div>{_noSoBtn}</>;
               })()}
             </>}
           </>:<>

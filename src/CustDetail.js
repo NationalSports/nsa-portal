@@ -13,7 +13,7 @@ import { supabase } from './lib/supabase';
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -33,6 +33,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[promoPeriodEdit,setPromoPeriodEdit]=useState(null);// null or {id,allocated} — inline edit of a period's allocation
   // Credit state
   const[creditAdd,setCreditAdd]=useState(null);// null or {amount,source}
+  const[pendShipAdd,setPendShipAdd]=useState(null);// null or {amount,cost,source}
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
   const[portalComment,setPortalComment]=useState('');
   const[portalContactEdit,setPortalContactEdit]=useState(null);
@@ -773,6 +774,62 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 onSaveCredit(credit);setCreditAdd(null);nf('Credit of $'+creditAdd.amount.toLocaleString()+' added');
               }}>Add Credit</button>
               <button className="btn btn-sm btn-secondary" onClick={()=>setCreditAdd(null)}>Cancel</button>
+            </div>
+          </div>}
+        </div></div></>})()}
+
+      {/* ═══ PENDING SHIPPING CHARGES ═══ */}
+      {(()=>{const pend=customer.pending_shipping||[];const pendUsage=customer.pending_shipping_usage||[];
+        const totalCharged=pend.reduce((a,r)=>a+(r.amount||0),0);
+        const totalApplied=pend.reduce((a,r)=>a+(r.used||0),0);
+        const outstanding=pend.reduce((a,r)=>a+Math.max(0,(r.amount||0)-(r.used||0)),0);
+        return<><div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e40af',marginBottom:8}}>PENDING SHIPPING CHARGES</div>
+        </div>
+        <div className="card"><div className="card-header"><h2>Carried Shipping</h2></div>
+          <div className="card-body"><div className="stats-row">
+            <div className="stat-card"><div className="stat-label">Recorded</div><div className="stat-value" style={{color:'#2563eb'}}>${totalCharged.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Applied to Orders</div><div className="stat-value" style={{color:'#166534'}}>${totalApplied.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Waiting for Next Order</div><div className="stat-value" style={{color:outstanding>0?'#c2410c':'#94a3b8'}}>${outstanding.toLocaleString()}</div></div>
+          </div></div>
+        </div>
+        <div className="card"><div className="card-header"><h2>Shipping Charges</h2>
+          {!pendShipAdd&&<button className="btn btn-sm btn-primary" onClick={()=>setPendShipAdd({amount:0,source:''})}>+ Add Charge</button>}
+        </div>
+        <div className="card-body">
+          {pend.length===0&&!pendShipAdd&&<div className="empty">No pending shipping charges. Recorded from Warehouse → Manual Ship → “Ship without an order”; they auto-add to this customer’s next order.</div>}
+          {pend.map(r=>{const bal=Math.max(0,(r.amount||0)-(r.used||0));const usages=pendUsage.filter(u=>u.pending_id===r.id);
+            return<div key={r.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+              <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#dbeafe':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'📦':'✓'}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14}}>${(r.amount||0).toLocaleString()} {r.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {r.source}</span>}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Applied: ${(r.used||0).toLocaleString()} · Waiting: ${bal.toLocaleString()}{r.cost?' · Our cost: $'+(r.cost||0).toLocaleString():''}{r.tracking_number?' · '+(r.carrier?r.carrier+' ':'')+r.tracking_number:''}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>Added {r.created_at?new Date(r.created_at).toLocaleDateString():'-'}{r.created_by?' by '+r.created_by:''}</div>
+                {usages.length>0&&<div style={{marginTop:6}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>APPLIED TO</div>
+                  {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+                    <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
+                      <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
+                      <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||'-'}</span>
+                      <span style={{fontWeight:700,color:'#166534'}}>${(u.amount||0).toLocaleString()}</span>
+                    </div>)}
+                </div>}
+              </div>
+              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#dbeafe':'#f1f5f9',color:bal>0?'#1e40af':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' pending':'Applied'}</span>
+              {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this pending shipping charge of $'+(r.amount||0)+'?'))onDeletePendingShip(r.id)}}>×</button>}
+            </div>})}
+          {pendShipAdd&&<div style={{padding:14,background:'#eff6ff',borderRadius:8,border:'1px solid #bfdbfe',marginTop:8}}>
+            <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+              <div><label className="form-label">Charge ($)</label><input className="form-input" type="number" style={{width:120}} value={pendShipAdd.amount||''} onChange={e=>setPendShipAdd({...pendShipAdd,amount:parseFloat(e.target.value)||0})}/></div>
+              <div style={{flex:1}}><label className="form-label">Reason / Note</label><input className="form-input" value={pendShipAdd.source||''} onChange={e=>setPendShipAdd({...pendShipAdd,source:e.target.value})} placeholder="e.g., Manual ship, sample package..."/></div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{
+                if(!pendShipAdd.amount||pendShipAdd.amount<=0){nf('Enter a charge amount','error');return}
+                const rec={id:'ps_'+Date.now(),customer_id:customer.id,amount:pendShipAdd.amount,used:0,cost:0,source:pendShipAdd.source||'',tracking_number:'',carrier:'',label_url:null,created_by:cu?.name||'System',created_at:new Date().toISOString()};
+                onSavePendingShip(rec);setPendShipAdd(null);nf('Pending shipping charge of $'+pendShipAdd.amount.toLocaleString()+' added');
+              }}>Add Charge</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setPendShipAdd(null)}>Cancel</button>
             </div>
           </div>}
         </div></div></>})()}

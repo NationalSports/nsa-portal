@@ -277,6 +277,7 @@ const _dbLoad = async (opts={}) => {
       rSO,rSOArt,rSOFirm,rSOItems,rSODecos,rSOPicks,rSOPOs,rSOJobs,
       rInv,rInvPay,rInvItems,rMsg,rMsgReads,rOMG,rOMGProd,rIssues,rAppState,
       rPromoProg,rPromoPeriods,rPromoUsage,rCredits,rCreditUsage,
+      rPendingShip,rPendingShipUsage,
       rRepCsr,rAssignedTodos,rTodoComments,
       rDecoVendors,rDecoVendorPricing,
       rQuoteReqs,rQuoteReqItems,
@@ -343,6 +344,8 @@ const _dbLoad = async (opts={}) => {
       _grp('customers',()=>_safeQuery('customer_promo_usage'),true),
       _grp('customers',()=>_safeQuery('customer_credits'),true),
       _grp('customers',()=>_safeQuery('customer_credit_usage'),true),
+      _grp('customers',()=>_safeQuery('customer_pending_shipping'),true),
+      _grp('customers',()=>_safeQuery('customer_pending_shipping_usage'),true),
       _cold(()=>_safeQuery('rep_csr_assignments')),
       _grp('assigned_todos',()=>_safeQuery('assigned_todos'),true),
       _grp('assigned_todos',()=>_safeQuery('todo_comments'),true),
@@ -378,6 +381,7 @@ const _dbLoad = async (opts={}) => {
     // Promo data
     const promoPrograms=d(rPromoProg);const promoPeriods=d(rPromoPeriods);const promoUsage=d(rPromoUsage);
     const creditRecords=d(rCredits);const creditUsageRecords=d(rCreditUsage);
+    const pendingShipRecords=d(rPendingShip);const pendingShipUsageRecords=d(rPendingShipUsage);
     // Quote requests: attach items
     const quoteReqRaw=d(rQuoteReqs);const quoteReqItemsRaw=d(rQuoteReqItems);
     const quote_requests=quoteReqRaw.map(qr=>({...qr,items:quoteReqItemsRaw.filter(i=>i.quote_request_id===qr.id).sort((a,b)=>a.sort_order-b.sort_order)}));
@@ -396,7 +400,9 @@ const _dbLoad = async (opts={}) => {
       promo_periods:ownerPeriods,
       promo_usage:promoUsage.filter(pu=>ownerPeriods.some(pp=>pp.id===pu.period_id)),
       credits:creditRecords.filter(cr=>cr.customer_id===c.id),
-      credit_usage:creditUsageRecords.filter(cu2=>creditRecords.filter(cr=>cr.customer_id===c.id).some(cr=>cr.id===cu2.credit_id))}});
+      credit_usage:creditUsageRecords.filter(cu2=>creditRecords.filter(cr=>cr.customer_id===c.id).some(cr=>cr.id===cu2.credit_id)),
+      pending_shipping:pendingShipRecords.filter(ps=>ps.customer_id===c.id),
+      pending_shipping_usage:pendingShipUsageRecords.filter(pu=>pendingShipRecords.filter(ps=>ps.customer_id===c.id).some(ps=>ps.id===pu.pending_id))}});
     // Products: attach _inv and _alerts from product_inventory
     const products=prodRaw.map(p=>{const invRows=prodInv.filter(pi=>pi.product_id===p.id);const _inv={};const _alerts={};invRows.forEach(r=>{_inv[r.size]=r.quantity;if(r.alert_threshold)_alerts[r.size]=r.alert_threshold});const _pimg=_pimgMap[p.id];return{...p,image_url:p.image_url||p.image_front_url||(_pimg&&_pimg.front)||'',back_image_url:p.back_image_url||p.image_back_url||(_pimg&&_pimg.back)||'',images:p.images||(_pimg&&_pimg.gallery)||[],_sizeCosts:(p.size_costs&&Object.keys(p.size_costs).length)?p.size_costs:undefined,_inv,_alerts}});
     // Estimates: attach items (with decorations) and art_files
@@ -1857,6 +1863,39 @@ const _dbSaveCreditUsage = async (usage) => {
     return true;
   }catch(e){console.error('[DB] save credit usage:',e);return false}
 };
+// ── Pending-shipping DB functions (mirror of credits) ──
+const _dbSavePendingShip = async (rec) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_pending_shipping').upsert(rec,{onConflict:'id'});
+    if(error){console.error('[DB] save pending ship:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save pending ship:',e);return false}
+};
+const _dbDeletePendingShip = async (id) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_pending_shipping').delete().eq('id',id);
+    if(error){console.error('[DB] delete pending ship:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete pending ship:',e);return false}
+};
+const _dbSavePendingShipUsage = async (usage) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_pending_shipping_usage').insert(usage);
+    if(error){console.error('[DB] save pending ship usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] save pending ship usage:',e);return false}
+};
+const _dbDeletePendingShipUsage = async (soId) => {
+  if(!supabase)return false;
+  try{
+    const{error}=await supabase.from('customer_pending_shipping_usage').delete().eq('so_id',soId);
+    if(error){console.error('[DB] delete pending ship usage:',error.message);return false}
+    return true;
+  }catch(e){console.error('[DB] delete pending ship usage:',e);return false}
+};
 const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
 const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
 const _dbSaveProduct = async (p) => {
@@ -2180,6 +2219,10 @@ export {
   _dbSaveCredit,
   _dbDeleteCredit,
   _dbSaveCreditUsage,
+  _dbSavePendingShip,
+  _dbDeletePendingShip,
+  _dbSavePendingShipUsage,
+  _dbDeletePendingShipUsage,
   _dbSaveProduct,
   _dbPropagateVendorToOpenItems,
   _dbSaveMessage,
