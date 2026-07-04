@@ -40,10 +40,16 @@ async function loadAll(admin, table, cols, apply) {
 exports.handler = async (event) => {
   const qs = (event && event.queryStringParameters) || {};
   const testTo = qs.test ? String(qs.test).trim() : '';
-  const isHttp = !!(event && event.httpMethod);
+  // Netlify invokes scheduled functions via an internal POST whose body is
+  // {"next_run": "..."} — so event.httpMethod is set on the CRON run too. Detect the
+  // schedule POSITIVELY by that body and never block it (keying off httpMethod would
+  // silently 400 the cron and send nothing); only a genuine manual call (no next_run)
+  // must carry ?test= (or ?dry=1 to preview recipients).
+  const isScheduled = (() => { try { return !!(event && event.body && JSON.parse(event.body).next_run); } catch (_) { return false; } })();
+  const dryRun = qs.dry === '1' || qs.dry === 'true';
   const testKey = process.env.OPS_DIGEST_TEST_KEY || '';
-  if (isHttp) {
-    if (!testTo) return { statusCode: 400, body: 'Manual runs must pass ?test=<team email> (single-recipient test). The full send only runs on schedule.' };
+  if (!isScheduled) {
+    if (!testTo && !dryRun) return { statusCode: 400, body: 'Manual runs must pass ?test=<team email> (single-recipient test), or ?dry=1 to preview recipients. The full send only runs on schedule.' };
     if (testKey && qs.key !== testKey) return { statusCode: 403, body: 'Missing or bad ?key.' };
   }
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
@@ -113,13 +119,15 @@ exports.handler = async (event) => {
     }
 
     // ── Scheduled all-reps send ──
-    let sent = 0;
+    let sent = 0; const dryList = [];
     for (const [repId, rowsRaw] of Object.entries(byRep)) {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
       if (rep.ar_digest_opt_out === true) continue;
       const rows = rowsRaw.slice().sort((a, b) => b.dpd - a.dpd);
       if (!rows.length) continue;
+      if (dryRun) { dryList.push(`${rep.name} <${rep.email}> — ${rows.length} past-due`); }
+      else {
       const html = buildArHtml({ rep, rows, dateLabel, portal, custName });
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST',
@@ -132,11 +140,13 @@ exports.handler = async (event) => {
         }),
       });
       if (res.ok) sent++; else console.error('[ar-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+      }
 
       // Copy this rep's A/R recap to any configured account-team members.
       for (const extraId of (WEEKLY_EXTRA_RECIPIENTS[repId] || [])) {
         const ex = repById[extraId];
         if (!ex || !ex.email || ex.is_active === false || ex.ar_digest_opt_out === true || !/.+@.+\..+/.test(ex.email)) continue;
+        if (dryRun) { dryList.push(`${ex.name} <${ex.email}> ← ${rep.name}'s A/R`); continue; }
         const exRes = await fetch('https://api.brevo.com/v3/smtp/email', {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
@@ -150,6 +160,7 @@ exports.handler = async (event) => {
         if (exRes.ok) sent++; else console.error('[ar-digest] brevo(cc)', ex.email, exRes.status, await exRes.text().catch(() => ''));
       }
     }
+    if (dryRun) return { statusCode: 200, body: `DRY RUN — ${dateLabel} — would email ${dryList.length}:\n` + dryList.join('\n') };
     console.log(`[ar-digest] ${dateLabel}: ${Object.keys(byRep).length} reps with past-due, ${sent} emailed`);
     return { statusCode: 200, body: `Emailed ${sent}` };
   } catch (e) {
