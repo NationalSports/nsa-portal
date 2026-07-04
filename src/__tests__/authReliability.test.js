@@ -2,7 +2,7 @@
  * refresh signs the user out (PR: auth-reliability-fixes). The behavioral guarantee under test:
  * a transient/network refresh failure must NEVER be classified 'fatal', because 'fatal' is the only
  * path that force-logs-out — that misclassification was the "it randomly logged me out" bug. */
-import { _classifyRefresh, _isAuthError } from '../lib/dbEngine';
+import { _classifyRefresh, _isAuthError, _isPermissionDenied } from '../lib/dbEngine';
 
 describe('_classifyRefresh — transient failures never force logout', () => {
   test('ok: refresh returned a session with no error', () => {
@@ -48,5 +48,23 @@ describe('_isAuthError classification', () => {
     expect(_isAuthError(null)).toBe(false);
     expect(_isAuthError({ message: 'duplicate key value violates unique constraint' })).toBe(false);
     expect(_isAuthError({ code: '23505' })).toBe(false);
+  });
+});
+
+describe('_isPermissionDenied — terminal RLS denial vs recoverable expiry', () => {
+  test('true for a genuine permission denial on a valid session', () => {
+    expect(_isPermissionDenied({ code: '42501' })).toBe(true);
+    expect(_isPermissionDenied({ message: 'new row violates row-level security policy for table "app_state"' })).toBe(true);
+    expect(_isPermissionDenied({ message: 'permission denied for table team_members' })).toBe(true);
+  });
+
+  test('false when the same RLS-shaped error carries an expiry marker (recoverable)', () => {
+    // an expired token degraded to anon also trips row-level-security — but it IS refreshable, so it
+    // must NOT be classified as a terminal permission denial
+    expect(_isPermissionDenied({ message: 'JWT expired: row-level security policy violated' })).toBe(false);
+    expect(_isPermissionDenied({ message: 'not authenticated' })).toBe(false);
+    expect(_isPermissionDenied({ code: 'PGRST301' })).toBe(false);
+    expect(_isPermissionDenied(null)).toBe(false);
+    expect(_isPermissionDenied({ message: 'duplicate key' })).toBe(false);
   });
 });

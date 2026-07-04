@@ -10,6 +10,12 @@ Harnesses:
   (coach art decision: H1 stale-link guard, H2 mock pinning, complete
   reject/approve write sets, SO-1199 contradictory-state heal). Same runner
   recipe as below, substituting the art fixture/scenarios and migration 00172.
+- `rls_step1_fixture.sql` + `rls_step1_scenarios.sql` — migration `00173`
+  (RLS lockdown step 1). Stubs `auth.uid()` and switches Postgres roles to prove,
+  end to end, that anon/authenticated-coach WRITES are blocked while every current
+  READ is preserved and linked staff + service_role keep full access. Ends with
+  `ALL_RLS_STEP1_SCENARIOS_PASSED`. Same runner recipe, substituting the RLS
+  fixture/scenarios and migration 00173.
 
 ## place_webstore_order (00171)
 

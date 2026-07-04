@@ -863,7 +863,7 @@ const _dbSaveEstimateInner = async (est) => {
       }
       if(_rpcErr){
         const _m=_rpcErr.message||String(_rpcErr);
-        if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id);
+        if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id,_rpcErr);
         const _friendly=_m.includes('CUSTOMER_MISSING')
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
           :(_m.includes('ESTIMATE_ID_MISSING')||_m.includes('ESTIMATE_PAYLOAD_EMPTY'))
@@ -927,7 +927,7 @@ const _dbSaveEstimateInner = async (est) => {
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     // Items + decorations were written atomically by the save_estimate RPC above — no separate insert,
     // delete-old-rows swap, or rollback is needed here. (oldItemIds is still read above for the safety guards.)
-    if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
+    if(decoFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(est.id,{message:_failMsg});_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,_failMsg||'unknown estimate save error');_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();_dbRecentSaves[est.id]=Date.now();_dbStaleCooldown.delete(est.id);
     // Bump local version to match server (DB trigger increments on UPDATE) — ONLY when the RPC didn't
     // return the post-save version (pre-00128 fallback). When it did, est._version is already exact and
@@ -936,7 +936,7 @@ const _dbSaveEstimateInner = async (est) => {
     // the most common conflict case.
     if(est._version&&!_serverVersioned)est._version=est._version+1;
     return true;
-  }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
 const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
 // Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
@@ -1108,7 +1108,7 @@ const _dbSaveSOInner = async (so) => {
     if(_bgSync&&oldItemIds.length>0&&_clientSoItemCount<_oldDistinctItemIndexCount&&!(so._itemsHydrated||_everHydratedItems.has(so.id))){
       console.warn('[DB] SAFETY: background sync would shrink',so.id,'items ('+_clientSoItemCount+'<'+_oldDistinctItemIndexCount+(oldItemIds.length!==_oldDistinctItemIndexCount?' raw='+oldItemIds.length:'')+') — items not hydrated, preserving DB items, skipping item writes; art files already synced');
       if(_dataLossAlert)_dataLossAlert({kind:'bg_shrink_blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'background SO save would shrink items'});
-      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
+      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
     }
     if(oldItemIds.length>0&&_clientSoItemCount!==_oldDistinctItemIndexCount){
@@ -1343,7 +1343,7 @@ const _dbSaveSOInner = async (so) => {
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss
     if(firm_dates?.length){const{error:fdErr}=await supabase.from('so_firm_dates').insert(firm_dates.map(f=>({..._pick(f,_firmDateCols),so_id:so.id})));if(fdErr){console.error('[DB] so_firm_dates insert failed:',fdErr.message);saveFailed=true;_failMsg=_failMsg||('so_firm_dates: '+fdErr.message)}}
     if(!items?.length){
-      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+      if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
       // Intentional removal of all items (validated by the safety guards above). Since we no longer delete
       // upfront, remove the old item rows and their children here.
       if(oldItemIds.length){
@@ -1467,12 +1467,12 @@ const _dbSaveSOInner = async (so) => {
     if(finalUpdatedAt!==existingSO?.updated_at){
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
-    if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
+    if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
-  }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
+  }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
 // Shadow-capture hook (OFF unless REACT_APP_SO_CAPTURE==='1'): after a SUCCESSFUL
 // SO save, fire-and-forget a copy of the saved order + its persisted state to the
@@ -1500,7 +1500,7 @@ const _dbSaveArtFilesInner = async (so) => {
     const art_files=so.art_files;
     if(!Array.isArray(art_files))return true;// nothing hydrated to sync
     const{data:_dbAf,error:_dbAfErr}=await _retryNet(()=>supabase.from('so_art_files').select('*').eq('so_id',so.id));
-    if(_dbAfErr){if(_isAuthError(_dbAfErr))return _handleAuthSaveFailure(so.id);console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
+    if(_dbAfErr){if(_isAuthError(_dbAfErr))return _handleAuthSaveFailure(so.id,_dbAfErr);console.error('[DB] so_art_files read failed:',_dbAfErr.message);if(_dbNotify)_dbNotify('Could not save artwork file change: '+_dbAfErr.message,'error');return false}
     const _dbAfVerById=new Map((_dbAf||[]).map(r=>[r.id,r._version||0]));
     if(art_files.length){
       const _resolved=_resolveArtRows(art_files,_dbAf,so.id);
@@ -1508,11 +1508,11 @@ const _dbSaveArtFilesInner = async (so) => {
         const soAfRows=_resolved.map(({row})=>_sanitizeArtRow({..._pick(row,_artCols),archived:!!row.archived,so_id:so.id}));
         const{error:afErr}=await _retryNet(()=>supabase.from('so_art_files').upsert(soAfRows,{onConflict:'so_id,id'}));
         if(afErr){
-          if(_isAuthError(afErr))return _handleAuthSaveFailure(so.id);
+          if(_isAuthError(afErr))return _handleAuthSaveFailure(so.id,afErr);
           if(afErr.message?.includes('art_sizes')||afErr.message?.includes('garment_colors')||afErr.message?.includes('item_mockups')||afErr.message?.includes('schema cache')||afErr.code==='PGRST204'||afErr.message?.includes('not found')){
             const coreRows=soAfRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_artExtraCols.has(k))cr[k]=r[k]});return cr});
             const{error:afErr2}=await supabase.from('so_art_files').upsert(coreRows,{onConflict:'so_id,id'});
-            if(afErr2){if(_isAuthError(afErr2))return _handleAuthSaveFailure(so.id);console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
+            if(afErr2){if(_isAuthError(afErr2))return _handleAuthSaveFailure(so.id,afErr2);console.error('[DB] so_art_files upsert failed (core):',afErr2.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr2.message,'error');return false}
           }else{console.error('[DB] so_art_files upsert failed:',afErr.message);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+afErr.message,'error');return false}
         }
         _resolved.forEach(({client,baseVersion})=>{client._version=baseVersion+1});
@@ -1536,7 +1536,7 @@ const _dbSaveArtFilesInner = async (so) => {
     // otherwise never set this, unlike the full SO/estimate/customer saves.
     _dbRecentSaves[so.id]=Date.now();
     return true;
-  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
+  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
 const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
@@ -1690,11 +1690,25 @@ const _recoverSession=async()=>{
   }
   return false;
 };
+// A genuine PERMISSION denial (a valid session that simply lacks rights — e.g. a magic-link coach or a
+// not-yet-linked account hitting a staff-only RLS policy) is NOT an expired session. It won't be fixed
+// by a token refresh, so refreshing / forcing a re-login just yields a misleading "session expired"
+// banner and an every-60s retry loop a re-login can never clear. Postgres reports it as 42501 /
+// "row-level security" / "permission denied" — but an EXPIRED token degraded to anon also trips
+// "row-level security" while carrying a jwt/expired marker and IS recoverable, so those are excluded.
+// This split matters now that RLS is being enforced table-by-table.
+const _isPermissionDenied=(err)=>{
+  if(!err)return false;
+  const m=(err.message||'').toLowerCase();
+  if(/jwt|not authenticated|no api key|expired/.test(m))return false;// looks like RLS but is really an expiry — recoverable
+  return (err.code||err.status)==='42501'||err.code==='42501'||m.includes('row-level security')||m.includes('permission denied');
+};
 // Routes an auth-related save failure: keeps the entity queued (so it auto-flushes once the session is
 // restored) and triggers recovery, but suppresses the misleading per-save error toast. Always returns false.
-const _handleAuthSaveFailure=(id)=>{
-  if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,'session expired — sign in again to save');_persistFailedIds()}
-  _recoverSession();
+const _handleAuthSaveFailure=(id,err)=>{
+  const perm=_isPermissionDenied(err);
+  if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,perm?'permission denied — your account can’t save this change; contact an admin':'session expired — sign in again to save');_persistFailedIds()}
+  if(!perm)_recoverSession();// a permission denial can't be refreshed away — don't churn recovery or bounce to login
   return false;
 };
 // Proactive guard: ensure the access token isn't expired/near-expiry *before* a write goes out. A
@@ -1730,7 +1744,7 @@ const _dbSaveCustomer = async (c) => {
         const _drop=new Set(_optional.slice(0,_n));
         const _r=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols.filter(c2=>!_drop.has(c2))),{onConflict:'id'}));
         if(!_r.error){_saved=true;console.warn('[DB] customer saved without '+[..._drop].join(', ')+' (run latest migrations)')}
-        else if(_n===_optional.length){if(_isAuthError(_r.error))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer upsert error:',_r.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+_r.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+_r.error.message,'error');return false}
+        else if(_n===_optional.length){if(_isAuthError(_r.error))return _handleAuthSaveFailure(c.id,_r.error);console.error('[DB] save customer upsert error:',_r.error.message);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: '+_r.error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+_r.error.message,'error');return false}
       }
     }
     // Upsert contacts then delete removed ones (avoids DELETE+INSERT race condition)
@@ -1753,7 +1767,7 @@ const _dbSaveCustomer = async (c) => {
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(c._version)c._version=c._version+1;
     console.log('[DB] Customer saved:',c.id,c.name);return true;
-  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(c.id);console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
+  }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(c.id,e);console.error('[DB] save customer:',e);_dbSaveFailedIds.add(c.id);_recordSaveError(c.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Customer save failed: '+e.message,'error');return false}
 };
 const _dbSavePromoProgram = async (prog) => {
   if(!supabase)return false;
@@ -1872,7 +1886,7 @@ const _dbSaveProduct = async (p) => {
         // here cleared the dirty flag and silently dropped the change (gone on next reload, no banner).
         // Route it through the same mark-failed + session-recover path as estimates/SOs/customers so
         // the background retry re-saves it once the session refreshes.
-        return _handleAuthSaveFailure(p.id);
+        return _handleAuthSaveFailure(p.id,error);
       }else{console.error('[DB] save product:',error.message);_dbSaveFailedIds.add(p.id);_recordSaveError(p.id,'products: '+error.message);_persistFailedIds();if(_dbNotify)_dbNotify('Product save failed: '+error.message,'error');return false}
     }
     // Always save product images to app_state as reliable backup (works even without image columns)
@@ -2207,5 +2221,6 @@ export {
   _isNetErr,
   _retryNet,
   _isAuthError,
+  _isPermissionDenied,
   _classifyRefresh,
 };
