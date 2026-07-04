@@ -92,10 +92,17 @@ exports.handler = async (event) => {
   // address; the unattended all-reps send runs solely from the Netlify scheduler
   // (a scheduled invocation carries no httpMethod). Belt-and-suspenders so hitting
   // the function URL can never blast the whole team.
-  const isHttp = !!(event && event.httpMethod);
+  // Netlify invokes scheduled functions via an internal POST whose body is
+  // {"next_run": "..."} — so event.httpMethod is set on the CRON run too. Keying the
+  // guard off httpMethod (as before) silently 400'd the scheduled run and sent
+  // nothing, while manual ?test= calls sailed through. Detect the schedule POSITIVELY
+  // by that body and never block it; only a genuine manual call (no next_run) must
+  // carry ?test= (or ?dry=1 to enumerate recipients without sending).
+  const isScheduled = (() => { try { return !!(event && event.body && JSON.parse(event.body).next_run); } catch (_) { return false; } })();
+  const dryRun = qs.dry === '1' || qs.dry === 'true';
   const testKey = process.env.OPS_DIGEST_TEST_KEY || '';
-  if (isHttp) {
-    if (!testTo) return { statusCode: 400, body: 'Manual runs must pass ?test=<team email> (single-recipient test). The full send only runs on schedule.' };
+  if (!isScheduled) {
+    if (!testTo && !dryRun) return { statusCode: 400, body: 'Manual runs must pass ?test=<team email> (single-recipient test), or ?dry=1 to preview recipients. The full send only runs on schedule.' };
     if (testKey && qs.key !== testKey) return { statusCode: 403, body: 'Missing or bad ?key.' };
   }
   const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY || '';
@@ -274,7 +281,7 @@ exports.handler = async (event) => {
     }
 
     // ── Send ──
-    let sent = 0, skippedOptOut = 0;
+    let sent = 0, skippedOptOut = 0; const dryList = [];
     for (const [repId, b] of Object.entries(byRep)) {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
@@ -283,25 +290,28 @@ exports.handler = async (event) => {
       if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
-
-      const html = buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo });
       const shortN = b.picked.filter((p) => p.short).length;
-      const res = await fetch('https://api.brevo.com/v3/smtp/email', {
-        method: 'POST',
-        headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-        body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
-          to: [{ email: rep.email, name: rep.name || '' }],
-          subject: opsSubject(b, shortN, dayLabel),
-          htmlContent: html,
-        }),
-      });
-      if (res.ok) sent++; else console.error('[ops-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+
+      if (dryRun) { dryList.push(`${rep.name} <${rep.email}> — ${activity} items`); }
+      else {
+        const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+          method: 'POST',
+          headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+          body: JSON.stringify({
+            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            to: [{ email: rep.email, name: rep.name || '' }],
+            subject: opsSubject(b, shortN, dayLabel),
+            htmlContent: buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo }),
+          }),
+        });
+        if (res.ok) sent++; else console.error('[ops-digest] brevo', rep.email, res.status, await res.text().catch(() => ''));
+      }
 
       // Copy this rep's recap to any configured account-team members.
       for (const extraId of (DAILY_EXTRA_RECIPIENTS[repId] || [])) {
         const ex = repById[extraId];
         if (!ex || !ex.email || ex.is_active === false || ex.ops_digest_opt_out === true || !/.+@.+\..+/.test(ex.email)) continue;
+        if (dryRun) { dryList.push(`${ex.name} <${ex.email}> ← ${rep.name}'s recap`); continue; }
         const exRes = await fetch('https://api.brevo.com/v3/smtp/email', {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
@@ -315,6 +325,7 @@ exports.handler = async (event) => {
         if (exRes.ok) sent++; else console.error('[ops-digest] brevo(cc)', ex.email, exRes.status, await exRes.text().catch(() => ''));
       }
     }
+    if (dryRun) return { statusCode: 200, body: `DRY RUN — ${dayLabel} — would email ${dryList.length}:\n` + dryList.join('\n') };
     console.log(`[ops-digest] ${dayLabel}: ${orders.length}/${headers.length} orders in working set, ${Object.keys(byRep).length} reps bucketed, ${sent} emailed, ${skippedOptOut} opted out`);
     return { statusCode: 200, body: `Emailed ${sent}` };
   } catch (e) {
