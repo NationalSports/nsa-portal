@@ -4129,7 +4129,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -4231,7 +4231,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -4493,7 +4493,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
 
       {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
+      {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
@@ -6333,6 +6333,84 @@ const styleKey = (name) => {
   return base || n;
 };
 
+// ── Shared style-rows machinery (TemplateColorPicker + SkuImporter) ──
+// Group matched products into one row per garment STYLE and pull sibling colorways so
+// the rep can bring in more colors. matched = [{ product, meta }] where meta rides from
+// the source (template item / spreadsheet row): { price, fundraise, category, kit, required }.
+// styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
+// ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
+async function buildStyleRows(matched) {
+  const styleMap = new Map();
+  const savedByKey = new Map();
+  (matched || []).forEach(({ product: p, meta }) => { if (!p) return;
+    const key = styleKey(p.name);
+    if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: meta?.price, fundraise: meta?.fundraise || 0, category: meta?.category || null, kit: meta?.kit || null, required: !!meta?.required }, defaults: new Set() }); savedByKey.set(key, []); }
+    styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
+    savedByKey.get(key).push(p); });
+  const keys = [...styleMap.keys()];
+  // Pull every sibling sharing a style's base name (prefix), then keep only those whose
+  // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
+  const byKey = new Map();
+  await Promise.all(keys.map(async (key) => {
+    const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
+    const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
+    const sibs = (data || []).filter((p) => styleKey(p.name) === key);
+    const seen = new Set(); const list = [];
+    [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
+    byKey.set(key, list);
+  }));
+  return keys.map((key) => {
+    const s = styleMap.get(key);
+    // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
+    const colMap = new Map();
+    (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
+    const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
+    const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
+    return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
+  });
+}
+// Row aggregates — whether a style is coming in at all, and the addable-picked total.
+const rowItemIn = (r, existingPids) => [...r.picked].some((id) => !existingPids.has(id));
+const rowItemAvail = (r, existingPids) => r.colors.some((c) => !existingPids.has(c.id));
+const rowsTotalPicked = (rows, existingPids) => rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+// Build the apply plan applyTemplateColors expects (colors already in store are re-filtered there).
+const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
+
+// The style-rows list: one block per style with a whole-style checkbox and per-color
+// swatches. renderRowExtra(r, ri, included) slots custom controls (e.g. the importer's
+// price/fundraise inputs) into an included row's header area.
+function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtra }) {
+  const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
+  const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  return (
+    <>
+      {rows.map((r, ri) => { const included = rowItemIn(r, existingPids); const avail = rowItemAvail(r, existingPids); return (
+        <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0, flexWrap: 'wrap' }}>
+            <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
+            {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            {included && renderRowExtra && renderRowExtra(r, ri, included)}
+            {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
+            {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
+          </div>
+          {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
+              <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
+                <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
+                <div style={{ fontSize: 9.5, color: on && !inStore ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.color || c.sku}</div>
+                {on && !inStore && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
+              </button>
+            ); })}
+          </div>}
+        </div>
+      ); })}
+    </>
+  );
+}
+
 function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
@@ -6348,56 +6426,19 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       const found = [];
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
-      // Group template items by STYLE so every color of a garment folds into one card.
-      // styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
-      // ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
-      const styleMap = new Map();
-      const savedByKey = new Map();
-      items.forEach((it) => { const p = bySku.get(String(it.sku || '').trim().toUpperCase()); if (!p) return;
-        const key = styleKey(p.name);
-        if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() }); savedByKey.set(key, []); }
-        styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
-        savedByKey.get(key).push(p); });
-      const keys = [...styleMap.keys()];
-      // Pull every sibling sharing a style's base name (prefix), then keep only those whose
-      // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
-      const byKey = new Map();
-      await Promise.all(keys.map(async (key) => {
-        const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
-        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
-        const sibs = (data || []).filter((p) => styleKey(p.name) === key);
-        const seen = new Set(); const list = [];
-        [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
-        byKey.set(key, list);
-      }));
-      const built = keys.map((key) => {
-        const s = styleMap.get(key);
-        // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
-        const colMap = new Map();
-        (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
-        const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
-        const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
-      });
+      const matched = items.map((it) => ({ product: bySku.get(String(it.sku || '').trim().toUpperCase()), meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required } })).filter((m) => m.product);
+      const built = await buildStyleRows(matched);
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [tpl]);
-  const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
-  const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
-  // Whether an ITEM (style) is being brought in at all — i.e. at least one not-already-in-store
-  // color is picked. The item checkbox toggles the whole style on (its saved colors) or off.
-  const itemIn = (r) => [...r.picked].some((id) => !existingPids.has(id));
-  const itemAvail = (r) => r.colors.some((c) => !existingPids.has(c.id));
-  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
   const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
-  const itemsAvailable = rows.filter(itemAvail).length;
-  const itemsIncluded = rows.filter(itemIn).length;
-  const totalPicked = rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+  const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
+  const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
+  const totalPicked = rowsTotalPicked(rows, existingPids);
   const confirm = async () => {
     setBusy(true);
-    const plan = rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
-    await onConfirm(plan);
+    await onConfirm(rowsToPlan(rows, forcedCategory));
     setBusy(false);
   };
   return (
@@ -6418,27 +6459,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
         <div style={{ padding: 16, maxHeight: '60vh', overflowY: 'auto' }}>
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading colors…</div>
             : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>None of this template's items resolve to live products.</div>
-            : rows.map((r, ri) => { const included = itemIn(r); const avail = itemAvail(r); return (
-              <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0 }}>
-                  <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
-                  {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
-                  {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
-                  {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
-                </div>
-                {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
-                    <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
-                      <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
-                      <div style={{ fontSize: 9.5, color: on && !inStore ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.color || c.sku}</div>
-                      {on && !inStore && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
-                      {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
-                    </button>
-                  ); })}
-                </div>}
-              </div>
-            ); })}
+            : <StyleColorRows rows={rows} setRows={setRows} existingPids={existingPids} />}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !totalPicked} onClick={confirm}>{busy ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'}`}</button>
@@ -7227,8 +7248,13 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 // the store. Only a SKU column is required; optional Price, Fundraising, Category, Kit,
 // Mandatory. SKUs are matched to products (case-insensitive) and a preview shows
 // matched / already-in-store / not-found before anything is added.
-function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
+function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, onClose }) {
+  // Spreadsheet → style rows: parse SKUs, group into one row per garment style with
+  // sibling colorways pickable (same grid as the template color picker), price/fundraise
+  // optional (blank = each color's list price / the store's fundraising rule), then the
+  // picked colors fold into multi-color cards via the template-apply path.
   const [rows, setRows] = useState([]);
+  const [issues, setIssues] = useState(null); // { notfound: [skus], dupRows: n, matched: n }
   const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -7241,7 +7267,7 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
   const pickField = (obj, keys) => { for (const k of Object.keys(obj)) { if (keys.includes(norm(k))) { const v = obj[k]; if (v !== '' && v != null) return v; } } return ''; };
 
   const downloadTemplate = () => {
-    const csv = 'SKU,Price,Fundraising,Category,Kit,Mandatory\nJX4452,30,,Spirit Wear,,no\nA595,45,5,Coaches,,no\n';
+    const csv = 'SKU,Price,Fundraising,Category,Kit,Mandatory\nJX4452,,,Spirit Wear,,no\nA595,45,5,Coaches,,no\n';
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'store-import-template.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
@@ -7249,7 +7275,7 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 
   const parseFile = async (file) => {
     if (!file) return;
-    setErr(''); setDone(null); setBusy(true); setFileName(file.name);
+    setErr(''); setDone(null); setBusy(true); setFileName(file.name); setRows([]); setIssues(null);
     try {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
@@ -7263,8 +7289,11 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
         kit: String(pickField(r, ['kit', 'package', 'bundle'])).trim(),
         mandatory: ['yes', 'y', 'true', '1', 'x', 'required'].includes(norm(pickField(r, ['mandatory', 'required']))),
       })).filter((r) => r.sku);
-      if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setRows([]); setBusy(false); return; }
-      const skus = [...new Set(parsed.map((r) => r.sku))];
+      if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setBusy(false); return; }
+      // Dedupe rows repeating the same SKU (first row's price/category wins).
+      const seenSku = new Set(); let dupRows = 0;
+      const uniq = parsed.filter((r) => { const k = r.sku.toUpperCase(); if (seenSku.has(k)) { dupRows += 1; return false; } seenSku.add(k); return true; });
+      const skus = uniq.map((r) => r.sku);
       const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
       const found = [];
       for (let i = 0; i < variants.length; i += 150) {
@@ -7273,47 +7302,40 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
       }
       const byKey = new Map();
       found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
-      const seen = new Set();
-      const preview = parsed.map((r) => {
-        const product = byKey.get(r.sku.toUpperCase()) || null;
-        let status = 'new';
-        if (!product) status = 'notfound';
-        else if (existingPids && existingPids.has(product.id)) status = 'dup';
-        else if (seen.has(product.id)) status = 'dupfile';
-        if (product && status === 'new') seen.add(product.id);
-        return { ...r, product, status };
+      const notfound = [];
+      const matched = [];
+      uniq.forEach((r) => {
+        const product = byKey.get(r.sku.toUpperCase());
+        if (!product) { notfound.push(r.sku); return; }
+        matched.push({ product, meta: { price: r.price, fundraise: r.fundraise, category: r.category || null, kit: r.kit || null, required: r.mandatory } });
       });
-      setRows(preview);
+      if (!matched.length) { setErr('None of those SKUs matched the catalog.' + (notfound.length ? ` Not found: ${notfound.slice(0, 8).join(', ')}${notfound.length > 8 ? '…' : ''}` : '')); setBusy(false); return; }
+      const built = await buildStyleRows(matched);
+      setRows(built);
+      setIssues({ notfound, dupRows, matched: matched.length });
     } catch (e) { setErr('Could not read that file: ' + (e.message || e)); setRows([]); }
     setBusy(false);
   };
 
-  const counts = rows.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
-  const addable = rows.filter((r) => r.status === 'new');
+  const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
+  const totalPicked = rowsTotalPicked(rows, existingPids);
+  const stylesIn = rows.filter((r) => rowItemIn(r, existingPids)).length;
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
 
   const doImport = async () => {
-    if (!addable.length || !onAddMany) return;
+    if (!totalPicked || !onApplyColors) return;
     setAdding(true);
-    const res = await onAddMany(addable.map((r) => ({
-      product: r.product,
-      price: (r.price !== '' && r.price != null) ? r.price : r.product.retail_price,
-      fundraise: r.fundraise || 0,
-      category: r.category || null,
-      kit_name: r.kit || null,
-      required: r.mandatory,
-    })));
+    const res = await onApplyColors(rowsToPlan(rows, null));
     setAdding(false);
-    if (res && !res.error) setDone({ added: res.added });
+    if (res && !res.error) setDone({ added: res.added || 0 });
   };
 
-  const statusChip = (s) => {
-    const m = { new: ['Will add', '#166534', '#dcfce7'], dup: ['Already in store', '#92400e', '#fef3c7'], dupfile: ['Duplicate row', '#92400e', '#fef3c7'], notfound: ['SKU not found', '#b91c1c', '#fee2e2'] }[s] || ['—', '#64748b', '#f1f5f9'];
-    return <span style={{ fontSize: 11, fontWeight: 700, color: m[1], background: m[2], borderRadius: 6, padding: '2px 8px' }}>{m[0]}</span>;
-  };
+  // Blank fundraising follows the store rule at checkout — say which rule that is.
+  const fundHint = storeFund?.enabled ? (Number(storeFund.pct) ? `${storeFund.pct}% rule` : Number(storeFund.flat) ? `${money(storeFund.flat)} rule` : 'store rule') : 'none';
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 860, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>Import a product list</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
@@ -7323,13 +7345,16 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
             <div style={{ textAlign: 'center', padding: '20px 10px' }}>
               <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
               <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 4 }}>Imported {done.added} item{done.added === 1 ? '' : 's'}</div>
-              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog now — set art, colors and any per-item overrides next.</div>
-              <button className="btn btn-primary" onClick={onClose}>Done</button>
+              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog{done.added ? ' — next, put your logo on them' : ''}.</div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                {onGoToArt && done.added > 0 && <button className="btn btn-primary" onClick={() => { onClose(); onGoToArt(); }}>🎨 Place artwork →</button>}
+                <button className={onGoToArt && done.added > 0 ? 'btn btn-secondary' : 'btn btn-primary'} onClick={onClose}>Done</button>
+              </div>
             </div>
           ) : (
             <>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>
-                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item's list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
+                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export. Only a <b>SKU</b> column is required — price and fundraising are optional: blank price uses each color's list price, blank fundraising follows the store rule{storeFund?.enabled ? ` (${fundHint})` : ''}.
                 <button type="button" onClick={downloadTemplate} style={{ marginLeft: 6, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}>Download template ↓</button>
               </div>
 
@@ -7338,9 +7363,9 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
                 onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
                 onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); parseFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}
                 onClick={() => fileRef.current && fileRef.current.click()}
-                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: '22px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
-                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: 14 }}>{busy ? 'Reading…' : fileName ? `${fileName} — drop another to replace` : 'Drop your spreadsheet here, or click to browse'}</div>
-                <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>
+                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: rows.length ? '10px 14px' : '22px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: rows.length ? 12.5 : 14 }}>{busy ? 'Reading…' : fileName ? `${fileName} — drop another to replace` : 'Drop your spreadsheet here, or click to browse'}</div>
+                {!rows.length && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>}
                 <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: 'none' }} onChange={(e) => { parseFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
               </div>
 
@@ -7348,35 +7373,31 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 
               {rows.length > 0 && (
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
-                    <span style={{ color: '#166534' }}>{counts.new || 0} to add</span>
-                    {counts.dup ? <span style={{ color: '#92400e' }}>{counts.dup} already in store</span> : null}
-                    {counts.dupfile ? <span style={{ color: '#92400e' }}>{counts.dupfile} duplicate row{counts.dupfile === 1 ? '' : 's'}</span> : null}
-                    {counts.notfound ? <span style={{ color: '#b91c1c' }}>{counts.notfound} not found</span> : null}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
+                    <span style={{ color: '#166534' }}>{stylesIn} style{stylesIn === 1 ? '' : 's'} · {totalPicked} color{totalPicked === 1 ? '' : 's'} to add</span>
+                    {issues?.dupRows ? <span style={{ color: '#92400e' }}>{issues.dupRows} duplicate row{issues.dupRows === 1 ? '' : 's'} skipped</span> : null}
+                    {issues?.notfound?.length ? <span style={{ color: '#b91c1c' }} title={issues.notfound.join(', ')}>{issues.notfound.length} not found: {issues.notfound.slice(0, 5).join(', ')}{issues.notfound.length > 5 ? '…' : ''}</span> : null}
+                    <span style={{ marginLeft: 'auto' }} />
+                    <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+                    <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
                   </div>
-                  <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 10 }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase', position: 'sticky', top: 0, background: '#f8fafc' }}>
-                        <th style={{ padding: '7px 10px' }}>SKU</th><th style={{ padding: '7px 10px' }}>Product</th><th style={{ padding: '7px 10px' }}>Price</th><th style={{ padding: '7px 10px' }}>Status</th>
-                      </tr></thead>
-                      <tbody>
-                        {rows.slice(0, 200).map((r, i) => (
-                          <tr key={i} style={{ borderTop: '1px solid #f1f5f9', opacity: r.status === 'new' ? 1 : 0.7 }}>
-                            <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{r.sku}</td>
-                            <td style={{ padding: '6px 10px' }}>{r.product ? [r.product.name, r.product.color].filter(Boolean).join(' · ') : <span style={{ color: '#b91c1c' }}>—</span>}</td>
-                            <td style={{ padding: '6px 10px' }}>{r.product ? money((r.price !== '' && r.price != null) ? r.price : r.product.retail_price) : '—'}</td>
-                            <td style={{ padding: '6px 10px' }}>{statusChip(r.status)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{ maxHeight: '48vh', overflowY: 'auto', paddingRight: 2 }}>
+                    <StyleColorRows rows={rows} setRows={setRows} existingPids={existingPids} renderRowExtra={(r, ri) => (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                        <label style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>$
+                          <input type="number" step="0.01" min="0" value={r.meta.price ?? ''} onChange={(e) => setMeta(ri, { price: e.target.value })} placeholder="auto" title="Selling price for every color of this style — blank uses each color's list price" style={{ width: 64, marginLeft: 3, fontSize: 12, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                        </label>
+                        <label style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>FR
+                          <input type="number" step="0.01" min="0" value={r.meta.fundraise || ''} onChange={(e) => setMeta(ri, { fundraise: e.target.value })} placeholder={storeFund?.enabled ? fundHint : '0'} title={storeFund?.enabled ? `Per-item fundraising — blank follows the store rule (${fundHint}) at checkout` : 'Per-item fundraising dollars'} style={{ width: 62, marginLeft: 3, fontSize: 12, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                        </label>
+                      </span>
+                    )} />
                   </div>
-                  {rows.length > 200 && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Showing first 200 of {rows.length} rows.</div>}
                 </div>
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!addable.length || adding} onClick={doImport} style={{ opacity: (!addable.length || adding) ? 0.5 : 1 }}>{adding ? 'Adding…' : `Add ${addable.length} item${addable.length === 1 ? '' : 's'} to store`}</button>
+                <button className="btn btn-primary" disabled={!totalPicked || adding} onClick={doImport} style={{ opacity: (!totalPicked || adding) ? 0.5 : 1 }}>{adding ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'} to store`}</button>
                 <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
               </div>
             </>
