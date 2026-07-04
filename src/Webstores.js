@@ -2109,16 +2109,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const label = String(cwName || '').trim();
     const withLogo = (a) => {
       const color_ways = Array.isArray(a.color_ways) ? [...a.color_ways] : [];
-      if (label && !color_ways.some((c) => c && String(c.garment_color || '').trim().toLowerCase() === label.toLowerCase())) {
-        color_ways.push({ id: 'cw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), garment_color: label, inks: [''], source: 'rep' });
+      // Resolve the target color way's stable id (create it, tagged rep-made, if new).
+      let cwId = null;
+      if (label) {
+        const found = color_ways.find((c) => c && String(c.garment_color || '').trim().toLowerCase() === label.toLowerCase());
+        if (found) cwId = found.id;
+        else { cwId = 'cw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); color_ways.push({ id: cwId, garment_color: label, inks: [''], source: 'rep' }); }
       }
-      // Replace the entry we're setting (this CW, or the default), keep the rest.
+      // Replace the entry we're setting (matched by CW id OR label, so a renamed color way
+      // never leaves a duplicate), keep the rest; empty label replaces only the default.
       const keep = (Array.isArray(a.web_logos) ? a.web_logos : []).filter((w) => {
         if (!w || !w.url) return false;
         const wl = String(w.color_way || '').trim().toLowerCase();
-        return label ? wl !== label.toLowerCase() : !(w.is_default || !wl);
+        return label ? (wl !== label.toLowerCase() && !(cwId && w.color_way_id === cwId)) : !(w.is_default || !wl);
       });
-      const entry = label ? { url, color_way: label, source: 'rep' } : { url, color_way: '', is_default: true, source: 'rep' };
+      const entry = label ? { url, color_way: label, color_way_id: cwId || undefined, source: 'rep' } : { url, color_way: '', is_default: true, source: 'rep' };
       const web_logos = normalizeWebLogos([...keep, entry], color_ways);
       const def = (web_logos.find((w) => w.is_default || !((w.color_way || '').trim())) || {}).url || a.web_logo_url || (label ? '' : url);
       return { ...a, color_ways, web_logos, web_logo_url: def };

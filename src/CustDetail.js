@@ -1154,10 +1154,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // CW): replace this URL's web-logo entries with one per chosen color way (+ an
     // "all garments" default when asDefault). Other cutouts are untouched.
     const setUrlCws=(url,names,asDefault)=>{
-      const others=webLogos.filter(w=>w.url!==url);
+      // Preserve this cutout's own metadata (e.g. source:'rep') on the rebuilt entries.
+      const src=(webLogos.find(w=>w.url===url)||{}).source;
+      const mk=(extra)=>{const e={url,...extra};if(src)e.source=src;return e};
+      // Only ONE cutout may be the "all garments" default — when we set it here, drop it
+      // from every other cutout so two images can't both claim the default.
+      const others=webLogos.filter(w=>w.url!==url).filter(w=>asDefault?!(w.is_default||!((w.color_way||'').trim())):true);
       const entries=[];
-      if(asDefault)entries.push({url,color_way:''});
-      (names||[]).forEach(nm=>{const n=(nm||'').trim();if(n)entries.push({url,color_way:n})});
+      if(asDefault)entries.push(mk({color_way:'',is_default:true}));
+      (names||[]).forEach(nm=>{const n=(nm||'').trim();if(n)entries.push(mk({color_way:n}))});
       saveWebLogos([...others,...entries]);
     };
     // Open the multi-CW picker for an existing cutout, pre-checked with what it already covers.
@@ -1288,7 +1293,6 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</div>
             </div>)}
           </div>}
-          {saveArt&&<datalist id={'cw-names-'+art.id}>{cws.map((cw,ci)=>cw.garment_color?<option key={ci} value={cw.garment_color}/>:null)}</datalist>}
           {saveArt?<div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
             onClick={pickWebLogoAdd}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
