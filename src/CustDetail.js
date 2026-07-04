@@ -11,6 +11,35 @@ import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
 
+// Multi-select color-way picker — tie ONE web-logo cutout to any number of color ways
+// (reuse without re-uploading the same file per CW), plus an "all garments" default.
+function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onApply,onClose}){
+  const _norm=(s)=>String(s||'').trim().toLowerCase();
+  const names=(cws||[]).map((cw,ci)=>cw.garment_color||('Color way '+(ci+1)));
+  const [checked,setChecked]=useState(()=>new Set((initialNames||[]).map(_norm)));
+  const [def,setDef]=useState(!!initialDefault);
+  const toggle=(nm)=>setChecked(s=>{const n=new Set(s);const k=_norm(nm);n.has(k)?n.delete(k):n.add(k);return n});
+  const count=[...checked].filter(k=>names.some(nm=>_norm(nm)===k)).length+(def?1:0);
+  const apply=()=>onApply&&onApply(names.filter(nm=>checked.has(_norm(nm))),def);
+  return <div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();onClose&&onClose()}}>
+    <div className="modal" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2 style={{fontSize:16}}>{title||'Color ways'}</h2><button className="modal-close" onClick={()=>onClose&&onClose()}>x</button></div>
+      <div className="modal-body">
+        <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Tie this one cutout to every color way it fits — no need to re-upload it per color way.</div>
+        <label style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(def?'#c7d2fe':'#e2e8f0'),background:def?'#eef2ff':'#fff',borderRadius:8,marginBottom:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569'}}><input type="checkbox" checked={def} onChange={()=>setDef(v=>!v)} style={{width:16,height:16,cursor:'pointer'}}/>All garments <span style={{fontSize:11,fontWeight:500,color:'#94a3b8'}}>(default fallback)</span></label>
+        <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'44vh',overflowY:'auto'}}>
+          {names.map((nm,ci)=>{const on=checked.has(_norm(nm));return <label key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(on?'#c7d2fe':'#e2e8f0'),borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#1e293b',background:on?'#eef2ff':'#fff'}}><input type="checkbox" checked={on} onChange={()=>toggle(nm)} style={{width:16,height:16,cursor:'pointer'}}/><span style={{fontSize:10,fontWeight:700,color:'#fff',background:'#64748b',borderRadius:5,padding:'1px 6px',flexShrink:0}}>CW {ci+1}</span>{nm}</label>;})}
+          {!names.length&&<div style={{fontSize:12,color:'#94a3b8',padding:'8px 2px'}}>No color ways yet — add them in the Color Ways section above, or just use “All garments”.</div>}
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}>
+        <button className="btn btn-primary" disabled={!count} onClick={apply}>Apply{count?(' ('+count+')'):''}</button>
+        <button className="btn btn-secondary" onClick={()=>onClose&&onClose()}>Cancel</button>
+      </div>
+    </div>
+  </div>;
+}
+
 // CUSTOMER DETAIL
 
 function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
@@ -1121,21 +1150,34 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logos:clean,web_logo_url:def,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
       setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);
     };
+    // Tie one cutout URL to a set of color ways (reuse — no re-uploading the same file per
+    // CW): replace this URL's web-logo entries with one per chosen color way (+ an
+    // "all garments" default when asDefault). Other cutouts are untouched.
+    const setUrlCws=(url,names,asDefault)=>{
+      // Preserve this cutout's own metadata (e.g. source:'rep') on the rebuilt entries.
+      const src=(webLogos.find(w=>w.url===url)||{}).source;
+      const mk=(extra)=>{const e={url,...extra};if(src)e.source=src;return e};
+      // Only ONE cutout may be the "all garments" default — when we set it here, drop it
+      // from every other cutout so two images can't both claim the default.
+      const others=webLogos.filter(w=>w.url!==url).filter(w=>asDefault?!(w.is_default||!((w.color_way||'').trim())):true);
+      const entries=[];
+      if(asDefault)entries.push(mk({color_way:'',is_default:true}));
+      (names||[]).forEach(nm=>{const n=(nm||'').trim();if(n)entries.push(mk({color_way:n}))});
+      saveWebLogos([...others,...entries]);
+    };
+    // Open the multi-CW picker for an existing cutout, pre-checked with what it already covers.
+    const openAssign=(g)=>setCwPrompt({title:'Color ways this web logo covers',multi:true,initialNames:g.labels,initialDefault:g.isDefault,onPickMany:(names,asDefault)=>{setUrlCws(g.url,names,asDefault);setCwPrompt(null)}});
     const addWebLogoFile=async(file)=>{
       if(!file)return;
       const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      // Prompt for the color way this web logo is for (or create a new one), then save.
-      const _assign=(cwName,cwList)=>{saveWebLogos([...webLogos,{url,color_way:cwName||''}],cwList);setCwPrompt(null);nf&&nf('Web logo added'+(cwName?' — '+cwName:''))};
-      // A just-created CW isn't in art.color_ways yet (state update is async) — pass the fresh
-      // list through so the new entry still gets its color_way_id stamped.
-      setCwPrompt({title:'Which color way is this web logo for?',onPick:_assign,onPickNew:(name)=>{const _newCws=[...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}];persistColorWays(_newCws);_assign(name,_newCws)}});
+      // One cutout can cover several color ways — pick any number (pre-checked with the CWs
+      // still missing a logo), or "All garments". Reuse means no re-uploading per CW.
+      setCwPrompt({title:'Which color ways is this web logo for?',multi:true,initialNames:_missingCws,onPickMany:(names,asDefault)=>{setUrlCws(url,names,asDefault);setCwPrompt(null);const cnt=(names||[]).length+(asDefault?1:0);nf&&nf('Web logo added'+(cnt?(' — covers '+cnt+' color way'+(cnt===1?'':'s')):''))}});
     };
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
-    const setWebLogoCw=(i,cw)=>saveWebLogos(webLogos.map((w,x)=>x===i?{...w,color_way:cw}:w));
-    const removeWebLogoAt=(i)=>saveWebLogos(webLogos.filter((_,x)=>x!==i));
     // Add a web logo straight to a named color way (the per-CW empty-slot path) — no
     // "which color way?" prompt, since the slot already says which one it's for.
     const addWebLogoForCw=async(file,cwName)=>{
@@ -1157,6 +1199,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     webLogos.forEach(w=>{const l=(w.color_way||'').trim().toLowerCase();if(l)_haveCwLogo.add(l);const c=w.color_way_id&&cws.find(x=>x&&x.id===w.color_way_id);const cl=c?(c.garment_color||'').trim().toLowerCase():'';if(cl)_haveCwLogo.add(cl)});
     const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
     const _hasDefaultWebLogo=webLogos.some(w=>w.url&&(w.is_default||!((w.color_way||'').trim())));
+    // Group web logos by cutout URL so one image shows every color way it covers (reuse).
+    const _byUrl=[];{const _m=new Map();webLogos.forEach(w=>{if(!w||!w.url)return;let g=_m.get(w.url);if(!g){g={url:w.url,labels:[],isDefault:false,repMade:false};_m.set(w.url,g);_byUrl.push(g)}const lbl=(w.color_way||'').trim();if(w.source==='rep')g.repMade=true;if(w.is_default||!lbl)g.isDefault=true;else if(!g.labels.some(x=>x.toLowerCase()===lbl.toLowerCase()))g.labels.push(lbl)})}
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header">{isOwnLib?<input value={art.name||''} onChange={e=>editLib({name:e.target.value})} placeholder="Art group name…" style={{flex:1,fontSize:18,fontWeight:800,border:'1px solid #e2e8f0',borderRadius:8,padding:'5px 10px',marginRight:10,outline:'none',color:'#0f172a'}}/>:<h2>{art.name||'Untitled'}</h2>}<button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -1217,16 +1261,22 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{fontWeight:500,marginTop:2,color:_hasDefaultWebLogo?'#b45309':'#b91c1c'}}>{_hasDefaultWebLogo?'These fall back to the default web logo on webstores & order mockups — add a per-color-way transparent PNG for the cleanest result.':'Add a transparent PNG for each so this art places cleanly on webstore garments and order mockups.'}</div>
             </div>
           </div>}
-          {webLogos.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
-            {webLogos.map((w,wi)=><div key={wi} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
+          {_byUrl.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(190px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
+            {_byUrl.map((g)=><div key={g.url} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
               <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:'#f0fdf4',position:'relative'}}>
-                <img src={w.url} alt="" style={{maxWidth:'82%',maxHeight:'82%',objectFit:'contain'}}/>
-                {saveArt&&<button onClick={()=>removeWebLogoAt(wi)} title="Remove" style={{position:'absolute',top:4,right:4,width:20,height:20,borderRadius:10,border:'none',background:'rgba(220,38,38,0.9)',color:'#fff',cursor:'pointer',fontSize:12,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
+                <img src={g.url} alt="" style={{maxWidth:'82%',maxHeight:'82%',objectFit:'contain'}}/>
+                {g.repMade&&<span title="Made by a rep (recolored) — an artist can replace it with a cleaner cutout" style={{position:'absolute',top:4,left:4,fontSize:8.5,fontWeight:800,color:'#92400e',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:5,padding:'1px 5px'}}>REP</span>}
+                {saveArt&&<button onClick={()=>saveWebLogos(webLogos.filter(w=>w.url!==g.url))} title="Remove this cutout" style={{position:'absolute',top:4,right:4,width:20,height:20,borderRadius:10,border:'none',background:'rgba(220,38,38,0.9)',color:'#fff',cursor:'pointer',fontSize:12,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
               </div>
               <div style={{padding:'6px 7px',borderTop:'1px solid #ecfdf5'}}>
-                {saveArt
-                  ?<input list={'cw-names-'+art.id} value={w.color_way||''} onChange={e=>setWebLogoCw(wi,e.target.value)} placeholder="All garments (default)" title="Assign this logo to a color way" style={{width:'100%',boxSizing:'border-box',fontSize:11,fontWeight:600,color:'#166534',border:'1px solid #d1fae5',borderRadius:6,background:'#fff',padding:'3px 6px',outline:'none'}}/>
-                  :<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{w.color_way||'All garments'}</div>}
+                {saveArt?<>
+                  <div style={{fontSize:8.5,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,color:'#94a3b8',marginBottom:4}}>Covers</div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                    {g.isDefault&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}>All garments<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.is_default||!((w.color_way||'').trim())))))} title="Stop using as the default" style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>}
+                    {g.labels.map(lbl=><span key={lbl} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}>{lbl}<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.color_way||'').trim().toLowerCase()===lbl.toLowerCase())))} title={'Stop covering '+lbl} style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>)}
+                    <button onClick={()=>openAssign(g)} title="Tie this cutout to more color ways" style={{fontSize:10,fontWeight:700,color:'#2563eb',background:'#eff6ff',border:'1px dashed #bfdbfe',borderRadius:6,padding:'2px 6px',cursor:'pointer'}}>+ color way</button>
+                  </div>
+                </>:<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{[...(g.isDefault?['All garments']:[]),...g.labels].join(', ')||'All garments'}</div>}
               </div>
             </div>)}
           </div>}
@@ -1243,7 +1293,6 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</div>
             </div>)}
           </div>}
-          {saveArt&&<datalist id={'cw-names-'+art.id}>{cws.map((cw,ci)=>cw.garment_color?<option key={ci} value={cw.garment_color}/>:null)}</datalist>}
           {saveArt?<div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
             onClick={pickWebLogoAdd}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
@@ -1327,7 +1376,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isOwnLib&&<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5',marginRight:isP&&!art._appliesToAll?0:'auto'}} onClick={delLib}><Icon name="trash" size={12}/> Delete</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div>
-    {cwPrompt&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
+    {cwPrompt&&cwPrompt.multi&&<CwMultiPrompt title={cwPrompt.title} cws={cws} initialNames={cwPrompt.initialNames} initialDefault={cwPrompt.initialDefault} onApply={(names,def)=>cwPrompt.onPickMany&&cwPrompt.onPickMany(names,def)} onClose={()=>setCwPrompt(null)}/>}
+    {cwPrompt&&!cwPrompt.multi&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
       <div className="modal" style={{maxWidth:430}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2 style={{fontSize:16}}>{cwPrompt.title||'Apply to color way'}</h2><button className="modal-close" onClick={()=>setCwPrompt(null)}>x</button></div>
         <div className="modal-body">

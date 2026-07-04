@@ -49,3 +49,29 @@ export function resolveItemPlacement(preset, placeByStyle, placeByItem, styleKey
   const ov = (placeByItem && placeByItem[itemId]) || null;
   return ov ? Object.assign({}, merged, ov) : merged;
 }
+
+// Classify a product name into a garment TYPE for placement memory — "left chest on a
+// hoodie" sits differently than on a tee (collar, zipper, pocket), so remembered
+// placements key on this. Order matters: more specific words first (a "hooded long
+// sleeve tee" is a hoodie; a "polo tee" doesn't exist, but "pocket tee" must stay tee).
+const GARMENT_TYPES = [
+  ['hoodie', /hood/],
+  ['quarter_zip', /(1\/4|quarter|qtr|half)[\s-]*zip/],
+  ['jacket', /jacket|windbreaker|anorak|parka|coat/],
+  ['polo', /polo/],
+  ['crew', /crew\s*neck|crewneck|sweatshirt|fleece\s*crew/],
+  ['jersey', /jersey/],
+  ['tank', /tank|singlet|sleeveless/],
+  ['long_sleeve', /long[\s-]*sleeve|\bls\b/],
+  ['tee', /\btee\b|t[\s-]*shirt|\btshirt\b|\btop\b/],
+  ['shorts', /short\b|shorts/],
+  ['pants', /pant|jogger|legging|tight/],
+  ['hat', /\bcap\b|\bhat\b|visor|beanie/],
+  ['bag', /\bbag\b|backpack|duffel|sackpack|tote/],
+  ['socks', /sock/],
+];
+export function garmentTypeOf(name) {
+  const s = String(name || '').toLowerCase();
+  for (const [type, re] of GARMENT_TYPES) { if (re.test(s)) return type; }
+  return 'other';
+}

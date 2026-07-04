@@ -855,25 +855,28 @@ function PersoMock({ takesNumber, takesName, decorations = [], sampleName = 'PLA
 }
 
 function BundleCollage({ comps, theme }) {
-  const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
-  if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
-  const n = imgs.length;
-  const Tile = ({ src, style }) => (
-    <div style={{ overflow: 'hidden', background: '#EEF1F6', ...style }}>
-      <img className="sf-img" src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+  // Each tile shows the component WITH its inherited decoration (the kit garments are
+  // decorated in production — the preview must say so, not show blank garments).
+  const tiles = comps.filter((c) => c.img).slice(0, 4);
+  if (!tiles.length) return <Placeholder theme={theme} label="Package" />;
+  const n = tiles.length;
+  const Tile = ({ c, style }) => (
+    <div style={{ position: 'relative', overflow: 'hidden', background: '#EEF1F6', ...style }}>
+      <img className="sf-img" src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      <DecoOverlay decorations={c.decorations} colorName={c.color} />
     </div>
   );
   const grid = (cols, rows, children) => (
     <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: cols, gridTemplateRows: rows, gap: 3, background: '#fff' }}>{children}</div>
   );
-  if (n === 1) return grid('1fr', '1fr', [<Tile key={0} src={imgs[0]} />]);
-  if (n === 2) return grid('1fr 1fr', '1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+  if (n === 1) return grid('1fr', '1fr', [<Tile key={0} c={tiles[0]} />]);
+  if (n === 2) return grid('1fr 1fr', '1fr', tiles.map((c, i) => <Tile key={i} c={c} />));
   if (n === 3) return grid('1.5fr 1fr', '1fr 1fr', [
-    <Tile key={0} src={imgs[0]} style={{ gridRow: '1 / span 2' }} />,
-    <Tile key={1} src={imgs[1]} />,
-    <Tile key={2} src={imgs[2]} />,
+    <Tile key={0} c={tiles[0]} style={{ gridRow: '1 / span 2' }} />,
+    <Tile key={1} c={tiles[1]} />,
+    <Tile key={2} c={tiles[2]} />,
   ]);
-  return grid('1fr 1fr', '1fr 1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+  return grid('1fr 1fr', '1fr 1fr', tiles.map((c, i) => <Tile key={i} c={c} />));
 }
 
 // Map a category name to a garment silhouette kind for the placeholder tile.
@@ -904,6 +907,10 @@ function ColorDots({ rows, theme, max = 4 }) {
 function compMeta(c, wpById, compInfo) {
   const wp = c && c.webstore_product_id && wpById ? wpById[c.webstore_product_id] : null;
   if (wp) return { name: wp.name, image: wp.image_front_url, sizes: wp.available_sizes, color: wp.color, decorations: wp.decorations };
+  // Not linked to an in-store item — if the store carries a single of the SAME base
+  // product, inherit its photo/decorations so the component still shows its decorated look.
+  const twin = c && c.product_id && wpById ? Object.values(wpById).find((w) => w && w.product_id === c.product_id && w.kind !== 'bundle') : null;
+  if (twin) return { name: twin.name, image: twin.image_front_url, sizes: twin.available_sizes, color: twin.color, decorations: twin.decorations };
   const base = (compInfo || {})[c.product_id] || {};
   return { name: base.name || c.sku, image: base.image_front_url, sizes: base.available_sizes, color: null, decorations: null };
 }
@@ -914,7 +921,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
     ? bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; })
+        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; })
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
@@ -989,7 +996,7 @@ function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById =
 // component item with its image and name. Shoppers see exactly what's in the kit.
 function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById = null }) {
   const comps = bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; });
+    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; });
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
@@ -1010,7 +1017,9 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
         {comps.map((c, i) => (
           <div key={i} style={{ flex: '1 1 0', minWidth: 120, padding: '14px 12px 16px', borderRight: i < comps.length - 1 ? `1px solid ${theme.line}` : 'none', textAlign: 'center' }}>
             <div style={{ width: '100%', aspectRatio: '1 / 1', background: theme.warm, borderRadius: 4, overflow: 'hidden', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {c.img ? <img src={c.img} alt="" style={{ width: '80%', height: '80%', objectFit: 'contain', display: 'block' }} /> : <GarmentTile theme={theme} store={store} kind="top" />}
+              {/* Inner 4:5 cover frame = the exact frame placements are authored against,
+                  so the inherited decoration overlay lands where it does on the live card. */}
+              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}><img src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /><DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
             </div>
             <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, lineHeight: 1.2 }}>{c.name}</div>
           </div>
@@ -1315,7 +1324,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
               <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
                 {/* Full-width item image */}
                 <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
-                  {compImg(c) ? <img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {compImg(c) ? <><img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
                   {/* Step badge — top-left */}
                   <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
                   {/* Required badge — top-right */}
