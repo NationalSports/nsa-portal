@@ -6,7 +6,7 @@
   # a successful fresh deploy. Wiping the compiler cache forces a clean compile.
   command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=true npm run build"
   publish = "build"
-  environment = { NODE_VERSION = "18" }
+  environment = { NODE_VERSION = "22" }
 
 # PUBLIC_URL pins assets to the production domain so the marketing site's /shop/*
 # 200-proxy (which serves the portal's index.html at nationalsportsapparel.com) loads

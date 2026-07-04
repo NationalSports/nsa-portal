@@ -3,6 +3,8 @@ name: Business Logic Tests
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   schedule:
     # Daily at 7am Central Time (12pm UTC in winter, 1pm UTC in summer)
     - cron: '0 12 * * *'
@@ -17,7 +19,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       - name: Install dependencies

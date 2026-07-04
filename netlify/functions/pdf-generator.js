@@ -1,4 +1,5 @@
-const chromium = require('@sparticuz/chromium');
+// v149 ships as a transpiled ES module — the API lives on the default export.
+const chromium = require('@sparticuz/chromium').default;
 const puppeteer = require('puppeteer-core');
 const { verifyUser } = require('./_shared');
 
