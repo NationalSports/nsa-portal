@@ -30615,7 +30615,7 @@ export default function App(){
     const _mdDeadlineCut=_mdNow+stMdDeadline*864e5;
     const mdDeadlines=sos.filter(so=>{
       if(!_mdMine(_mdRepOf(so)))return false;
-      if(so.deleted_at||so.status==='cancelled')return false;
+      if(so.deleted_at||so.status==='cancelled'||so.status==='complete')return false;
       if(opsShippedOut(so,_mdFF(so)))return false;
       const dt=parseDate(so.expected_date);return dt&&!isNaN(dt)&&dt.getTime()<=_mdDeadlineCut;
     }).map(so=>({so,dt:parseDate(so.expected_date),daysOut:Math.ceil((parseDate(so.expected_date).getTime()-_mdNow)/864e5)}))

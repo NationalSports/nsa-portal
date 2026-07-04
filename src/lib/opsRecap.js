@@ -57,16 +57,19 @@ function soFulfillment(so) {
 }
 
 // ── Shipped / fulfilled-out ──
-// ShipStation marked it shipped, every production job shipped, the order was
-// closed out (sticky status='complete'), or — for delivery-preference orders,
-// whose terminal step is delivery, never a 'shipped' job state — production is
-// done, all goods are in, and the delivered map covers the jobs. (Approximation
-// of calcSOStatus's delivery branch: the per-no-deco-line delivered check is
-// skipped, and jobless orders require at least one delivered entry so a plain
-// stock order can't read as delivered by vacuity.)
+// A REAL shipping signal: ShipStation/job-ship marked it shipped (_shipped /
+// _shipping_status), every production job shipped, or — for delivery-preference
+// orders, whose terminal step is delivery, never a 'shipped' job state —
+// production is done, all goods are in, and the delivered map covers the jobs.
+// Deliberately NOT `status === 'complete'`: OMG store orders and manually closed
+// orders finalize WITHOUT a shipping step, so completion alone must not read as
+// "shipped" (it was surfacing un-shipped OMG orders under Orders Shipped).
+// (Approximation of calcSOStatus's delivery branch: the per-no-deco-line delivered
+// check is skipped, and jobless orders require at least one delivered entry so a
+// plain stock order can't read as delivered by vacuity.)
 function isShippedOut(so, ff) {
   if (!so) return false;
-  if (so._shipping_status === 'shipped' || ff.allJobsShipped || so.status === 'complete') return true;
+  if (so._shipped === true || so._shipping_status === 'shipped' || ff.allJobsShipped) return true;
   if (so.ship_preference === 'warehouse_delivery' || so.ship_preference === 'deliver_on_date') {
     const dlv = so.delivered || {};
     const jobs = jobsOf(so);
@@ -84,6 +87,7 @@ function isShippedOut(so, ff) {
 // fully-received NO-DECO order reports 'ready_to_invoice' there and would be
 // silently skipped — the rep still wants to know the goods are all in.
 function isCheckedIn(so, ff) {
+  if (!so || so.status === 'complete') return false; // closed/finalized — not a fresh check-in
   return !isShippedOut(so, ff) && ff.totalSz > 0 && ff.fulfilledSz >= ff.totalSz && !ff.anyActiveJob;
 }
 
