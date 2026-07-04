@@ -1236,10 +1236,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
       flash('Store saved'); return { data };
     }
-    const { data, error } = await supabase.from('webstores').insert(form).select().single();
+    // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
+    // with an existing store (e.g. re-importing the same OMG report, or two similarly-named teams)
+    // auto-suffixes (-2, -3…) instead of failing the insert with a raw constraint error.
+    const baseSlug = (form.slug || slugify(form.name) || 'team-store').slice(0, 60) || 'team-store';
+    let form2 = form;
+    try {
+      const { data: ex } = await supabase.from('webstores').select('slug').ilike('slug', baseSlug + '%');
+      const taken = new Set((ex || []).map((r) => r.slug));
+      let slug = baseSlug;
+      if (taken.has(slug)) { let n = 2; while (taken.has(`${baseSlug}-${n}`)) n++; slug = `${baseSlug}-${n}`; }
+      if (slug !== form.slug) form2 = { ...form, slug };
+    } catch (_) { /* fall through — the retry below still guards the constraint */ }
+    let { data, error } = await supabase.from('webstores').insert(form2).select().single();
+    // Race fallback: another create claimed the slug between the check and the insert.
+    if (error && /slug/i.test(error.message || '') && /duplicate|unique/i.test(error.message || '')) {
+      form2 = { ...form2, slug: `${baseSlug}-${Date.now().toString(36).slice(-4)}` };
+      ({ data, error } = await supabase.from('webstores').insert(form2).select().single());
+    }
     if (error) return { error };
     setStores((prev) => [data, ...prev]);
-    flash('Store created'); return { data };
+    flash(data.slug !== form.slug ? `Store created · URL set to /shop/${data.slug}` : 'Store created');
+    return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
 
   // ── "Create from OMG" — the one place to turn a shared OMG report link into a Club Webstore.
