@@ -8339,6 +8339,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
   const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w }
   const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in per-garment nudge mode
+  const [presetTouched, setPresetTouched] = useState(false); // rep picked a placement preset → it overrides existing placements
   // Back logos are a per-item add (rare) — not a whole-grid mode. backByItem holds the
   // back placement for the items that get one; flipped is which cards currently SHOW their back.
   const [backByItem, setBackByItem] = useState({});     // itemId -> { x, y, w } (present = has a back logo)
@@ -8355,7 +8356,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item', box }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
-  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByItem({}); setFlipped(new Set()); setDone(''); }, [activeId]);
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByItem({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -8371,6 +8372,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const activeArt = (storeArt || []).find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
   const activeUrl = artPlaceUrl(activeArt);
   const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
+  const _fullBack = ART_PLACEMENTS.find((p) => p.id === 'full_back') || place;
   // The active logo's real per-CW variants (artist cutouts). ≥2 → the card shows variant
   // chips; otherwise the recolor chips. Re-keyed so each carries its stable color_way_id.
   const variants = normalizeWebLogos(activeArt && activeArt.web_logos, activeArt && activeArt.color_ways).filter((w) => w && w.url);
@@ -8400,17 +8402,28 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color);
   const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
   const autocolorSelected = () => setPickByItem((m) => { const n = { ...m }; for (const it of includedItems) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
-  const placeForItem = (item) => resolveItemPlacement(place, placeByStyle, placeByItem, item.styleKey, item.id);
-  // Back logos: a per-item placement seeded from the Full Back preset. Presence in
-  // backByItem means the item gets a back logo on apply.
-  const _fullBack = ART_PLACEMENTS.find((p) => p.id === 'full_back') || place;
-  const backPlaceFor = (item) => backByItem[item.id] || { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w };
-  const addBack = (id) => { setBackByItem((m) => (m[id] ? m : { ...m, [id]: { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w } })); setFlipped((s) => new Set(s).add(id)); };
+  // Where this garment's logo already sits (the active art's front deco, else any front
+  // logo) — so selecting an already-placed garment loads its real placement instead of
+  // snapping to the preset. Once the rep picks a preset pill (presetTouched), that wins.
+  const existingPlace = (item, side) => {
+    const decos = item.decorations || [];
+    const d = decos.find((x) => x && (x.side || 'front') === side && x.art_id === (activeArt && activeArt.id)) || decos.find((x) => x && x.art_url && (x.side || 'front') === side && !isPerso(x));
+    if (!d) return null;
+    const dp = ART_PLACEMENTS.find((p) => p.id === d.placement) || (side === 'back' ? _fullBack : place);
+    return { id: d.placement || dp.id, x: d.x != null ? d.x : dp.x, y: d.y != null ? d.y : dp.y, w: d.w != null ? d.w : dp.w };
+  };
+  const frontBase = (item) => (presetTouched ? { id: place.id, x: place.x, y: place.y, w: place.w } : (existingPlace(item, 'front') || { id: place.id, x: place.x, y: place.y, w: place.w }));
+  const placeForItem = (item) => resolveItemPlacement(frontBase(item), placeByStyle, placeByItem, item.styleKey, item.id);
+  // Back logos: a per-item placement, seeded from an existing back deco if the garment
+  // already has one, else the Full Back preset. Presence in backByItem = gets a back logo.
+  const _backSeed = (item) => { const ex = existingPlace(item, 'back'); return ex ? { placement: ex.id, x: ex.x, y: ex.y, w: ex.w } : { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w }; };
+  const backPlaceFor = (item) => backByItem[item.id] || _backSeed(item);
+  const addBack = (id) => { const it = itemById(id); setBackByItem((m) => (m[id] ? m : { ...m, [id]: _backSeed(it) })); setFlipped((s) => new Set(s).add(id)); };
   const removeBack = (id) => { setBackByItem((m) => { const n = { ...m }; delete n[id]; return n; }); setFlipped((s) => { const n = new Set(s); n.delete(id); return n; }); };
   const flipSide = (id, toBack) => setFlipped((s) => { const n = new Set(s); toBack ? n.add(id) : n.delete(id); return n; });
   // Switching the base placement preset re-baselines everything (clears per-style /
   // per-garment drags), so "put it all at Left Chest" is a clean reset to nudge from.
-  const choosePlacement = (id) => { setPlacement(id); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
+  const choosePlacement = (id) => { setPlacement(id); setPresetTouched(true); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
 
   // Drag / resize the logo on a garment preview. Front scope is the whole STYLE (every color
   // of that style moves together) unless the garment is nudged; back is always per item.
@@ -8639,8 +8652,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                     <div ref={(el) => { if (el) boxRefs.current[item.id] = el; else delete boxRefs.current[item.id]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
                       style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden', touchAction: sel3 ? 'none' : 'auto' }}>
                       {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No {sideNow} image</div>}
-                      {/* logos already on the shown side (other than the one we're placing) */}
-                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === sideNow && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; return <img key={'ad' + di} src={d.art_url} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
+                      {/* logos already on the shown side (other than the one we're placing) —
+                          resolve the per-color image (cw_by_color / web-logo variant), not the
+                          deco's stored art_url, which may be a different color's cutout. */}
+                      {(item.decorations || []).filter((d) => d && (d.side || 'front') === sideNow && !isPerso(d) && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = ((storeArt || []).find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
                       {/* the logo being placed on the shown side — draggable + resizable */}
                       {activeUrl && sel3 && bgImg && (
                         <div onPointerDown={(e) => startDrag(e, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none' }}>
