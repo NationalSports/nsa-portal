@@ -8329,21 +8329,23 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
-  const [selected, setSelected] = useState(() => new Set()); // items chosen for bulk apply — none by default
+  const [selected, setSelected] = useState(() => new Set()); // STYLE keys chosen for apply — a style card covers all its colors
   const [bulkOpen, setBulkOpen] = useState(false); // bulk apply is an opt-in next step, not the default view
-  // Per-garment color choice: a real per-CW variant { kind:'variant', url, colorWayId, label }
-  // or a recolor of the one cutout { kind:'recolor', choice:'original'|'white'|'black' }.
+  // Per-color logo choice (keyed by the color row's item id): a real per-CW variant
+  // { kind:'variant', url, colorWayId, label } or a recolor { kind:'recolor', choice }.
   const [pickByItem, setPickByItem] = useState({});
-  // Placement is per STYLE (drag/resize applies to all its colors — the photos match, so
-  // one size reads consistently), with an optional per-garment nudge override for the odd one.
+  // One card per style; each card pages through its colors. Placement is per STYLE
+  // (drag/resize applies to all its colors — the photos match, so one size reads
+  // consistently), with an optional nudge override for the odd color's photo.
+  const [activeIdx, setActiveIdx] = useState({});       // styleKey -> index of the color being shown
   const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
-  const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w }
-  const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in per-garment nudge mode
+  const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w } (nudge override)
+  const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in nudge mode
   const [presetTouched, setPresetTouched] = useState(false); // rep picked a placement preset → it overrides existing placements
-  // Back logos are a per-item add (rare) — not a whole-grid mode. backByItem holds the
-  // back placement for the items that get one; flipped is which cards currently SHOW their back.
-  const [backByItem, setBackByItem] = useState({});     // itemId -> { x, y, w } (present = has a back logo)
-  const [flipped, setFlipped] = useState(() => new Set()); // itemIds whose card is showing the back
+  // Back logos are a rare, per-card add — not a whole-grid mode. A style card that gets
+  // one carries it on every color (decorations are card-level on the storefront).
+  const [backByStyle, setBackByStyle] = useState({});   // styleKey -> { placement, x, y, w }
+  const [flipped, setFlipped] = useState(() => new Set()); // styleKeys whose card is showing the back
   const [applying, setApplying] = useState(false);
   const [done, setDone] = useState('');
   const [addOpen, setAddOpen] = useState(false);
@@ -8352,11 +8354,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
   const emptyRef = useRef();
-  const boxRefs = useRef({}); // itemId -> the garment preview box element (for drag math)
-  const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item', box }
+  const boxRefs = useRef({}); // styleKey -> the card's stage element (for drag math)
+  const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item'|'backStyle', box, grab }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
-  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByItem({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -8391,49 +8393,61 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   }
   const allItems = groups.flatMap((g) => g.items);
   const itemById = (id) => allItems.find((it) => it.id === id) || null;
-  const includedItems = allItems.filter((it) => selected.has(it.id));
-  const toggleItem = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const selectAll = () => setSelected(new Set(allItems.map((it) => it.id)));
+  const selectedGroups = groups.filter((g) => selected.has(g.key));
+  const includedItems = selectedGroups.flatMap((g) => g.items);
+  const toggleStyle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const selectAll = () => setSelected(new Set(groups.map((g) => g.key)));
   const clearSel = () => setSelected(new Set());
+  const activeItemOf = (g) => g.items[Math.min(activeIdx[g.key] || 0, g.items.length - 1)];
+  const pageColor = (g, dir) => setActiveIdx((m) => { const cur = Math.min(m[g.key] || 0, g.items.length - 1); return { ...m, [g.key]: (cur + dir + g.items.length) % g.items.length }; });
 
-  // Autocolor: the per-garment pick, resolved from the garment color (real CW variant when
+  // Autocolor: the per-COLOR pick, resolved from the garment color (real CW variant when
   // the logo has one, else a light/dark recolor). Used as the live default and re-applied
   // in one click by the Autocolor button.
   const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color);
   const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
   const autocolorSelected = () => setPickByItem((m) => { const n = { ...m }; for (const it of includedItems) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
-  // Where this garment's logo already sits (the active art's front deco, else any front
-  // logo) — so selecting an already-placed garment loads its real placement instead of
-  // snapping to the preset. Once the rep picks a preset pill (presetTouched), that wins.
+  // Where a garment's logo already sits (the active art's deco, else any logo on that
+  // side) — so an already-decorated style loads its real placement instead of snapping
+  // to the preset. Once the rep picks a preset pill (presetTouched), the preset wins.
   const existingPlace = (item, side) => {
-    const decos = item.decorations || [];
+    const decos = (item && item.decorations) || [];
     const d = decos.find((x) => x && (x.side || 'front') === side && x.art_id === (activeArt && activeArt.id)) || decos.find((x) => x && x.art_url && (x.side || 'front') === side && !isPerso(x));
     if (!d) return null;
     const dp = ART_PLACEMENTS.find((p) => p.id === d.placement) || (side === 'back' ? _fullBack : place);
     return { id: d.placement || dp.id, x: d.x != null ? d.x : dp.x, y: d.y != null ? d.y : dp.y, w: d.w != null ? d.w : dp.w };
   };
-  const frontBase = (item) => (presetTouched ? { id: place.id, x: place.x, y: place.y, w: place.w } : (existingPlace(item, 'front') || { id: place.id, x: place.x, y: place.y, w: place.w }));
+  const _groupOf = (item) => groups.find((g) => g.key === item.styleKey);
+  const frontBase = (item) => {
+    if (presetTouched) return { id: place.id, x: place.x, y: place.y, w: place.w };
+    // Seed from this color's existing deco, else any color of the style (they share one
+    // card-level placement), else the preset.
+    const g = _groupOf(item);
+    let ex = existingPlace(item, 'front');
+    if (!ex && g) for (const it of g.items) { ex = existingPlace(it, 'front'); if (ex) break; }
+    return ex || { id: place.id, x: place.x, y: place.y, w: place.w };
+  };
   const placeForItem = (item) => resolveItemPlacement(frontBase(item), placeByStyle, placeByItem, item.styleKey, item.id);
-  // Back logos: a per-item placement, seeded from an existing back deco if the garment
-  // already has one, else the Full Back preset. Presence in backByItem = gets a back logo.
-  const _backSeed = (item) => { const ex = existingPlace(item, 'back'); return ex ? { placement: ex.id, x: ex.x, y: ex.y, w: ex.w } : { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w }; };
-  const backPlaceFor = (item) => backByItem[item.id] || _backSeed(item);
-  const addBack = (id) => { const it = itemById(id); setBackByItem((m) => (m[id] ? m : { ...m, [id]: _backSeed(it) })); setFlipped((s) => new Set(s).add(id)); };
-  const removeBack = (id) => { setBackByItem((m) => { const n = { ...m }; delete n[id]; return n; }); setFlipped((s) => { const n = new Set(s); n.delete(id); return n; }); };
-  const flipSide = (id, toBack) => setFlipped((s) => { const n = new Set(s); toBack ? n.add(id) : n.delete(id); return n; });
+  // Back logos: one per style card (rare), seeded from an existing back deco on any of the
+  // style's colors, else the Full Back preset. Presence in backByStyle = gets a back logo.
+  const _backSeed = (g) => { let ex = null; for (const it of g.items) { ex = existingPlace(it, 'back'); if (ex) break; } return ex ? { placement: ex.id, x: ex.x, y: ex.y, w: ex.w } : { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w }; };
+  const backPlaceFor = (g) => backByStyle[g.key] || _backSeed(g);
+  const addBack = (g) => { setBackByStyle((m) => (m[g.key] ? m : { ...m, [g.key]: _backSeed(g) })); setFlipped((s) => new Set(s).add(g.key)); };
+  const removeBack = (key) => { setBackByStyle((m) => { const n = { ...m }; delete n[key]; return n; }); setFlipped((s) => { const n = new Set(s); n.delete(key); return n; }); };
+  const flipSide = (key, toBack) => setFlipped((s) => { const n = new Set(s); toBack ? n.add(key) : n.delete(key); return n; });
   // Switching the base placement preset re-baselines everything (clears per-style /
-  // per-garment drags), so "put it all at Left Chest" is a clean reset to nudge from.
+  // per-color drags), so "put it all at Left Chest" is a clean reset to nudge from.
   const choosePlacement = (id) => { setPlacement(id); setPresetTouched(true); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
 
-  // Drag / resize the logo on a garment preview. Front scope is the whole STYLE (every color
-  // of that style moves together) unless the garment is nudged; back is always per item.
-  const startDrag = (e, item, mode, side = 'front') => {
-    if (!selected.has(item.id) || !activeUrl) return;
+  // Drag / resize the logo on a card's stage. Front scope is the whole STYLE (every color
+  // moves together) unless the shown color is nudged; the back placement is per style too.
+  const startDrag = (e, g, item, mode, side = 'front') => {
+    if (!selected.has(g.key) || !activeUrl) return;
     e.preventDefault(); e.stopPropagation();
-    const box = boxRefs.current[item.id];
+    const box = boxRefs.current[g.key];
     if (!box) return;
     try { box.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
-    const curP = side === 'back' ? backPlaceFor(item) : placeForItem(item);
+    const curP = side === 'back' ? backPlaceFor(g) : placeForItem(item);
     // Capture where the logo was grabbed relative to its center, so a move tracks the
     // cursor from that point instead of snapping the center under it (no first-move jump).
     let grab = { dx: 0, dy: 0 };
@@ -8441,16 +8455,17 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const r = box.getBoundingClientRect();
       grab = { dx: (e.clientX - r.left) - (curP.x / 100) * r.width, dy: (e.clientY - r.top) - (curP.y / 100) * r.height };
     }
-    // A front garment keeps item scope if it's the nudge target OR already carries its own
+    // The shown color keeps item scope if it's the nudge target OR already carries its own
     // override — otherwise dragging it would silently rewrite the whole style's placement.
-    const scope = side === 'back' ? 'back' : ((nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style');
-    dragRef.current = { itemId: item.id, styleKey: item.styleKey, mode, box, grab, side, scope };
+    const scope = side === 'back' ? 'backStyle' : ((nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style');
+    dragRef.current = { itemId: item.id, styleKey: g.key, mode, box, grab, side, scope };
   };
   const onDragMove = (e) => {
     const d = dragRef.current; if (!d || !d.box) return;
     const r = d.box.getBoundingClientRect();
     const item = itemById(d.itemId); if (!item) return;
-    const cur = d.side === 'back' ? backPlaceFor(item) : placeForItem(item);
+    const g = _groupOf(item); if (!g) return;
+    const cur = d.side === 'back' ? backPlaceFor(g) : placeForItem(item);
     const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
     let patch;
     if (d.mode === 'resize') {
@@ -8464,7 +8479,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       };
     }
     const merge = (prev) => ({ placement: cur.placement, x: cur.x, y: cur.y, w: cur.w, ...(prev || {}), ...patch });
-    if (d.scope === 'back') setBackByItem((m) => ({ ...m, [d.itemId]: merge(m[d.itemId]) }));
+    if (d.scope === 'backStyle') setBackByStyle((m) => ({ ...m, [d.styleKey]: merge(m[d.styleKey]) }));
     else if (d.scope === 'item') setPlaceByItem((m) => ({ ...m, [d.itemId]: merge(m[d.itemId]) }));
     else setPlaceByStyle((m) => ({ ...m, [d.styleKey]: merge(m[d.styleKey]) }));
   };
@@ -8492,24 +8507,45 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       };
       const source_url = artSourceUrl(activeArt);
       const entries = [];
-      for (const it of includedItems) {
-        const pick = pickFor(it);
-        // Resolve the cutout + color-way once; the same logo colors front and back.
-        let artUrl, colorLabel, colorWayId = null;
-        if (pick.kind === 'variant') { artUrl = pick.url; colorLabel = pick.label || 'variant'; colorWayId = pick.colorWayId || null; }
-        else { artUrl = await recoloredUrl(pick.choice); colorLabel = pick.choice; }
-        const mk = (side, pl) => { const d = { art_id: activeArt.id, source_url, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, art_url: artUrl, color_label: colorLabel }; if (colorWayId) d.color_way_id = colorWayId; return d; };
-        const newDecos = [mk('front', placeForItem(it))];
-        if (backByItem[it.id]) newDecos.push(mk('back', backPlaceFor(it)));
-        // Replace the logo on each side we're placing; keep the other side and — crucially —
-        // any personalization tokens (number/name live on the back as perso decorations).
-        const sides = new Set(newDecos.map((d) => d.side));
-        const existing = Array.isArray(it.decorations) ? it.decorations : [];
-        const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
-        entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
+      for (const g of selectedGroups) {
+        // Resolve every color's pick once, and build the per-color map (Decision-2 shape:
+        // {url, color_way_id}) that rides on EVERY row of the style — decorations are
+        // card-level on the storefront/item editor, so each row must be able to resolve
+        // any sibling color, and the SO handoff reads the CW id straight from this map.
+        const resolvedById = {};
+        const cwMap = {};
+        for (const it of g.items) {
+          const pick = pickFor(it);
+          let r;
+          if (pick.kind === 'variant') r = { url: pick.url, label: pick.label || 'variant', cwId: pick.colorWayId || null };
+          else r = { url: await recoloredUrl(pick.choice), label: pick.choice, cwId: null };
+          resolvedById[it.id] = r;
+          const ck = colorKeyOf(it.color);
+          if (ck) cwMap[ck] = r.cwId ? { url: r.url, color_way_id: r.cwId } : r.url;
+        }
+        const multi = g.items.length > 1;
+        const hasBack = !!backByStyle[g.key];
+        const bp = hasBack ? backPlaceFor(g) : null;
+        for (const it of g.items) {
+          const r = resolvedById[it.id];
+          const mk = (side, pl) => {
+            const d = { art_id: activeArt.id, source_url, orig_url: activeUrl, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, art_url: r.url, color_label: r.label };
+            if (r.cwId) d.color_way_id = r.cwId;
+            if (multi) d.cw_by_color = cwMap;
+            return d;
+          };
+          const newDecos = [mk('front', placeForItem(it))];
+          if (hasBack) newDecos.push(mk('back', bp));
+          // Replace the logo on each side we're placing; keep the other side and — crucially —
+          // any personalization tokens (number/name live on the back as perso decorations).
+          const sides = new Set(newDecos.map((d) => d.side));
+          const existing = Array.isArray(it.decorations) ? it.decorations : [];
+          const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
+          entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
+        }
       }
       const n = await onApplyLogoBulk(entries);
-      setDone(n > 0 ? `Applied to ${n} item${n === 1 ? '' : 's'}.` : 'Error: nothing was applied — please retry.');
+      setDone(n > 0 ? `Applied to ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}.` : 'Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
@@ -8619,97 +8655,107 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
               <button key={p.id} onClick={() => choosePlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
             ))}
           </div>
-          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — <b>drag the logo</b> on any garment to fine-tune, or its corner to resize; that moves the whole style. Use <b>⤢ nudge</b> to adjust one garment, or <b>+ Back</b> on a card to add a back logo to just that garment.</div>
+          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — each card is one style; <b>‹ ›</b> pages through its colors. <b>Drag the logo</b> to fine-tune (or its corner to resize) and every color follows. <b>⤢ nudge</b> adjusts just the shown color; <b>+ Back</b> adds a back logo to that style.</div>
 
-          {/* 2 · Select items + Autocolor */}
+          {/* 2 · Select styles + Autocolor — one card per style; page through its colors */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select items <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the garments ({includedItems.length} selected)</span></div>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select styles <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the cards — a style covers all its colors ({selectedGroups.length} of {groups.length})</span></div>
             <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-              <button onClick={autocolorSelected} disabled={!includedItems.length} title="Auto-pick the right logo color for each selected garment (light logo on dark garments, dark on light — using your real color-way variants when the logo has them)" style={{ fontSize: 12.5, fontWeight: 800, borderRadius: 999, padding: '6px 14px', cursor: includedItems.length ? 'pointer' : 'not-allowed', border: 'none', background: includedItems.length ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff' }}>✨ Autocolor</button>
+              <button onClick={autocolorSelected} disabled={!includedItems.length} title="Auto-pick the right logo color for every color of the selected styles (light logo on dark garments, dark on light — using your real color-way variants when the logo has them)" style={{ fontSize: 12.5, fontWeight: 800, borderRadius: 999, padding: '6px 14px', cursor: includedItems.length ? 'pointer' : 'not-allowed', border: 'none', background: includedItems.length ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff' }}>✨ Autocolor</button>
               <button onClick={selectAll} className="btn btn-sm btn-secondary">Select all</button>
-              <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!includedItems.length}>Clear</button>
+              <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!selectedGroups.length}>Clear</button>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(132px,1fr))', gap: 14, alignItems: 'start' }}>
-          {groups.map((g) => (
-            <div key={g.key}>
-              <div style={{ fontSize: 11.5, fontWeight: 800, color: '#334155', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {g.items.map((item) => {
-                  const sel3 = selected.has(item.id);
-                  const showBack = sel3 && flipped.has(item.id);
-                  const sideNow = showBack ? 'back' : 'front';
-                  const hasBack = !!backByItem[item.id];
-                  const pick = pickFor(item);
-                  const pl = showBack ? backPlaceFor(item) : placeForItem(item);
-                  const bgImg = showBack ? item.backImg : item.img;
-                  const previewUrl = pick.kind === 'variant' ? pick.url : activeUrl;
-                  const previewFilter = pick.kind === 'variant' ? 'none' : cssTint(pick.choice);
-                  const has = (item.decorations || []).some((d) => d && d.art_id === activeArt.id);
-                  const nudged = !!placeByItem[item.id];
-                  return (
-                  <div key={item.id} onClick={() => { if (!sel3) toggleItem(item.id); }} title={sel3 ? '' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: sel3 ? 'default' : 'pointer' }}>
-                    <div ref={(el) => { if (el) boxRefs.current[item.id] = el; else delete boxRefs.current[item.id]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
-                      style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden', touchAction: sel3 ? 'none' : 'auto' }}>
-                      {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No {sideNow} image</div>}
-                      {/* logos already on the shown side (other than the one we're placing) —
-                          resolve the per-color image (cw_by_color / web-logo variant), not the
-                          deco's stored art_url, which may be a different color's cutout. */}
-                      {(item.decorations || []).filter((d) => d && (d.side || 'front') === sideNow && !isPerso(d) && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = ((storeArt || []).find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
-                      {/* the logo being placed on the shown side — draggable + resizable */}
-                      {activeUrl && sel3 && bgImg && (
-                        <div onPointerDown={(e) => startDrag(e, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none' }}>
-                          <img src={previewUrl} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: previewFilter, pointerEvents: 'none' }} />
-                          <div onPointerDown={(e) => startDrag(e, item, 'resize', sideNow)} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
-                        </div>
-                      )}
-                      <button onClick={(e) => { e.stopPropagation(); toggleItem(item.id); }} title={sel3 ? 'Deselect' : 'Select'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0 }}>{sel3 ? '✓' : ''}</button>
-                      {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Back</span>}
-                      {!showBack && hasBack && <span title="This garment also has a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>+ Back</span>}
-                      {nudged && !showBack && <span title="This garment has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase' }}>Nudged</span>}
-                      {has && !sel3 && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
-                    </div>
-                    <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}</div>
-                    {sel3 && <div style={{ marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
-                      {/* Color pick (applies to both sides) — real CW variants when the logo has them */}
-                      {variants.length >= 2 && (
-                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
-                          {variants.map((v) => { const on = pick.kind === 'variant' && pick.url === v.url; return (
-                            <button key={v.url} onClick={() => setPick(item.id, { kind: 'variant', url: v.url, colorWayId: v.color_way_id || null, label: v.color_way || '' })} title={`Use the ${v.color_way || 'default'} version`} style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999, cursor: 'pointer', border: on ? '1px solid #4f46e5' : '1px solid #d1d5db', background: on ? '#4f46e5' : '#fff', color: on ? '#fff' : '#475569' }}>{v.color_way || 'Default'}</button>
-                          ); })}
-                        </div>
-                      )}
-                      <div style={{ display: 'flex', gap: 4 }}>
-                        {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = pick.kind === 'recolor' && pick.choice === c; return (
-                          <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
-                        ); })}
-                      </div>
-                      {/* Front/Back + placement controls */}
-                      <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
-                        {item.backImg && (
-                          <div style={{ display: 'inline-flex', border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
-                            <button onClick={() => flipSide(item.id, false)} title="Front" style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', background: !showBack ? '#0f172a' : '#fff', color: !showBack ? '#fff' : '#475569' }}>Front</button>
-                            <button onClick={() => (hasBack ? flipSide(item.id, true) : addBack(item.id))} title={hasBack ? 'View / edit the back logo' : 'Add a back logo to this garment'} style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', borderLeft: '1px solid #e2e8f0', background: showBack ? '#0f172a' : '#fff', color: showBack ? '#fff' : (hasBack ? '#0f172a' : '#94a3b8') }}>{hasBack ? 'Back' : '+ Back'}</button>
-                          </div>
-                        )}
-                        {hasBack && <button onClick={() => removeBack(item.id)} title="Remove the back logo from this garment" style={{ fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>✕ back</button>}
-                        {!showBack && (nudged
-                          ? <button onClick={() => clearNudge(item.id)} title="Reset this garment to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
-                          : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this garment's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
-                      </div>
-                    </div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 16, alignItems: 'start' }}>
+          {groups.map((g) => {
+            const selG = selected.has(g.key);
+            const item = activeItemOf(g);
+            const multi = g.items.length > 1;
+            const idx = g.items.indexOf(item);
+            const showBack = selG && flipped.has(g.key);
+            const sideNow = showBack ? 'back' : 'front';
+            const hasBack = !!backByStyle[g.key];
+            const pick = pickFor(item);
+            const pl = showBack ? backPlaceFor(g) : placeForItem(item);
+            const bgImg = showBack ? item.backImg : item.img;
+            const previewUrl = pick.kind === 'variant' ? pick.url : activeUrl;
+            const previewFilter = pick.kind === 'variant' ? 'none' : cssTint(pick.choice);
+            const has = g.items.some((it) => (it.decorations || []).some((d) => d && d.art_id === activeArt.id));
+            const nudged = !!placeByItem[item.id];
+            const navBtn = { position: 'absolute', top: '50%', transform: 'translateY(-50%)', width: 24, height: 24, borderRadius: '50%', border: '1px solid #e2e8f0', background: 'rgba(255,255,255,.94)', color: '#334155', fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 4px rgba(0,0,0,.14)', padding: 0, zIndex: 3, lineHeight: 1 };
+            return (
+            <div key={g.key} onClick={() => { if (!selG) toggleStyle(g.key); }} title={selG ? '' : 'Tap to select this style'} style={{ border: selG ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 12, padding: 8, background: '#fff', cursor: selG ? 'default' : 'pointer', boxShadow: selG ? '0 2px 10px rgba(79,70,229,.10)' : 'none' }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
+              <div ref={(el) => { if (el) boxRefs.current[g.key] = el; else delete boxRefs.current[g.key]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
+                style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 9, overflow: 'hidden', touchAction: selG ? 'none' : 'auto' }}>
+                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
+                {/* logos already on the shown color+side (other than the one we're placing) —
+                    resolved per color (cw_by_color / web-logo variant), never the raw art_url,
+                    which may be a different color's cutout. */}
+                {(item.decorations || []).filter((d) => d && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = ((storeArt || []).find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
+                {activeUrl && selG && bgImg && (
+                  <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
+                    <img src={previewUrl} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: previewFilter, pointerEvents: 'none' }} />
+                    <div onPointerDown={(e) => startDrag(e, g, item, 'resize', sideNow)} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
                   </div>
-                ); })}
+                )}
+                {/* color paging — browse colors without selecting the card */}
+                {multi && <button onClick={(e) => { e.stopPropagation(); pageColor(g, -1); }} onPointerDown={(e) => e.stopPropagation()} title="Previous color" aria-label="Previous color" style={{ ...navBtn, left: 6 }}>‹</button>}
+                {multi && <button onClick={(e) => { e.stopPropagation(); pageColor(g, 1); }} onPointerDown={(e) => e.stopPropagation()} title="Next color" aria-label="Next color" style={{ ...navBtn, right: 6 }}>›</button>}
+                <button onClick={(e) => { e.stopPropagation(); toggleStyle(g.key); }} title={selG ? 'Deselect style' : 'Select style'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: selG ? '#4f46e5' : 'rgba(255,255,255,.92)', border: selG ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0, zIndex: 3 }}>{selG ? '✓' : ''}</button>
+                {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Back</span>}
+                {!showBack && selG && hasBack && <span title="This style also gets a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>+ Back</span>}
+                {!selG && has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Applied</span>}
+                {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
+              {/* color name + pager dots */}
+              <div style={{ marginTop: 6, textAlign: 'center' }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}{multi && <span style={{ fontWeight: 600, color: '#94a3b8' }}> · {idx + 1}/{g.items.length}</span>}</div>
+                {multi && g.items.length <= 8 && (
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'center', marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                    {g.items.map((it, i) => <button key={it.id} onClick={() => setActiveIdx((m) => ({ ...m, [g.key]: i }))} title={it.color || `Color ${i + 1}`} aria-label={it.color || `Color ${i + 1}`} style={{ width: i === idx ? 16 : 6, height: 6, borderRadius: 3, border: 'none', padding: 0, cursor: 'pointer', background: i === idx ? '#4f46e5' : '#cbd5e1', transition: 'width .15s' }} />)}
+                  </div>
+                )}
+              </div>
+              {selG && <div style={{ marginTop: 7 }} onClick={(e) => e.stopPropagation()}>
+                {/* Logo color for the SHOWN color (Autocolor sets all colors at once) */}
+                <div style={{ fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#94a3b8', marginBottom: 3 }}>Logo on {item.color || 'this color'}</div>
+                {variants.length >= 2 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                    {variants.map((v) => { const on = pick.kind === 'variant' && pick.url === v.url; return (
+                      <button key={v.url} onClick={() => setPick(item.id, { kind: 'variant', url: v.url, colorWayId: v.color_way_id || null, label: v.color_way || '' })} title={`Use the ${v.color_way || 'default'} version on ${item.color || 'this color'}`} style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999, cursor: 'pointer', border: on ? '1px solid #4f46e5' : '1px solid #d1d5db', background: on ? '#4f46e5' : '#fff', color: on ? '#fff' : '#475569' }}>{v.color_way || 'Default'}</button>
+                    ); })}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = pick.kind === 'recolor' && pick.choice === c; return (
+                    <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
+                  ); })}
+                </div>
+                {/* Front/Back + placement controls */}
+                <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {(item.backImg || hasBack) && (
+                    <div style={{ display: 'inline-flex', border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+                      <button onClick={() => flipSide(g.key, false)} title="Front" style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', background: !showBack ? '#0f172a' : '#fff', color: !showBack ? '#fff' : '#475569' }}>Front</button>
+                      <button onClick={() => (hasBack ? flipSide(g.key, true) : addBack(g))} title={hasBack ? 'View / edit the back logo' : 'Add a back logo to this style'} style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', borderLeft: '1px solid #e2e8f0', background: showBack ? '#0f172a' : '#fff', color: showBack ? '#fff' : (hasBack ? '#0f172a' : '#94a3b8') }}>{hasBack ? 'Back' : '+ Back'}</button>
+                    </div>
+                  )}
+                  {hasBack && <button onClick={() => removeBack(g.key)} title="Remove the back logo from this style" style={{ fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>✕ back</button>}
+                  {!showBack && (nudged
+                    ? <button onClick={() => clearNudge(item.id)} title="Reset this color to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
+                    : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this color's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
+                </div>
+              </div>}
             </div>
-          ))}
+          ); })}
           </div>
 
           {/* Sticky apply bar */}
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
-            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'}{(() => { const b = includedItems.filter((it) => backByItem[it.id]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : includedItems.length ? `Apply to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}` : 'Select items to apply'}</button>
+            <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+            <button className="btn btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={apply}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply'}</button>
           </div>
         </div></div>
       ))}
