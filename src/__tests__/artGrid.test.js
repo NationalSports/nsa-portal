@@ -1,0 +1,67 @@
+import { guessDarkColor, autoColorChoice, resolveItemPlacement } from '../lib/artGrid';
+
+describe('guessDarkColor', () => {
+  test('dark colors (incl. Navy/Maroon/Forest) → true; light → false', () => {
+    ['Black', 'Navy', 'Maroon', 'Forest Green', 'Heather Charcoal'].forEach((c) => expect(guessDarkColor(c)).toBe(true));
+    ['White', 'Natural', 'Vegas Gold', 'Silver', 'Ash', ''].forEach((c) => expect(guessDarkColor(c)).toBe(false));
+  });
+});
+
+describe('autoColorChoice', () => {
+  const cws = [{ id: 'cw_d', garment_color: 'Black' }, { id: 'cw_l', garment_color: 'White' }];
+  const twoVariant = {
+    color_ways: cws,
+    web_logos: [
+      { url: 'lightlogo.png', color_way: 'Black', color_way_id: 'cw_d' }, // for dark garments
+      { url: 'darklogo.png', color_way: 'White', color_way_id: 'cw_l' },  // for light garments
+    ],
+  };
+
+  test('exact color-word match wins and carries the color way', () => {
+    expect(autoColorChoice(twoVariant, 'Black')).toEqual({ kind: 'variant', url: 'lightlogo.png', colorWayId: 'cw_d', label: 'Black' });
+    expect(autoColorChoice(twoVariant, 'White')).toEqual({ kind: 'variant', url: 'darklogo.png', colorWayId: 'cw_l', label: 'White' });
+  });
+
+  test('no name match → brightness picks the variant meant for that garment brightness (the Navy case)', () => {
+    // Navy is dark and shares no word with "Black"/"White"; it must still get the
+    // dark-garment (light-ink) variant, not fall back to a recolor.
+    expect(autoColorChoice(twoVariant, 'Navy')).toMatchObject({ kind: 'variant', url: 'lightlogo.png', colorWayId: 'cw_d' });
+    // Ash is light → the light-garment (dark-ink) variant.
+    expect(autoColorChoice(twoVariant, 'Ash')).toMatchObject({ kind: 'variant', url: 'darklogo.png', colorWayId: 'cw_l' });
+  });
+
+  test('fewer than 2 real variants → recolor by brightness', () => {
+    const one = { web_logos: [{ url: 'only.png', color_way: '', is_default: true }] };
+    expect(autoColorChoice(one, 'Navy')).toEqual({ kind: 'recolor', choice: 'white' });
+    expect(autoColorChoice(one, 'White')).toEqual({ kind: 'recolor', choice: 'original' });
+    expect(autoColorChoice(null, 'Black')).toEqual({ kind: 'recolor', choice: 'white' });
+  });
+
+  test('legacy label-only variants still resolve (normalizeWebLogos stamps the id)', () => {
+    const legacy = { color_ways: cws, web_logos: [{ url: 'a.png', color_way: 'Black' }, { url: 'b.png', color_way: 'White' }] };
+    expect(autoColorChoice(legacy, 'Black')).toMatchObject({ kind: 'variant', url: 'a.png', colorWayId: 'cw_d' });
+  });
+});
+
+describe('resolveItemPlacement', () => {
+  const preset = { id: 'left_chest', x: 30, y: 28, w: 18 };
+
+  test('no overrides → the preset', () => {
+    expect(resolveItemPlacement(preset, {}, {}, 'TEE', 'wp1')).toEqual({ placement: 'left_chest', x: 30, y: 28, w: 18 });
+  });
+
+  test('per-style placement layers over the preset for the whole style', () => {
+    const byStyle = { TEE: { x: 40, y: 35, w: 22 } };
+    expect(resolveItemPlacement(preset, byStyle, {}, 'TEE', 'wp1')).toEqual({ placement: 'left_chest', x: 40, y: 35, w: 22 });
+    // a different style is unaffected
+    expect(resolveItemPlacement(preset, byStyle, {}, 'HOODIE', 'wp9')).toEqual({ placement: 'left_chest', x: 30, y: 28, w: 18 });
+  });
+
+  test('per-garment nudge overrides just that garment, on top of the style placement', () => {
+    const byStyle = { TEE: { x: 40, y: 35, w: 22 } };
+    const byItem = { wp1: { x: 55 } };
+    expect(resolveItemPlacement(preset, byStyle, byItem, 'TEE', 'wp1')).toEqual({ placement: 'left_chest', x: 55, y: 35, w: 22 });
+    // sibling color of the same style keeps the style placement
+    expect(resolveItemPlacement(preset, byStyle, byItem, 'TEE', 'wp2')).toEqual({ placement: 'left_chest', x: 40, y: 35, w: 22 });
+  });
+});

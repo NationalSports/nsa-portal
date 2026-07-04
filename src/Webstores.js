@@ -2,15 +2,15 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
-import { cloudUpload, fileUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
+import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
-import { planStoreBakes, bakeMockBlob } from './lib/mockBake';
 import { normalizeWebLogos } from './businessLogic';
+import { autoColorChoice, resolveItemPlacement } from './lib/artGrid';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -1228,69 +1228,6 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     flash('Store created'); return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
 
-  // Auto-bake mockups: composite each garment color's photo with its placed logos and
-  // save the PNGs into the owning art records' item_mockups (tagged auto:true, keyed
-  // sku|color, CW-tagged). Runs on store launch and from the Art tab. batchOrders then
-  // carries a real decorated proof onto webstore Sales Orders instead of the bare
-  // catalog photo, and the artist mockup gate sees these SKUs as covered (the "Auto
-  // mock" name makes their origin visible wherever mockups render).
-  // Never touches webstore_products.image_url/decorations — the storefront overlay
-  // stays the shopper-facing render (no double-stamping).
-  const bakeStoreMockups = useCallback(async (opts = {}) => {
-    const plan = planStoreBakes({ catalog: detail?.catalog || [], stockByWp: detail?.stockByWp || {}, libraryArt: detail?.libraryArt || [], storeArt: sel?.store_art || [], defaultCustId: sel?.customer_id });
-    if (!plan.length) { if (!opts.quiet) flash('No placed logos to bake into mockups'); return { baked: 0, failed: 0 }; }
-    if (!opts.quiet) flash(`Baking ${plan.length} mockup${plan.length === 1 ? '' : 's'}…`);
-    let baked = 0, failed = 0;
-    const byCust = {}; // custId -> artId -> 'sku|color' -> [entries]
-    for (const t of plan) {
-      try {
-        const blob = await bakeMockBlob(t);
-        const fname = `automock_${t.sku}_${(t.color || 'all').replace(/[^a-z0-9]+/gi, '-')}_${t.side}.png`;
-        const url = await fileUpload(new File([blob], fname, { type: 'image/png' }), 'nsa-mockups');
-        t.writes.forEach((w) => {
-          if (!w.custId) return;
-          const entry = { url, name: `Auto mock · ${t.color || 'default'}${t.side === 'back' ? ' · back' : ''}`, art_file_id: w.artId, sku: t.sku, side: t.side, auto: true };
-          if (w.colorWayId) entry.color_way_id = w.colorWayId;
-          const byArt = byCust[w.custId] = byCust[w.custId] || {};
-          const byKey = byArt[w.artId] = byArt[w.artId] || {};
-          (byKey[t.key] = byKey[t.key] || []).push(entry);
-        });
-        baked++;
-      } catch (e) { console.warn('[mockBake] skipped', t.key, t.side, e?.message || e); failed++; }
-    }
-    // Write each owning customer's art records: prior AUTO entries for the same
-    // garment+art are replaced (re-publish re-bakes, never accumulates), and a garment
-    // that already has a MANUAL mock (artist/QuickMockBuilder) is left alone — a human's
-    // proof always outranks the auto composite. Fresh read right before the write to
-    // shrink the concurrent-edit window on the art_files blob.
-    for (const [cid, byArt] of Object.entries(byCust)) {
-      const { data: cust } = await supabase.from('customers').select('art_files').eq('id', cid).maybeSingle();
-      const arts = Array.isArray(cust?.art_files) ? cust.art_files : [];
-      let touched = false;
-      const next = arts.map((a) => {
-        const byKey = byArt[a.id];
-        if (!byKey) return a;
-        let changed = false;
-        const im = { ...(a.item_mockups || {}) };
-        Object.entries(byKey).forEach(([key, entries]) => {
-          const cur = im[key] || [];
-          if (cur.some((m) => m && !(typeof m === 'object' && m.auto))) return; // manual mock wins
-          im[key] = [...cur.filter((m) => !(m && typeof m === 'object' && m.auto && m.art_file_id === a.id)), ...entries];
-          changed = true;
-        });
-        if (!changed) return a;
-        touched = true;
-        return { ...a, item_mockups: im };
-      });
-      if (!touched) continue;
-      const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', cid);
-      if (error) flash('Could not save auto mocks to the library: ' + error.message);
-    }
-    if (!opts.quiet) flash(failed ? `Auto-baked ${baked} mockup${baked === 1 ? '' : 's'} (${failed} skipped)` : `Auto-baked ${baked} mockup${baked === 1 ? '' : 's'} to the art library`);
-    if (baked && sel) loadDetail(sel);
-    return { baked, failed };
-  }, [detail, sel, flash, loadDetail]);
-
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
   const setStoreStatus = useCallback(async (store, status, opts = {}) => {
@@ -1307,10 +1244,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // On a manual close, create the rep to-do + breakdown email (the sweep handles auto-closes).
     else if (store.status !== 'closed' && status === 'closed') notifyStoreClosed(data);
     else flash(status === 'open' ? "Store launched — it's live" : `Store ${status}`);
-    // Launch = the catalog is final: bake the decorated proofs so orders batch with
-    // real mockups. Failures never block the launch itself.
-    if (status === 'open') { try { await bakeStoreMockups({ quiet: false }); } catch (e) { console.warn('[mockBake] launch bake failed:', e?.message || e); } }
-  }, [sel, flash, notifyCoachPublished, notifyStoreClosed, bakeStoreMockups]);
+  }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
     if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
@@ -1792,6 +1726,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
+  }, [detail, sel, flash, loadDetail]);
+
+  // Bulk apply — each garment gets its OWN decoration (its per-garment placement +
+  // color-way variant), written in one pass with a single flash/reload. entries:
+  // [{ id, decoration }]. Like applyLogoToItems, replaces same-side decorations so a
+  // re-apply swaps the logo instead of stacking. Used by the Art tab's apply grid.
+  const applyLogoBulk = useCallback(async (entries) => {
+    const cat = detail?.catalog || [];
+    let n = 0, fails = 0;
+    for (const { id, decoration } of entries) {
+      const item = cat.find((c) => c.id === id);
+      if (!item) { fails += 1; continue; }
+      const existing = Array.isArray(item.decorations) ? item.decorations : [];
+      const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
+      const { error } = await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
+      if (error) fails += 1; else n += 1;
+    }
+    flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
+    loadDetail(sel);
+    return n;
   }, [detail, sel, flash, loadDetail]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
@@ -2525,7 +2479,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onBakeMocks={bakeStoreMockups} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} />
@@ -4006,7 +3960,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onBakeMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -4178,7 +4132,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} onBakeMocks={onBakeMocks} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -8266,8 +8220,6 @@ const artPlaceUrl = (art) => {
   return null;
 };
 const hexRgb = (hex) => { const h = (hex || '#000').replace('#', ''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; };
-const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly'];
-const guessDark = (name) => { const s = (name || '').toLowerCase(); return DARK_WORDS.some((w) => s.includes(w)); };
 const cssTint = (choice) => choice === 'white' ? 'brightness(0) invert(1)' : choice === 'black' ? 'brightness(0)' : 'none';
 
 // Recolor a logo to a single solid color, returning an uploadable Blob.
@@ -8375,13 +8327,20 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder, onBakeMocks }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
   const [selected, setSelected] = useState(() => new Set()); // items chosen for bulk apply — none by default
   const [bulkOpen, setBulkOpen] = useState(false); // bulk apply is an opt-in next step, not the default view
-  const [colorByItem, setColorByItem] = useState({}); // item id -> 'original' | 'white' | 'black'
+  // Per-garment color choice: a real per-CW variant { kind:'variant', url, colorWayId, label }
+  // or a recolor of the one cutout { kind:'recolor', choice:'original'|'white'|'black' }.
+  const [pickByItem, setPickByItem] = useState({});
+  // Placement is per STYLE (drag/resize applies to all its colors — the photos match, so
+  // one size reads consistently), with an optional per-garment nudge override for the odd one.
+  const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
+  const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w }
+  const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in per-garment nudge mode
   const [applying, setApplying] = useState(false);
   const [done, setDone] = useState('');
   const [addOpen, setAddOpen] = useState(false);
@@ -8390,6 +8349,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
   const emptyRef = useRef();
+  const boxRefs = useRef({}); // itemId -> the garment preview box element (for drag math)
+  const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item', box }
+  // Picks (and placements) are specific to the active logo — a variant pick holds that
+  // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setDone(''); }, [activeId]);
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -8405,8 +8369,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const activeArt = (storeArt || []).find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
   const activeUrl = artPlaceUrl(activeArt);
   const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
+  // The active logo's real per-CW variants (artist cutouts). ≥2 → the card shows variant
+  // chips; otherwise the recolor chips. Re-keyed so each carries its stable color_way_id.
+  const variants = normalizeWebLogos(activeArt && activeArt.web_logos, activeArt && activeArt.color_ways).filter((w) => w && w.url);
 
-  // Group store items into styles, each with its colorways.
+  // Group store items into styles, each with its colorways; stamp the style key on each
+  // item so placement (per style) and drag can resolve it.
   const groups = [];
   { const m = new Map();
     for (const it of singles) {
@@ -8414,41 +8382,101 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, color: st.color || '', decorations: it.decorations || [] });
+      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
-  const choiceOf = (item) => colorByItem[item.id] || (guessDark(item.color) ? 'white' : 'original');
-  const setChoice = (id, c) => setColorByItem((m) => ({ ...m, [id]: c }));
+  const allItems = groups.flatMap((g) => g.items);
+  const itemById = (id) => allItems.find((it) => it.id === id) || null;
+  const includedItems = allItems.filter((it) => selected.has(it.id));
   const toggleItem = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const includedItems = singles.filter((it) => selected.has(it.id));
-  const selectAll = () => setSelected(new Set(singles.map((it) => it.id)));
+  const selectAll = () => setSelected(new Set(allItems.map((it) => it.id)));
   const clearSel = () => setSelected(new Set());
 
+  // Autocolor: the per-garment pick, resolved from the garment color (real CW variant when
+  // the logo has one, else a light/dark recolor). Used as the live default and re-applied
+  // in one click by the Autocolor button.
+  const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color);
+  const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
+  const autocolorSelected = () => setPickByItem((m) => { const n = { ...m }; for (const it of includedItems) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
+  const placeForItem = (item) => resolveItemPlacement(place, placeByStyle, placeByItem, item.styleKey, item.id);
+  // Switching the base placement preset re-baselines everything (clears per-style /
+  // per-garment drags), so "put it all at Left Chest" is a clean reset to nudge from.
+  const choosePlacement = (id) => { setPlacement(id); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
+
+  // Drag / resize the logo on a garment preview. Default scope is the whole STYLE (every
+  // color of that style moves together); a garment in nudge mode overrides just itself.
+  const startDrag = (e, item, mode) => {
+    if (!selected.has(item.id) || !activeUrl) return;
+    e.preventDefault(); e.stopPropagation();
+    const box = boxRefs.current[item.id];
+    if (!box) return;
+    try { box.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
+    // Capture where the logo was grabbed relative to its center, so a move tracks the
+    // cursor from that point instead of snapping the center under it (no first-move jump).
+    let grab = { dx: 0, dy: 0 };
+    if (mode === 'move') {
+      const r = box.getBoundingClientRect();
+      const cur = placeForItem(item);
+      grab = { dx: (e.clientX - r.left) - (cur.x / 100) * r.width, dy: (e.clientY - r.top) - (cur.y / 100) * r.height };
+    }
+    // A garment keeps item scope if it's the nudge target OR already carries its own
+    // override — otherwise dragging it would silently rewrite the whole style's placement.
+    dragRef.current = { itemId: item.id, styleKey: item.styleKey, mode, box, grab, scope: (nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style' };
+  };
+  const onDragMove = (e) => {
+    const d = dragRef.current; if (!d || !d.box) return;
+    const r = d.box.getBoundingClientRect();
+    const item = itemById(d.itemId); if (!item) return;
+    const cur = placeForItem(item);
+    const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
+    let patch;
+    if (d.mode === 'resize') {
+      const cx = (cur.x / 100) * r.width;
+      const halfW = Math.abs((e.clientX - r.left) - cx);
+      patch = { w: Math.max(4, Math.min(100, Math.round((halfW * 2 / r.width) * 100))) };
+    } else {
+      patch = {
+        x: clamp(((e.clientX - r.left - d.grab.dx) / r.width) * 100),
+        y: clamp(((e.clientY - r.top - d.grab.dy) / r.height) * 100),
+      };
+    }
+    if (d.scope === 'item') setPlaceByItem((m) => ({ ...m, [d.itemId]: { x: cur.x, y: cur.y, w: cur.w, ...(m[d.itemId] || {}), ...patch } }));
+    else setPlaceByStyle((m) => ({ ...m, [d.styleKey]: { x: cur.x, y: cur.y, w: cur.w, ...(m[d.styleKey] || {}), ...patch } }));
+  };
+  const endDrag = (e) => { const d = dragRef.current; if (d && d.box) { try { d.box.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ } } dragRef.current = null; };
+  const clearNudge = (id) => { setPlaceByItem((m) => { const n = { ...m }; delete n[id]; return n; }); if (nudgeItem === id) setNudgeItem(null); };
+
   const apply = async () => {
-    if (!activeArt || !activeUrl) return;
+    if (!activeArt || !activeUrl || !includedItems.length) return;
     setApplying(true); setDone('');
     try {
       const custId = activeArt._srcCustId;
-      // Group the included items by their color choice so each recolor uploads once.
-      const byChoice = { original: [], white: [], black: [] };
-      for (const it of includedItems) byChoice[choiceOf(it)]?.push(it.id);
-      const variantCache = {}; // choice -> art_url
-      for (const choice of ['original', 'white', 'black']) {
-        const ids = byChoice[choice]; if (!ids.length) continue;
-        let artUrl = activeUrl;
-        if (choice !== 'original') {
-          const hex = choice === 'white' ? '#ffffff' : '#000000';
-          const blob = await recolorToBlob(activeUrl, hex);
-          const ext = isSvg(activeUrl) ? 'svg' : 'png';
-          const file = new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${choice}.${ext}`, { type: blob.type });
-          artUrl = await cloudUpload(file, 'nsa-store-art');
-          variantCache[choice] = artUrl;
-          // Save the recolored logo back to the library for reuse on future mocks.
-          if (custId && onSaveArtVariant) await onSaveArtVariant(custId, activeArt.id, { label: choice === 'white' ? 'White' : 'Black', color: hex, art_url: artUrl, source: activeUrl });
-        }
-        await onApplyLogo(ids, { art_id: activeArt.id, art_url: artUrl, source_url: artSourceUrl(activeArt), placement, color_label: choice });
+      // Recolor each needed shade once (cached); variant picks use the artist cutout as-is.
+      const recolorCache = {};
+      const recoloredUrl = async (choice) => {
+        if (choice === 'original') return activeUrl;
+        if (recolorCache[choice]) return recolorCache[choice];
+        const hex = choice === 'white' ? '#ffffff' : '#000000';
+        const blob = await recolorToBlob(activeUrl, hex);
+        const ext = isSvg(activeUrl) ? 'svg' : 'png';
+        const file = new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${choice}.${ext}`, { type: blob.type });
+        const url = await cloudUpload(file, 'nsa-store-art');
+        recolorCache[choice] = url;
+        if (custId && onSaveArtVariant) await onSaveArtVariant(custId, activeArt.id, { label: choice === 'white' ? 'White' : 'Black', color: hex, art_url: url, source: activeUrl });
+        return url;
+      };
+      const source_url = artSourceUrl(activeArt);
+      const entries = [];
+      for (const it of includedItems) {
+        const pick = pickFor(it);
+        const pl = placeForItem(it);
+        const deco = { art_id: activeArt.id, source_url, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side: 'front' };
+        if (pick.kind === 'variant') { deco.art_url = pick.url; deco.color_label = pick.label || 'variant'; if (pick.colorWayId) deco.color_way_id = pick.colorWayId; }
+        else { deco.art_url = await recoloredUrl(pick.choice); deco.color_label = pick.choice; }
+        entries.push({ id: it.id, decoration: deco });
       }
-      setDone(`Applied to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}.`);
+      const n = await onApplyLogoBulk(entries);
+      setDone(n > 0 ? `Applied to ${n} item${n === 1 ? '' : 's'}.` : 'Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
@@ -8486,11 +8514,6 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         <span><span style={{ fontSize: 16, fontWeight: 800 }}>🎨 Build mockups (full editor)</span><br /><span style={{ fontSize: 12.5, opacity: 0.92 }}>Place logos, eyedrop &amp; recolor, and apply to every garment color at once — saved to the art library and onto your store items.</span></span>
         <span style={{ fontSize: 13, fontWeight: 800, background: 'rgba(255,255,255,.18)', border: '1px solid rgba(255,255,255,.35)', borderRadius: 9, padding: '9px 15px', whiteSpace: 'nowrap' }}>Open →</span>
       </button>
-      {/* Auto-bake: composite the placed overlays into saved proofs (also runs on launch) */}
-      {onBakeMocks && <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10, marginBottom: 12, border: '1px solid #e2e8f0', background: '#f8fafc' }}>
-        <span style={{ fontSize: 12.5, color: '#475569', flex: 1 }}>⚡ <b>Auto-bake mockups</b> — save each garment color's photo with its placed logos as a proof in the art library (tagged "Auto mock"). Runs automatically at launch; use this to re-bake after art changes.</span>
-        <button className="btn btn-sm btn-secondary" onClick={() => onBakeMocks()} title="Composite placed logos onto each garment color and save to the customer's art library">Bake now</button>
-      </div>}
       {/* Library picker + placement (quick decoration overlay path) */}
       <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8 }}>
@@ -8542,54 +8565,91 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       </div></div>
 
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
-          a logo: pick placement, select which items, then apply & review them together. */}
+          a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
+          then apply & review them together. */}
       {activeArt && (!bulkOpen ? (
         <button onClick={() => activeUrl && setBulkOpen(true)} disabled={!activeUrl}
           style={{ width: '100%', textAlign: 'left', cursor: activeUrl ? 'pointer' : 'not-allowed', border: '1px solid #c7d2fe', background: activeUrl ? '#eef2ff' : '#f1f5f9', color: '#3730a3', borderRadius: 12, padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <span><span style={{ fontSize: 15, fontWeight: 800 }}>Bulk-apply “{activeArt.name || 'this logo'}” to items →</span><br /><span style={{ fontSize: 12.5, color: activeUrl ? '#4f46e5' : '#94a3b8' }}>{activeUrl ? 'Optional next step — pick the items to put this logo on, recolor per garment, then apply.' : 'Attach a web logo above first.'}</span></span>
+          <span><span style={{ fontSize: 15, fontWeight: 800 }}>Place “{activeArt.name || 'this logo'}” on items →</span><br /><span style={{ fontSize: 12.5, color: activeUrl ? '#4f46e5' : '#94a3b8' }}>{activeUrl ? 'Pick the garments, Autocolor the right logo per color, drag to fine-tune, then apply.' : 'Attach a web logo above first.'}</span></span>
         </button>
       ) : (
         <div className="card"><div style={{ padding: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 800 }}>Bulk-apply <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span></div>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</div>
             <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
           </div>
 
-          {/* Placement */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          {/* 1 · Placement — a starting preset; drag on any garment to fine-tune per style */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Placement</span>
             {ART_PLACEMENTS.map((p) => (
-              <button key={p.id} onClick={() => setPlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
+              <button key={p.id} onClick={() => choosePlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
             ))}
           </div>
+          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — <b>drag the logo</b> on any garment to fine-tune, or its corner to resize; that moves the whole style. Use <b>⤢ nudge</b> on a card to adjust just one garment.</div>
 
-          {/* Select items — none chosen by default; tap to pick, then review them together */}
+          {/* 2 · Select items + Autocolor */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select items <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the garments to apply this logo to ({includedItems.length} selected)</span></div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select items <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the garments ({includedItems.length} selected)</span></div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button onClick={autocolorSelected} disabled={!includedItems.length} title="Auto-pick the right logo color for each selected garment (light logo on dark garments, dark on light — using your real color-way variants when the logo has them)" style={{ fontSize: 12.5, fontWeight: 800, borderRadius: 999, padding: '6px 14px', cursor: includedItems.length ? 'pointer' : 'not-allowed', border: 'none', background: includedItems.length ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff' }}>✨ Autocolor</button>
               <button onClick={selectAll} className="btn btn-sm btn-secondary">Select all</button>
               <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!includedItems.length}>Clear</button>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(124px,1fr))', gap: 14, alignItems: 'start' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(132px,1fr))', gap: 14, alignItems: 'start' }}>
           {groups.map((g) => (
             <div key={g.key}>
               <div style={{ fontSize: 11.5, fontWeight: 800, color: '#334155', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {g.items.map((item) => { const ch = choiceOf(item); const sel3 = selected.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
-                  <div key={item.id} onClick={() => toggleItem(item.id)} title={sel3 ? 'Tap to deselect' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: 'pointer' }}>
-                    <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
-                      {item.img ? <img src={item.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
-                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front').map((d, di) => { const pl = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : pl.x; const dy = d.y != null ? d.y : pl.y; const dw = d.w != null ? d.w : pl.w; return <img key={'ad' + di} src={d.art_url} alt="" style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
-                      {activeUrl && sel3 && <img src={activeUrl} alt="" style={{ position: 'absolute', left: `${place.x}%`, top: `${place.y}%`, width: `${place.w}%`, transform: 'translate(-50%,-50%)', filter: cssTint(ch), pointerEvents: 'none', opacity: 0.95 }} />}
-                      <span style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)' }}>{sel3 ? '✓' : ''}</span>
-                      {has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
+                {g.items.map((item) => {
+                  const sel3 = selected.has(item.id);
+                  const pick = pickFor(item);
+                  const pl = placeForItem(item);
+                  const previewUrl = pick.kind === 'variant' ? pick.url : activeUrl;
+                  const previewFilter = pick.kind === 'variant' ? 'none' : cssTint(pick.choice);
+                  const has = (item.decorations || []).some((d) => d && d.art_id === activeArt.id);
+                  const nudged = !!placeByItem[item.id];
+                  return (
+                  <div key={item.id} onClick={() => { if (!sel3) toggleItem(item.id); }} title={sel3 ? '' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: sel3 ? 'default' : 'pointer' }}>
+                    <div ref={(el) => { if (el) boxRefs.current[item.id] = el; else delete boxRefs.current[item.id]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
+                      style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden', touchAction: sel3 ? 'none' : 'auto' }}>
+                      {item.img ? <img src={item.img} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
+                      {/* logos already on this garment (other than the one we're placing) */}
+                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front' && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; return <img key={'ad' + di} src={d.art_url} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
+                      {/* the logo being placed — draggable + resizable when the card is selected */}
+                      {activeUrl && sel3 && (
+                        <div onPointerDown={(e) => startDrag(e, item, 'move')} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none' }}>
+                          <img src={previewUrl} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: previewFilter, pointerEvents: 'none' }} />
+                          <div onPointerDown={(e) => startDrag(e, item, 'resize')} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
+                        </div>
+                      )}
+                      <button onClick={(e) => { e.stopPropagation(); toggleItem(item.id); }} title={sel3 ? 'Deselect' : 'Select'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0 }}>{sel3 ? '✓' : ''}</button>
+                      {nudged && <span title="This garment has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase' }}>Nudged</span>}
+                      {has && !sel3 && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
                     </div>
                     <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}</div>
-                    {sel3 && <div style={{ display: 'flex', gap: 4, marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
-                      {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => (
-                        <button key={c} onClick={() => setChoice(item.id, c)} title={`Recolor: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: ch === c ? '1px solid #191919' : '1px solid #d1d5db', background: ch === c ? '#191919' : '#fff', color: ch === c ? '#fff' : '#475569' }}>{lbl}</button>
-                      ))}
+                    {sel3 && <div style={{ marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
+                      {/* Real color-way variants (when the logo has them) — the preferred pick */}
+                      {variants.length >= 2 && (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                          {variants.map((v) => { const on = pick.kind === 'variant' && pick.url === v.url; return (
+                            <button key={v.url} onClick={() => setPick(item.id, { kind: 'variant', url: v.url, colorWayId: v.color_way_id || null, label: v.color_way || '' })} title={`Use the ${v.color_way || 'default'} version`} style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999, cursor: 'pointer', border: on ? '1px solid #4f46e5' : '1px solid #d1d5db', background: on ? '#4f46e5' : '#fff', color: on ? '#fff' : '#475569' }}>{v.color_way || 'Default'}</button>
+                          ); })}
+                        </div>
+                      )}
+                      {/* Recolor of the base cutout — always available so the active pick is
+                          visible/adjustable even when Autocolor fell back to a recolor. */}
+                      <div style={{ display: 'flex', gap: 4 }}>
+                        {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = pick.kind === 'recolor' && pick.choice === c; return (
+                          <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
+                        ); })}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        {nudged
+                          ? <button onClick={() => clearNudge(item.id)} title="Reset this garment to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset placement</button>
+                          : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this garment's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging this one' : '⤢ nudge just this'}</button>}
+                      </div>
                     </div>}
                   </div>
                 ); })}
@@ -8601,7 +8661,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           {/* Sticky apply bar */}
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
-            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'} · {place.label}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'}{activeArt ? ` · ${activeArt.name}` : ''}</span>
             <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : includedItems.length ? `Apply to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}` : 'Select items to apply'}</button>
           </div>
         </div></div>
