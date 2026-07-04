@@ -2094,6 +2094,50 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return url;
   }, [sel, flash, loadDetail]);
 
+  // Rep self-serve: promote a recolored cutout into a real per-color-way web logo, creating
+  // the color way if the rep named a new one. Tagged source:'rep' so an artist can see it in
+  // the art library and swap in a cleaner cutout for complex logos. cwName '' = all-garments.
+  const saveRepWebLogo = useCallback(async (art, url, cwName) => {
+    if (!art || !url) return null;
+    const custId = art._srcCustId || sel?.customer_id;
+    if (!custId) { flash('No customer to save the web logo to'); return null; }
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', custId).maybeSingle();
+    const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const nm = (art.name || '').trim().toLowerCase();
+    const dt = art.deco_type || '';
+    const matches = (a) => a.id === art.id || (nm && (a.name || '').trim().toLowerCase() === nm && (a.deco_type || '') === dt);
+    const label = String(cwName || '').trim();
+    const withLogo = (a) => {
+      const color_ways = Array.isArray(a.color_ways) ? [...a.color_ways] : [];
+      if (label && !color_ways.some((c) => c && String(c.garment_color || '').trim().toLowerCase() === label.toLowerCase())) {
+        color_ways.push({ id: 'cw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), garment_color: label, inks: [''], source: 'rep' });
+      }
+      // Replace the entry we're setting (this CW, or the default), keep the rest.
+      const keep = (Array.isArray(a.web_logos) ? a.web_logos : []).filter((w) => {
+        if (!w || !w.url) return false;
+        const wl = String(w.color_way || '').trim().toLowerCase();
+        return label ? wl !== label.toLowerCase() : !(w.is_default || !wl);
+      });
+      const entry = label ? { url, color_way: label, source: 'rep' } : { url, color_way: '', is_default: true, source: 'rep' };
+      const web_logos = normalizeWebLogos([...keep, entry], color_ways);
+      const def = (web_logos.find((w) => w.is_default || !((w.color_way || '').trim())) || {}).url || a.web_logo_url || (label ? '' : url);
+      return { ...a, color_ways, web_logos, web_logo_url: def };
+    };
+    const idx = arr.findIndex(matches);
+    const next = idx >= 0 ? arr.map((a, i) => (i === idx ? withLogo(a) : a))
+      : [...arr, withLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
+    const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', custId);
+    if (error) { flash('Could not save web logo: ' + error.message); return null; }
+    const curArt = Array.isArray(sel?.store_art) ? sel.store_art : [];
+    if (curArt.some(matches)) {
+      const nextStore = curArt.map((a) => (matches(a) ? withLogo(a) : a));
+      const { data: st } = await supabase.from('webstores').update({ store_art: nextStore }).eq('id', sel.id).select().single();
+      if (st) { setStores((prev) => prev.map((x) => (x.id === sel.id ? st : x))); setSel(st); }
+    }
+    flash(label ? `Web logo saved for ${label}` : 'Web logo saved (all garments)'); loadDetail(sel);
+    return url;
+  }, [sel, flash, loadDetail]);
+
   const updateTransfer = useCallback(async (id, fields) => {
     const { error } = await supabase.from('webstore_transfers').update(fields).eq('id', id);
     if (error) { flash('Error: ' + error.message); return; }
@@ -2754,7 +2798,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
@@ -4416,7 +4460,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -4588,7 +4632,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -8864,7 +8908,7 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -8946,6 +8990,35 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color);
   const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
   const autocolorSelected = () => setPickByItem((m) => { const n = { ...m }; for (const it of includedItems) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
+  // Rep self-serve: turn the shown color's cutout (a recolor, or the base) into a saved,
+  // reusable web logo tied to a color way — creating the CW if the rep names a new one.
+  const [repSave, setRepSave] = useState(null); // { url } while the color-way prompt is open
+  const [repBusy, setRepBusy] = useState(false);
+  const [repNewCw, setRepNewCw] = useState('');
+  const startRepSave = async (item) => {
+    if (!activeArt || !activeUrl || !onSaveRepWebLogo) return;
+    const pick = pickFor(item);
+    setRepBusy(true);
+    try {
+      let url = activeUrl;
+      if (pick.kind === 'variant') url = pick.url;
+      else if (pick.choice !== 'original') {
+        const hex = pick.choice === 'white' ? '#ffffff' : '#000000';
+        const blob = await recolorToBlob(activeUrl, hex);
+        const ext = isSvg(activeUrl) ? 'svg' : 'png';
+        url = await cloudUpload(new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${pick.choice}.${ext}`, { type: blob.type }), 'nsa-store-art');
+      }
+      setRepNewCw(item.color || '');
+      setRepSave({ url });
+    } catch (e) { onFlash && onFlash('Could not prepare the web logo: ' + (e.message || e)); }
+    setRepBusy(false);
+  };
+  const confirmRepSave = async (cwName) => {
+    if (!repSave) return;
+    setRepBusy(true);
+    await onSaveRepWebLogo(activeArt, repSave.url, cwName || '');
+    setRepBusy(false); setRepSave(null); setRepNewCw('');
+  };
   // Where a garment's logo already sits (the active art's deco, else any logo on that
   // side) — so an already-decorated style loads its real placement instead of snapping
   // to the preset. Once the rep picks a preset pill (presetTouched), the preset wins.
@@ -9272,6 +9345,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                     <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
                   ); })}
                 </div>
+                {/* Rep self-serve: save this recolored cutout as a real per-CW web logo */}
+                {onSaveRepWebLogo && pick.kind === 'recolor' && <button onClick={() => startRepSave(item)} disabled={repBusy} title="Save this recolored logo to the art library as a reusable web logo tied to a color way" style={{ width: '100%', fontSize: 9.5, fontWeight: 700, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, padding: '3px 8px', marginTop: 4, cursor: repBusy ? 'wait' : 'pointer' }}>{repBusy ? 'Saving…' : '💾 Save recolor as web logo'}</button>}
                 {/* Front/Back + placement controls */}
                 <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap', alignItems: 'center' }}>
                   {(item.backImg || hasBack) && (
@@ -9298,6 +9373,38 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           </div>
         </div></div>
       ))}
+
+      {/* Rep self-serve: which color way does this saved web logo belong to? */}
+      {repSave && (
+        <div onClick={() => !repBusy && setRepSave(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '48px 16px', overflowY: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 420, margin: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>Save web logo for which color way?</div>
+              <button onClick={() => !repBusy && setRepSave(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <img src={repSave.url} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, border: '1px solid #eef2f7', background: '#f8fafc' }} />
+                <div style={{ fontSize: 12, color: '#64748b' }}>Saved to <b>{activeArt && activeArt.name}</b>'s art library and reusable on every store.</div>
+              </div>
+              {(activeArt && activeArt.color_ways || []).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8' }}>Existing color ways</div>
+                  {(activeArt.color_ways || []).map((cw, ci) => <button key={cw.id || ci} disabled={repBusy} onClick={() => confirmRepSave(cw.garment_color || ('Color way ' + (ci + 1)))} style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: repBusy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, color: '#1e293b' }}><span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: '#64748b', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>CW {ci + 1}</span>{cw.garment_color || ('Color way ' + (ci + 1))}</button>)}
+                </div>
+              )}
+              <div style={{ paddingTop: 12, borderTop: '1px solid #eef2f7' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8', marginBottom: 6 }}>Or create a new color way</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={repNewCw} onChange={(e) => setRepNewCw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && repNewCw.trim()) confirmRepSave(repNewCw.trim()); }} placeholder="e.g. Navy, White" style={{ flex: 1, fontSize: 13, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, outline: 'none' }} />
+                  <button className="btn btn-primary" disabled={repBusy || !repNewCw.trim()} onClick={() => confirmRepSave(repNewCw.trim())}>Create &amp; save</button>
+                </div>
+                <button disabled={repBusy} onClick={() => confirmRepSave('')} style={{ marginTop: 10, fontSize: 11.5, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: repBusy ? 'wait' : 'pointer', padding: 0 }}>or save as the “all garments” default →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
