@@ -1732,21 +1732,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // color-way variant), written in one pass with a single flash/reload. entries:
   // [{ id, decoration }]. Like applyLogoToItems, replaces same-side decorations so a
   // re-apply swaps the logo instead of stacking. Used by the Art tab's apply grid.
+  // Bulk apply — each entry carries the item's COMPLETE new decorations array (the Art
+  // tab computes it: replace the logo on each side it's placing, preserve the other side
+  // and personalization tokens). Written in one pass with a single flash/reload.
   const applyLogoBulk = useCallback(async (entries) => {
-    const cat = detail?.catalog || [];
     let n = 0, fails = 0;
-    for (const { id, decoration } of entries) {
-      const item = cat.find((c) => c.id === id);
-      if (!item) { fails += 1; continue; }
-      const existing = Array.isArray(item.decorations) ? item.decorations : [];
-      const next = existing.filter((d) => (d.side || 'front') !== (decoration.side || 'front')).concat([decoration]);
-      const { error } = await supabase.from('webstore_products').update({ decorations: next }).eq('id', id);
+    for (const { id, decorations } of entries) {
+      const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', id);
       if (error) fails += 1; else n += 1;
     }
     flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
     loadDetail(sel);
     return n;
-  }, [detail, sel, flash, loadDetail]);
+  }, [sel, flash, loadDetail]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
     const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', itemId);
@@ -8341,6 +8339,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
   const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w }
   const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in per-garment nudge mode
+  // Back logos are a per-item add (rare) — not a whole-grid mode. backByItem holds the
+  // back placement for the items that get one; flipped is which cards currently SHOW their back.
+  const [backByItem, setBackByItem] = useState({});     // itemId -> { x, y, w } (present = has a back logo)
+  const [flipped, setFlipped] = useState(() => new Set()); // itemIds whose card is showing the back
   const [applying, setApplying] = useState(false);
   const [done, setDone] = useState('');
   const [addOpen, setAddOpen] = useState(false);
@@ -8353,7 +8355,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item', box }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
-  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setDone(''); }, [activeId]);
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByItem({}); setFlipped(new Set()); setDone(''); }, [activeId]);
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -8382,7 +8384,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, color: st.color || '', decorations: it.decorations || [], styleKey: key });
+      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, backImg: st.image_back_url || '', color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
   const allItems = groups.flatMap((g) => g.items);
@@ -8399,35 +8401,43 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
   const autocolorSelected = () => setPickByItem((m) => { const n = { ...m }; for (const it of includedItems) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
   const placeForItem = (item) => resolveItemPlacement(place, placeByStyle, placeByItem, item.styleKey, item.id);
+  // Back logos: a per-item placement seeded from the Full Back preset. Presence in
+  // backByItem means the item gets a back logo on apply.
+  const _fullBack = ART_PLACEMENTS.find((p) => p.id === 'full_back') || place;
+  const backPlaceFor = (item) => backByItem[item.id] || { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w };
+  const addBack = (id) => { setBackByItem((m) => (m[id] ? m : { ...m, [id]: { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w } })); setFlipped((s) => new Set(s).add(id)); };
+  const removeBack = (id) => { setBackByItem((m) => { const n = { ...m }; delete n[id]; return n; }); setFlipped((s) => { const n = new Set(s); n.delete(id); return n; }); };
+  const flipSide = (id, toBack) => setFlipped((s) => { const n = new Set(s); toBack ? n.add(id) : n.delete(id); return n; });
   // Switching the base placement preset re-baselines everything (clears per-style /
   // per-garment drags), so "put it all at Left Chest" is a clean reset to nudge from.
   const choosePlacement = (id) => { setPlacement(id); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
 
-  // Drag / resize the logo on a garment preview. Default scope is the whole STYLE (every
-  // color of that style moves together); a garment in nudge mode overrides just itself.
-  const startDrag = (e, item, mode) => {
+  // Drag / resize the logo on a garment preview. Front scope is the whole STYLE (every color
+  // of that style moves together) unless the garment is nudged; back is always per item.
+  const startDrag = (e, item, mode, side = 'front') => {
     if (!selected.has(item.id) || !activeUrl) return;
     e.preventDefault(); e.stopPropagation();
     const box = boxRefs.current[item.id];
     if (!box) return;
     try { box.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
+    const curP = side === 'back' ? backPlaceFor(item) : placeForItem(item);
     // Capture where the logo was grabbed relative to its center, so a move tracks the
     // cursor from that point instead of snapping the center under it (no first-move jump).
     let grab = { dx: 0, dy: 0 };
     if (mode === 'move') {
       const r = box.getBoundingClientRect();
-      const cur = placeForItem(item);
-      grab = { dx: (e.clientX - r.left) - (cur.x / 100) * r.width, dy: (e.clientY - r.top) - (cur.y / 100) * r.height };
+      grab = { dx: (e.clientX - r.left) - (curP.x / 100) * r.width, dy: (e.clientY - r.top) - (curP.y / 100) * r.height };
     }
-    // A garment keeps item scope if it's the nudge target OR already carries its own
+    // A front garment keeps item scope if it's the nudge target OR already carries its own
     // override — otherwise dragging it would silently rewrite the whole style's placement.
-    dragRef.current = { itemId: item.id, styleKey: item.styleKey, mode, box, grab, scope: (nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style' };
+    const scope = side === 'back' ? 'back' : ((nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style');
+    dragRef.current = { itemId: item.id, styleKey: item.styleKey, mode, box, grab, side, scope };
   };
   const onDragMove = (e) => {
     const d = dragRef.current; if (!d || !d.box) return;
     const r = d.box.getBoundingClientRect();
     const item = itemById(d.itemId); if (!item) return;
-    const cur = placeForItem(item);
+    const cur = d.side === 'back' ? backPlaceFor(item) : placeForItem(item);
     const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
     let patch;
     if (d.mode === 'resize') {
@@ -8440,8 +8450,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         y: clamp(((e.clientY - r.top - d.grab.dy) / r.height) * 100),
       };
     }
-    if (d.scope === 'item') setPlaceByItem((m) => ({ ...m, [d.itemId]: { x: cur.x, y: cur.y, w: cur.w, ...(m[d.itemId] || {}), ...patch } }));
-    else setPlaceByStyle((m) => ({ ...m, [d.styleKey]: { x: cur.x, y: cur.y, w: cur.w, ...(m[d.styleKey] || {}), ...patch } }));
+    const merge = (prev) => ({ placement: cur.placement, x: cur.x, y: cur.y, w: cur.w, ...(prev || {}), ...patch });
+    if (d.scope === 'back') setBackByItem((m) => ({ ...m, [d.itemId]: merge(m[d.itemId]) }));
+    else if (d.scope === 'item') setPlaceByItem((m) => ({ ...m, [d.itemId]: merge(m[d.itemId]) }));
+    else setPlaceByStyle((m) => ({ ...m, [d.styleKey]: merge(m[d.styleKey]) }));
   };
   const endDrag = (e) => { const d = dragRef.current; if (d && d.box) { try { d.box.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ } } dragRef.current = null; };
   const clearNudge = (id) => { setPlaceByItem((m) => { const n = { ...m }; delete n[id]; return n; }); if (nudgeItem === id) setNudgeItem(null); };
@@ -8469,11 +8481,19 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const entries = [];
       for (const it of includedItems) {
         const pick = pickFor(it);
-        const pl = placeForItem(it);
-        const deco = { art_id: activeArt.id, source_url, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side: 'front' };
-        if (pick.kind === 'variant') { deco.art_url = pick.url; deco.color_label = pick.label || 'variant'; if (pick.colorWayId) deco.color_way_id = pick.colorWayId; }
-        else { deco.art_url = await recoloredUrl(pick.choice); deco.color_label = pick.choice; }
-        entries.push({ id: it.id, decoration: deco });
+        // Resolve the cutout + color-way once; the same logo colors front and back.
+        let artUrl, colorLabel, colorWayId = null;
+        if (pick.kind === 'variant') { artUrl = pick.url; colorLabel = pick.label || 'variant'; colorWayId = pick.colorWayId || null; }
+        else { artUrl = await recoloredUrl(pick.choice); colorLabel = pick.choice; }
+        const mk = (side, pl) => { const d = { art_id: activeArt.id, source_url, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, art_url: artUrl, color_label: colorLabel }; if (colorWayId) d.color_way_id = colorWayId; return d; };
+        const newDecos = [mk('front', placeForItem(it))];
+        if (backByItem[it.id]) newDecos.push(mk('back', backPlaceFor(it)));
+        // Replace the logo on each side we're placing; keep the other side and — crucially —
+        // any personalization tokens (number/name live on the back as perso decorations).
+        const sides = new Set(newDecos.map((d) => d.side));
+        const existing = Array.isArray(it.decorations) ? it.decorations : [];
+        const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
+        entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
       }
       const n = await onApplyLogoBulk(entries);
       setDone(n > 0 ? `Applied to ${n} item${n === 1 ? '' : 's'}.` : 'Error: nothing was applied — please retry.');
@@ -8586,7 +8606,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
               <button key={p.id} onClick={() => choosePlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
             ))}
           </div>
-          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — <b>drag the logo</b> on any garment to fine-tune, or its corner to resize; that moves the whole style. Use <b>⤢ nudge</b> on a card to adjust just one garment.</div>
+          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — <b>drag the logo</b> on any garment to fine-tune, or its corner to resize; that moves the whole style. Use <b>⤢ nudge</b> to adjust one garment, or <b>+ Back</b> on a card to add a back logo to just that garment.</div>
 
           {/* 2 · Select items + Autocolor */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
@@ -8604,8 +8624,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {g.items.map((item) => {
                   const sel3 = selected.has(item.id);
+                  const showBack = sel3 && flipped.has(item.id);
+                  const sideNow = showBack ? 'back' : 'front';
+                  const hasBack = !!backByItem[item.id];
                   const pick = pickFor(item);
-                  const pl = placeForItem(item);
+                  const pl = showBack ? backPlaceFor(item) : placeForItem(item);
+                  const bgImg = showBack ? item.backImg : item.img;
                   const previewUrl = pick.kind === 'variant' ? pick.url : activeUrl;
                   const previewFilter = pick.kind === 'variant' ? 'none' : cssTint(pick.choice);
                   const has = (item.decorations || []).some((d) => d && d.art_id === activeArt.id);
@@ -8614,23 +8638,25 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   <div key={item.id} onClick={() => { if (!sel3) toggleItem(item.id); }} title={sel3 ? '' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: sel3 ? 'default' : 'pointer' }}>
                     <div ref={(el) => { if (el) boxRefs.current[item.id] = el; else delete boxRefs.current[item.id]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
                       style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden', touchAction: sel3 ? 'none' : 'auto' }}>
-                      {item.img ? <img src={item.img} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
-                      {/* logos already on this garment (other than the one we're placing) */}
-                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front' && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; return <img key={'ad' + di} src={d.art_url} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
-                      {/* the logo being placed — draggable + resizable when the card is selected */}
-                      {activeUrl && sel3 && (
-                        <div onPointerDown={(e) => startDrag(e, item, 'move')} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none' }}>
+                      {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No {sideNow} image</div>}
+                      {/* logos already on the shown side (other than the one we're placing) */}
+                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === sideNow && !(sel3 && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; return <img key={'ad' + di} src={d.art_url} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
+                      {/* the logo being placed on the shown side — draggable + resizable */}
+                      {activeUrl && sel3 && bgImg && (
+                        <div onPointerDown={(e) => startDrag(e, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none' }}>
                           <img src={previewUrl} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: previewFilter, pointerEvents: 'none' }} />
-                          <div onPointerDown={(e) => startDrag(e, item, 'resize')} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
+                          <div onPointerDown={(e) => startDrag(e, item, 'resize', sideNow)} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
                         </div>
                       )}
                       <button onClick={(e) => { e.stopPropagation(); toggleItem(item.id); }} title={sel3 ? 'Deselect' : 'Select'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0 }}>{sel3 ? '✓' : ''}</button>
-                      {nudged && <span title="This garment has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase' }}>Nudged</span>}
+                      {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Back</span>}
+                      {!showBack && hasBack && <span title="This garment also has a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>+ Back</span>}
+                      {nudged && !showBack && <span title="This garment has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase' }}>Nudged</span>}
                       {has && !sel3 && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
                     </div>
                     <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}</div>
                     {sel3 && <div style={{ marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
-                      {/* Real color-way variants (when the logo has them) — the preferred pick */}
+                      {/* Color pick (applies to both sides) — real CW variants when the logo has them */}
                       {variants.length >= 2 && (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
                           {variants.map((v) => { const on = pick.kind === 'variant' && pick.url === v.url; return (
@@ -8638,17 +8664,23 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                           ); })}
                         </div>
                       )}
-                      {/* Recolor of the base cutout — always available so the active pick is
-                          visible/adjustable even when Autocolor fell back to a recolor. */}
                       <div style={{ display: 'flex', gap: 4 }}>
                         {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = pick.kind === 'recolor' && pick.choice === c; return (
                           <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
                         ); })}
                       </div>
-                      <div style={{ marginTop: 4 }}>
-                        {nudged
-                          ? <button onClick={() => clearNudge(item.id)} title="Reset this garment to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset placement</button>
-                          : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this garment's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging this one' : '⤢ nudge just this'}</button>}
+                      {/* Front/Back + placement controls */}
+                      <div style={{ display: 'flex', gap: 4, marginTop: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {item.backImg && (
+                          <div style={{ display: 'inline-flex', border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+                            <button onClick={() => flipSide(item.id, false)} title="Front" style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', background: !showBack ? '#0f172a' : '#fff', color: !showBack ? '#fff' : '#475569' }}>Front</button>
+                            <button onClick={() => (hasBack ? flipSide(item.id, true) : addBack(item.id))} title={hasBack ? 'View / edit the back logo' : 'Add a back logo to this garment'} style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', borderLeft: '1px solid #e2e8f0', background: showBack ? '#0f172a' : '#fff', color: showBack ? '#fff' : (hasBack ? '#0f172a' : '#94a3b8') }}>{hasBack ? 'Back' : '+ Back'}</button>
+                          </div>
+                        )}
+                        {hasBack && <button onClick={() => removeBack(item.id)} title="Remove the back logo from this garment" style={{ fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>✕ back</button>}
+                        {!showBack && (nudged
+                          ? <button onClick={() => clearNudge(item.id)} title="Reset this garment to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
+                          : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this garment's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
                       </div>
                     </div>}
                   </div>
@@ -8661,7 +8693,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           {/* Sticky apply bar */}
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
-            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'}{(() => { const b = includedItems.filter((it) => backByItem[it.id]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
             <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : includedItems.length ? `Apply to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}` : 'Select items to apply'}</button>
           </div>
         </div></div>
