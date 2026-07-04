@@ -995,8 +995,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [omgItems, setOmgItems] = useState([]); // [{sku,name,color,sizes,retail,image_url,manufacturer,cost,vendor_id,_cost_source,product_id,_removed,_resolving}]
   const [omgName, setOmgName] = useState('');
   const [omgCustomerId, setOmgCustomerId] = useState('');
-  const [omgCreating, setOmgCreating] = useState(false);
   const [omgStock, setOmgStock] = useState(null); // Map from fetchStockMap, keyed by product_id | 'omgtmp:'+i
+  const [omgPrefill, setOmgPrefill] = useState(null); // { name, customer_id } → carried into the New Store settings form
   const [omgVendList, setOmgVendList] = useState([]); // cached at fetch time, reused on per-row SKU re-resolve
   const [omgMomentecDiscount, setOmgMomentecDiscount] = useState(0.15);
 
@@ -1416,39 +1416,49 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch { /* keep old stock display */ }
   }, [omgItems, omgVendList, omgMomentecDiscount, _omgResolveOne]);
 
-  // Step 2 → done: create the draft webstore + its products, queue in-house art if a customer
-  // is linked, then jump straight into the new store (same place "+ New Store" lands).
-  const omgCreateStore = useCallback(async () => {
+  // Step 2 → don't create the store yet. Hand off to the SAME settings form "+ New Store" uses
+  // (delivery, fundraising, coach contact, decoration mode, etc.), pre-filled with the reviewed
+  // name/customer. The reviewed items stay staged in omgItems until that form is actually
+  // submitted, so backing out of settings leaves nothing behind.
+  const omgProceedToSettings = useCallback(() => {
     const included = omgItems.filter((p) => p._included !== false && (p.sku || p.name));
     if (!included.length) { flash('Select at least one item'); return; }
-    const wsName = (omgName || 'Team Store').trim() || 'Team Store';
-    setOmgCreating(true);
-    try {
-      const base = wsName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'team-store';
-      let slug = base;
-      for (let n = 2; n < 60; n++) {
-        const { data: ex } = await supabase.from('webstores').select('id').eq('slug', slug).limit(1);
-        if (!ex || !ex.length) break;
-        slug = `${base}-${n}`;
-      }
-      const form = { ...BLANK, name: wsName, slug, customer_id: omgCustomerId || null, rep_id: null, csr_id: null, open_at: null, close_at: null, status: 'draft', source: 'webstore', created_via: 'staff', decoration_mode: 'in_house' };
-      const r = await saveStore(form, null);
-      if (r.error) { flash('Could not create store: ' + r.error.message); setOmgCreating(false); return; }
-      const newStore = r.data;
-      // In-house art: the OMG mockup shows the finished garment, but OMG never hands over the
-      // real production file. Queue one "needs file" record (art_id only, no art_url — the
-      // storefront never composites a logo over the mockup) so it lands in the art queue instead
-      // of silently looking done.
-      let pendingArtId = null;
-      if (omgCustomerId) {
-        try {
-          const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'pending', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
-          const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', omgCustomerId).maybeSingle();
-          const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
-          const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', omgCustomerId);
-          if (!aErr) { await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG import' }] }).eq('id', newStore.id); pendingArtId = rec.id; }
-        } catch (e) { /* items still get created without the art queue */ }
-      }
+    setOmgPrefill({ name: (omgName || 'Team Store').trim() || 'Team Store', customer_id: omgCustomerId || '' });
+    setOmgStep(null);
+    setEditing('new');
+  }, [omgItems, omgName, omgCustomerId, flash]);
+
+  // Clears any items/prefill staged by the OMG wizard — called both when the review step is
+  // cancelled outright and when the settings form itself is backed out of.
+  const omgResetStaged = useCallback(() => {
+    setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId(''); setOmgPrefill(null);
+  }, []);
+
+  // Settings form submitted → the store now exists with every setting the rep configured.
+  // Add the reviewed items and queue in-house art (if a customer is linked), then open it.
+  const omgFinishAfterSettings = useCallback(async (newStore) => {
+    const included = omgItems.filter((p) => p._included !== false && (p.sku || p.name));
+    const wsName = newStore.name || 'Team Store';
+    const customerId = newStore.customer_id || null;
+    // In-house art: the OMG mockup shows the finished garment, but OMG never hands over the real
+    // production file. Queue one "needs file" record (art_id only, no art_url — the storefront
+    // never composites a logo over the mockup) so it lands in the art queue instead of silently
+    // looking done.
+    let pendingArtId = null;
+    if (customerId) {
+      try {
+        // status 'waiting_for_art' is the canonical "needs artist attention" state — it puts this
+        // record in the customer Artwork Library's Waiting-for-Art queue and on the Art Dashboard,
+        // so the separations request can't be missed. ('pending' isn't a real art status.)
+        const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'waiting_for_art', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
+        const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+        const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+        const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', customerId);
+        if (!aErr) { await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG import' }] }).eq('id', newStore.id); pendingArtId = rec.id; }
+      } catch (e) { /* items still get created without the art queue */ }
+    }
+    let linked = 0;
+    if (included.length) {
       const rows = included.map((p, i) => ({
         store_id: newStore.id, product_id: p.product_id || null, sku: p.sku || null, kind: 'single',
         display_name: (p.name || p.sku || 'Item').trim(), image_url: p.image_url || null,
@@ -1457,13 +1467,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
       }));
       const { error: pErr } = await supabase.from('webstore_products').insert(rows);
-      if (pErr) { flash('Store created but items failed to add: ' + pErr.message); setOmgStep(null); await openStore(newStore); setOmgCreating(false); return; }
-      const linked = rows.filter((r2) => r2.product_id).length;
-      flash(`✓ ${wsName} created — ${rows.length} item${rows.length === 1 ? '' : 's'} (${linked} catalog-linked)${pendingArtId ? ' · in-house art queued' : ''}`);
-      setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId('');
-      await openStore(newStore);
-    } catch (e) { flash('Create failed: ' + e.message); } finally { setOmgCreating(false); }
-  }, [omgItems, omgName, omgCustomerId, saveStore, openStore, flash]);
+      if (pErr) { flash('Store created but items failed to add: ' + pErr.message); omgResetStaged(); await openStore(newStore); return; }
+      linked = rows.filter((r2) => r2.product_id).length;
+    }
+    flash(`✓ ${wsName} created — ${included.length} item${included.length === 1 ? '' : 's'} (${linked} catalog-linked)${pendingArtId ? ' · in-house art queued' : ''}`);
+    omgResetStaged();
+    await openStore(newStore);
+  }, [omgItems, openStore, flash, omgResetStaged]);
 
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
@@ -2680,10 +2690,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
 
       {editing ? (
-        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
-          onCancel={() => { setPendingStartTpl(null); setEditing(null); }}
-          onSave={async (form) => { const isNew = editing === 'new'; const r = await saveStore(form, isNew ? null : editing.id); if (r.error) return r; setEditing(null); if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); } return r; }}
-          onImportFromOmg={editing === 'new' ? () => { setEditing(null); setOmgStep('link'); } : null} />
+        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
+          onCancel={() => { setPendingStartTpl(null); setEditing(null); omgResetStaged(); }}
+          onSave={async (form) => {
+            const isNew = editing === 'new';
+            const r = await saveStore(form, isNew ? null : editing.id);
+            if (r.error) return r;
+            setEditing(null);
+            // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
+            // in-house art now that the store exists with every setting the rep just configured.
+            if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
+            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); }
+            return r;
+          }}
+          onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
@@ -2708,8 +2728,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         onSkuBlur={omgResolveRow}
         onFieldChange={(i, key, v) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, [key]: v } : p)))}
         onToggleIncluded={(i) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, _included: p._included === false } : p)))}
-        onCreate={omgCreateStore} creating={omgCreating}
-        onClose={() => { setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId(''); }}
+        onCreate={omgProceedToSettings} creating={false}
+        onClose={omgResetStaged}
       />}
     </>
   );
@@ -2745,7 +2765,12 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
   }
   // step === 'review'
   const badSkus = items.filter((p) => skuInvalid(p.sku));
-  const notLinked = items.filter((p) => p._included !== false && !isLinked(p));
+  // "Matched" (found a real catalog/vendor SKU) is a different fact than "priced" (that catalog
+  // row happens to have a cost on file). A SKU can be a genuine match with $0 cost — e.g. an
+  // Adidas item NSA hasn't priced yet, since Adidas has no live pricing API — and that is NOT
+  // the same failure as never finding the SKU at all.
+  const unmatched = items.filter((p) => p._included !== false && !p.product_id);
+  const missingCost = items.filter((p) => p._included !== false && p.product_id && !isLinked(p));
   const included = items.filter((p) => p._included !== false);
   const totalUnits = included.reduce((a, p) => a + Object.values(p.sizes || {}).reduce((a2, v) => a2 + (Number(v) || 0), 0), 0);
   const chip = (bg, fg) => ({ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: bg, color: fg });
@@ -2776,8 +2801,9 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
             <span style={chip('#eef2ff', '#4338ca')}>{included.length} item{included.length === 1 ? '' : 's'} · {totalUnits} units</span>
             {badSkus.length > 0 && <span style={chip('#fef2f2', '#b91c1c')}>⚠ {badSkus.length} invalid SKU{badSkus.length === 1 ? '' : 's'}</span>}
-            {notLinked.length > 0 && <span style={chip('#fffbeb', '#92400e')}>⚠ {notLinked.length} not linked to catalog/API</span>}
-            {badSkus.length === 0 && notLinked.length === 0 && <span style={chip('#f0fdf4', '#166534')}>✓ all linked &amp; valid</span>}
+            {unmatched.length > 0 && <span style={chip('#fef2f2', '#b91c1c')}>⚠ {unmatched.length} not linked to catalog/API</span>}
+            {missingCost.length > 0 && <span style={chip('#fffbeb', '#92400e')}>{missingCost.length} matched, no cost on file</span>}
+            {badSkus.length === 0 && unmatched.length === 0 && missingCost.length === 0 && <span style={chip('#f0fdf4', '#166534')}>✓ all linked &amp; valid</span>}
           </div>
           <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
@@ -2797,7 +2823,12 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
                   const included2 = p._included !== false;
                   const key = p.product_id || ('omgtmp:' + i);
                   const st = stock && stock.get(key);
-                  const regSizes = foldScale(Object.keys(p.sizes || {}));
+                  // Prefer the catalog/vendor's REAL current sizes over the size the OMG order
+                  // historically recorded — that label (e.g. "Womens S", "OSFA") is whatever a
+                  // parent typed years ago and routinely doesn't match today's raw size key, which
+                  // made every live item look "out of stock" even when it had hundreds on hand.
+                  const liveSizes = (st && st.sizes && st.sizes.length) ? st.sizes : null;
+                  const regSizes = foldScale(liveSizes || Object.keys(p.sizes || {}));
                   const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
                   const sizeRows = regSizes.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
                   const totalStock = sizeRows.reduce((a, s) => a + s.q, 0);
@@ -2840,8 +2871,12 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
                         {(() => {
                           const L = { catalog: ['✓ Catalog', '#15803d', '#dcfce7'], sanmar: ['✓ SanMar', '#1d4ed8', '#dbeafe'], ss: ['✓ S&S', '#6d28d9', '#ede9fe'], richardson: ['✓ Richardson', '#b45309', '#fef3c7'], momentec: ['✓ Momentec', '#0e7490', '#cffafe'], api: ['✓ API', '#475569', '#e2e8f0'] };
                           const hit = isLinked(p) && L[p._cost_source];
-                          return hit ? <span style={{ fontSize: 8, fontWeight: 800, color: hit[1], background: hit[2], padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>{hit[0]}</span>
-                            : <span title="This SKU didn't match the catalog or any supplier API." style={{ fontSize: 8, fontWeight: 800, color: '#b45309', background: '#fef3c7', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>⚠ not linked</span>;
+                          if (hit) return <span style={{ fontSize: 8, fontWeight: 800, color: hit[1], background: hit[2], padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>{hit[0]}</span>;
+                          // A real catalog match with no cost on file (e.g. Adidas — no live pricing
+                          // API) is a DIFFERENT problem than never matching the SKU at all; don't
+                          // call it "not linked" when it genuinely is.
+                          if (p.product_id) return <span title="Matched this exact SKU in the catalog, but it has no cost on file yet — enter one after creating the store." style={{ fontSize: 8, fontWeight: 800, color: '#b45309', background: '#fef3c7', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>Catalog match · no cost</span>;
+                          return <span title="This SKU didn't match the catalog or any supplier API." style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', background: '#fef2f2', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>⚠ not linked</span>;
                         })()}
                       </td>
                       <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontSize: 11, maxWidth: 100, overflow: 'hidden' }}><div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{vendList.find((v) => v.id === p.vendor_id)?.name || '—'}</div></td>
@@ -2855,7 +2890,7 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
         </div>
         <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
           <button onClick={onClose} disabled={creating} style={{ fontSize: 12, fontWeight: 600, padding: '8px 16px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: creating ? 'not-allowed' : 'pointer' }}>Cancel — don’t create</button>
-          <button onClick={onCreate} disabled={creating || included.length === 0} style={{ fontSize: 13, fontWeight: 800, padding: '8px 22px', borderRadius: 6, border: 'none', background: (creating || included.length === 0) ? '#94a3b8' : '#166534', color: '#fff', cursor: (creating || included.length === 0) ? 'not-allowed' : 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' }}>{creating ? '⏳ Creating…' : `✓ Create Store · ${included.length} item${included.length === 1 ? '' : 's'}`}</button>
+          <button onClick={onCreate} disabled={creating || included.length === 0} title="Continue to delivery, fundraising, coach contact and the rest of the store's settings" style={{ fontSize: 13, fontWeight: 800, padding: '8px 22px', borderRadius: 6, border: 'none', background: (creating || included.length === 0) ? '#94a3b8' : '#166534', color: '#fff', cursor: (creating || included.length === 0) ? 'not-allowed' : 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' }}>{creating ? '⏳…' : `Next: Store Settings · ${included.length} item${included.length === 1 ? '' : 's'} →`}</button>
         </div>
       </div>
     </div>
@@ -3781,11 +3816,12 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
-  // Once the name is hand-edited we stop auto-naming from the linked customer.
-  const [nameTouched, setNameTouched] = useState(!!(store && store.name));
+  // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
+  // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
+  const [nameTouched, setNameTouched] = useState(!!(store && store.name) || !!(initialOverrides && initialOverrides.name));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
