@@ -1,4 +1,27 @@
-import { guessDarkColor, autoColorChoice, resolveItemPlacement } from '../lib/artGrid';
+import { guessDarkColor, autoColorChoice, resolveItemPlacement, garmentTypeOf } from '../lib/artGrid';
+
+describe('garmentTypeOf', () => {
+  test('classifies common product names', () => {
+    expect(garmentTypeOf('Adidas Fleece Hood ROYBLU/WHITE')).toBe('hoodie');
+    expect(garmentTypeOf('M Team 1/4 Zip')).toBe('quarter_zip');
+    expect(garmentTypeOf('Sport Polo')).toBe('polo');
+    expect(garmentTypeOf('Unisex Pregame Tee')).toBe('tee');
+    expect(garmentTypeOf('Long Sleeve Shooter Shirt')).toBe('long_sleeve');
+    expect(garmentTypeOf('Crewneck Sweatshirt')).toBe('crew');
+    expect(garmentTypeOf('Volleyball Jersey')).toBe('jersey');
+    expect(garmentTypeOf('Woven Short')).toBe('shorts');
+    expect(garmentTypeOf('Team Jogger Pant')).toBe('pants');
+    expect(garmentTypeOf('Richardson 112 Trucker Hat')).toBe('hat');
+    expect(garmentTypeOf('Team Backpack')).toBe('bag');
+  });
+  test('specific beats general: a hooded long sleeve is a hoodie', () => {
+    expect(garmentTypeOf('Hooded Long Sleeve Tee')).toBe('hoodie');
+  });
+  test('unknown → other', () => {
+    expect(garmentTypeOf('Gadget Widget')).toBe('other');
+    expect(garmentTypeOf('')).toBe('other');
+  });
+});
 
 describe('guessDarkColor', () => {
   test('dark colors (incl. Navy/Maroon/Forest) → true; light → false', () => {
