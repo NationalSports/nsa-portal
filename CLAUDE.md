@@ -28,6 +28,11 @@ This repo is worked with Claude Fable 5. These habits get noticeably better resu
 
 ### How Claude should work here
 
+- **Match the model to the task; don't burn Fable on easy work.** Fable 5 is the top tier
+  and priced accordingly — reserve it for genuinely hard, long-horizon, or ambiguous work.
+  For anything a lower tier handles just as well (routine edits, well-scoped changes,
+  mechanical or repetitive work), downshift to Haiku or Sonnet. When a cheaper model is
+  just as capable, use it. When in doubt, downshift.
 - **Scope discipline.** Keep changes focused and minimal. Don't add features, refactor,
   or introduce abstractions beyond what the task requires — a bug fix doesn't need
   surrounding cleanup. This codebase already carries a lot of hand-synced duplicate logic
