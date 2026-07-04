@@ -212,7 +212,7 @@ exports.handler = async (event) => {
       // Ready to invoice (production done) and not yet invoiced.
       if (isReadyToInvoice(so, ff) && !invoicedSoIds.has(so.id)) cell(rep).readyInv.push(so);
 
-      if (!shippedOut) {
+      if (!shippedOut && so.status !== 'complete') {
         const due = parseDate(so.expected_date);
         if (due && due < deadlineCut) cell(rep).deadlines.push({ so, due, daysOut: Math.ceil((due.getTime() - end.getTime()) / 864e5) });
       }
