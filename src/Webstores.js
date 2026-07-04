@@ -7254,17 +7254,23 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
   // optional (blank = each color's list price / the store's fundraising rule), then the
   // picked colors fold into multi-color cards via the template-apply path.
   const [rows, setRows] = useState([]);
-  const [issues, setIssues] = useState(null); // { notfound: [skus], dupRows: n, matched: n }
+  const [issues, setIssues] = useState(null); // { notfound: [skus], dupRows: n, matched: n, viaVendor: n }
   const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState(''); // sub-status while working (e.g. vendor lookup)
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState('');
   const [done, setDone] = useState(null);
   const [over, setOver] = useState(false);
+  const [link, setLink] = useState('');
   const fileRef = useRef(null);
+  // Real vendor ids (products.vendor_id FK) so a vendor-API import upserts a valid id.
+  const vendorMapRef = useRef(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); vendorMapRef.current = m; })(); }, []);
 
   const norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
   const pickField = (obj, keys) => { for (const k of Object.keys(obj)) { if (keys.includes(norm(k))) { const v = obj[k]; if (v !== '' && v != null) return v; } } return ''; };
+  const metaOf = (r) => ({ price: r.price, fundraise: r.fundraise, category: r.category || null, kit: r.kit || null, required: r.mandatory });
 
   const downloadTemplate = () => {
     const csv = 'SKU,Price,Fundraising,Category,Kit,Mandatory\nJX4452,,,Spirit Wear,,no\nA595,45,5,Coaches,,no\n';
@@ -7273,48 +7279,92 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
     const a = document.createElement('a'); a.href = url; a.download = 'store-import-template.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
 
+  // Turn parsed spreadsheet rows into the style-row grid: parse SKUs, match the local
+  // catalog, look up any leftovers live in the vendor catalogs (importing what's found),
+  // then group into one row per style with sibling colorways.
+  const processRaw = async (raw) => {
+    const parsed = raw.map((r) => ({
+      sku: String(pickField(r, ['sku', 'style', 'style #', 'item', 'item #', 'item number', 'product', 'product sku', 'number'])).trim(),
+      price: pickField(r, ['price', 'retail', 'retail price', 'x']),
+      fundraise: pickField(r, ['fundraise', 'fundraising', 'fundraiser', 'y']),
+      category: String(pickField(r, ['category', 'section', 'group'])).trim(),
+      kit: String(pickField(r, ['kit', 'package', 'bundle'])).trim(),
+      mandatory: ['yes', 'y', 'true', '1', 'x', 'required'].includes(norm(pickField(r, ['mandatory', 'required']))),
+    })).filter((r) => r.sku);
+    if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setBusy(false); setStage(''); return; }
+    // Dedupe rows repeating the same SKU (first row's price/category wins).
+    const seenSku = new Set(); let dupRows = 0;
+    const uniq = parsed.filter((r) => { const k = r.sku.toUpperCase(); if (seenSku.has(k)) { dupRows += 1; return false; } seenSku.add(k); return true; });
+    const variants = [...new Set(uniq.flatMap((r) => [r.sku, r.sku.toUpperCase(), r.sku.toLowerCase()]))];
+    const cat = [];
+    for (let i = 0; i < variants.length; i += 150) {
+      const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150));
+      if (data) cat.push(...data);
+    }
+    const byKey = new Map();
+    cat.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
+    const matched = [];
+    const notInCatalog = [];
+    uniq.forEach((r) => { const p = byKey.get(r.sku.toUpperCase()); if (p) matched.push({ product: p, meta: metaOf(r) }); else notInCatalog.push(r); });
+
+    // Vendor-API fallback: any SKU not in the catalog gets looked up live (SanMar / S&S /
+    // Richardson / Momentec) and, if found, its colorways are imported so it behaves like
+    // any catalog style. Vendors we don't have API search for just stay "not found".
+    const notfound = [];
+    let viaVendor = 0;
+    const vm = vendorMapRef.current;
+    if (notInCatalog.length && vm) {
+      setStage(`Looking up ${notInCatalog.length} SKU${notInCatalog.length === 1 ? '' : 's'} in vendor catalogs…`);
+      const hits = await Promise.all(notInCatalog.map(async (r) => {
+        try { const { results } = await searchVendorCatalogs(r.sku, { vendorMap: vm }); const st = results.find((s) => String(s.sku).toUpperCase() === r.sku.toUpperCase()) || results[0] || null; return { r, st }; }
+        catch (_) { return { r, st: null }; }
+      }));
+      const upsertById = new Map(); // dedupe imported color rows across all found styles
+      const reps = []; // { r, id } — the representative color for each resolved style
+      hits.forEach(({ r, st }) => {
+        const prodRows = st ? (st.colors || []).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
+        if (!prodRows.length) { notfound.push(r.sku); return; }
+        prodRows.forEach((p) => { if (!upsertById.has(p.id)) upsertById.set(p.id, p); });
+        reps.push({ r, id: prodRows[0].id }); viaVendor += 1;
+      });
+      if (upsertById.size) {
+        const { data, error } = await supabase.from('products').upsert([...upsertById.values()], { onConflict: 'id' }).select('id,sku,name,color,retail_price,image_front_url');
+        if (error) { reps.forEach(({ r }) => notfound.push(r.sku)); viaVendor = 0; }
+        else { const ins = new Map((data || []).map((p) => [p.id, p])); reps.forEach(({ r, id }) => { const p = ins.get(id) || upsertById.get(id); if (p) matched.push({ product: p, meta: metaOf(r) }); }); }
+      }
+      setStage('');
+    } else if (notInCatalog.length) {
+      notInCatalog.forEach((r) => notfound.push(r.sku));
+    }
+
+    if (!matched.length) { setErr('None of those SKUs matched the catalog or any vendor.' + (notfound.length ? ` Not found: ${notfound.slice(0, 8).join(', ')}${notfound.length > 8 ? '…' : ''}` : '')); setBusy(false); setStage(''); return; }
+    const built = await buildStyleRows(matched);
+    setRows(built);
+    setIssues({ notfound, dupRows, matched: matched.length, viaVendor });
+    setBusy(false); setStage('');
+  };
+
+  const rawFromSheet = (data, type) => { const wb = XLSX.read(data, { type }); return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); };
+
   const parseFile = async (file) => {
     if (!file) return;
-    setErr(''); setDone(null); setBusy(true); setFileName(file.name); setRows([]); setIssues(null);
+    setErr(''); setDone(null); setBusy(true); setStage(''); setFileName(file.name); setRows([]); setIssues(null);
+    try { const buf = await file.arrayBuffer(); await processRaw(rawFromSheet(buf, 'array')); }
+    catch (e) { setErr('Could not read that file: ' + (e.message || e)); setRows([]); setBusy(false); setStage(''); }
+  };
+
+  const importLink = async () => {
+    const url = link.trim();
+    if (!url) return;
+    if (!/docs\.google\.com|spreadsheets/i.test(url)) { setErr('Paste a Google Sheets share link (docs.google.com/spreadsheets/…).'); return; }
+    setErr(''); setDone(null); setBusy(true); setStage('Reading the sheet…'); setFileName(''); setRows([]); setIssues(null);
     try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const parsed = raw.map((r) => ({
-        sku: String(pickField(r, ['sku', 'style', 'style #', 'item', 'item #', 'item number', 'product', 'product sku', 'number'])).trim(),
-        price: pickField(r, ['price', 'retail', 'retail price', 'x']),
-        fundraise: pickField(r, ['fundraise', 'fundraising', 'fundraiser', 'y']),
-        category: String(pickField(r, ['category', 'section', 'group'])).trim(),
-        kit: String(pickField(r, ['kit', 'package', 'bundle'])).trim(),
-        mandatory: ['yes', 'y', 'true', '1', 'x', 'required'].includes(norm(pickField(r, ['mandatory', 'required']))),
-      })).filter((r) => r.sku);
-      if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setBusy(false); return; }
-      // Dedupe rows repeating the same SKU (first row's price/category wins).
-      const seenSku = new Set(); let dupRows = 0;
-      const uniq = parsed.filter((r) => { const k = r.sku.toUpperCase(); if (seenSku.has(k)) { dupRows += 1; return false; } seenSku.add(k); return true; });
-      const skus = uniq.map((r) => r.sku);
-      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
-      const found = [];
-      for (let i = 0; i < variants.length; i += 150) {
-        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150));
-        if (data) found.push(...data);
-      }
-      const byKey = new Map();
-      found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
-      const notfound = [];
-      const matched = [];
-      uniq.forEach((r) => {
-        const product = byKey.get(r.sku.toUpperCase());
-        if (!product) { notfound.push(r.sku); return; }
-        matched.push({ product, meta: { price: r.price, fundraise: r.fundraise, category: r.category || null, kit: r.kit || null, required: r.mandatory } });
-      });
-      if (!matched.length) { setErr('None of those SKUs matched the catalog.' + (notfound.length ? ` Not found: ${notfound.slice(0, 8).join(', ')}${notfound.length > 8 ? '…' : ''}` : '')); setBusy(false); return; }
-      const built = await buildStyleRows(matched);
-      setRows(built);
-      setIssues({ notfound, dupRows, matched: matched.length });
-    } catch (e) { setErr('Could not read that file: ' + (e.message || e)); setRows([]); }
-    setBusy(false);
+      const res = await fetch('/.netlify/functions/sheet-fetch?url=' + encodeURIComponent(url));
+      const text = await res.text();
+      if (!res.ok) { setErr(text || 'Could not read that sheet.'); setBusy(false); setStage(''); return; }
+      setFileName('Google Sheet'); setStage('');
+      await processRaw(rawFromSheet(text, 'string'));
+    } catch (e) { setErr('Could not read that sheet: ' + (e.message || e)); setBusy(false); setStage(''); }
   };
 
   const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
@@ -7354,27 +7404,37 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
           ) : (
             <>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>
-                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export. Only a <b>SKU</b> column is required — price and fundraising are optional: blank price uses each color's list price, blank fundraising follows the store rule{storeFund?.enabled ? ` (${fundHint})` : ''}.
+                Paste a <b>Google Sheets link</b> or drop an <b>Excel / CSV</b> file. Only a <b>SKU</b> column is required — price and fundraising are optional (blank price uses each color's list price, blank fundraising follows the store rule{storeFund?.enabled ? ` — ${fundHint}` : ''}). SKUs not in the catalog are looked up live in the vendor catalogs.
                 <button type="button" onClick={downloadTemplate} style={{ marginLeft: 6, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}>Download template ↓</button>
               </div>
 
+              {/* Primary: paste a Google Sheets link */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <input value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') importLink(); }} disabled={busy} placeholder="Paste a Google Sheets link (share it as “Anyone with the link”)" style={{ flex: 1, fontSize: 13, padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: 10, outline: 'none' }} />
+                <button className="btn btn-primary" onClick={importLink} disabled={busy || !link.trim()} style={{ opacity: (busy || !link.trim()) ? 0.5 : 1 }}>Load</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0 10px', color: '#94a3b8', fontSize: 11, fontWeight: 700 }}><div style={{ flex: 1, height: 1, background: '#eef0f3' }} />OR<div style={{ flex: 1, height: 1, background: '#eef0f3' }} /></div>
+
+              {/* Secondary: drop / browse a file */}
               <div
                 onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!over) setOver(true); }}
                 onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
                 onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); parseFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}
                 onClick={() => fileRef.current && fileRef.current.click()}
-                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: rows.length ? '10px 14px' : '22px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
-                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: rows.length ? 12.5 : 14 }}>{busy ? 'Reading…' : fileName ? `${fileName} — drop another to replace` : 'Drop your spreadsheet here, or click to browse'}</div>
-                {!rows.length && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>}
+                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: rows.length ? '10px 14px' : '18px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: rows.length ? 12.5 : 13.5 }}>{busy ? (stage || 'Reading…') : fileName ? `${fileName} — drop another to replace` : 'Drop an Excel / CSV file here, or click to browse'}</div>
+                {!rows.length && !busy && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>}
                 <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: 'none' }} onChange={(e) => { parseFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
               </div>
 
+              {busy && stage && <div style={{ fontSize: 12, color: '#4f46e5', fontWeight: 700, marginTop: 8 }}>⏳ {stage}</div>}
               {err && <div style={{ fontSize: 12.5, color: '#b91c1c', fontWeight: 600, marginTop: 10 }}>{err}</div>}
 
               {rows.length > 0 && (
                 <div style={{ marginTop: 14 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
                     <span style={{ color: '#166534' }}>{stylesIn} style{stylesIn === 1 ? '' : 's'} · {totalPicked} color{totalPicked === 1 ? '' : 's'} to add</span>
+                    {issues?.viaVendor ? <span style={{ color: '#3730a3' }} title="Found live in the vendor catalogs and imported">{issues.viaVendor} via vendor lookup</span> : null}
                     {issues?.dupRows ? <span style={{ color: '#92400e' }}>{issues.dupRows} duplicate row{issues.dupRows === 1 ? '' : 's'} skipped</span> : null}
                     {issues?.notfound?.length ? <span style={{ color: '#b91c1c' }} title={issues.notfound.join(', ')}>{issues.notfound.length} not found: {issues.notfound.slice(0, 5).join(', ')}{issues.notfound.length > 5 ? '…' : ''}</span> : null}
                     <span style={{ marginLeft: 'auto' }} />
