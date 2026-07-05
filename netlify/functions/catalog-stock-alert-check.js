@@ -22,7 +22,10 @@ exports.handler = async () => {
     const alerts = await alertsRes.json();
     if (!Array.isArray(alerts) || !alerts.length) return { statusCode: 200, body: 'No active alerts' };
 
-    const skus = [...new Set(alerts.map((a) => a.sku))];
+    // Defensively drop any sku that isn't a plain identifier so it can't break
+    // out of the PostgREST in.(...) filter below.
+    const skus = [...new Set(alerts.map((a) => a.sku))].filter((s) => /^[A-Za-z0-9._-]+$/.test(s));
+    if (!skus.length) return { statusCode: 200, body: 'No valid alert skus' };
     const invRes = await sb(`adidas_inventory?sku=in.(${skus.map((s) => `"${s}"`).join(',')})&stock_qty=gt.0&select=sku,size,stock_qty`);
     const inv = await invRes.json();
     const stockBySku = {};

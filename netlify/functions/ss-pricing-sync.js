@@ -109,6 +109,6 @@ exports.handler = async (event) => {
       })
     };
   } catch (err) {
-    return { statusCode: 200, headers, body: JSON.stringify({ error: 'Sync crashed: ' + err.message }) };
+    return { statusCode: 500, headers, body: JSON.stringify({ error: 'Sync crashed: ' + err.message }) };
   }
 };

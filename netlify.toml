@@ -4,7 +4,11 @@
   # cache was serving a STALE compiled App.js — producing byte-identical bundles
   # that silently dropped newly merged code (e.g. the /onboarding route) even on
   # a successful fresh deploy. Wiping the compiler cache forces a clean compile.
-  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=true npm run build"
+  # GENERATE_SOURCEMAP=false: do NOT publish production source maps to the public CDN.
+  # Published .map files reconstruct the full unminified source (and any client-inlined
+  # env) for anyone hitting the .map URL. Keep them off in prod; re-enable locally if
+  # you need to debug a minified stack trace.
+  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=false npm run build"
   publish = "build"
   environment = { NODE_VERSION = "22" }
 

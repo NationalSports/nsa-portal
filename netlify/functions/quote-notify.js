@@ -40,7 +40,7 @@ exports.handler = async (event) => {
     if (!rep || !rep.email) return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, skipped: 'no rep email' }) };
     const custName = (custs && custs[0] && custs[0].name) || 'Customer';
 
-    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     const itemSummary = (items || []).map((it, i) => {
       const sizes = Object.entries(it.sizes || {}).filter(([, v]) => v > 0).map(([s, v]) => s + ':' + v).join(', ');
       return `${i + 1}. ${esc(it.sku || it.description)} — ${esc(it.color || 'no color')} — ${sizes || ('Qty: ' + (it.total_qty || 'TBD'))}`;

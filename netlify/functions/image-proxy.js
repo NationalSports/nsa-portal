@@ -20,7 +20,13 @@ exports.handler = async (event) => {
   try {
     const response = await fetch(url, {
       headers: { 'User-Agent': 'NSA-Portal/1.0' },
+      // Don't follow redirects: an allowlisted host could 3xx off-allowlist
+      // (SSRF). Treat any redirect as a blocked fetch.
+      redirect: 'manual',
     });
+    if (response.status >= 300 && response.status < 400) {
+      return { statusCode: 403, body: 'Redirect not allowed' };
+    }
     if (!response.ok) {
       return { statusCode: response.status, body: `Upstream error: ${response.status}` };
     }

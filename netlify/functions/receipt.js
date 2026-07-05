@@ -8,7 +8,7 @@ const stripe = require('stripe');
 const { getSupabaseAdmin, corsHeaders } = require('./_shared');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 // Pull the payment + the invoice(s) it covers and shape them for the receipt.
 async function loadReceipt(piId) {

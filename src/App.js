@@ -4058,11 +4058,14 @@ export default function App(){
   const[prodServerResults,setProdServerResults]=useState(null);// {products:[], total:0} or null=use client
   const[prodSearching,setProdSearching]=useState(false);
   const _prodSearchTimer=useRef(null);
+  const _prodSearchSeq=useRef(0);
   const _prodSearchRPC=useCallback((query,filters,page)=>{
     if(_prodSearchTimer.current)clearTimeout(_prodSearchTimer.current);
     _prodSearchTimer.current=setTimeout(async()=>{
+      const seq=++_prodSearchSeq.current;
       setProdSearching(true);
       const res=await _searchProductsServer(query,filters,page,PROD_PAGE_SIZE);
+      if(seq!==_prodSearchSeq.current)return;// stale — a newer search has started
       if(res){
         // Enrich with _inv and _alerts from local prod data for display
         const enriched=res.products.map(sp=>{
@@ -4098,11 +4101,14 @@ export default function App(){
   const[custExpanded,setCustExpanded]=useState(()=>new Set());
   const[showArchived,setShowArchived]=useState(false);
   const _custSearchTimer=useRef(null);
+  const _custSearchSeq=useRef(0);
   const _custSearchRPC=useCallback((query,repId,page)=>{
     if(_custSearchTimer.current)clearTimeout(_custSearchTimer.current);
     _custSearchTimer.current=setTimeout(async()=>{
+      const seq=++_custSearchSeq.current;
       setCustSearching(true);
       const res=await _searchCustomersServer(query,repId==='all'?null:repId,page,CUST_PAGE_SIZE);
+      if(seq!==_custSearchSeq.current)return;// stale — a newer search has started
       if(res){
         // Enrich with contacts and computed fields from local cust data
         const enriched=res.customers.map(sc=>{
@@ -9758,8 +9764,6 @@ export default function App(){
   const[idleWarning,setIdleWarning]=useState(null);// null | {keys:[timerKey,...], since:timestamp}
   const _idleSettingsRef=useRef({warnMin:5,autoOutMin:10});
   _idleSettingsRef.current=idleSettings||{warnMin:5,autoOutMin:10};
-  const IDLE_WARN_MS=(_idleSettingsRef.current.warnMin||5)*60*1000;
-  const IDLE_AUTO_OUT_MS=(_idleSettingsRef.current.autoOutMin||10)*60*1000;
 
   // Track mouse/keyboard/visibility activity silently
   useEffect(()=>{
@@ -9777,8 +9781,9 @@ export default function App(){
       const hasArtTimers=Object.keys(activeArtTimers).length>0;
       if(!hasArtTimers){_idleState.current='active';_idleAccum.current={};setIdleWarning(null);return}
       const gap=Date.now()-_lastActivity.current;
+      const warnMs=(_idleSettingsRef.current.warnMin||5)*60*1000,autoOutMs=(_idleSettingsRef.current.autoOutMin||10)*60*1000;// read live thresholds each tick
       // Auto clock-out at 10 min idle — art timers only
-      if(gap>=IDLE_AUTO_OUT_MS){
+      if(gap>=autoOutMs){
         Object.entries(activeArtTimers).forEach(([key,timer])=>{
           const mins=Math.round((Date.now()-timer.clockIn)/60000);
           const idleMins=Math.round(((_idleAccum.current[key]||0)+gap)/60000);
@@ -9790,13 +9795,13 @@ export default function App(){
         return;
       }
       // Warn at 5 min idle — art timers only
-      if(gap>=IDLE_WARN_MS&&_idleState.current==='active'){
+      if(gap>=warnMs&&_idleState.current==='active'){
         _idleState.current='warned';
         const keys=[...Object.keys(activeArtTimers)];
         setIdleWarning({keys,since:_lastActivity.current});
       }
       // Accumulate idle time when past the warning threshold — art timers only
-      if(gap>=IDLE_WARN_MS){
+      if(gap>=warnMs){
         const allKeys=[...Object.keys(activeArtTimers)];
         allKeys.forEach(k=>{_idleAccum.current[k]=(_idleAccum.current[k]||0)+30000});// add 30s each tick
       }
@@ -30717,7 +30722,7 @@ export default function App(){
               <button className="btn btn-secondary" onClick={()=>{
                 const updated={...qrView,status:'reviewed'};
                 setQuoteRequests(prev=>prev.map(q=>q.id===qrView.id?updated:q));
-                if(supabase)supabase.from('quote_requests').update({status:'reviewed',reviewed_at:new Date().toISOString()}).eq('id',qrView.id);
+                if(supabase)supabase.from('quote_requests').update({status:'reviewed',reviewed_at:new Date().toISOString()}).eq('id',qrView.id).then(({error})=>{if(error)nf('Failed to save review status','warn')});
                 setQrView(null);nf('Marked as reviewed');
               }}>Mark Reviewed</button>
             </div>
