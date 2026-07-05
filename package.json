@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@sentry/react": "^7.120.4",
     "@sparticuz/chromium": "^131.0.1",
     "@stripe/react-stripe-js": "^5.6.0",
     "@stripe/stripe-js": "^8.8.0",

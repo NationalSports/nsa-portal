@@ -1,5 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import * as Sentry from '@sentry/react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
 import BotStatus from './BotStatus';
@@ -446,6 +447,7 @@ class ComponentErrorBoundary extends React.Component{
   static getDerivedStateFromError(error){return{hasError:true,error}}
   componentDidCatch(error,info){
     console.error('[NSA Component Error]',this.props.name||'Unknown',error,info);
+    try{Sentry.captureException(error,{tags:{boundary:this.props.name||'Unknown'},extra:{componentStack:info&&info.componentStack}})}catch(_){}
     // A chunk error means this tab is running an old build whose chunks a newer
     // deploy has replaced. Resetting state can't recover (React.lazy caches the
     // rejected import) — only a fresh load can. Auto-reload once, sharing

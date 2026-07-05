@@ -1,11 +1,25 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import * as Sentry from '@sentry/react';
 import LoginGate from './LoginGate';
 import {
   supabase, sbSignIn, sbSignUp, sbResendSignup, sbResetPassword,
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
+
+// Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
+// The DSN is a public client identifier (not a secret), so inlining it into the
+// bundle is expected. No-op when unset, so local/dev builds are unaffected. v7
+// default integrations capture uncaught errors + unhandled promise rejections;
+// the App error boundary additionally reports React render errors.
+if (process.env.REACT_APP_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.REACT_APP_SENTRY_DSN,
+    environment: process.env.REACT_APP_SENTRY_ENV || process.env.NODE_ENV,
+    tracesSampleRate: 0, // errors only — no performance tracing
+  });
+}
 
 // The full portal (App.js, ~2.6MB) is code-split out so a visitor who isn't
 // logged in gets the login screen instantly without downloading it. App loads
