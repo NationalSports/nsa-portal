@@ -2979,9 +2979,16 @@ export default function App(){
   }});_dbSnap.current.omg=omgStores}},[omgStores]);
 
   // ─── Automatic retry for failed saves (every 60s, sequential to avoid overwhelming Supabase) ───
+  // The interval is created ONCE (deps []) so its 60s timer isn't torn down every time
+  // these arrays change — during active editing they change far more than once a minute,
+  // which kept resetting the timer so the retry almost never fired. The save fns and
+  // _dbSaveFailedIds are module-level (stable); only the data arrays need a latest-value ref.
+  const _retryDataRef=useRef({ests,sos,invs,msgs,cust,prod});
+  _retryDataRef.current={ests,sos,invs,msgs,cust,prod};
   React.useEffect(()=>{
     const retryInterval=setInterval(async()=>{
       if(_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+      const {ests,sos,invs,msgs,cust,prod}=_retryDataRef.current;
       console.log('[DB] Retrying failed saves:',[ ..._dbSaveFailedIds]);
       const ids=[..._dbSaveFailedIds];
       for(const id of ids){
@@ -2997,7 +3004,7 @@ export default function App(){
       }
     },60000);
     return()=>clearInterval(retryInterval);
-  },[ests,sos,invs,msgs,cust,prod]); // eslint-disable-line react-hooks/exhaustive-deps
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Warn user before leaving if there are unsaved changes in flight ───
   React.useEffect(()=>{
