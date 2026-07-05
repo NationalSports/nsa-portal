@@ -369,7 +369,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
           const ext=safeItems(order)[idx];if(!ext)return it;
           let next=it;
-          if(hasExternalPickChange){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
+          if(hasExternalPickChange&&(!next.sku||!ext.sku||next.sku===ext.sku)){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
           if(hasExternalPoChange&&(!next.sku||!ext.sku||next.sku===ext.sku)){
             const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
             if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
@@ -4785,7 +4785,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
           <button className="btn btn-secondary" onClick={()=>setAiBuild(x=>({...x,step:'input'}))}>← Back</button>
-          <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#6d28d9'}} onClick={()=>{
+          <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#6d28d9'}} onClick={async()=>{
             const keeping=aiBuild.parsed.filter(p=>!p._skip);
             const newItems=keeping.map(p=>{
               const sku=(p.sku_guess||'').trim();
@@ -4821,7 +4821,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             sv('items',[...o.items,...newItems]);
             // Best-effort: record accepted lines on the audit row
             if(supabase&&aiBuild.build_id){
-              try{supabase.from('ai_order_builds').update({accepted_lines:keeping,accepted_count:keeping.length}).eq('id',aiBuild.build_id)}catch(_){}
+              try{await supabase.from('ai_order_builds').update({accepted_lines:keeping,accepted_count:keeping.length}).eq('id',aiBuild.build_id)}catch(_){}
             }
             setAiBuild(null);
             nf('✨ Imported '+newItems.length+' items from AI');
