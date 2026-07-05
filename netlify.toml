@@ -8,7 +8,9 @@
   # Published .map files reconstruct the full unminified source (and any client-inlined
   # env) for anyone hitting the .map URL. Keep them off in prod; re-enable locally if
   # you need to debug a minified stack trace.
-  command = "rm -rf node_modules/.cache && GENERATE_SOURCEMAP=false npm run build"
+  # `npm test` runs the suite BEFORE building so a red test fails the deploy — Netlify
+  # deploys on push independently of the GitHub Actions run, so this is the real gate.
+  command = "rm -rf node_modules/.cache && CI=true npm test && GENERATE_SOURCEMAP=false npm run build"
   publish = "build"
   environment = { NODE_VERSION = "22" }
 
