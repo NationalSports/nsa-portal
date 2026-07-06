@@ -110,6 +110,14 @@ describe('autoColorChoice', () => {
     // Screen print is single-ink → still flips to white on a dark garment.
     expect(autoColorChoice({ deco_type: 'screen_print', web_logos: [{ url: 'a.png' }] }, 'Black')).toEqual({ kind: 'recolor', choice: 'white' });
   });
+
+  test('preferOriginal (caller detected a multi-color mark) keeps Orig even for screen print', () => {
+    const sp = { deco_type: 'screen_print', web_logos: [{ url: 'a.png' }] };
+    expect(autoColorChoice(sp, 'Black', { preferOriginal: true })).toEqual({ kind: 'recolor', choice: 'original' });
+    // undefined/false opt → unchanged single-ink behavior.
+    expect(autoColorChoice(sp, 'Black', { preferOriginal: false })).toEqual({ kind: 'recolor', choice: 'white' });
+    expect(autoColorChoice(sp, 'Black')).toEqual({ kind: 'recolor', choice: 'white' });
+  });
 });
 
 describe('resolveItemPlacement', () => {

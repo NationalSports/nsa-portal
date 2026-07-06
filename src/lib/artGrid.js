@@ -70,7 +70,9 @@ export const FIXED_COLOR_DECO = new Set(['embroidery', 'dtf', 'sublimation']);
 // "Grey" variant); (2) brightness — a variant whose OWN label is a dark color is the one
 // meant FOR dark garments (its ink is light), so a dark garment picks it and a light
 // garment picks a light-labeled variant. Only ≥2 real variants trigger variant mode.
-export function autoColorChoice(activeArt, colorName) {
+// opts.preferOriginal — the caller detected the logo is multi-color (a flat recolor would
+// silhouette it), so keep it Orig regardless of garment brightness.
+export function autoColorChoice(activeArt, colorName, opts = {}) {
   const wls = normalizeWebLogos(activeArt && activeArt.web_logos, activeArt && activeArt.color_ways).filter((w) => w && w.url);
   if (wls.length >= 2) {
     const g = _words(colorName);
@@ -82,8 +84,9 @@ export function autoColorChoice(activeArt, colorName) {
     }
     if (hit) return { kind: 'variant', url: hit.url, colorWayId: hit.color_way_id || null, label: hit.color_way || '' };
   }
-  // Fixed-color methods never get a flat recolor — the real logo reads correctly on any garment.
-  if (FIXED_COLOR_DECO.has(String((activeArt && activeArt.deco_type) || '').toLowerCase())) return { kind: 'recolor', choice: 'original' };
+  // Fixed-color methods, and any logo the caller flagged multi-color, never get a flat recolor —
+  // the real logo reads correctly on any garment; a white/black knockout would silhouette it.
+  if (opts.preferOriginal || FIXED_COLOR_DECO.has(String((activeArt && activeArt.deco_type) || '').toLowerCase())) return { kind: 'recolor', choice: 'original' };
   return { kind: 'recolor', choice: guessDarkColor(colorName) ? 'white' : 'original' };
 }
 
