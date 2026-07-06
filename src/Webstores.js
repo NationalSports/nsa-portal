@@ -8925,6 +8925,38 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
+// Color-coded decoration-method chip so two visually-identical logos (e.g. an embroidery
+// version and a screen-print version of the same mark) are told apart at a glance. Reads
+// the art record's `deco_type` (embroidery / screen_print / dtf / heat_transfer /
+// sublimation / vinyl); unknown values fall back to a neutral chip, and a blank type
+// renders nothing rather than guessing.
+const DECO_BADGE = {
+  embroidery: { label: 'Embroidery', bg: '#fef3c7', fg: '#92400e', bd: '#fcd34d' },
+  screen_print: { label: 'Screen Print', bg: '#e0e7ff', fg: '#3730a3', bd: '#c7d2fe' },
+  dtf: { label: 'DTF', bg: '#ccfbf1', fg: '#115e59', bd: '#5eead4' },
+  heat_transfer: { label: 'Heat Transfer', bg: '#ffedd5', fg: '#9a3412', bd: '#fdba74' },
+  heat_press: { label: 'Heat Press', bg: '#ffedd5', fg: '#9a3412', bd: '#fdba74' },
+  sublimation: { label: 'Sublimation', bg: '#f3e8ff', fg: '#6b21a8', bd: '#e9d5ff' },
+  vinyl: { label: 'Vinyl', bg: '#ffe4e6', fg: '#9f1239', bd: '#fecdd3' },
+};
+const decoBadge = (dt) => {
+  const k = String(dt || '').toLowerCase().trim();
+  if (DECO_BADGE[k]) return DECO_BADGE[k];
+  return k ? { label: k.replace(/_/g, ' '), bg: '#f1f5f9', fg: '#475569', bd: '#e2e8f0' } : null;
+};
+function DecoBadge({ deco }) {
+  const b = decoBadge(deco);
+  if (!b) return null;
+  return (
+    <span title={`Decoration method: ${b.label}`} style={{
+      display: 'inline-block', maxWidth: '100%', background: b.bg, color: b.fg,
+      border: `1px solid ${b.bd}`, borderRadius: 999, padding: '1px 7px',
+      fontSize: 9.5, fontWeight: 800, lineHeight: 1.5, whiteSpace: 'nowrap',
+      overflow: 'hidden', textOverflow: 'ellipsis', textTransform: 'capitalize',
+    }}>{b.label}</span>
+  );
+}
+
 function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
@@ -9255,6 +9287,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
+                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}
               </button>
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
@@ -9271,6 +9304,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                     {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9.5, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 3px' }}>{(a.files || [])[0] ? 'AI — add web logo' : 'Add web logo'}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
+                  {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><DecoBadge deco={a.deco_type} /></div>}
                   {sel2 && <span style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
                 <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
