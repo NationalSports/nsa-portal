@@ -4,14 +4,21 @@
 // Supabase `anon` role. Migration 00160 left roster_* with `FOR ALL TO anon USING(true)`,
 // so ANY holder of the shipped anon key can read/write/delete ANY club's roster directly.
 // This function (service role) performs roster writes on the coach portal's behalf, scoped
-// to the customer family the portal's alpha_tag resolves to — the SAME ownership model as
-// portal-action.js. Once the frontend is rerouted through this endpoint, a migration revokes
-// direct anon/coach writes on roster_* (staff keep writing directly via is_team_member()).
+// to the customer family the portal's alpha_tag resolves to — via the shared
+// resolveCustomerFamily (same ownership model as portal-action.js). Once the frontend is
+// rerouted through this endpoint, migration 00176 revokes direct anon/coach writes on
+// roster_* (staff keep writing directly via is_team_member()).
 //
 // Every op resolves its target row up the hierarchy to a customer_id and asserts that
-// customer is in the portal's family. Writes use allow-listed columns only.
+// customer is in the portal's family. Writes use allow-listed columns only, and the lists
+// carry ONLY what the coach portal actually sends — staff-only columns (notes, deadline,
+// is_loaner) go through the staff app's direct writes and stay off this surface.
+// Session `status` is deliberately NOT writable here: it's server-assigned ('open' on
+// create) and transitions only through roster-order-submit's guarded flip — a generic
+// status patch would let any alpha_tag holder reopen a submitted session out from under
+// the estimate staff built from it (same lesson as the art-decision txn, 00172).
 
-const { createClient } = require('@supabase/supabase-js');
+const { getSupabaseAdmin, pickCols, resolveCustomerFamily } = require('./_shared');
 
 const CORS = {
   'Content-Type': 'application/json',
@@ -22,60 +29,51 @@ const CORS = {
 const ok = (b) => ({ statusCode: 200, headers: CORS, body: JSON.stringify({ ok: true, ...b }) });
 const bad = (code, error) => ({ statusCode: code, headers: CORS, body: JSON.stringify({ ok: false, error }) });
 
-// Allow-listed writable columns per table (defends against a crafted payload writing
-// arbitrary columns — e.g. flipping ownership fields). id/parent keys are handled explicitly.
-// Column names verified against the LIVE schema (information_schema), not just 00160 —
-// the live tables carry columns added after 00160 (qty/notes/size_group on sizes,
-// category on players) that the coach portal actually writes.
-const SESSION_COLS = new Set(['name', 'status', 'season', 'deadline', 'kit_template_id', 'notes', 'kit_items', 'created_by', 'updated_at']);
+// Allow-listed writable columns per table — exactly the columns the coach portal sends
+// (KitItemsBar/TeamRosterEditor/RosterOrdersCoach in src/RosterOrders.js). Adding a
+// coach-editable column means adding it BOTH there and here, or pickCols silently drops
+// it and the coach's save loses the field while staff saves keep it.
+const SESSION_COLS = new Set(['name', 'season', 'kit_template_id', 'kit_items', 'created_by', 'updated_at']);
 const TEAM_COLS = new Set(['name', 'sort_order', 'locked']);
-const PLAYER_COLS = new Set(['first_name', 'last_name', 'jersey_number', 'is_gk', 'is_loaner', 'sort_order', 'category', 'updated_at']);
-const SIZE_COLS = new Set(['kit_slot', 'size', 'qty', 'notes', 'size_group', 'updated_at']);
-const pick = (obj, allowed) => {
-  const out = {};
-  Object.keys(obj || {}).forEach((k) => { if (allowed.has(k)) out[k] = obj[k]; });
-  return out;
-};
+const PLAYER_COLS = new Set(['first_name', 'last_name', 'jersey_number', 'is_gk', 'sort_order', 'category', 'updated_at']);
+const SIZE_COLS = new Set(['kit_slot', 'size', 'qty', 'updated_at']);
 
 function getAdmin() {
-  const url = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
-}
-
-// Resolve the customer family (parent + sub-customers) for a portal alpha_tag.
-async function resolveFamily(admin, alphaTag) {
-  const { data: parents, error } = await admin.from('customers').select('id').eq('alpha_tag', alphaTag);
-  if (error) return { error: error.message };
-  if (!parents || !parents.length) return { error: 'Unknown portal tag', notFound: true };
-  const parentIds = parents.map((p) => p.id);
-  const { data: kids } = await admin.from('customers').select('id').in('parent_id', parentIds);
-  return { fam: new Set([...parentIds, ...(kids || []).map((k) => k.id)]) };
+  try { return getSupabaseAdmin(); } catch { return null; }
 }
 
 // Walk a target row up to its owning customer_id and confirm it's in `fam`.
-// Returns { ok } or { error } (403 on scope violation).
+// One nested-join query per entry point (this runs on every write — the size grid
+// fires a write per cell commit, so the old 3-chained-lookup walk tripled latency).
+// Returns { ok } or { error } (403 on scope violation, 500 on a server/query error).
 async function assertOwned(admin, fam, { sessionId, teamId, playerId }) {
   let cid = null;
   if (playerId) {
-    const { data } = await admin.from('roster_players').select('team_id').eq('id', playerId).maybeSingle();
+    const { data, error } = await admin.from('roster_players')
+      .select('roster_teams!inner(roster_order_sessions!inner(customer_id))')
+      .eq('id', playerId).maybeSingle();
+    if (error) return { error: error.message, server: true };
     if (!data) return { error: 'Player not found' };
-    teamId = data.team_id;
-  }
-  if (teamId) {
-    const { data } = await admin.from('roster_teams').select('session_id').eq('id', teamId).maybeSingle();
+    cid = data.roster_teams?.roster_order_sessions?.customer_id;
+  } else if (teamId) {
+    const { data, error } = await admin.from('roster_teams')
+      .select('roster_order_sessions!inner(customer_id)')
+      .eq('id', teamId).maybeSingle();
+    if (error) return { error: error.message, server: true };
     if (!data) return { error: 'Team not found' };
-    sessionId = data.session_id;
-  }
-  if (sessionId) {
-    const { data } = await admin.from('roster_order_sessions').select('customer_id').eq('id', sessionId).maybeSingle();
+    cid = data.roster_order_sessions?.customer_id;
+  } else if (sessionId) {
+    const { data, error } = await admin.from('roster_order_sessions')
+      .select('customer_id').eq('id', sessionId).maybeSingle();
+    if (error) return { error: error.message, server: true };
     if (!data) return { error: 'Session not found' };
     cid = data.customer_id;
   }
   if (!cid || !fam.has(cid)) return { error: 'Not authorized for this roster' };
   return { ok: true };
 }
+
+const denied = (owned) => bad(owned.server ? 500 : 403, owned.error);
 
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: CORS, body: '' };
@@ -93,7 +91,7 @@ exports.handler = async (event) => {
   const admin = getAdmin();
   if (!admin) return bad(500, 'Service not configured');
 
-  const famRes = await resolveFamily(admin, alphaTag);
+  const famRes = await resolveCustomerFamily(admin, alphaTag);
   if (famRes.error) return bad(famRes.notFound ? 403 : 500, famRes.error);
   const fam = famRes.fam;
 
@@ -105,14 +103,17 @@ exports.handler = async (event) => {
         const customerId = String(p.customer_id || '').trim();
         if (p.id) {
           const owned = await assertOwned(admin, fam, { sessionId: p.id });
-          if (!owned.ok) return bad(403, owned.error);
+          if (!owned.ok) return denied(owned);
+          const patch = pickCols(p, SESSION_COLS);
+          if (!Object.keys(patch).length) return bad(400, 'No writable fields');
           const { data, error } = await admin.from('roster_order_sessions')
-            .update(pick(p, SESSION_COLS)).eq('id', p.id).select('*').maybeSingle();
+            .update(patch).eq('id', p.id).select('*').maybeSingle();
           if (error) return bad(500, error.message);
           return ok({ data });
         }
         if (!customerId || !fam.has(customerId)) return bad(403, 'Not authorized for this customer');
-        const row = { ...pick(p, SESSION_COLS), customer_id: customerId };
+        // status is server-assigned; transitions only via roster-order-submit.
+        const row = { ...pickCols(p, SESSION_COLS), customer_id: customerId, status: 'open' };
         const { data, error } = await admin.from('roster_order_sessions').insert(row).select('*').maybeSingle();
         if (error) return bad(500, error.message);
         return ok({ data });
@@ -121,23 +122,16 @@ exports.handler = async (event) => {
       // ── roster_teams ──
       case 'team_insert': {
         const owned = await assertOwned(admin, fam, { sessionId: p.session_id });
-        if (!owned.ok) return bad(403, owned.error);
-        const row = { ...pick(p, TEAM_COLS), session_id: p.session_id };
+        if (!owned.ok) return denied(owned);
+        const row = { ...pickCols(p, TEAM_COLS), session_id: p.session_id };
         const { data, error } = await admin.from('roster_teams').insert(row).select('*').maybeSingle();
         if (error) return bad(500, error.message);
         return ok({ data });
       }
       case 'team_update': {
         const owned = await assertOwned(admin, fam, { teamId: p.id });
-        if (!owned.ok) return bad(403, owned.error);
-        const { error } = await admin.from('roster_teams').update(pick(p, TEAM_COLS)).eq('id', p.id);
-        if (error) return bad(500, error.message);
-        return ok({ id: p.id });
-      }
-      case 'team_delete': {
-        const owned = await assertOwned(admin, fam, { teamId: p.id });
-        if (!owned.ok) return bad(403, owned.error);
-        const { error } = await admin.from('roster_teams').delete().eq('id', p.id);
+        if (!owned.ok) return denied(owned);
+        const { error } = await admin.from('roster_teams').update(pickCols(p, TEAM_COLS)).eq('id', p.id);
         if (error) return bad(500, error.message);
         return ok({ id: p.id });
       }
@@ -148,8 +142,8 @@ exports.handler = async (event) => {
         const rows = Array.isArray(p.players) ? p.players : [p];
         const teamId = String(p.team_id || (rows[0] && rows[0].team_id) || '').trim();
         const owned = await assertOwned(admin, fam, { teamId });
-        if (!owned.ok) return bad(403, owned.error);
-        const ins = rows.map((r) => ({ ...pick(r, PLAYER_COLS), team_id: teamId }));
+        if (!owned.ok) return denied(owned);
+        const ins = rows.map((r) => ({ ...pickCols(r, PLAYER_COLS), team_id: teamId }));
         const { data, error } = await admin.from('roster_players').insert(ins).select('*');
         if (error) return bad(500, error.message);
         // Single row for a single insert, the array for a bulk insert — matches the
@@ -158,14 +152,14 @@ exports.handler = async (event) => {
       }
       case 'player_update': {
         const owned = await assertOwned(admin, fam, { playerId: p.id });
-        if (!owned.ok) return bad(403, owned.error);
-        const { error } = await admin.from('roster_players').update(pick(p, PLAYER_COLS)).eq('id', p.id);
+        if (!owned.ok) return denied(owned);
+        const { error } = await admin.from('roster_players').update(pickCols(p, PLAYER_COLS)).eq('id', p.id);
         if (error) return bad(500, error.message);
         return ok({ id: p.id });
       }
       case 'player_delete': {
         const owned = await assertOwned(admin, fam, { playerId: p.id });
-        if (!owned.ok) return bad(403, owned.error);
+        if (!owned.ok) return denied(owned);
         const { error } = await admin.from('roster_players').delete().eq('id', p.id);
         if (error) return bad(500, error.message);
         return ok({ id: p.id });
@@ -175,9 +169,9 @@ exports.handler = async (event) => {
       case 'sizes_upsert': {
         const playerId = String(p.player_id || '').trim();
         const owned = await assertOwned(admin, fam, { playerId });
-        if (!owned.ok) return bad(403, owned.error);
-        const rows = (Array.isArray(p.sizes) ? p.sizes : [p]).map((r) => ({ ...pick(r, SIZE_COLS), player_id: playerId }));
-        const { error } = await admin.from('roster_player_sizes').upsert(rows, { onConflict: 'player_id,kit_slot' });
+        if (!owned.ok) return denied(owned);
+        const row = { ...pickCols(p, SIZE_COLS), player_id: playerId };
+        const { error } = await admin.from('roster_player_sizes').upsert(row, { onConflict: 'player_id,kit_slot' });
         if (error) return bad(500, error.message);
         return ok({ player_id: playerId });
       }
