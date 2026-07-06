@@ -295,6 +295,48 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   return total;
 };
 
+// ── Paid-only promo earning (ownership rule 2026-07-06: promo earns from PAID revenue only) ──
+// Normalize a date-ish string to 'YYYY-MM-DD'. Handles ISO strings and the locale strings
+// legacy rows carry in created_at (e.g. "7/6/2026, 3:04 PM"), which break lexical range checks.
+export const promoDateKey=(v)=>{
+  const s=String(v||'');
+  if(/^\d{4}-\d{2}-\d{2}/.test(s))return s.slice(0,10);
+  const d=new Date(s);
+  if(isNaN(d.getTime()))return '';
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+};
+
+// A sales order counts as PAID when it has portal invoices and they are fully paid:
+// payments cover the invoiced total (or, when totals are $0, every invoice is marked paid).
+export const soIsPaid=(so,invs)=>{
+  if(!so)return false;
+  const rel=(invs||[]).filter(i=>i&&i.so_id===so.id&&i.status!=='void');
+  if(!rel.length)return false;
+  const total=rel.reduce((a,i)=>a+safeNum(i.total),0);
+  if(total>0)return rel.reduce((a,i)=>a+safeNum(i.paid),0)>=total-0.01;
+  return rel.every(i=>i.status==='paid');
+};
+
+// Qualifying PAID spend for a customer family within [start,end]. Two sources, combined:
+//  - Portal SOs whose invoices are fully paid — line-level calcQualifyingSpend
+//    (product+deco only, ≥20% margin; tax and shipping never enter).
+//  - NetSuite sales history (customer_invoices rows, status 'paid') — header subtotal
+//    (tax excluded; shipping sits inside the subtotal and is not separable), credit memos negative.
+// The two sets have no linking key, so the breakdown is returned for the UI to display —
+// any overlap must stay visible so a rep can adjust the allocation manually.
+export const calcPaidQualifyingSpend=({sos,invs,histInvs,famIds,start,end})=>{
+  const fam=new Set(famIds||[]);
+  const inRange=(v)=>{const d=promoDateKey(v);return !!d&&d>=start&&d<=end};
+  const soSpend=(sos||[]).filter(so=>so&&fam.has(so.customer_id)&&inRange(so.order_date||so.created_at)&&soIsPaid(so,invs))
+    .reduce((a,so)=>a+calcQualifyingSpend(so),0);
+  const histSpend=(histInvs||[]).filter(hi=>hi&&fam.has(hi.customer_id)&&hi.status==='paid'&&inRange(hi.date||hi.invoice_date))
+    .reduce((a,hi)=>{
+      const net=hi.subtotal!=null?safeNum(hi.subtotal):safeNum(hi.total)-safeNum(hi.tax);
+      return a+(hi.invoice_type==='credit_memo'?-Math.abs(net):net);
+    },0);
+  return{soSpend:rQ(soSpend),histSpend:rQ(histSpend),total:rQ(soSpend+histSpend)};
+};
+
 // ── calcAdidasItemSpend — adidas product revenue ONLY (no decoration, shipping, or tax) ──
 // For the coach-portal Adidas-only reporting section. Counts unit_sell × qty for items whose
 // brand is adidas/agron; decorations are intentionally excluded. Free-promo items don't count.

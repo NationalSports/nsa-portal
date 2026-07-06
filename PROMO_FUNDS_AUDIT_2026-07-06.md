@@ -194,6 +194,71 @@ program shows ALLOCATED $0 until the customer is reopened.
 3. Promo application **skips footwear** items.
 4. No changes to deco/shipping promo consumption, margin gate, or early draw.
 
+### Follow-up decisions (same day)
+
+- **Paid signal = BOTH sources combined.** Investigation showed SOs have no
+  paid status of their own (`calcSOStatus` is fulfillment-only; the `'paid'`
+  literal in the old earning filter was dead code). Payment lives on (a)
+  portal invoices (`invs`, linked by `so_id`, with `paid`/`total`/`status`)
+  and (b) NetSuite-imported `customer_invoices` (paid/open status, totals
+  only, **no SO link, no line items**). Ownership chose **both combined**:
+  line-level qualifying spend (margin gate, tax/ship excluded) for SOs whose
+  portal invoices are fully paid, PLUS paid NetSuite invoice subtotals
+  (tax excluded; shipping not separable at the header level). No linking key
+  exists between the two, so the UI shows the breakdown for manual overlap
+  adjustment.
+- **Overdraft carry-forward (FPU case).** A period that ends with
+  `used > allocated` (negative remaining) previously just sat there; the new
+  semester started fresh. Now the deficit carries into the current period as
+  starting `used`, so new earnings pay the negative down first.
+
+## Implementation (2026-07-06, this branch)
+
+- **`src/pricing.js`** — new canonical helpers (single copy, no businessLogic
+  mirror):
+  - `promoDateKey(v)` — normalizes ISO *and* legacy locale date strings to
+    `YYYY-MM-DD` (fixes audit F9 for the earning path).
+  - `soIsPaid(so, invs)` — an SO is paid when its non-void portal invoices
+    exist and payments cover the invoiced total ($0 totals fall back to
+    status === 'paid').
+  - `calcPaidQualifyingSpend({sos, invs, histInvs, famIds, start, end})` —
+    returns `{soSpend, histSpend, total}` combining paid SO line-level
+    qualifying spend and paid NetSuite invoice subtotals (credit memos
+    negative).
+- **`src/CustDetail.js`**:
+  - Earning calc and the auto-allocation effect now use
+    `calcPaidQualifyingSpend`; the dead `['approved','paid','complete']`
+    status filter is gone (fixes F1).
+  - The auto-allocation effect re-runs when **programs change**, so adding a
+    "10% of spend" program immediately computes last semester's paid spend ×
+    pct and populates the current period's ALLOCATED (the reported bug). It
+    only ever raises the allocation (`Math.max`), never claws back.
+  - **Overdraft carry-forward**: past periods with `used > allocated` push
+    their deficit into the current period's `used`, write a usage-ledger row
+    ("Overdraft carried forward from H1 2026"), and stamp the source period's
+    notes with `[overdraft carried to …]` so the deficit can't be carried
+    twice (a session ref guards double-fires before state settles).
+  - Earning card now says "paid invoices only" and shows the source
+    breakdown (portal orders vs NetSuite invoices) with an overlap warning.
+- **`src/OrderEditor.js`**:
+  - Apply Promo Funds skips `is_footwear` line items (they stay
+    customer-paid); notifications report how many footwear items were
+    excluded (fixes F2 per Q2).
+  - The per-line Promo checkbox is hidden for footwear items.
+- **`src/__tests__/promoPaidSpend.test.js`** — 20 tests covering date
+  normalization, the paid gate (partial/void/$0 invoices), margin gate still
+  applying, credit-memo netting, family/period filtering, and legacy
+  locale-date bucketing. Full suite: 381 passing; production build clean.
+
+### Still open (not in this pass)
+
+- F5 (editor-side overspend is warn-only; edits after apply don't re-sync the
+  deduction), F6 (non-atomic `used` counter), F8 (usage bucketed by clock
+  date at apply time), F7 consolidation of the remaining duplicated promo
+  copies (`calcPromoTotals` drift, semester-boundary inlines).
+- NetSuite invoice import is a manual batch step — paid statuses lag until
+  someone re-runs the loader.
+
 ## Open questions for ownership (original)
 
 - **Q1 (paid-only):** Should "paid" mean the SO's paid status, or strictly paid
