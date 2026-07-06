@@ -91,9 +91,13 @@ export default function CommissionsPage(){
 
     // Build pipeline from open/unpaid invoices + uninvoiced open SOs
     const buildPipeline=(repFilter)=>{
-      // Open invoices
+      // Open invoices only. Exclude 'partial' as well as 'paid': buildCommLines already
+      // credits a partial invoice's FULL gp as EARNED (calcGP uses inv.total, not the paid
+      // amount), so also counting it here as pipeline double-counts the same commission —
+      // a rep saw ~2x in the combined (earned + pipeline) total. A partial is booked as
+      // earned; it has no remaining pipeline.
       const invLines=invs.filter(inv=>{
-        if(inv.status==='paid')return false;
+        if(inv.status==='paid'||inv.status==='partial')return false;
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.
