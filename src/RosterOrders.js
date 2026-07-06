@@ -222,7 +222,7 @@ function makeCoachWriter(alphaTag) {
   return async (op, payload) => {
     const res = await fetch('/.netlify/functions/roster-write', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ alpha_tag: alphaTag, op, payload }),
+      body: JSON.stringify({ alpha_tag: String(alphaTag || '').trim(), op, payload }),
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok || j.ok === false) throw new Error(j.error || 'Roster save failed');
@@ -236,6 +236,15 @@ function makeCoachWriter(alphaTag) {
 function rosterW(writer, op, payload, direct) {
   if (!writer) return direct();
   return writer(op, payload).then((data) => ({ data, error: null }), (error) => ({ data: null, error }));
+}
+
+// A roster write can genuinely fail now — roster-write 403/500, RLS deny, network —
+// and the editors update state optimistically, so a swallowed failure silently loses
+// the coach's edit. Every write site below must check { error } and call this (and
+// revert what it can) instead of pretending success.
+function rosterSaveFailed(error, what) {
+  const msg = (error && (error.message || String(error))) || 'unknown error';
+  window.alert(`Could not save ${what} — ${msg}\n\nPlease try again; the change was NOT saved.`);
 }
 
 // ─── Product picker — typeahead search of products in the system ──────────────
@@ -495,8 +504,10 @@ function KitItemsBar({ session, catalog, onChange, readOnly, writer }) {
   const persist = async (next) => {
     setBusy(true);
     onChange({ ...session, kit_items: next });
-    await rosterW(writer, 'session_upsert', { id: session.id, kit_items: next, updated_at: new Date().toISOString() },
-      () => supabase.from('roster_order_sessions').update({ kit_items: next, updated_at: new Date().toISOString() }).eq('id', session.id));
+    const patch = { kit_items: next, updated_at: new Date().toISOString() };
+    const { error } = await rosterW(writer, 'session_upsert', { id: session.id, ...patch },
+      () => supabase.from('roster_order_sessions').update(patch).eq('id', session.id));
+    if (error) { onChange(session); rosterSaveFailed(error, 'the kit items'); }
     setBusy(false);
   };
   const addItem = (slot) => { const ci = catItems.find(c => c.slot === slot); if (ci) persist([...items, { ...ci }]); };
@@ -658,19 +669,20 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
   // that changed; the other is read from current state so the size box and the
   // qty box can update independently.
   const saveCell = useCallback(async (playerId, kitSlot, patch) => {
-    let nextCell;
+    let nextCell, prevCell;
     setSizes(prev => {
       const cur = (prev[playerId] || {})[kitSlot] || { size: '-', qty: null };
-      nextCell = { ...cur, ...patch };
+      prevCell = cur; nextCell = { ...cur, ...patch };
       return { ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: nextCell } };
     });
-    // nextCell is set synchronously by the updater above before this line runs.
-    await w('sizes_upsert',
-      { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
-      () => supabase.from('roster_player_sizes').upsert(
-        { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
-        { onConflict: 'player_id,kit_slot' }
-      ));
+    // nextCell/prevCell are set synchronously by the updater above before this line runs.
+    const row = { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() };
+    const { error } = await w('sizes_upsert', row,
+      () => supabase.from('roster_player_sizes').upsert(row, { onConflict: 'player_id,kit_slot' }));
+    if (error) {
+      setSizes(prev => ({ ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: prevCell } }));
+      rosterSaveFailed(error, 'this size');
+    }
   }, [w]);
 
   const updatePlayer = useCallback((id, field, val) => {
@@ -678,8 +690,9 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
   }, []);
 
   const savePlayer = useCallback(async (id, field, val) => {
-    await w('player_update', { id, [field]: val },
+    const { error } = await w('player_update', { id, [field]: val },
       () => supabase.from('roster_players').update({ [field]: val }).eq('id', id));
+    if (error) rosterSaveFailed(error, 'this player');
   }, [w]);
 
   const addPlayer = async () => {
@@ -697,13 +710,16 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
     if (!error && data) {
       setPlayers(prev => [...prev, data]);
       setAddRow({ first_name: '', last_name: '', jersey_number: '', is_gk: false, category: '' });
+    } else if (error) {
+      rosterSaveFailed(error, 'the new player');
     }
   };
 
   const deletePlayer = async (id) => {
     if (!window.confirm('Remove this player from the roster?')) return;
-    await w('player_delete', { id },
+    const { error } = await w('player_delete', { id },
       () => supabase.from('roster_players').delete().eq('id', id));
+    if (error) { rosterSaveFailed(error, 'the player removal'); return; }
     setPlayers(prev => prev.filter(p => p.id !== id));
   };
 
@@ -716,9 +732,10 @@ function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
       if (!window.confirm(`${incomplete.length} player${incomplete.length === 1 ? ' is' : 's are'} still missing sizes:\n\n${detail}${more}\n\nLock the roster anyway?`)) return;
     }
     setLockLoading(true);
-    await w('team_update', { id: team.id, locked: newLocked },
+    const { error } = await w('team_update', { id: team.id, locked: newLocked },
       () => supabase.from('roster_teams').update({ locked: newLocked }).eq('id', team.id));
-    setIsLocked(newLocked);
+    if (error) rosterSaveFailed(error, newLocked ? 'the roster lock' : 'the roster unlock');
+    else setIsLocked(newLocked);
     setLockLoading(false);
   };
 
@@ -2159,17 +2176,21 @@ export function RosterOrdersCoach({ customer }) {
     setSubmittingId(session.id);
     patchSession({ ...session, status: 'submitted' });
     try {
-      // The status flip and the rep-notification email are independent. The old direct
-      // supabase update returned { data, error } without throwing, so the email always
-      // fired even if the status write failed; coachWriter throws, so catch it locally to
-      // preserve that — a status-write hiccup must not swallow the rep notification.
-      try { await coachWriter('session_upsert', { id: session.id, status: 'submitted' }); }
-      catch (e) { console.error('[submitSession] status write failed:', e); }
-      await fetch('/.netlify/functions/roster-order-submit', {
+      // roster-order-submit owns the status transition (it flips open/draft → submitted
+      // server-side before emailing the rep), so there is no separate client status write —
+      // one authority, no torn state. If the call fails, undo the optimistic patch and tell
+      // the coach: a submit that silently stays 'open' means the rep never hears about it.
+      const res = await fetch('/.netlify/functions/roster-order-submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
       });
-    } catch (e) { console.error('[submitSession]', e); }
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.ok === false) throw new Error(j.error || 'Submit failed');
+    } catch (e) {
+      console.error('[submitSession]', e);
+      patchSession(session);
+      rosterSaveFailed(e, 'the submission');
+    }
     setSubmittingId(null);
   };
 
@@ -2177,16 +2198,20 @@ export function RosterOrdersCoach({ customer }) {
     if (!newSession.name.trim()) return;
     setNewSession(n => ({ ...n, saving: true }));
     const cat = catalog || await fetchCatalog(customer.id);
-    const { data, error } = await coachWriter('session_upsert', {
+    // status is server-assigned ('open' on insert; transitions only via roster-order-submit).
+    const { data, error } = await rosterW(coachWriter, 'session_upsert', {
       customer_id: customer.id, kit_template_id: cat?.id || null,
       kit_items: (cat?.items?.length ? cat.items : DEFAULT_KIT),
       name: newSession.name.trim(), season: newSession.season || null,
-      status: 'open', created_by: coach?.email || null,
-    }).then((d) => ({ data: d, error: null }), (e) => ({ data: null, error: e }));
+      created_by: coach?.email || null,
+    });
     if (!error && data) {
       setSessions(prev => [data, ...prev]);
       setNewSession({ name: '', season: new Date().getFullYear().toString(), open: false, saving: false });
-    } else { setNewSession(n => ({ ...n, saving: false })); }
+    } else {
+      setNewSession(n => ({ ...n, saving: false }));
+      rosterSaveFailed(error || new Error('no row returned'), 'the new session');
+    }
   };
 
   const createTeam = async (sessionId) => {
@@ -2194,13 +2219,16 @@ export function RosterOrdersCoach({ customer }) {
     if (!(f.name || '').trim()) return;
     setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: true } }));
     const count = teams.filter(t => t.session_id === sessionId).length;
-    const { data, error } = await coachWriter('team_insert', {
+    const { data, error } = await rosterW(coachWriter, 'team_insert', {
       session_id: sessionId, name: f.name.trim(), sort_order: count,
-    }).then((d) => ({ data: d, error: null }), (e) => ({ data: null, error: e }));
+    });
     if (!error && data) {
       setTeams(prev => [...prev, data]);
       setNewTeam(prev => ({ ...prev, [sessionId]: { name: '', saving: false } }));
-    } else setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: false } }));
+    } else {
+      setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: false } }));
+      rosterSaveFailed(error || new Error('no row returned'), 'the new team');
+    }
   };
 
   const inviteCoach = async (team, session) => {
