@@ -5,7 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
-import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
+import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
@@ -121,28 +121,50 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
-  // Auto co-op true-up: the first time this customer is opened after a period rollover (1/1 or 7/1),
-  // finalize the now-current period's allocation to the full % earned from the prior half's qualifying spend.
+  // Auto co-op allocation + overdraft carry-forward.
+  // 1) Whenever a % of Spend program is present (including one added just now), materialize the
+  //    CURRENT period's allocation from the prior half's PAID qualifying spend × pct. Paid = portal
+  //    SOs whose invoices are fully paid + paid NetSuite history invoices. Re-runs when programs
+  //    change so a newly added % program populates ALLOCATED without a reload. Only raises the
+  //    allocation (Math.max), never claws back.
+  // 2) Past periods that ended overdrawn (used > allocated) carry their deficit into the current
+  //    period as starting `used` — new earnings pay the negative down first. The source period is
+  //    stamped with an [overdraft carried…] note so the deficit is never carried twice, and a usage
+  //    row records the carry on the current period's ledger.
+  const _carriedRef=useRef({});
   useEffect(()=>{
     const c=initCust;if(!c)return;
     const pId=c.parent_id||c.id;
     const pctProg=(c.promo_programs||[]).find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
-    if(!pctProg)return;const pct=safeNum(pctProg.spend_percentage);if(pct<=0)return;
+    const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const d=new Date();const yy=d.getFullYear();const mm=d.getMonth();
-    const cur=mm<6?{start:yy+'-01-01',end:yy+'-06-30'}:{start:yy+'-07-01',end:yy+'-12-31'};
-    const prev=mm<6?{start:(yy-1)+'-07-01',end:(yy-1)+'-12-31'}:{start:yy+'-01-01',end:yy+'-06-30'};
-    const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
-    const fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
-    const prevSpend=(sos||[]).filter(so=>fam.includes(so.customer_id)&&fulfilled(so)&&(()=>{const dt=(so.order_date||so.created_at||'').slice(0,10);return dt>=prev.start&&dt<=prev.end})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
-    const prevEarned=Math.round(prevSpend*pct*100)/100;if(prevEarned<=0)return;
+    const cur=mm<6?{start:yy+'-01-01',end:yy+'-06-30',label:'H1 '+yy}:{start:yy+'-07-01',end:yy+'-12-31',label:'H2 '+yy};
+    const prev=mm<6?{start:(yy-1)+'-07-01',end:(yy-1)+'-12-31',label:'H2 '+(yy-1)}:{start:yy+'-01-01',end:yy+'-06-30',label:'H1 '+yy};
+    let prevEarned=0;
+    if(pct>0){
+      const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
+      const histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+      const prevSpend=calcPaidQualifyingSpend({sos,invs,histInvs:histInvsAll,famIds:fam,start:prev.start,end:prev.end}).total;
+      prevEarned=Math.round(prevSpend*pct*100)/100;
+    }
+    const carryPeriods=(c.promo_periods||[]).filter(p=>p.period_start<cur.start
+      &&safeNum(p.used)>safeNum(p.allocated)+0.009
+      &&!String(p.notes||'').includes('[overdraft carried')
+      &&!_carriedRef.current[p.id]);
+    const carry=rQ(carryPeriods.reduce((a,p)=>a+safeNum(p.used)-safeNum(p.allocated),0));
     const existing=(c.promo_periods||[]).find(p=>p.period_start===cur.start);
     const curAlloc=existing?safeNum(existing.allocated):0;
-    if(prevEarned-curAlloc>0.01){
-      if(existing)onSavePromoPeriod({...existing,allocated:Math.max(curAlloc,prevEarned),program_id:existing.program_id||pctProg.id,notes:existing.notes||'Auto co-op true-up'});
-      else onSavePromoPeriod({id:'pp_'+pId+'_'+cur.start,customer_id:pId,program_id:pctProg.id,period_start:cur.start,period_end:cur.end,allocated:prevEarned,used:0,notes:'Auto co-op true-up',created_at:new Date().toISOString()});
+    const needAlloc=prevEarned-curAlloc>0.01;
+    if(!needAlloc&&carry<=0)return;
+    const base=existing||{id:'pp_'+pId+'_'+cur.start,customer_id:pId,program_id:pctProg?.id||null,period_start:cur.start,period_end:cur.end,allocated:0,used:0,notes:pct>0?'Auto co-op allocation from paid spend':'',created_at:new Date().toISOString()};
+    onSavePromoPeriod({...base,allocated:Math.max(safeNum(base.allocated),prevEarned),used:safeNum(base.used)+carry,program_id:base.program_id||pctProg?.id||null,notes:base.notes||(pct>0?'Auto co-op allocation from paid spend':'')});
+    if(carry>0){
+      carryPeriods.forEach(p=>{_carriedRef.current[p.id]=true});
+      onSavePromoUsage({period_id:base.id,amount:carry,description:'Overdraft carried forward from '+carryPeriods.map(p=>(p.period_start.slice(5,7)==='01'?'H1 ':'H2 ')+p.period_start.slice(0,4)).join(', '),created_by:'System',so_id:null,estimate_id:null,created_at:new Date().toISOString()});
+      carryPeriods.forEach(p=>onSavePromoPeriod({...p,notes:((p.notes||'')+' [overdraft carried to '+cur.label+']').trim()}));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[initCust.id,sos]);
+  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
@@ -581,13 +603,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const otherPeriods=periods.filter(p=>p.period_start!==curPeriod.start);
     const upcomingPeriods=otherPeriods.filter(p=>(p.period_start||'')>curPeriod.start).sort((a,b)=>a.period_start.localeCompare(b.period_start));
     const pastPeriods=otherPeriods.filter(p=>(p.period_start||'')<curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
-    // Co-op earning: live % of qualifying (≥20% margin) net spend this half, destined for the next half.
+    // Co-op earning: live % of qualifying (≥20% margin) net PAID spend this half, destined for the
+    // next half. Paid = portal SOs with fully paid invoices + paid NetSuite history invoices
+    // (ownership rule 2026-07-06: promo is not earned until the invoice is paid).
     const pctProg=programs.find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
     const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const famIds=[parentId,...allCustomers.filter(c=>c.parent_id===parentId).map(c=>c.id)];
-    const _fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
-    const _spendInRange=(s,e)=>(sos||[]).filter(so=>famIds.includes(so.customer_id)&&_fulfilled(so)&&(()=>{const d=(so.order_date||so.created_at||'').slice(0,10);return d>=s&&d<=e})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
-    const curHalfSpend=pct>0?_spendInRange(curPeriod.start,curPeriod.end):0;
+    const _histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+    const _spendInRange=(s,e)=>calcPaidQualifyingSpend({sos,invs,histInvs:_histInvsAll,famIds,start:s,end:e});
+    const curSpendParts=pct>0?_spendInRange(curPeriod.start,curPeriod.end):{soSpend:0,histSpend:0,total:0};
+    const curHalfSpend=curSpendParts.total;
     const curEarned=pct>0?Math.round(curHalfSpend*pct*100)/100:0;
     const nextPeriod=m<6?{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y}:{start:(y+1)+'-01-01',end:(y+1)+'-06-30',label:'H1 '+(y+1)};
     const nextExisting=periods.find(p=>p.period_start===nextPeriod.start);
@@ -658,7 +683,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div className="card-body">
           <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
             <div style={{fontSize:13,color:'#334155',flex:1,minWidth:240}}>
-              Qualifying spend <span style={{fontSize:11,color:'#94a3b8'}}>(net, ≥20% margin)</span>: <strong>${curHalfSpend.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
+              Qualifying spend <span style={{fontSize:11,color:'#94a3b8'}}>(paid invoices only — net, ≥20% margin)</span>: <strong>${curHalfSpend.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
               <span style={{margin:'0 6px',color:'#cbd5e1'}}>×</span>{(pct*100).toFixed(0)}%
               <span style={{margin:'0 6px',color:'#cbd5e1'}}>=</span>
               <strong style={{color:'#166534'}}>${curEarned.toLocaleString(undefined,{maximumFractionDigits:2})}</strong>
@@ -667,7 +692,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <button className="btn btn-sm btn-primary" disabled={curEarned<=nextPulled} onClick={doPullForward} title={curEarned<=nextPulled?'Nothing new to pull forward yet':('Make $'+(curEarned-nextPulled).toLocaleString()+' usable now')}>↪ Pull Forward to {nextPeriod.label}</button>
           </div>
           {nextPulled>0&&<div style={{fontSize:11,color:'#64748b',marginTop:8}}>${nextPulled.toLocaleString()} already pulled forward to {nextPeriod.label}{curEarned>nextPulled?(' — $'+(curEarned-nextPulled).toLocaleString()+' more available'):' (up to date)'}.</div>}
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Pulled-forward dollars are usable on orders now. Spend keeps accruing — the {nextPeriod.label} allocation trues up automatically when the half closes.</div>
+          {(curSpendParts.soSpend>0||curSpendParts.histSpend>0)&&<div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Paid spend sources: ${curSpendParts.soSpend.toLocaleString(undefined,{maximumFractionDigits:0})} portal orders (paid invoices) + ${curSpendParts.histSpend.toLocaleString(undefined,{maximumFractionDigits:0})} NetSuite invoices (paid). Overlap between the two isn't auto-detected — adjust manually if an order appears in both.</div>}
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Pulled-forward dollars are usable on orders now. Spend keeps accruing — the {nextPeriod.label} allocation trues up automatically when the half closes. Only PAID invoices count toward earning.</div>
         </div>
       </div>}
 
