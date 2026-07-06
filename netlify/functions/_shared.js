@@ -110,6 +110,58 @@ async function verifyUserOrInternal(event) {
   return verifyUser(event);
 }
 
+// Copy only allow-listed keys — the standard defense for service-role write endpoints
+// (a crafted payload must not reach arbitrary columns). Shared so the allow-list callers
+// (roster-write; portal-action's local copy can migrate here too) stay one implementation.
+function pickCols(obj, allowed) {
+  const out = {};
+  Object.keys(obj || {}).forEach((k) => { if (allowed.has(k)) out[k] = obj[k]; });
+  return out;
+}
+
+// ── Coach-portal customer-family resolution (alpha_tag → Set of customer ids) ──────
+// The portal link's alpha_tag is its only credential; every anon-portal endpoint must
+// scope reads/writes to the family it resolves to (parent + one level of sub-customers).
+// This is the canonical implementation — portal-action.js and coach-invite.js carry
+// older inline copies (coach-invite's has already drifted: parents only) and should
+// migrate here rather than fork again.
+// Matching tolerates tag-hygiene reality: stored tags may carry stray whitespace/case
+// (the staff modal historically saved them raw), and the App portal gate matches
+// trim+lowercase on BOTH sides — a resolver stricter than the gate yields a portal that
+// renders fine while every action 403s. Exact-insensitive match first (ilike with
+// escaped wildcards), then a normalized in-JS pass only if that found nothing.
+// Cached per warm container: the mapping is effectively static per portal and this runs
+// on every coach write (same shape as the token-verification cache above). A family
+// change (new sub-customer) is picked up within the TTL.
+const FAMILY_TTL_MS = 60 * 1000;
+const FAMILY_CACHE_MAX = 200;
+const _familyCache = new Map(); // normalized tag -> { at, fam: Set<customer id> }
+
+async function resolveCustomerFamily(admin, alphaTag) {
+  const tag = String(alphaTag || '').trim();
+  if (!tag) return { error: 'Unknown portal tag', notFound: true };
+  const norm = tag.toLowerCase();
+  const hit = _familyCache.get(norm);
+  if (hit && Date.now() - hit.at < FAMILY_TTL_MS) return { fam: hit.fam };
+
+  const esc = tag.replace(/([%_\\])/g, '\\$1'); // ilike without wildcards = case-insensitive exact
+  let { data: parents, error } = await admin.from('customers').select('id').ilike('alpha_tag', esc);
+  if (error) return { error: error.message };
+  if (!parents || !parents.length) {
+    const { data: all, error: e2 } = await admin.from('customers').select('id,alpha_tag').not('alpha_tag', 'is', null);
+    if (e2) return { error: e2.message };
+    parents = (all || []).filter((c) => String(c.alpha_tag || '').trim().toLowerCase() === norm);
+  }
+  if (!parents.length) return { error: 'Unknown portal tag', notFound: true };
+  const parentIds = parents.map((p) => p.id);
+  const { data: kids, error: e3 } = await admin.from('customers').select('id').in('parent_id', parentIds);
+  if (e3) return { error: e3.message }; // a failed kids lookup must be a retryable 500, not a shrunken family
+  const fam = new Set([...parentIds, ...(kids || []).map((k) => k.id)]);
+  if (_familyCache.size >= FAMILY_CACHE_MAX) { const oldest = _familyCache.keys().next().value; _familyCache.delete(oldest); }
+  _familyCache.set(norm, { at: Date.now(), fam });
+  return { fam };
+}
+
 // Mark the invoice(s) referenced by a succeeded Stripe PaymentIntent's metadata as paid, using the
 // service role. This is the reliable reconciliation path for coach-portal payments: the portal is
 // anonymous and RLS-blocks it from writing `invoices`, and the Stripe webhook can't be relied on as
@@ -238,4 +290,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily };
