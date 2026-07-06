@@ -10,6 +10,7 @@ import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from '
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset } from './businessLogic';
+import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex } from './lib/artGrid';
 import QuickMockBuilder from './QuickMockBuilder';
 
@@ -1490,7 +1491,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const rows = included.map((p, i) => ({
         store_id: newStore.id, product_id: p.product_id || null, sku: p.sku || null, kind: 'single',
         display_name: (p.name || p.sku || 'Item').trim(), image_url: p.image_url || null,
-        retail_price: Number(p.retail) || 0, sizes_offered: Object.keys(p.sizes || {}).length ? Object.keys(p.sizes || {}) : null,
+        // Normalize the OMG report's size labels to catalog size codes ("Men's Small" → "S",
+        // "Men's 3X-Large" → "3XL") so sizes_offered matches the product's scale — otherwise the
+        // storefront filters every offered size out and an in-stock item reads "Sold out".
+        retail_price: Number(p.retail) || 0, sizes_offered: Object.keys(p.sizes || {}).length ? foldScale(Object.keys(p.sizes).map(normSzName)) : null,
         sort_order: i, active: true,
         // Items come in with NO art linked. The old behavior blanket-stamped every item with the
         // placeholder team-art record, so the whole store read "Applied" before the rep chose

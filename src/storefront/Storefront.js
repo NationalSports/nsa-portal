@@ -5,6 +5,7 @@ import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { placementById } from '../lib/artPlacements';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
+import { normSzName } from '../pricing';
 
 // Stripe publishable key is fetched at runtime from the server so changing
 // it in Netlify env vars takes effect without a rebuild.
@@ -1089,15 +1090,21 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // can actually get (in stock now, warehouse or vendor, OR restocking within
   // ~2 weeks); if nothing qualifies yet but the item is on the way, fall back to
   // the full scale so backorderable items stay orderable.
+  // Map an offered label to the catalog's size code before matching. OMG imports store the
+  // report's verbose labels ("Men's Small", "Men's 3X-Large"), which never equal the product's
+  // "S"/"3XL" scale — so every offered size filtered out and an in-stock item read "Sold out"
+  // while the badge (which sums raw stock) still said "In stock". normSzName strips the
+  // gender/age qualifier and normalizes the size; regularSize folds a tall to its regular twin.
+  const _offeredKey = (o) => String(regularSize(normSzName(o))).toUpperCase();
   const sizesFor = (c) => {
-    const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
-    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
+    const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
+    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
     if (!isTracked(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
       // made-to-order item these always sell — checkout's stock guard skips them too.
-      const prodScale = foldScale(c.available_sizes);
-      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.some((s) => String(s).toUpperCase() === String(regularSize(o)).toUpperCase()));
+      const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
+      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
       return [...scale, ...extras]; // not inventory-tracked → every offered size sells
     }
     const avail = scale.filter((s) => sizeSellable(c, s));
