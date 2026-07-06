@@ -55,6 +55,12 @@ export function garmentIsDark(name) {
 
 const _words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
 
+// Decoration methods whose colors are FIXED — embroidery (thread colors are stitched in),
+// DTF and sublimation (full-color prints). A flat white/black recolor would knock a
+// multi-color mark down to a single-color silhouette, so these must always show the real
+// logo (Orig). Only genuine single-ink methods (screen print, vinyl) flip light/dark.
+export const FIXED_COLOR_DECO = new Set(['embroidery', 'dtf', 'sublimation']);
+
 // Decide how to color the logo for one garment color:
 //   { kind:'variant', url, colorWayId, label } — use a real per-CW web-logo variant the
 //        artist made (preferred: a proper 2-color knockout beats a flat recolor).
@@ -76,6 +82,8 @@ export function autoColorChoice(activeArt, colorName) {
     }
     if (hit) return { kind: 'variant', url: hit.url, colorWayId: hit.color_way_id || null, label: hit.color_way || '' };
   }
+  // Fixed-color methods never get a flat recolor — the real logo reads correctly on any garment.
+  if (FIXED_COLOR_DECO.has(String((activeArt && activeArt.deco_type) || '').toLowerCase())) return { kind: 'recolor', choice: 'original' };
   return { kind: 'recolor', choice: guessDarkColor(colorName) ? 'white' : 'original' };
 }
 
