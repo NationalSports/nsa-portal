@@ -934,7 +934,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
             ? <>
-                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: '5%', width: '90%', height: '90%', objectFit: 'cover', display: 'block' }} />
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
               </>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
