@@ -1,5 +1,35 @@
 # RLS Authorization Matrix — Hand-off for the Fable session
 
+> ## ✅ RESOLVED — Fable pass (2026-07-05)
+>
+> The coach-auth model was traced end-to-end. Key facts that made the matrix decidable:
+> - The **only** magic-link-coach client is `supabaseCoach` (used solely in
+>   `src/storefront/AdidasInventory.js`); it writes **only** `coach_saved_orders` and
+>   `coach_favorite_items`, which are **already correctly coach-scoped** (nothing to do).
+> - `CoachPortal.js` / `CoachCatalogAccess.js` use the **staff** client despite their names.
+> - The public storefront (`Storefront.js`) writes **nothing** directly; checkout + vendor
+>   sync run as the **service role** (bypasses RLS).
+>
+> **Deliverable:** `supabase/migrations/00175_rls_lockdown_step3_coach_auth_writes.sql`
+> — locks the write surface of **24 tables** to staff-only (`is_team_member()`) while leaving
+> every read policy untouched, and closes the `coach_customer_access` self-grant (**#4**).
+> `is_team_member()` verified sound (SECURITY DEFINER over active `team_members`).
+> **Not yet applied to any database — pending branch test + owner approval.**
+>
+> **Still open (need decisions / coordinated changes):**
+> - **#3 coach-invite.js** — has no auth guard, but all 3 callers currently send **no auth
+>   token**. Fix = require a staff/coach JWT in the function **and** update the 3 callers to
+>   send `Authorization: Bearer <session>`, plus decide the caller rule (staff-only vs
+>   staff-or-authorized-coach). Multi-file + decision — not done here.
+> - **#11 roster_\* portal** — anon-writable with no DB identity; needs a capability-token or
+>   service-role redesign (architectural).
+> - `catalog_order_requests`, `quote_request_items`/`quote_requests`, `coach_hire_leads`,
+>   `uniform_*`, `adidas_inventory` — deferred (public/coach write paths or unknown writer).
+> - Separate: several internal tables (`issues`, `assigned_todos`, …) have anon **READ**
+>   policies — a read-hardening pass, out of scope for this write-focused migration.
+
+---
+
 **Status:** analysis complete, no changes applied. Live-verified 2026-07-05 against
 project `hpslkvngulqirmbstlfx` via **read-only** `pg_policies` queries. Nothing has been
 written to the database or to a branch.
