@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
+import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
@@ -1344,7 +1344,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const coachComment=comment.trim();
-                const _apDeco=(safeArt(liveSO).find(a=>jArtIds.includes(a.id))?.deco_type)||j.deco_type;const _apSt=prodFilesStatusFor(_apDeco);
+                // Folder already carries a confirmed production separation (checkbox, or an
+                // embroidery .dst)? Approval sends it straight to art_complete instead of the
+                // upload-files stage — mirrors the buildJobs derivation. Every art on the job
+                // must be confirmed before we skip the stage.
+                const _apArts=jArtIds.map(id=>safeArt(liveSO).find(a=>a.id===id)).filter(Boolean);const _apDeco=_apArts[0]?.deco_type||j.deco_type;const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apDeco);
                 // Pin the approval to the artwork on screen: every mock URL in view must still
                 // exist server-side, or the approve conflicts instead of recording an approval
                 // for an image the artist has since replaced.

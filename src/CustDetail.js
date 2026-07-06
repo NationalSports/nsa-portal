@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor } from './constants';
+import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
@@ -1765,7 +1765,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 {/* Mirror the coach portal's approve write set exactly: deco-specific prod-files stage
                     (dtf→transfers, embroidery→emb files) and coach_rejected cleared in the SAME write —
                     this path used to hardcode production_files_needed and leave the rejection flag stranded. */}
-                const artId=j.art_file_id;if(artId&&onSaveSO){const _apSt=prodFilesStatusFor((so.art_files||[]).find(af3=>af3.id===artId)?.deco_type||j.deco_type);const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_rejected:false}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
+                {/* An already-attached confirmed separation (checkbox / embroidery .dst) skips the
+                    upload stage and lands on art_complete — matches the buildJobs derivation. */}
+                const artId=j.art_file_id;if(artId&&onSaveSO){const _apAf=(so.art_files||[]).find(af3=>af3.id===artId);const _apSt=artProdFilesConfirmed(_apAf)?'art_complete':prodFilesStatusFor(_apAf?.deco_type||j.deco_type);const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_rejected:false}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
                 setPortalJobView(null)}}>✅ Approve</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
                 if(portalComment.trim()){
