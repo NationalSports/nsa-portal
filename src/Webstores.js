@@ -9,8 +9,8 @@ import { NSA, pantoneHex, SZ_NORM } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
-import { normalizeWebLogos } from './businessLogic';
-import { autoColorChoice, resolveItemPlacement, garmentTypeOf } from './lib/artGrid';
+import { normalizeWebLogos, pickCwAsset } from './businessLogic';
+import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex } from './lib/artGrid';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -8796,6 +8796,21 @@ const artThumbUrl = (art) => {
   const cands = [webLogoDefault(art), art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
   return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
 };
+// Background for a logo THUMBNAIL so a transparent cutout stays visible wherever it's shown
+// (a white logo washes out on a near-white card). Prefer the garment color(s) the shown
+// cutout covers — a white logo on its dark garment reads perfectly — falling back to a soft
+// transparency checker (light + medium gray) that reveals both light- and dark-ink logos
+// when the cutout has no color assigned yet.
+const LOGO_THUMB_CHECKER = 'repeating-conic-gradient(#94a3b8 0 25%, #e2e8f0 0 50%) 50% / 14px 14px';
+const logoThumbBg = (art, thumbUrl) => {
+  const wls = Array.isArray(art && art.web_logos) ? art.web_logos : [];
+  const forUrl = thumbUrl ? wls.filter((w) => w && w.url === thumbUrl) : [];
+  const src = forUrl.length ? forUrl : wls;
+  const labels = [...new Set(src.map((w) => ((w && w.color_way) || '').trim()).filter(Boolean))];
+  if (!labels.length) return LOGO_THUMB_CHECKER;
+  const cols = labels.map(garmentHex);
+  return cols.length === 1 ? cols[0] : ('linear-gradient(135deg, ' + cols[0] + ' 0 50%, ' + cols[1] + ' 50% 100%)');
+};
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
 // Clean cutout for PLACING art on a garment — a real logo, never a full-garment mockup
 // (recoloring an opaque mockup to white is exactly what produced the "white box"). Prefers
@@ -9015,6 +9030,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // (drag/resize applies to all its colors — the photos match, so one size reads
   // consistently), with an optional nudge override for the odd color's photo.
   const [activeIdx, setActiveIdx] = useState({});       // styleKey -> index of the color being shown
+  const [logoCwIdx, setLogoCwIdx] = useState({});       // art id -> index of the color way being previewed in "Pick a logo"
   const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
   const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w } (nudge override)
   const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in nudge mode
@@ -9357,15 +9373,37 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {pickOpen && (<>
         {storeArt.length === 0 && !addOpen && <div style={{ fontSize: 13, color: '#64748b', padding: '4px 2px 8px' }}>No art chosen for this store yet — click <b>+ Add from library</b> to pick which logos belong on it.</div>}
         {storeArt.length > 0 && <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-          {storeArt.map((a) => { const u = artThumbUrl(a); const on = a.id === activeId; return (
+          {storeArt.map((a) => {
+            const u = artThumbUrl(a);
+            const on = a.id === activeId;
+            // Multiple color ways → let the rep tab through each CW's web logo on its garment
+            // color, to eyeball that every color way's art is ready. pickCwAsset resolves the
+            // right cutout per CW (real variant, else the shared default); garmentHex paints it.
+            const cwList = (a.color_ways || []).filter((c) => c && (c.garment_color || '').trim());
+            const views = cwList.length >= 2
+              ? cwList.map((cw) => ({ label: cw.garment_color, url: pickCwAsset(a, { kind: 'web_logo', colorWayId: cw.id }) || u, bg: garmentHex(cw.garment_color) }))
+              : [{ label: '', url: u, bg: u ? logoThumbBg(a, u) : '#f8fafc' }];
+            const multi = views.length > 1;
+            const idx = Math.min(logoCwIdx[a.id] || 0, views.length - 1);
+            const view = views[idx] || views[0];
+            const goIdx = (i) => setLogoCwIdx((m) => ({ ...m, [a.id]: (i + views.length) % views.length }));
+            return (
             <div key={a.id} style={{ position: 'relative', flex: '0 0 auto', width: 96 }}>
               <button onClick={() => setActiveId(a.id)} title={a.name} style={{ width: 96, border: on ? '2px solid #191919' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
-                  {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
+                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: view.url ? view.bg : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: view.url ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
+                  {view.url ? <img src={view.url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
                 {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}
               </button>
+              {multi && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+                  <button onClick={() => goIdx(idx - 1)} title="Previous color way" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontSize: 13, lineHeight: 1, padding: '0 2px' }}>‹</button>
+                  {views.length <= 6 ? views.map((v, i) => <button key={i} onClick={() => goIdx(i)} title={v.label || `Color way ${i + 1}`} aria-label={v.label || `Color way ${i + 1}`} style={{ width: i === idx ? 14 : 6, height: 6, borderRadius: 3, border: 'none', padding: 0, cursor: 'pointer', background: i === idx ? '#191919' : '#cbd5e1', transition: 'width .15s' }} />) : <span style={{ fontSize: 9.5, fontWeight: 700, color: '#64748b' }}>{idx + 1}/{views.length}</span>}
+                  <button onClick={() => goIdx(idx + 1)} title="Next color way" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontSize: 13, lineHeight: 1, padding: '0 2px' }}>›</button>
+                </div>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textAlign: 'center', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={view.label}>{view.label || '—'}</div>
+              </div>}
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
             </div>
@@ -9377,7 +9415,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
             {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); return (
               <div key={a.id} style={{ position: 'relative' }}>
                 <button onClick={() => toggleStoreArt(a)} title={a.name} style={{ position: 'relative', width: '100%', border: sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: u ? logoThumbBg(a, u) : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: u ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
                     {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9.5, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 3px' }}>{(a.files || [])[0] ? 'AI — add web logo' : 'Add web logo'}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
