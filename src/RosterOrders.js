@@ -213,6 +213,31 @@ async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, r
   }
 }
 
+// Coach-portal roster writes (audit #11): the public portal runs as anon, so it cannot
+// write roster_* directly once the lockdown migration (00176) lands. This routes each
+// write through the roster-write function (service role, scoped to the portal alpha_tag's
+// customer family). Returns the affected row(s) or throws. Staff render the shared editors
+// WITHOUT a writer, so their writes stay direct (RLS is_team_member()) and unchanged.
+function makeCoachWriter(alphaTag) {
+  return async (op, payload) => {
+    const res = await fetch('/.netlify/functions/roster-write', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ alpha_tag: alphaTag, op, payload }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) throw new Error(j.error || 'Roster save failed');
+    return j.data;
+  };
+}
+
+// Uniform write wrapper for the shared roster editors: staff (no writer) get the direct
+// Supabase call's exact { data, error } result; coach (writer present) get the same shape
+// from the function. So the write sites below barely change.
+function rosterW(writer, op, payload, direct) {
+  if (!writer) return direct();
+  return writer(op, payload).then((data) => ({ data, error: null }), (error) => ({ data: null, error }));
+}
+
 // ─── Product picker — typeahead search of products in the system ──────────────
 // Attaches a real product (SKU) to a kit item so inventory/availability resolves.
 function ProductPicker({ value, sku, productName, onPick }) {
@@ -460,16 +485,18 @@ function ItemCatalogManager({ customer, onClose }) {
 }
 
 // ─── Kit items bar — add/remove items on a session from the catalog ───────────
-function KitItemsBar({ session, catalog, onChange, readOnly }) {
+function KitItemsBar({ session, catalog, onChange, readOnly, writer }) {
   const items = (session.kit_items && session.kit_items.length) ? session.kit_items : [];
   const catItems = catalog?.items || [];
   const available = catItems.filter(ci => !items.some(it => it.slot === ci.slot));
   const [busy, setBusy] = useState(false);
 
+  // Coach portal passes a `writer` (routes through roster-write.js); staff pass none → direct.
   const persist = async (next) => {
     setBusy(true);
     onChange({ ...session, kit_items: next });
-    await supabase.from('roster_order_sessions').update({ kit_items: next, updated_at: new Date().toISOString() }).eq('id', session.id);
+    await rosterW(writer, 'session_upsert', { id: session.id, kit_items: next, updated_at: new Date().toISOString() },
+      () => supabase.from('roster_order_sessions').update({ kit_items: next, updated_at: new Date().toISOString() }).eq('id', session.id));
     setBusy(false);
   };
   const addItem = (slot) => { const ci = catItems.find(c => c.slot === slot); if (ci) persist([...items, { ...ci }]); };
@@ -571,7 +598,10 @@ function TypeaheadInput({ value, options, onCommit, placeholder, width, center =
 }
 
 // ─── Roster Table Editor ──────────────────────────────────────────────────────
-function TeamRosterEditor({ team, kitTemplate, readOnly }) {
+function TeamRosterEditor({ team, kitTemplate, readOnly, writer }) {
+  // Coach portal passes a `writer` (routes writes through roster-write.js, service role,
+  // scoped to the portal's customer family). Staff pass none → writes stay direct via RLS.
+  const w = useCallback((op, payload, direct) => rosterW(writer, op, payload, direct), [writer]);
   const [players, setPlayers] = useState([]);
   const [sizes, setSizes] = useState({});
   const [loading, setLoading] = useState(true);
@@ -635,29 +665,34 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
       return { ...prev, [playerId]: { ...(prev[playerId] || {}), [kitSlot]: nextCell } };
     });
     // nextCell is set synchronously by the updater above before this line runs.
-    await supabase.from('roster_player_sizes').upsert(
+    await w('sizes_upsert',
       { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
-      { onConflict: 'player_id,kit_slot' }
-    );
-  }, []);
+      () => supabase.from('roster_player_sizes').upsert(
+        { player_id: playerId, kit_slot: kitSlot, size: nextCell.size, qty: nextCell.qty, updated_at: new Date().toISOString() },
+        { onConflict: 'player_id,kit_slot' }
+      ));
+  }, [w]);
 
   const updatePlayer = useCallback((id, field, val) => {
     setPlayers(prev => prev.map(p => p.id === id ? { ...p, [field]: val } : p));
   }, []);
 
   const savePlayer = useCallback(async (id, field, val) => {
-    await supabase.from('roster_players').update({ [field]: val }).eq('id', id);
-  }, []);
+    await w('player_update', { id, [field]: val },
+      () => supabase.from('roster_players').update({ [field]: val }).eq('id', id));
+  }, [w]);
 
   const addPlayer = async () => {
     const { first_name, last_name, jersey_number, is_gk, category } = addRow;
     if (!first_name.trim() && !last_name.trim()) return;
     setAddingRow(true);
-    const { data, error } = await supabase.from('roster_players').insert({
+    const row = {
       team_id: team.id, first_name: first_name.trim(), last_name: last_name.trim(),
       jersey_number: jersey_number.trim(), is_gk, sort_order: players.length,
       category: category || null,
-    }).select().single();
+    };
+    const { data, error } = await w('player_insert', row,
+      () => supabase.from('roster_players').insert(row).select().single());
     setAddingRow(false);
     if (!error && data) {
       setPlayers(prev => [...prev, data]);
@@ -667,7 +702,8 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
 
   const deletePlayer = async (id) => {
     if (!window.confirm('Remove this player from the roster?')) return;
-    await supabase.from('roster_players').delete().eq('id', id);
+    await w('player_delete', { id },
+      () => supabase.from('roster_players').delete().eq('id', id));
     setPlayers(prev => prev.filter(p => p.id !== id));
   };
 
@@ -680,7 +716,8 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
       if (!window.confirm(`${incomplete.length} player${incomplete.length === 1 ? ' is' : 's are'} still missing sizes:\n\n${detail}${more}\n\nLock the roster anyway?`)) return;
     }
     setLockLoading(true);
-    await supabase.from('roster_teams').update({ locked: newLocked }).eq('id', team.id);
+    await w('team_update', { id: team.id, locked: newLocked },
+      () => supabase.from('roster_teams').update({ locked: newLocked }).eq('id', team.id));
     setIsLocked(newLocked);
     setLockLoading(false);
   };
@@ -690,11 +727,13 @@ function TeamRosterEditor({ team, kitTemplate, readOnly }) {
     const rows = parsePastedRoster(paste.text);
     if (!rows.length) { window.alert('Nothing to import — paste rows copied from your spreadsheet (name, number…).'); return; }
     setPaste(p => ({ ...p, busy: true }));
-    const { data, error } = await supabase.from('roster_players').insert(rows.map((r, i) => ({
+    const ins = rows.map((r, i) => ({
       team_id: team.id, first_name: r.first_name, last_name: r.last_name,
       jersey_number: r.jersey_number, is_gk: false, category: r.category,
       sort_order: players.length + i,
-    }))).select();
+    }));
+    const { data, error } = await w('player_insert', { team_id: team.id, players: ins },
+      () => supabase.from('roster_players').insert(ins).select());
     if (error) {
       console.error('[importPaste]', error);
       window.alert('Import failed — ' + error.message);
@@ -2041,6 +2080,11 @@ export function RosterOrdersCoach({ customer }) {
   const [invite, setInvite] = useState({});   // { teamId: {email, name, sending} }
   const [submittingId, setSubmittingId] = useState(null); // session id currently submitting
 
+  // Every roster write from the coach portal goes through roster-write.js (service role,
+  // scoped to this portal's alpha_tag family) — the portal runs as anon and, once the
+  // lockdown migration lands, can no longer write roster_* directly.
+  const coachWriter = useMemo(() => makeCoachWriter(customer.alpha_tag), [customer.alpha_tag]);
+
   const reload = useCallback(async () => {
     if (!customer?.coach_roster) { setLoading(false); return; } // roster module off for this account
     // No sign-in required — the portal link (?portal=<tag>) is the gate, same as
@@ -2115,7 +2159,7 @@ export function RosterOrdersCoach({ customer }) {
     setSubmittingId(session.id);
     patchSession({ ...session, status: 'submitted' });
     try {
-      await supabase.from('roster_order_sessions').update({ status: 'submitted' }).eq('id', session.id);
+      await coachWriter('session_upsert', { id: session.id, status: 'submitted' });
       await fetch('/.netlify/functions/roster-order-submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
@@ -2128,12 +2172,12 @@ export function RosterOrdersCoach({ customer }) {
     if (!newSession.name.trim()) return;
     setNewSession(n => ({ ...n, saving: true }));
     const cat = catalog || await fetchCatalog(customer.id);
-    const { data, error } = await supabase.from('roster_order_sessions').insert({
+    const { data, error } = await coachWriter('session_upsert', {
       customer_id: customer.id, kit_template_id: cat?.id || null,
       kit_items: (cat?.items?.length ? cat.items : DEFAULT_KIT),
       name: newSession.name.trim(), season: newSession.season || null,
       status: 'open', created_by: coach?.email || null,
-    }).select().single();
+    }).then((d) => ({ data: d, error: null }), (e) => ({ data: null, error: e }));
     if (!error && data) {
       setSessions(prev => [data, ...prev]);
       setNewSession({ name: '', season: new Date().getFullYear().toString(), open: false, saving: false });
@@ -2145,9 +2189,9 @@ export function RosterOrdersCoach({ customer }) {
     if (!(f.name || '').trim()) return;
     setNewTeam(prev => ({ ...prev, [sessionId]: { ...f, saving: true } }));
     const count = teams.filter(t => t.session_id === sessionId).length;
-    const { data, error } = await supabase.from('roster_teams').insert({
+    const { data, error } = await coachWriter('team_insert', {
       session_id: sessionId, name: f.name.trim(), sort_order: count,
-    }).select().single();
+    }).then((d) => ({ data: d, error: null }), (e) => ({ data: null, error: e }));
     if (!error && data) {
       setTeams(prev => [...prev, data]);
       setNewTeam(prev => ({ ...prev, [sessionId]: { name: '', saving: false } }));
@@ -2192,7 +2236,7 @@ export function RosterOrdersCoach({ customer }) {
               'A small number box appears next to items that come with more than one per player (like shorts) — change it if a specific player needs more or fewer.',
               'Lock the roster once it’s ready — locked rosters can’t be edited until unlocked.',
             ]} />
-          <TeamRosterEditor team={openTeam} kitTemplate={kitFor(session)} readOnly={false} />
+          <TeamRosterEditor team={openTeam} kitTemplate={kitFor(session)} readOnly={false} writer={coachWriter} />
           {/* Invite another coach to this team */}
           <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #f1f5f9' }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Coaches on this team</div>
@@ -2307,7 +2351,7 @@ export function RosterOrdersCoach({ customer }) {
             </div>
             <div style={{ padding: 12 }}>
               {/* Build the kit by adding items from the catalog */}
-              <KitItemsBar session={session} catalog={catalog} onChange={patchSession} />
+              <KitItemsBar session={session} catalog={catalog} onChange={patchSession} writer={coachWriter} />
 
               {sessTeams.map(team => (
                 <div key={team.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 8, marginBottom: 6,

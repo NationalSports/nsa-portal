@@ -27,7 +27,7 @@ const bad = (code, error) => ({ statusCode: code, headers: CORS, body: JSON.stri
 // Column names verified against the LIVE schema (information_schema), not just 00160 —
 // the live tables carry columns added after 00160 (qty/notes/size_group on sizes,
 // category on players) that the coach portal actually writes.
-const SESSION_COLS = new Set(['name', 'status', 'season', 'deadline', 'kit_template_id', 'notes', 'kit_items', 'updated_at']);
+const SESSION_COLS = new Set(['name', 'status', 'season', 'deadline', 'kit_template_id', 'notes', 'kit_items', 'created_by', 'updated_at']);
 const TEAM_COLS = new Set(['name', 'sort_order', 'locked']);
 const PLAYER_COLS = new Set(['first_name', 'last_name', 'jersey_number', 'is_gk', 'is_loaner', 'sort_order', 'category', 'updated_at']);
 const SIZE_COLS = new Set(['kit_slot', 'size', 'qty', 'notes', 'size_group', 'updated_at']);
@@ -107,15 +107,15 @@ exports.handler = async (event) => {
           const owned = await assertOwned(admin, fam, { sessionId: p.id });
           if (!owned.ok) return bad(403, owned.error);
           const { data, error } = await admin.from('roster_order_sessions')
-            .update(pick(p, SESSION_COLS)).eq('id', p.id).select('id').maybeSingle();
+            .update(pick(p, SESSION_COLS)).eq('id', p.id).select('*').maybeSingle();
           if (error) return bad(500, error.message);
-          return ok({ id: data && data.id });
+          return ok({ data });
         }
         if (!customerId || !fam.has(customerId)) return bad(403, 'Not authorized for this customer');
         const row = { ...pick(p, SESSION_COLS), customer_id: customerId };
-        const { data, error } = await admin.from('roster_order_sessions').insert(row).select('id').maybeSingle();
+        const { data, error } = await admin.from('roster_order_sessions').insert(row).select('*').maybeSingle();
         if (error) return bad(500, error.message);
-        return ok({ id: data && data.id });
+        return ok({ data });
       }
 
       // ── roster_teams ──
@@ -123,9 +123,9 @@ exports.handler = async (event) => {
         const owned = await assertOwned(admin, fam, { sessionId: p.session_id });
         if (!owned.ok) return bad(403, owned.error);
         const row = { ...pick(p, TEAM_COLS), session_id: p.session_id };
-        const { data, error } = await admin.from('roster_teams').insert(row).select('id').maybeSingle();
+        const { data, error } = await admin.from('roster_teams').insert(row).select('*').maybeSingle();
         if (error) return bad(500, error.message);
-        return ok({ id: data && data.id });
+        return ok({ data });
       }
       case 'team_update': {
         const owned = await assertOwned(admin, fam, { teamId: p.id });
@@ -150,9 +150,11 @@ exports.handler = async (event) => {
         const owned = await assertOwned(admin, fam, { teamId });
         if (!owned.ok) return bad(403, owned.error);
         const ins = rows.map((r) => ({ ...pick(r, PLAYER_COLS), team_id: teamId }));
-        const { data, error } = await admin.from('roster_players').insert(ins).select('id');
+        const { data, error } = await admin.from('roster_players').insert(ins).select('*');
         if (error) return bad(500, error.message);
-        return ok({ ids: (data || []).map((d) => d.id) });
+        // Single row for a single insert, the array for a bulk insert — matches the
+        // frontend's .single() vs .select() usage so state updates the same either way.
+        return ok({ data: Array.isArray(p.players) ? (data || []) : (data && data[0]) });
       }
       case 'player_update': {
         const owned = await assertOwned(admin, fam, { playerId: p.id });
