@@ -2159,7 +2159,12 @@ export function RosterOrdersCoach({ customer }) {
     setSubmittingId(session.id);
     patchSession({ ...session, status: 'submitted' });
     try {
-      await coachWriter('session_upsert', { id: session.id, status: 'submitted' });
+      // The status flip and the rep-notification email are independent. The old direct
+      // supabase update returned { data, error } without throwing, so the email always
+      // fired even if the status write failed; coachWriter throws, so catch it locally to
+      // preserve that — a status-write hiccup must not swallow the rep notification.
+      try { await coachWriter('session_upsert', { id: session.id, status: 'submitted' }); }
+      catch (e) { console.error('[submitSession] status write failed:', e); }
       await fetch('/.netlify/functions/roster-order-submit', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: session.id, customer_id: customer.id, coach_email: coach?.email || '' }),
