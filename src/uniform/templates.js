@@ -203,6 +203,27 @@ const TEMPLATES = {
       },
     },
   },
+  // Vikram's base (Blender → GLB, delivered web-ready at 3.5MB, 10.7K tris, native
+  // .blend included). Zones are separated by MATERIAL (Body/Sleeves/Collar) on one
+  // clean mesh, with a full PBR set (albedo + normal + metallic-roughness). 3D
+  // preview is native; 2D proof reuses octa flat art as a placeholder for now.
+  vikram_jersey: {
+    id: 'vikram_jersey', name: 'Vikram Base', category: 'Photoreal', type: 'raster',
+    credit: 'Base garment by Vikram (Blender)',
+    model3d: PUB('/uniform/vikram-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.33, y: 0.2, size: 88 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
   // Built-in photoreal jersey: a neutral 3D render + zone mask (front/back) shipped
   // in /public/uniform, so the Photoreal path works out-of-the-box with no import.
   // Colors/patterns/logos tint through the base's real folds and shadows.
