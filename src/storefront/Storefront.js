@@ -232,8 +232,19 @@ function useTheme(store) {
 function useScrolled(px = 56) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > px);
-    onScroll();
+    // Hysteresis stops the header from jiggling. Collapsing removes ~60px from the
+    // sticky region, and the browser's scroll-anchoring nudges scrollY by about that
+    // much — with a single threshold that nudge flips `scrolled` straight back and the
+    // two states fight forever. A collapse/expand gap wider than the shift absorbs it,
+    // so the state settles instead of oscillating.
+    const enter = Math.max(px, 72), exit = 8;
+    let on = window.scrollY > enter;
+    setScrolled(on);
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (!on && y > enter) { on = true; setScrolled(true); }
+      else if (on && y <= exit) { on = false; setScrolled(false); }
+    };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, [px]);
@@ -657,8 +668,10 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
               return (
                 <div key={i} style={{ gridColumn: full ? '1 / span 2' : tall ? '1' : '2', gridRow: spanRows ? '1 / span 2' : 'auto', aspectRatio: full ? '4 / 3' : spanRows ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                    <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                    <div style={{ position: 'absolute', inset: '8%' }}>
+                      <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                      <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                    </div>
                   </div>
                 </div>
               );
