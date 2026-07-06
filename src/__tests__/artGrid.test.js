@@ -1,4 +1,39 @@
-import { guessDarkColor, autoColorChoice, resolveItemPlacement, garmentTypeOf } from '../lib/artGrid';
+import { guessDarkColor, autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, garmentIsDark } from '../lib/artGrid';
+
+describe('garmentHex', () => {
+  test('known colors map to their swatch', () => {
+    expect(garmentHex('Black')).toBe('#111827');
+    expect(garmentHex('White')).toBe('#ffffff');
+    expect(garmentHex('Navy')).toBe('#1f2a44');
+    expect(garmentHex('red')).toBe('#dc2626');
+  });
+  test('a word inside the name resolves (Heather Charcoal → charcoal)', () => {
+    expect(garmentHex('Heather Charcoal')).toBe('#374151');
+    expect(garmentHex('Forest Green')).toBe('#14532d');
+  });
+  test('unknown names fall back to a neutral by brightness', () => {
+    expect(garmentHex('Zorptown')).toBe('#e5e7eb');   // unknown + not dark → light neutral
+    expect(garmentHex('Dark Zone')).toBe('#1f2937');  // unknown but reads dark → dark neutral
+    expect(garmentHex('')).toBe('#e5e7eb');
+  });
+});
+
+describe('garmentIsDark', () => {
+  test('luminance catches colors the word list misses (Red is dark, Grey is light)', () => {
+    expect(garmentIsDark('Red')).toBe(true);
+    expect(garmentIsDark('Orange')).toBe(true);
+    expect(garmentIsDark('Grey')).toBe(false);
+    expect(garmentIsDark('Gold')).toBe(false);
+  });
+  test('obvious cases', () => {
+    ['Black', 'Navy', 'Maroon', 'Forest'].forEach((c) => expect(garmentIsDark(c)).toBe(true));
+    ['White', 'Silver', 'Vegas Gold', 'Natural'].forEach((c) => expect(garmentIsDark(c)).toBe(false));
+  });
+  test('unknown names fall back to the word heuristic', () => {
+    expect(garmentIsDark('Darkish')).toBe(true);
+    expect(garmentIsDark('Zorptown')).toBe(false);
+  });
+});
 
 describe('garmentTypeOf', () => {
   test('classifies common product names', () => {
