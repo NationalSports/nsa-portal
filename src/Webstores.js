@@ -152,7 +152,7 @@ function buildPackingLists(store, label, groups) {
     const shipTo = store.delivery_mode === 'deliver_club'
       ? 'Deliver to club'
       : [a.name || order.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
-    const rows = items.filter((i) => !i.is_bundle_parent).map((i) => `<tr><td>${esc(i.sku || '')}</td><td>${esc(i.size || '')}</td><td>${esc(i.player_number || '')}</td><td>${esc(i.player_name || '')}</td><td style="text-align:center">${i.qty || 1}</td></tr>`).join('');
+    const rows = items.filter((i) => !i.is_bundle_parent).map((i) => `<tr><td>${esc(i._effSku || i.sku || '')}</td><td>${esc(i.size || '')}</td><td>${esc(i.player_number || '')}</td><td>${esc(i.player_name || '')}</td><td style="text-align:center">${i.qty || 1}</td></tr>`).join('');
     const player = [...new Set(items.map((i) => i.player_name).filter(Boolean))].join(', ') || order.buyer_name || '';
     return `<div class="slip">
       <div class="hd"><div><div class="t">${esc(store.name)}</div><div class="s">Packing list · ${esc(label)}</div></div>
@@ -182,15 +182,14 @@ function buildPackingLists(store, label, groups) {
 // lands on the latest orders — the fair, defensible call when we can't cover
 // everyone. Products with no stock record are made-to-order (decorated/custom)
 // and treated as available, matching the batch flow's own inventory check.
-function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set()) {
-  const keyOf = (pid, size) => pid + '|' + (size || 'OS');
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set(), stockBySku = {}) {
   // Earliest orders claim stock first.
   const sorted = [...lines].sort((a, b) => {
     const ta = orderById[a.order_id]?.created_at || '', tb = orderById[b.order_id]?.created_at || '';
     return ta < tb ? -1 : ta > tb ? 1 : 0;
   });
-  const remaining = {};   // product|size -> units left to allocate (Infinity if untracked)
-  const itemAgg = {};     // product|size -> rollup row
+  const remaining = {};   // stock-pool key -> units left to allocate (Infinity if untracked)
+  const itemAgg = {};     // stock-pool key -> rollup row
   const orderShort = {};  // order_id -> { order, lines: [...] }
   let totalUnits = 0, shortUnits = 0, untrackedUnits = 0;
 
@@ -198,13 +197,13 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
     totalUnits += need;
     if (!pid) { untrackedUnits += need; return; }
-    const k = keyOf(pid, size);
-    const st = stockByPid[pid];
-    const wh = Number((st?.size_stock || {})[size]) || 0;
-    const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
-    const tracked = !!st && !madeToOrder.has(pid);
+    // Override-aware: a size mapped to a different SKU pools + checks THAT SKU's
+    // stock (lineStock reads inventory_unified for it), not the base product's.
+    const k = lineStockKey(i);
+    const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
+    const wh = ls.ours, ven = ls.vendor, tracked = ls.tracked;
     if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
-    if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
+    if (!itemAgg[k]) itemAgg[k] = { name: ls.name || i.sku || pid, sku: i._effSku || i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: ls.onOrder };
     const row = itemAgg[k];
     row.needed += need;
     const give = Math.min(need, Math.max(0, remaining[k]));
@@ -216,7 +215,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
       shortUnits += short;
       const o = orderById[i.order_id] || {};
       const bucket = orderShort[i.order_id] || (orderShort[i.order_id] = { order: o, lines: [] });
-      bucket.lines.push({ name: row.name, sku: i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
+      bucket.lines.push({ name: row.name, sku: i._effSku || i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
     }
   });
 
@@ -307,7 +306,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
     const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
   });
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const notOrdered = (roster || []).filter((r) => !r.ordered);
@@ -351,17 +350,68 @@ function madeToOrderPids(catalog) {
   return new Set((catalog || []).filter((c) => c.product_id && c.track_inventory === false).map((c) => c.product_id));
 }
 
-function aggStock(lines, stockByPid, madeToOrder = new Set()) {
+// ── Size-level SKU overrides ─────────────────────────────────────────
+// A size mapped to a different item number (catalog size_skus) is sourced as
+// that SKU everywhere: the SO line (batch flow), the availability/stock
+// reports, CSVs and the batch shortfall check. These helpers resolve a line's
+// EFFECTIVE SKU and annotate order lines so every consumer agrees.
+function sizeSkuMapOf(catalog) {
+  const m = {};
+  (catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) m[c.product_id] = c.size_skus; });
+  return m;
+}
+// Annotate lines with _effSku (the SKU production will actually source) and
+// _skuOv (true when it differs from the line's own SKU).
+function annotateEffSkus(lines, skuMap) {
+  return (lines || []).map((i) => {
+    const ov = i.product_id && skuMap[i.product_id] ? String(skuMap[i.product_id][i.size || 'OS'] || '').trim() : '';
+    const eff = ov || i.sku || '';
+    return { ...i, _effSku: eff, _skuOv: !!ov && ov !== (i.sku || '') };
+  });
+}
+// Vendor stock for override SKUs (they have no product row, so the usual
+// product-keyed stock map can't see them). Looks up inventory_unified by SKU →
+// { SKU: { sizes: {size: qty}, eta: bool } }. Best-effort: on error returns {}
+// and overridden lines simply report as untracked rather than wrong.
+async function fetchOverrideSkuStock(lines) {
+  const skus = [...new Set((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku))];
+  if (!skus.length || !supabase) return {};
+  try {
+    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date').in('sku', skus);
+    const out = {};
+    (data || []).forEach((r) => {
+      const e = out[r.sku] || (out[r.sku] = { sizes: {}, eta: false });
+      e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
+      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) e.eta = true;
+    });
+    return out;
+  } catch { return {}; }
+}
+// Stock picture for one line, override-aware: overridden lines read the
+// override SKU's vendor stock (warehouse stock is unknown for a bare SKU → 0);
+// normal lines read the product's stock record as before.
+function lineStock(i, stockByPid, stockBySku, madeToOrder) {
+  const size = i.size || 'OS';
+  if (i._skuOv) {
+    const vst = stockBySku[i._effSku];
+    const base = i.product_id ? stockByPid[i.product_id] : null;
+    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), onOrder: !!(vst && vst.eta), name: base && base.name };
+  }
+  const st = i.product_id ? stockByPid[i.product_id] : null;
+  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+}
+// Aggregation key: overridden sizes pool stock separately from the base SKU.
+const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
+
+function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
-    const k = (pid || i.sku || 'x') + '|' + size;
-    const st = pid ? stockByPid[pid] : null;
+    const k = lineStockKey(i);
+    const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     if (!agg[k]) agg[k] = {
-      name: (st && st.name) || i.name || i.sku || pid, sku: i.sku || '', size, need: 0,
-      ours: Number(((st && st.size_stock) || {})[size]) || 0,
-      vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0,
-      tracked: !!st && !madeToOrder.has(pid), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
+      name: ls.name || i.name || i.sku || pid, sku: i._effSku || i.sku || '', size, need: 0,
+      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, onOrder: ls.onOrder,
     };
     agg[k].need += need;
   });
@@ -376,8 +426,8 @@ function aggStock(lines, stockByPid, madeToOrder = new Set()) {
 // ─── Store-close stock / shortage report ─────────────────────────────
 // "What can we fill from stock, what do we need to order from Adidas, and what
 // is nobody able to supply (backorder)." Vendor-split, not the combined view.
-function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set()) {
-  const rows = aggStock(lines, stockByPid, madeToOrder);
+function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
+  const rows = aggStock(lines, stockByPid, madeToOrder, stockBySku);
   const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
   const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
     .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
@@ -433,7 +483,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
       lineItemKey: i.id, // echoed back on the shipment so the webhook marks the exact line shipped
-      sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
+      sku: i._effSku || i.sku || '', name: [i._effSku || i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
       options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
@@ -2356,74 +2406,81 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, loadDetail]);
 
   // Gather this store's unbatched orders + their stock picture (shared by the
-  // availability report and the batch flow's inventory check).
-  const gatherBatch = useCallback(() => {
+  // availability report and the batch flow's inventory check). Lines are
+  // annotated with the effective SKU (size_skus overrides) and stockBySku
+  // carries vendor stock for the override SKUs, so reports check/show the item
+  // number production will actually source.
+  const gatherBatch = useCallback(async () => {
     const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
     const openIds = new Set(open.map((o) => o.id));
-    const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const skuMap = sizeSkuMapOf(detail?.catalog);
+    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
-    return { open, openIds, lines, stockByPid, orderById };
+    return { open, openIds, lines, stockByPid, stockBySku, orderById };
   }, [detail]);
 
   // Open the printable availability ("FAFO") report for the pending batch.
-  const availabilityReport = useCallback(() => {
+  const availabilityReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { open, lines, stockByPid, orderById } = gatherBatch();
+    const { open, lines, stockByPid, stockBySku, orderById } = await gatherBatch();
     if (!open.length) { flash('No unbatched orders to report'); return; }
-    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog));
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherBatch, flash]);
 
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
   // the player + stock reports (not just the unbatched ones the FAFO report uses).
-  const gatherAll = useCallback(() => {
+  const gatherAll = useCallback(async () => {
     const valid = (detail?.orders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
     const ids = new Set(valid.map((o) => o.id));
-    const lines = (detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent);
+    const skuMap = sizeSkuMapOf(detail?.catalog);
+    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
-    return { valid, lines, stockByPid, orderById, roster: detail?.roster || [] };
+    return { valid, lines, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
   // Per-player roll-up (printable): every player and exactly what they ordered.
-  const playerReport = useCallback(() => {
+  const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, orderById, roster, stockByPid } = gatherAll();
+    const { valid, lines, orderById, roster, stockByPid } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     buildPlayerReport(sel, lines, orderById, roster, stockByPid);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
   // vs backorder, split by vendor.
-  const stockReport = useCallback(() => {
+  const stockReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, stockByPid } = gatherAll();
+    const { valid, lines, stockByPid, stockBySku } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog));
+    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherAll, flash]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
   // 'orders' (every line item with order + payment detail).
-  const exportCsv = useCallback((kind) => {
+  const exportCsv = useCallback(async (kind) => {
     if (!sel || !detail) return;
-    const { lines, orderById, stockByPid } = gatherAll();
+    const { lines, orderById, stockByPid, stockBySku } = await gatherAll();
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
       const header = ['Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
-      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog))
+      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
         .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
       downloadCsv(`${slug}-orders.csv`, header, rows);
     }
   }, [sel, detail, gatherAll, flash]);
@@ -2435,25 +2492,29 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const open = (detail.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded');
     if (!open.length) { flash('No unbatched orders to send'); return; }
     const openIds = new Set(open.map((o) => o.id));
-    const lines = (detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const lines = annotateEffSkus((detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
+    // Override-aware: a size mapped to a different SKU (size_skus) checks THAT
+    // SKU's vendor stock, not the base product's — the SO will source it.
     const stockByPid = {};
     (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
     // produced to demand, so they're never a stock shortfall — same as products with
-    // no stock record (which the `if (!st) return` below already skips).
+    // no stock record.
     const mto = madeToOrderPids(detail.catalog);
     const demand = {};
-    lines.forEach((i) => { if (!i.product_id) return; const k = i.product_id + '|' + (i.size || 'OS'); demand[k] = (demand[k] || 0) + (i.qty || 1); });
+    lines.forEach((i) => { if (!i.product_id) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
     const shortages = [];
-    Object.entries(demand).forEach(([k, q]) => {
-      const [pid, size] = k.split('|'); if (mto.has(pid)) return; const st = stockByPid[pid]; if (!st) return;
-      const wh = Number((st.size_stock || {})[size]) || 0;
-      const ven = Number((st.vendor_size_stock || {})[size]) || 0;
-      const avail = wh + ven;
-      if (q > avail) shortages.push({ pid, size, sku: st.sku || '', label: `${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}` });
+    Object.values(demand).forEach(({ line: i, q }) => {
+      const pid = i.product_id, size = i.size || 'OS';
+      const ls = lineStock(i, stockByPid, stockBySku, mto);
+      if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
+      const avail = ls.ours + ls.vendor;
+      const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
+      if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
     });
     // Everything from here on runs once the user confirms in the modal below.
     // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
@@ -4519,7 +4580,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
-    { id: 'orders', label: `Orders (${orders.length})` },
+    { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
   ];
@@ -10211,10 +10272,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       </table>
     );
   };
-  // Webstore orders + items belonging to one batched SO.
+  // Webstore orders + items belonging to one batched SO. Items carry the
+  // effective SKU (size_skus overrides) so packing lists + ShipStation lines
+  // show the item number production actually sourced.
   const batchGroups = (soId) => {
+    const skuMap = sizeSkuMapOf(catalog);
     const linked = orders.filter((o) => o.so_id === soId);
-    return linked.map((o) => ({ order: o, items: orderItems.filter((i) => i.order_id === o.id) }));
+    return linked.map((o) => ({ order: o, items: annotateEffSkus(orderItems.filter((i) => i.order_id === o.id), skuMap) }));
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
   const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
