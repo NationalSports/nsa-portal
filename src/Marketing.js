@@ -140,6 +140,7 @@ export default function Marketing() {
 
   // Sync state.
   const [syncSection, setSyncSection] = useState(String(CIFCS_SECTIONS[0].id));
+  const [resumeOffset, setResumeOffset] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncProg, setSyncProg] = useState(null);
   const [syncMsg, setSyncMsg] = useState(null);
@@ -233,36 +234,54 @@ export default function Marketing() {
     setSyncErr(null);
     setSyncMsg(null);
     setSyncProg({ processed: 0, total: 0, upserted: 0 });
+    let offset = resumeOffset, total = 0, upserted = 0, schoolsWithData = 0, sectionName = '';
+    let hadError = null;
     try {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) throw new Error('Not signed in');
-      let offset = 0, total = 0, upserted = 0, schoolsWithData = 0, sectionName = '', guard = 0;
-      do {
-        const res = await fetch(`/.netlify/functions/cifcs-sync?section_id=${sectionId}&offset=${offset}`, {
-          method: 'POST',
-          headers: { Authorization: 'Bearer ' + session.access_token },
-        });
-        const j = await res.json();
-        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+      let guard = 0;
+      while (guard < 500) {
+        // Retry a failed batch a few times (the server already retries the origin;
+        // this covers a cold function or a dropped connection) before giving up.
+        let j = null;
+        for (let attempt = 0; attempt < 3 && !j; attempt++) {
+          if (attempt) await new Promise((r) => setTimeout(r, 900 * attempt));
+          try {
+            const res = await fetch(`/.netlify/functions/cifcs-sync?section_id=${sectionId}&offset=${offset}`, {
+              method: 'POST',
+              headers: { Authorization: 'Bearer ' + session.access_token },
+            });
+            const body = await res.json();
+            if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+            j = body;
+          } catch (e) {
+            if (attempt === 2) throw e;
+          }
+        }
         total = j.total;
         sectionName = j.section_name;
         upserted += j.contactsUpserted || 0;
         schoolsWithData += j.schoolsWithData || 0;
-        const processed = Math.min(offset + (j.batch || 0), total);
-        setSyncProg({ processed, total, upserted });
-        offset = j.nextOffset;
+        setSyncProg({ processed: Math.min(offset + (j.batch || 0), total), total, upserted });
         guard++;
-      } while (offset != null && guard < 300);
-      setSyncMsg(`${sectionName}: ${upserted} contact${upserted === 1 ? '' : 's'} synced from ${schoolsWithData} school${schoolsWithData === 1 ? '' : 's'}.`);
-      setSection(String(sectionId));
-      await loadRows();
+        if (j.nextOffset == null) { offset = null; break; }
+        offset = j.nextOffset;
+      }
     } catch (e) {
-      setSyncErr(e.message || String(e));
+      hadError = e.message || String(e);
     } finally {
       setSyncing(false);
       setSyncProg(null);
+      setResumeOffset(hadError ? offset : 0);
+      setSection(String(sectionId));
+      await loadRows();
+      if (hadError) {
+        setSyncErr(`Stopped early (${hadError}). ${upserted} contact${upserted === 1 ? '' : 's'} imported so far — click Resume to continue.`);
+      } else {
+        setSyncMsg(`${sectionName}: ${upserted} contact${upserted === 1 ? '' : 's'} synced from ${schoolsWithData} school${schoolsWithData === 1 ? '' : 's'}.`);
+      }
     }
-  }, [syncSection, loadRows]);
+  }, [syncSection, resumeOffset, loadRows]);
 
   const rowsToCsv = useCallback((list) => {
     const cols = ['section_name', 'school_name', 'role', 'sport', 'first_name', 'last_name', 'email', 'phone', 'ext', 'school_city', 'school_state', 'school_website'];
@@ -372,11 +391,12 @@ export default function Marketing() {
         <div className="mk-card-b">
           <div className="mk-field">
             <label>Section</label>
-            <select className="mk-select" style={{ width: 220 }} value={syncSection} disabled={syncing} onChange={(e) => setSyncSection(e.target.value)}>
+            <select className="mk-select" style={{ width: 220 }} value={syncSection} disabled={syncing}
+              onChange={(e) => { setSyncSection(e.target.value); setResumeOffset(0); setSyncErr(null); setSyncMsg(null); }}>
               {CIFCS_SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
             </select>
           </div>
-          <Btn variant="navy" onClick={runSync} disabled={syncing}>{syncing ? 'Syncing…' : 'Sync from CIFCS'}</Btn>
+          <Btn variant="navy" onClick={runSync} disabled={syncing}>{syncing ? 'Syncing…' : resumeOffset > 0 ? 'Resume sync' : 'Sync from CIFCS'}</Btn>
           {syncProg && (
             <div style={{ flex: '1 1 240px', minWidth: 220 }}>
               <div style={{ fontSize: 11, color: '#5A6075', marginBottom: 4, fontWeight: 600 }}>
