@@ -36,8 +36,10 @@ const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af
 // Wear the team's own colors in the portal header, the way each webstore
 // header is themed by its store colors. customer.school_colors is an array of
 // catalog color-family names (e.g. ["Navy","Orange","White"]); families + hexes
-// match src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js.
-const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// mirror src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js — except
+// Red, which is intentionally the deeper team-brand red here (PMS 200 C, #BA0C2F)
+// rather than the brighter garment-swatch red, so the branded hero reads richer.
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
 // Darkest-first: which team color makes the best deep banner background (white
 // text stays readable). Light/neutral families are intentionally excluded.
 const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
@@ -57,14 +59,25 @@ const cpShade = (hex, pct) => {
 // Resolve a {primary, accent} header theme from a customer's school colors.
 // primary is always a dark, readable banner color (a dark team color or the NSA
 // navy default); accent is the team's brightest color (or a tonal fallback).
-function cpTeamTheme(customer) {
-  const fams = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
-  if (!fams.length) return { ...CP_DEFAULT_THEME };
-  const darkFam = CP_PRIMARY_PREF.find((f) => fams.includes(f));
+function cpTeamTheme(customer, supplement) {
+  const own = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  // Parent-department colors the team doesn't already carry — used to fill the
+  // accent only (e.g. a sub-team borrows the school's gold), never the primary.
+  const sup = Array.isArray(supplement) ? supplement.filter((f) => CP_HEX[f] && !own.includes(f)) : [];
+  if (!own.length && !sup.length) return { ...CP_DEFAULT_THEME };
+  // Primary comes from the team's OWN colors first, so a sub-team keeps its own
+  // banner color; borrow the parent's only when the team has none of its own.
+  const primaryPool = own.length ? own : sup;
+  const darkFam = CP_PRIMARY_PREF.find((f) => primaryPool.includes(f));
   const primary = darkFam ? CP_HEX[darkFam] : CP_DEFAULT_THEME.primary;
-  const accentFam = CP_ACCENT_PREF.find((f) => fams.includes(f) && f !== darkFam)
-    || fams.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
-  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, 45);
+  // Accent from the team's OWN colors first (keep its identity); only borrow the
+  // parent department's colors when the team has no distinct accent of its own.
+  const pickAccent = (pool) => CP_ACCENT_PREF.find((f) => pool.includes(f) && f !== darkFam)
+    || pool.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
+  const accentFam = pickAccent(own) || pickAccent(sup);
+  // No distinct second color anywhere? Deepen the primary for the accent — never
+  // lighten, which would desaturate a warm primary (red) into pink.
+  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, -24);
   return { primary, accent };
 }
 
@@ -309,7 +322,9 @@ const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outl
 
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
-  const [showOrders, setShowOrders] = useState(false);
+  // Player orders lead the store view and open expanded — the coach's main job
+  // here is seeing who ordered; batches & roster setup follow below.
+  const [showOrders, setShowOrders] = useState(true);
   const [openOrder, setOpenOrder] = useState(null);
   const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   // Active orders exclude abandoned pre-payment carts and cancellations.
@@ -365,31 +380,9 @@ function CoachStoreCard({ store: s, d }) {
           <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
         </div>
 
-        {/* Store batches */}
+        {/* Player orders — the primary view: who ordered, sizes, payment & status */}
         <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 8 }}>Production batches</div>
-          {batches.length === 0 ? (
-            <div style={{ fontSize: 13, color: '#64748b' }}>No batches yet{unbatched ? ` — ${unbatched} order${unbatched === 1 ? '' : 's'} waiting to be batched.` : '.'}</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {batches.map((b) => (
-                <div key={b.soId} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', background: '#f8fafc', borderRadius: 8 }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{b.soId}</span>
-                  <span style={{ color: '#64748b' }}>{b.count} order{b.count === 1 ? '' : 's'}</span>
-                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: _cpTone(b.status) }}>{_cpStages[b.status]}</span>
-                </div>
-              ))}
-              {unbatched > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>+ {unbatched} new order{unbatched === 1 ? '' : 's'} not yet batched.</div>}
-            </div>
-          )}
-        </div>
-
-        {/* Roster & player links — set up players, hand out links, track who's ordered */}
-        <CoachRosterManager store={s} initialRoster={d.roster || []} />
-
-        {/* Player orders — collapsible + searchable */}
-        <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
-          <button onClick={() => setShowOrders((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button onClick={() => setShowOrders((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ transform: showOrders ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
             Player orders ({active.length})
           </button>
@@ -430,6 +423,28 @@ function CoachStoreCard({ store: s, d }) {
             </div>
           )}
         </div>
+
+        {/* Store batches */}
+        <div style={{ marginTop: 18, borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
+          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 8 }}>Production batches</div>
+          {batches.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#64748b' }}>No batches yet{unbatched ? ` — ${unbatched} order${unbatched === 1 ? '' : 's'} waiting to be batched.` : '.'}</div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {batches.map((b) => (
+                <div key={b.soId} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', background: '#f8fafc', borderRadius: 8 }}>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{b.soId}</span>
+                  <span style={{ color: '#64748b' }}>{b.count} order{b.count === 1 ? '' : 's'}</span>
+                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: _cpTone(b.status) }}>{_cpStages[b.status]}</span>
+                </div>
+              ))}
+              {unbatched > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>+ {unbatched} new order{unbatched === 1 ? '' : 's'} not yet batched.</div>}
+            </div>
+          )}
+        </div>
+
+        {/* Roster & player links — set up players, hand out links, track who's ordered */}
+        <CoachRosterManager store={s} initialRoster={d.roster || []} />
       </div>
     </div>
   );
@@ -456,7 +471,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
-  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
+  const[page,setPage]=useState('home');// portal nav: home|orders|roster|store|art|billing|shop
+  const[estOpen,setEstOpen]=useState(true);// Orders page: "Estimates to Approve" dropdown open by default
   const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
   const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
@@ -464,9 +480,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
-  const cpTheme=cpTeamTheme(customer);
+  // A sub-team's own colors drive the theme; its parent department's colors only
+  // *supplement* the accent. So "Cross Country" keeps its own banner color but
+  // still borrows the school's gold — which is what stops a red-only team's
+  // accent from falling back to a lightened tint that reads pink.
+  const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
+  const cpTheme=cpTeamTheme(customer,_parentCust&&_parentCust.school_colors);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
-  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
+  const _hasFam=cols=>Array.isArray(cols)&&cols.some(f=>CP_HEX[f]);
+  const _nsaHasColors=_hasFam(customer.school_colors)||(!!_parentCust&&_hasFam(_parentCust.school_colors));
   const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
   const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
   const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
@@ -477,7 +499,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
   // Logo: use own logo_url, fall back to parent's logo if sub has none set
-  const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
+  // (_parentCust is resolved above with the theme colors).
   const cpLogo=customer.logo_url||(_parentCust&&_parentCust.logo_url)||null;
   // ── Team store presence — drives the conditional "Team Store" nav tab. Lightweight
   // top-level lookup (the full per-store tracking is fetched by <CoachStore/> when the
@@ -614,6 +636,55 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // Mark job art approvals as viewed when coach opens portal
     const jobSOs=custSOs.filter(s=>safeJobs(s).some(j=>j.sent_to_coach_at&&!j.coach_email_opened_at));
     if(jobSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>{if(!jobSOs.some(js=>js.id===s.id))return s;const updJobs=safeJobs(s).map(j=>j.sent_to_coach_at&&!j.coach_email_opened_at?{...j,coach_email_opened_at:new Date().toISOString()}:j);return{...s,jobs:updJobs,updated_at:now}}));
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── In-portal Back button ─────────────────────────────────────────────
+  // Coaches move around with the menu; a stray browser Back would otherwise
+  // drop them out of the portal. Trap Back so it steps back through the portal
+  // — close an open estimate/order/detail, then return to the previous page,
+  // then Home — only releasing to the browser once we're at Home with nothing
+  // open. History state carries no URL change, so the ?portal= param is kept.
+  const _cpNavStack=useRef([]);      // pages visited before the current one
+  const _cpFromBack=useRef(false);   // set while applying a Back, so it isn't re-recorded
+  const _cpBackRef=useRef(()=>false);
+  _cpBackRef.current=()=>{
+    // 1) close the top-most open detail / overlay
+    if(lightbox){setLightbox(null);return true;}
+    if(showPay){setShowPay(null);setPayLoading(false);return true;}
+    if(contactEdit){setContactEdit(null);return true;}
+    if(estView){setEstView(null);return true;}
+    if(jobView){setJobView(null);return true;} // artwork proof → back to its order detail (soView stays)
+    if(soView){setSoView(null);return true;}   // order detail → back to the page
+    if(invView){setInvView(null);return true;}
+    if(artView){setArtView(null);return true;}
+    if(spendView){setSpendView(false);return true;}
+    if(storeBuilder){setStoreBuilder(false);return true;}
+    // 2) step back to the previous page, else Home
+    if(_cpNavStack.current.length){_cpFromBack.current=true;setPage(_cpNavStack.current.pop());return true;}
+    if(page!=='home'){_cpFromBack.current=true;setPage('home');return true;}
+    return false;                    // 3) at Home, nothing open — let the browser leave
+  };
+  // Record forward page changes so Back can retrace them.
+  const _cpPrevPage=useRef(page);
+  useEffect(()=>{
+    if(_cpPrevPage.current!==page){
+      if(_cpFromBack.current)_cpFromBack.current=false; // change came from Back — don't record
+      else _cpNavStack.current.push(_cpPrevPage.current);
+      _cpPrevPage.current=page;
+    }
+  },[page]);
+  // Seed a history buffer on mount and translate Back presses. The seed is
+  // guarded by a ref so StrictMode's double-invoke (and any remount) pushes it
+  // only once — otherwise an orphan entry makes the first Back from Home a no-op.
+  const _cpHistSeeded=useRef(false);
+  useEffect(()=>{
+    if(!_cpHistSeeded.current){_cpHistSeeded.current=true;try{window.history.pushState({nsaPortal:1},'');}catch{}}
+    const onPop=()=>{
+      if(_cpBackRef.current()){try{window.history.pushState({nsaPortal:1},'');}catch{}} // handled — re-arm the buffer
+      else{window.removeEventListener('popstate',onPop);try{window.history.back();}catch{}} // nothing left — actually leave
+    };
+    window.addEventListener('popstate',onPop);
+    return ()=>window.removeEventListener('popstate',onPop);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePaymentSuccess=(result)=>{
@@ -1520,7 +1591,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,marginBottom:26,flexWrap:'wrap'}}>
           <div>
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:2,textTransform:'uppercase',color:tAccent,marginBottom:8}}>Athletic Department</div>
-            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>Spend &amp; Promo</h1>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>{hasPromo?'Spend & Promo':'Spend Report'}</h1>
             <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',margin:'12px 0 10px'}}/>
             <div style={{fontSize:15,color:'#64748b'}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
           </div>
@@ -1613,13 +1684,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const cpNav=[
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
-    {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
     ...(hasRoster?[{key:'roster',label:'Roster',icon:'📋'}]:[]),
     ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
     {key:'shop',label:'Shop',icon:'🛍️'},
-    ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
+    ...(adData?[{key:'spend',label:adData.hasPromo?'Spend & Promo':'Spend',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
   ];
   // Reorder a saved design through Live Look — deep-links the catalog with the artwork so the
   // coach picks gear and the design rides along to the rep on the order request.
@@ -1629,7 +1699,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   // ── NSA nav (design tokens are hoisted to the top of the component) ──
-  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
   const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
@@ -1676,7 +1746,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary}}>{customer.name}</div>
             <div style={{fontSize:11,color:'#5A6075'}}>{(customer.contacts||[])[0]?.name||'Coach'}</div>
           </div>
-          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:customer.logo_url?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
+          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:cpLogo?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
         </div>
       </div>
     </div>
@@ -1719,13 +1789,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Quick Access ── */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary,margin:'8px 0 16px'}}>Quick Access</div>
           <div className="nsa-qa">
-            {(()=>{const qa=[
+            {(()=>{
+              // Surface an open team store right on the dashboard — a live store is
+              // time-sensitive (it closes), so it earns a tile, not just the nav tab.
+              const _openStore=cpStores.find(s=>s.status==='open');
+              const _storeClose=_openStore&&_openStore.close_at?new Date(_openStore.close_at).toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'}):'';
+              const qa=[
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
-              {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
+              {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0,onClick:()=>setPage('orders')},
+              ...(hasStore?[{k:'store',t:'Team Store',sub:openStoreCount>0?('Open now'+(_storeClose?' · closes '+_storeClose:'')):'View store',icon:'🛒',accent:true,sa:openStoreCount>0}]:[]),
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
               {k:'shop',t:'Catalogs',sub:'Browse the team store',icon:'🛍️',accent:false},
-              ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
+              ...(adData?[{k:'spend',t:adData.hasPromo?'Promo & Spend':'Spend Report',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
               <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
@@ -1743,7 +1819,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
-                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
+                <button onClick={()=>setPage('orders')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
               </div>
               {openE.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>You're all caught up — nothing waiting.</div>:
                openE.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
@@ -1982,6 +2058,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const _tfEst=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
           const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tfEst(e));
           if(isP)openEsts.sort(_teamSort);
+          // Approved-but-not-yet-converted estimates stay visible here (read-only)
+          // so they don't vanish between the coach approving and the rep turning
+          // them into an order — this panel is the only place estimates now live.
+          const approvedEsts=custEsts.filter(e=>e.status==='approved'&&_tfEst(e));
+          if(isP)approvedEsts.sort(_teamSort);
           let rows=[...activeSOs,...completedSOs];
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
@@ -1995,17 +2076,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
               {isP&&_teamSelect}
             </div>
-            {/* ── Estimates to Approve — inline panel (new design) ── */}
-            {openEsts.length>0&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:'1px solid #EEF1F6',background:'#FAFBFC'}}>
-                <div style={{display:'flex',alignItems:'center',gap:10}}>
-                  <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13}}>{openEsts.length}</span>
-                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
-                  <span style={{fontSize:13,color:'#5A6075'}}>— approve to start production</span>
-                </div>
-                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>View all →</button>
-              </div>
-              {openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+            {/* ── Estimates — always present in the Orders section as a dropdown; lists
+                open (to-approve) first, then approved-awaiting-conversion estimates. ── */}
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+              <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
+                <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                  {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
+                  <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>{openEsts.length>0?'Estimates to Approve':'Estimates'}</span>
+                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{openEsts.length>0?'— approve to start production':approvedEsts.length>0?'— approved, awaiting your rep':'— your rep posts quotes here'}</span>
+                </span>
+                <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>{estOpen?'Hide':'Show'}<span style={{fontSize:12}}>{estOpen?'▾':'▸'}</span></span>
+              </button>
+              {estOpen&&openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
                 return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
                   <div style={{minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
@@ -2016,7 +2098,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
                   </div>
                 </div>})}
-            </div>}
+              {estOpen&&approvedEsts.length>0&&openEsts.length>0&&<div style={{padding:'11px 22px 5px',fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'.5px',color:'#94A0B0',background:'#FAFBFC',borderBottom:'1px solid #EEF1F6'}}>Approved — awaiting your rep</div>}
+              {estOpen&&approvedEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''} · {est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
+                  </div>
+                </div>})}
+              {estOpen&&openEsts.length===0&&approvedEsts.length===0&&<div style={{padding:'18px 22px',color:'#5A6075',fontSize:13}}>No estimates right now — your rep posts quotes here for you to review &amp; approve.</div>}
+            </div>
             {/* ── Order History table ── */}
             <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
             {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
