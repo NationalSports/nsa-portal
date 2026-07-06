@@ -1492,7 +1492,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         display_name: (p.name || p.sku || 'Item').trim(), image_url: p.image_url || null,
         retail_price: Number(p.retail) || 0, sizes_offered: Object.keys(p.sizes || {}).length ? Object.keys(p.sizes || {}) : null,
         sort_order: i, active: true,
-        ...(pendingArtId ? { decorations: [{ art_id: pendingArtId, side: 'front' }] } : {}),
+        // Items come in with NO art linked. The old behavior blanket-stamped every item with the
+        // placeholder team-art record, so the whole store read "Applied" before the rep chose
+        // anything. Art is now applied deliberately in the Art tab (incl. "Bypass mocks" for OMG
+        // stores whose images already show the decoration).
       }));
       const { error: pErr } = await supabase.from('webstore_products').insert(rows);
       if (pErr) { flash('Store created but items failed to add: ' + pErr.message); omgResetStaged(); await openStore(newStore); return; }
@@ -5690,7 +5693,7 @@ const decoUrlForColor = (deco, colorName, webLogos) => {
 // logo) applied. Mirrors the LogoPlacer hero-canvas math (x/y center %, w = width %).
 function GarmentLogoPreview({ imageUrl, decorations = [], colorName, library = [] }) {
   const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
-  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
+  const front = (decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
       {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
@@ -9157,8 +9160,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const endDrag = (e) => { const d = dragRef.current; if (d && d.box) { try { d.box.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ } } dragRef.current = null; };
   const clearNudge = (id) => { setPlaceByItem((m) => { const n = { ...m }; delete n[id]; return n; }); if (nudgeItem === id) setNudgeItem(null); };
 
-  const apply = async () => {
-    if (!activeArt || !activeUrl || !includedItems.length) return;
+  // linkOnly = "Bypass mocks": record the art on each selected item (art_id + placement +
+  // method) but with NO art_url and baked:true — so neither this grid nor the storefront
+  // composites a logo over the (already-decorated) product image, while the store→SO handoff
+  // still carries the art to production. Used for OMG stores whose images already show the art.
+  const apply = async ({ linkOnly = false } = {}) => {
+    if (!activeArt || (!linkOnly && !activeUrl) || !includedItems.length) return;
     setApplying(true); setDone('');
     try {
       const custId = activeArt._srcCustId;
@@ -9177,15 +9184,17 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         return url;
       };
       const source_url = artSourceUrl(activeArt);
+      const deco_type = activeArt.deco_type || null;
       const entries = [];
       for (const g of selectedGroups) {
         // Resolve every color's pick once, and build the per-color map (Decision-2 shape:
         // {url, color_way_id}) that rides on EVERY row of the style — decorations are
         // card-level on the storefront/item editor, so each row must be able to resolve
         // any sibling color, and the SO handoff reads the CW id straight from this map.
+        // Link-only skips all of this: no image is placed, so there's no recolor/upload work.
         const resolvedById = {};
         const cwMap = {};
-        for (const it of g.items) {
+        if (!linkOnly) for (const it of g.items) {
           const pick = pickFor(it);
           let r;
           if (pick.kind === 'variant') r = { url: pick.url, label: pick.label || 'variant', cwId: pick.colorWayId || null };
@@ -9200,6 +9209,14 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         for (const it of g.items) {
           const r = resolvedById[it.id];
           const mk = (side, pl) => {
+            if (linkOnly) {
+              // Art linked, image untouched: art_id + placement + method, baked:true so no
+              // overlay renders anywhere; color_label keeps the intended logo color for production.
+              const pk = pickFor(it);
+              const d = { art_id: activeArt.id, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, baked: true, color_label: pk.kind === 'variant' ? (pk.label || 'variant') : pk.choice };
+              if (deco_type) d.deco_type = deco_type;
+              return d;
+            }
             const d = { art_id: activeArt.id, source_url, orig_url: activeUrl, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, art_url: r.url, color_label: r.label };
             if (r.cwId) d.color_way_id = r.cwId;
             if (multi) d.cw_by_color = cwMap;
@@ -9226,7 +9243,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         }
         onSavePlacementMemory(memPatch);
       }
-      setDone(n > 0 ? `Applied to ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}.` : 'Error: nothing was applied — please retry.');
+      setDone(n > 0 ? `${linkOnly ? 'Linked art to' : 'Applied to'} ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}${linkOnly ? ' — image unchanged, no mockup.' : '.'}` : 'Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
@@ -9377,7 +9394,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
-                {(item.decorations || []).filter((d) => d && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = ((storeArt || []).find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = ((storeArt || []).find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
                 {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
                 {activeUrl && selG && bgImg && (
                   <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
@@ -9442,7 +9459,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
             <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={apply}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply'}</button>
+            <button className="btn btn-secondary" disabled={applying || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
+            <button className="btn btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply'}</button>
           </div>
         </div></div>
       ))}
