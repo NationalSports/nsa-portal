@@ -10,7 +10,7 @@ import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from '
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos } from './businessLogic';
-import { autoColorChoice, resolveItemPlacement, garmentTypeOf } from './lib/artGrid';
+import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex } from './lib/artGrid';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -8796,6 +8796,21 @@ const artThumbUrl = (art) => {
   const cands = [webLogoDefault(art), art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
   return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
 };
+// Background for a logo THUMBNAIL so a transparent cutout stays visible wherever it's shown
+// (a white logo washes out on a near-white card). Prefer the garment color(s) the shown
+// cutout covers — a white logo on its dark garment reads perfectly — falling back to a soft
+// transparency checker (light + medium gray) that reveals both light- and dark-ink logos
+// when the cutout has no color assigned yet.
+const LOGO_THUMB_CHECKER = 'repeating-conic-gradient(#94a3b8 0 25%, #e2e8f0 0 50%) 50% / 14px 14px';
+const logoThumbBg = (art, thumbUrl) => {
+  const wls = Array.isArray(art && art.web_logos) ? art.web_logos : [];
+  const forUrl = thumbUrl ? wls.filter((w) => w && w.url === thumbUrl) : [];
+  const src = forUrl.length ? forUrl : wls;
+  const labels = [...new Set(src.map((w) => ((w && w.color_way) || '').trim()).filter(Boolean))];
+  if (!labels.length) return LOGO_THUMB_CHECKER;
+  const cols = labels.map(garmentHex);
+  return cols.length === 1 ? cols[0] : ('linear-gradient(135deg, ' + cols[0] + ' 0 50%, ' + cols[1] + ' 50% 100%)');
+};
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
 // Clean cutout for PLACING art on a garment — a real logo, never a full-garment mockup
 // (recoloring an opaque mockup to white is exactly what produced the "white box"). Prefers
@@ -9305,7 +9320,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           {storeArt.map((a) => { const u = artThumbUrl(a); const on = a.id === activeId; return (
             <div key={a.id} style={{ position: 'relative', flex: '0 0 auto', width: 96 }}>
               <button onClick={() => setActiveId(a.id)} title={a.name} style={{ width: 96, border: on ? '2px solid #191919' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: u ? logoThumbBg(a, u) : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: u ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
                   {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
@@ -9322,7 +9337,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
             {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); return (
               <div key={a.id} style={{ position: 'relative' }}>
                 <button onClick={() => toggleStoreArt(a)} title={a.name} style={{ position: 'relative', width: '100%', border: sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: u ? logoThumbBg(a, u) : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: u ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
                     {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9.5, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 3px' }}>{(a.files || [])[0] ? 'AI — add web logo' : 'Add web logo'}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
