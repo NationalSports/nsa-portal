@@ -13,6 +13,46 @@ import { normalizeWebLogos } from '../businessLogic';
 export const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly', 'olive', 'crimson', 'cardinal'];
 export const guessDarkColor = (name) => { const s = String(name || '').toLowerCase(); return DARK_WORDS.some((w) => s.includes(w)); };
 
+// Common apparel color names → a representative swatch hex, so a web-logo card can preview
+// its cutout on the garment color it covers (a white cutout must sit on a dark swatch to
+// read; a dark cutout on a light one). Mirrors the palette in QuickMockBuilder. Unknown
+// names fall back to the brightness guess, so every color still gets a legible background.
+const GARMENT_HEX = {
+  black: '#111827', white: '#ffffff', navy: '#1f2a44', 'navy blue': '#1f2a44',
+  royal: '#1d4ed8', 'royal blue': '#1d4ed8', red: '#dc2626', maroon: '#7f1d1d',
+  cardinal: '#9b1c31', scarlet: '#c8102e', burgundy: '#7b1e3b', forest: '#14532d',
+  'forest green': '#14532d', green: '#16a34a', kelly: '#16a34a', 'kelly green': '#16a34a',
+  lime: '#84cc16', 'safety green': '#c6ff00', 'neon green': '#39ff14', gold: '#d4af37',
+  'old gold': '#caa53d', 'vegas gold': '#c5b358', yellow: '#facc15', orange: '#ea580c',
+  purple: '#7c3aed', grey: '#9ca3af', gray: '#9ca3af', 'heather grey': '#b6bcc4',
+  'heather gray': '#b6bcc4', 'athletic heather': '#cbd5e1', charcoal: '#374151',
+  graphite: '#3a3f45', silver: '#cbd5e1', pink: '#ec4899', 'light blue': '#7dd3fc',
+  'carolina blue': '#4b9cd3', 'columbia blue': '#9bcbeb', teal: '#14b8a6', brown: '#5c4033',
+  tan: '#d2b48c', natural: '#f0ead6', cream: '#fffdd0', sand: '#e0d3af', ash: '#e6e8ea',
+  midnight: '#0b1220', hunter: '#14532d', olive: '#556b2f', crimson: '#a11221',
+};
+// Look up a garment-color hex: exact name, else any word in it ("Heather Charcoal" →
+// charcoal), else null so the caller can fall back by brightness.
+const _garmentHexOf = (name) => {
+  const key = String(name || '').trim().toLowerCase();
+  if (!key) return null;
+  if (GARMENT_HEX[key]) return GARMENT_HEX[key];
+  for (const w of key.split(/[^a-z0-9]+/).filter(Boolean)) { if (GARMENT_HEX[w]) return GARMENT_HEX[w]; }
+  return null;
+};
+// Background hex for a garment color — known swatch, else a neutral dark/light by brightness.
+export function garmentHex(name) {
+  return _garmentHexOf(name) || (guessDarkColor(name) ? '#1f2937' : '#e5e7eb');
+}
+// Is a garment color dark enough to want a light (white) logo? Uses the swatch luminance
+// when the color is known — so "Red" and "Grey" bucket correctly (word lists miss those) —
+// and falls back to the word heuristic for names with no swatch.
+const _lum = (hex) => { const m = String(hex || '').replace('#', '').match(/.{2}/g); if (!m) return 128; const [r, g, b] = m.map((x) => parseInt(x, 16)); return 0.299 * r + 0.587 * g + 0.114 * b; };
+export function garmentIsDark(name) {
+  const hx = _garmentHexOf(name);
+  return hx ? _lum(hx) < 130 : guessDarkColor(name);
+}
+
 const _words = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
 
 // Decide how to color the logo for one garment color:

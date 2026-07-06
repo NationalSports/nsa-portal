@@ -4,6 +4,7 @@ import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesSt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
+import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
@@ -11,25 +12,44 @@ import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
 
-// Multi-select color-way picker — tie ONE web-logo cutout to any number of color ways
-// (reuse without re-uploading the same file per CW), plus an "all garments" default.
+// Multi-select garment-color picker — tie ONE web-logo cutout to any number of garment
+// colors (reuse without re-uploading the same file per color). Colors come from the art's
+// color ways, but you can also type any color that isn't listed yet, and "All dark / All
+// light" quick-check the rows by garment brightness. Plus an "all garments" default.
 function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onApply,onClose}){
   const _norm=(s)=>String(s||'').trim().toLowerCase();
-  const names=(cws||[]).map((cw,ci)=>cw.garment_color||('Color way '+(ci+1)));
+  const baseNames=(cws||[]).map((cw,ci)=>cw.garment_color||('Color way '+(ci+1)));
+  const _baseSet=new Set(baseNames.map(_norm));
+  // Already-covered colors that aren't one of the art's color ways (typed-in earlier) show
+  // as first-class rows too, so they can be seen and unchecked.
+  const [extras,setExtras]=useState(()=>[...new Set((initialNames||[]).filter(n=>n&&!_baseSet.has(_norm(n))))]);
   const [checked,setChecked]=useState(()=>new Set((initialNames||[]).map(_norm)));
   const [def,setDef]=useState(!!initialDefault);
+  const [typed,setTyped]=useState('');
+  const allNames=[...baseNames,...extras];
   const toggle=(nm)=>setChecked(s=>{const n=new Set(s);const k=_norm(nm);n.has(k)?n.delete(k):n.add(k);return n});
-  const count=[...checked].filter(k=>names.some(nm=>_norm(nm)===k)).length+(def?1:0);
-  const apply=()=>onApply&&onApply(names.filter(nm=>checked.has(_norm(nm))),def);
+  const addTyped=()=>{const n=typed.trim();if(!n)return;const k=_norm(n);if(!allNames.some(x=>_norm(x)===k))setExtras(e=>[...e,n]);setChecked(s=>new Set(s).add(k));setTyped('')};
+  const bucket=(dark)=>setChecked(s=>{const n=new Set(s);allNames.forEach(nm=>{if(garmentIsDark(nm)===dark)n.add(_norm(nm))});return n});
+  const count=[...checked].filter(k=>allNames.some(nm=>_norm(nm)===k)).length+(def?1:0);
+  const apply=()=>onApply&&onApply(allNames.filter(nm=>checked.has(_norm(nm))),def);
+  const Swatch=({nm})=><span style={{width:16,height:16,borderRadius:'50%',background:garmentHex(nm),border:'1px solid rgba(0,0,0,.25)',flexShrink:0,display:'inline-block'}}/>;
   return <div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();onClose&&onClose()}}>
     <div className="modal" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
-      <div className="modal-header"><h2 style={{fontSize:16}}>{title||'Color ways'}</h2><button className="modal-close" onClick={()=>onClose&&onClose()}>x</button></div>
+      <div className="modal-header"><h2 style={{fontSize:16}}>{title||'Garment colors'}</h2><button className="modal-close" onClick={()=>onClose&&onClose()}>x</button></div>
       <div className="modal-body">
-        <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Tie this one cutout to every color way it fits — no need to re-upload it per color way.</div>
+        <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Pick every garment color this one cutout goes on — no need to re-upload it per color.</div>
+        {allNames.length>1&&<div style={{display:'flex',gap:6,marginBottom:8}}>
+          <button type="button" onClick={()=>bucket(true)} title="Check every dark garment color" style={{flex:1,fontSize:11,fontWeight:700,color:'#334155',background:'#f1f5f9',border:'1px solid #e2e8f0',borderRadius:7,padding:'6px 8px',cursor:'pointer'}}>✓ All dark</button>
+          <button type="button" onClick={()=>bucket(false)} title="Check every light garment color" style={{flex:1,fontSize:11,fontWeight:700,color:'#334155',background:'#f1f5f9',border:'1px solid #e2e8f0',borderRadius:7,padding:'6px 8px',cursor:'pointer'}}>✓ All light</button>
+        </div>}
         <label style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(def?'#c7d2fe':'#e2e8f0'),background:def?'#eef2ff':'#fff',borderRadius:8,marginBottom:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569'}}><input type="checkbox" checked={def} onChange={()=>setDef(v=>!v)} style={{width:16,height:16,cursor:'pointer'}}/>All garments <span style={{fontSize:11,fontWeight:500,color:'#94a3b8'}}>(default fallback)</span></label>
-        <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'44vh',overflowY:'auto'}}>
-          {names.map((nm,ci)=>{const on=checked.has(_norm(nm));return <label key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(on?'#c7d2fe':'#e2e8f0'),borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#1e293b',background:on?'#eef2ff':'#fff'}}><input type="checkbox" checked={on} onChange={()=>toggle(nm)} style={{width:16,height:16,cursor:'pointer'}}/><span style={{fontSize:10,fontWeight:700,color:'#fff',background:'#64748b',borderRadius:5,padding:'1px 6px',flexShrink:0}}>CW {ci+1}</span>{nm}</label>;})}
-          {!names.length&&<div style={{fontSize:12,color:'#94a3b8',padding:'8px 2px'}}>No color ways yet — add them in the Color Ways section above, or just use “All garments”.</div>}
+        <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'40vh',overflowY:'auto'}}>
+          {allNames.map((nm,ci)=>{const on=checked.has(_norm(nm));return <label key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(on?'#c7d2fe':'#e2e8f0'),borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#1e293b',background:on?'#eef2ff':'#fff'}}><input type="checkbox" checked={on} onChange={()=>toggle(nm)} style={{width:16,height:16,cursor:'pointer'}}/><Swatch nm={nm}/>{nm}</label>;})}
+          {!allNames.length&&<div style={{fontSize:12,color:'#94a3b8',padding:'8px 2px'}}>No garment colors yet — type one below, or just use “All garments”.</div>}
+        </div>
+        <div style={{display:'flex',gap:6,marginTop:8}}>
+          <input value={typed} onChange={e=>setTyped(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addTyped()}}} placeholder="Add a garment color (e.g. Forest)…" style={{flex:1,minWidth:0,fontSize:12.5,border:'1px solid #e2e8f0',borderRadius:7,padding:'7px 9px',outline:'none'}}/>
+          <button type="button" onClick={addTyped} disabled={!typed.trim()} style={{fontSize:12,fontWeight:700,color:typed.trim()?'#2563eb':'#94a3b8',background:typed.trim()?'#eff6ff':'#f1f5f9',border:'1px solid '+(typed.trim()?'#bfdbfe':'#e2e8f0'),borderRadius:7,padding:'0 12px',cursor:typed.trim()?'pointer':'default'}}>Add</button>
         </div>
       </div>
       <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}>
@@ -1166,7 +1186,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       saveWebLogos([...others,...entries]);
     };
     // Open the multi-CW picker for an existing cutout, pre-checked with what it already covers.
-    const openAssign=(g)=>setCwPrompt({title:'Color ways this web logo covers',multi:true,initialNames:g.labels,initialDefault:g.isDefault,onPickMany:(names,asDefault)=>{setUrlCws(g.url,names,asDefault);setCwPrompt(null)}});
+    const openAssign=(g)=>setCwPrompt({title:'Garment colors this logo covers',multi:true,initialNames:g.labels,initialDefault:g.isDefault,onPickMany:(names,asDefault)=>{setUrlCws(g.url,names,asDefault);setCwPrompt(null)}});
     const addWebLogoFile=async(file)=>{
       if(!file)return;
       const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
@@ -1175,7 +1195,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
       // One cutout can cover several color ways — pick any number (pre-checked with the CWs
       // still missing a logo), or "All garments". Reuse means no re-uploading per CW.
-      setCwPrompt({title:'Which color ways is this web logo for?',multi:true,initialNames:_missingCws,onPickMany:(names,asDefault)=>{setUrlCws(url,names,asDefault);setCwPrompt(null);const cnt=(names||[]).length+(asDefault?1:0);nf&&nf('Web logo added'+(cnt?(' — covers '+cnt+' color way'+(cnt===1?'':'s')):''))}});
+      setCwPrompt({title:'Which garment colors is this logo for?',multi:true,initialNames:_missingCws,onPickMany:(names,asDefault)=>{setUrlCws(url,names,asDefault);setCwPrompt(null);const cnt=(names||[]).length+(asDefault?1:0);nf&&nf('Web logo added'+(cnt?(' — covers '+cnt+' color'+(cnt===1?'':'s')):''))}});
     };
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
     // Add a web logo straight to a named color way (the per-CW empty-slot path) — no
@@ -1250,7 +1270,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logos <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG per color way — placed on webstore garments</span></div>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logos <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG per garment color — placed on webstore garments</span></div>
             {saveArt&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickWebLogoAdd}><Icon name="plus" size={11}/> Add web logo</button>}
           </div>
           {/* Coverage nudge — flag color ways with no web PNG (cleanest webstore + order mockups). */}
@@ -1262,8 +1282,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>}
           {_byUrl.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(190px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
-            {_byUrl.map((g)=><div key={g.url} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
-              <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:'#f0fdf4',position:'relative'}}>
+            {_byUrl.map((g)=>{const _cols=(g.labels||[]).map(garmentHex);const _cardBg=!_cols.length?'repeating-conic-gradient(#eef2f7 0 25%, #ffffff 0 50%) 50% / 16px 16px':_cols.length===1?_cols[0]:('linear-gradient(135deg, '+_cols[0]+' 0 50%, '+_cols[1]+' 50% 100%)');return <div key={g.url} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
+              <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:_cardBg,position:'relative',boxShadow:'inset 0 0 0 1px rgba(0,0,0,.06)'}}>
                 <img src={g.url} alt="" style={{maxWidth:'82%',maxHeight:'82%',objectFit:'contain'}}/>
                 {g.repMade&&<span title="Made by a rep (recolored) — an artist can replace it with a cleaner cutout" style={{position:'absolute',top:4,left:4,fontSize:8.5,fontWeight:800,color:'#92400e',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:5,padding:'1px 5px'}}>REP</span>}
                 {saveArt&&<button onClick={()=>saveWebLogos(webLogos.filter(w=>w.url!==g.url))} title="Remove this cutout" style={{position:'absolute',top:4,right:4,width:20,height:20,borderRadius:10,border:'none',background:'rgba(220,38,38,0.9)',color:'#fff',cursor:'pointer',fontSize:12,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
@@ -1273,12 +1293,12 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                   <div style={{fontSize:8.5,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,color:'#94a3b8',marginBottom:4}}>Covers</div>
                   <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
                     {g.isDefault&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}>All garments<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.is_default||!((w.color_way||'').trim())))))} title="Stop using as the default" style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>}
-                    {g.labels.map(lbl=><span key={lbl} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}>{lbl}<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.color_way||'').trim().toLowerCase()===lbl.toLowerCase())))} title={'Stop covering '+lbl} style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>)}
-                    <button onClick={()=>openAssign(g)} title="Tie this cutout to more color ways" style={{fontSize:10,fontWeight:700,color:'#2563eb',background:'#eff6ff',border:'1px dashed #bfdbfe',borderRadius:6,padding:'2px 6px',cursor:'pointer'}}>+ color way</button>
+                    {g.labels.map(lbl=><span key={lbl} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}><span style={{width:9,height:9,borderRadius:'50%',background:garmentHex(lbl),border:'1px solid rgba(0,0,0,.2)',flexShrink:0}}/>{lbl}<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.color_way||'').trim().toLowerCase()===lbl.toLowerCase())))} title={'Stop covering '+lbl} style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>)}
+                    <button onClick={()=>openAssign(g)} title="Add more garment colors this cutout covers" style={{fontSize:10,fontWeight:700,color:'#2563eb',background:'#eff6ff',border:'1px dashed #bfdbfe',borderRadius:6,padding:'2px 6px',cursor:'pointer'}}>+ color</button>
                   </div>
                 </>:<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{[...(g.isDefault?['All garments']:[]),...g.labels].join(', ')||'All garments'}</div>}
               </div>
-            </div>)}
+            </div>;})}
           </div>}
           {/* One empty slot per color way still missing a web logo — uploading pre-tags that CW. */}
           {saveArt&&_missingCws.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:8}}>
@@ -1290,7 +1310,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{height:84,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,color:'#94a3b8'}}>
                 <Icon name="plus" size={18}/><span style={{fontSize:10,fontWeight:600}}>Add web PNG</span>
               </div>
-              <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</div>
+              <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',display:'flex',alignItems:'center',gap:5,overflow:'hidden'}}><span style={{width:11,height:11,borderRadius:'50%',background:garmentHex(nm),border:'1px solid rgba(0,0,0,.2)',flexShrink:0}}/><span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</span></div>
             </div>)}
           </div>}
           {saveArt?<div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
