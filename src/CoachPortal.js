@@ -2058,6 +2058,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const _tfEst=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
           const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tfEst(e));
           if(isP)openEsts.sort(_teamSort);
+          // Approved-but-not-yet-converted estimates stay visible here (read-only)
+          // so they don't vanish between the coach approving and the rep turning
+          // them into an order — this panel is the only place estimates now live.
+          const approvedEsts=custEsts.filter(e=>e.status==='approved'&&_tfEst(e));
+          if(isP)approvedEsts.sort(_teamSort);
           let rows=[...activeSOs,...completedSOs];
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
@@ -2072,12 +2077,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {isP&&_teamSelect}
             </div>
             {/* ── Estimates to Approve — inline panel (new design) ── */}
-            {openEsts.length>0&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+            {(openEsts.length>0||approvedEsts.length>0)&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
               <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
                 <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
-                  <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>
-                  <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</span>
-                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>— approve to start production</span>
+                  {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
+                  <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>{openEsts.length>0?'Estimates to Approve':'Estimates'}</span>
+                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{openEsts.length>0?'— approve to start production':'— approved, awaiting your rep'}</span>
                 </span>
                 <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>{estOpen?'Hide':'Show'}<span style={{fontSize:12}}>{estOpen?'▾':'▸'}</span></span>
               </button>
@@ -2090,6 +2095,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
                     <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                     <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                  </div>
+                </div>})}
+              {estOpen&&approvedEsts.length>0&&openEsts.length>0&&<div style={{padding:'11px 22px 5px',fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'.5px',color:'#94A0B0',background:'#FAFBFC',borderBottom:'1px solid #EEF1F6'}}>Approved — awaiting your rep</div>}
+              {estOpen&&approvedEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''} · {est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
                   </div>
                 </div>})}
             </div>}
