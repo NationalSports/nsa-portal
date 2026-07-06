@@ -182,6 +182,27 @@ const TEMPLATES = {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
   },
+  // Sahrul's NEW base (CLO3D → optimized GLB, 45MB raw → ~2MB: topstitch + flat
+  // pattern pieces stripped, panels renamed to our zones, Draco-compressed). Real
+  // baked fabric normal + set-in sleeves. 3D preview is native; the 2D proof reuses
+  // the octa flat art as a placeholder until Sahrul ships flat front/back + mask.
+  nsapro_jersey: {
+    id: 'nsapro_jersey', name: 'NSA Pro (New Base)', category: 'Photoreal', type: 'raster',
+    credit: 'Base garment by Sahrul (CLO3D)',
+    model3d: PUB('/uniform/nsapro-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.33, y: 0.2, size: 88 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
   // Built-in photoreal jersey: a neutral 3D render + zone mask (front/back) shipped
   // in /public/uniform, so the Photoreal path works out-of-the-box with no import.
   // Colors/patterns/logos tint through the base's real folds and shadows.

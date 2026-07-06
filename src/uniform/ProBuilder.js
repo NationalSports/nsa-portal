@@ -223,6 +223,9 @@ const PROGRAM_GARMENTS = {
   youth: { vneck: 'sahrul_jersey', crew: 'octa_jersey' },  // TODO: youth cut models
 };
 function garmentFor(cfg) {
+  // 'newbase' is Sahrul's upgraded base, offered as a third option to compare
+  // against the current V-neck/crew — same for every program for now.
+  if (cfg.neckStyle === 'newbase') return 'nsapro_jersey';
   const byNeck = PROGRAM_GARMENTS[cfg.program] || PROGRAM_GARMENTS.mens;
   return byNeck[cfg.neckStyle === 'crew' ? 'crew' : 'vneck'];
 }
@@ -1455,8 +1458,12 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                     </div>
                     <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} />
                   </RailCard>
-                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
-                    <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]} active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
+                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'crew' ? 'Crew Neck' : config.neckStyle === 'newbase' ? 'New Base ★' : 'V-Neck'}>
+                    <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' },
+                      // Preview toggle for Sahrul's upgraded base — soccer only for now.
+                      ...(config.sport === 'soccer' ? [{ id: 'newbase', label: 'New Base ★' }] : [])]}
+                      active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
+                    {config.neckStyle === 'newbase' && <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Sahrul's new base — 3D preview is the upgrade; the 2D proof is still a placeholder.</div>}
                   </RailCard>
                   <RailCard num={4} title="Fabric"
                     action={<button onClick={() => setFabricGuide(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Fabric guide →</button>}>
