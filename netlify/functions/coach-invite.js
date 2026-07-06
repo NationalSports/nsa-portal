@@ -6,15 +6,12 @@
 // coach_accounts row and the roster_team_coaches assignment using the service
 // role — that path bypasses RLS so a signed-in coach can invite a teammate even
 // though coach_accounts INSERT is otherwise staff-only.
-const { createClient } = require('@supabase/supabase-js');
-const { verifyUser } = require('./_shared');
+const { verifyUser, resolveCustomerFamily, rosterTeamCustomerId, getSupabaseAdmin: _getSupabaseAdmin } = require('./_shared');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Shared factory throws when creds are missing; this endpoint's callers expect null.
 function getSupabaseAdmin() {
-  const url = process.env.REACT_APP_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return null;
-  return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  try { return _getSupabaseAdmin(); } catch { return null; }
 }
 
 // Ensure a coach_accounts row exists for `email`, then assign them to the team.
@@ -66,26 +63,51 @@ exports.handler = async (event) => {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Valid email required' }) };
     }
 
-    // Authorization (audit #3): this endpoint provisions coach_accounts +
-    // coach_customer_access grants with the service role, so it must never be callable
-    // anonymously. Accept EITHER (a) a signed-in staff member (Bearer JWT) — used by the
-    // staff admin UIs — OR (b) a coach-portal caller presenting an alpha_tag whose
-    // customer family includes the target customer_id (the same ownership model as
-    // portal-action.js; the coach portal is a public alpha_tag link with no login).
+    // Authorization (audit #3 + #11): this endpoint provisions coach_accounts +
+    // coach_customer_access + roster_team_coaches with the service role, so it must never
+    // be callable anonymously, and a coach-portal caller must not reach OUTSIDE its own
+    // club family. Accept EITHER:
+    //   (a) a signed-in staff member (Bearer JWT) — staff can already write these tables
+    //       directly under RLS, so their scope is unrestricted (unchanged behavior); OR
+    //   (b) a coach-portal caller presenting an alpha_tag. That path is scoped to the
+    //       tag's customer family (parent + sub-customers, via the shared resolver — the
+    //       old inline check was parents-only and silently rejected sub-customer invites):
+    //       BOTH the target customer_id AND the target team_id (if any) must resolve into
+    //       that family. Validating team_id is the fix for the hole where a caller with
+    //       their own valid tag could pass another club's team_id and get provisioned as
+    //       an editor on it — latent only while roster_team_coaches still allows direct
+    //       anon writes (migration 00176 closes that and makes this the live path).
     let authed = false;
+    let scopeFam = null; // null = staff (unrestricted); a Set = coach-portal family bound
     try { const v = await verifyUser(event); if (v && v.ok) authed = true; } catch (_) {}
     if (!authed) {
       const alphaTag = String(body.alpha_tag || '').trim();
       if (alphaTag && customerId) {
         const adminAuth = getSupabaseAdmin();
         if (adminAuth) {
-          const { data: fam } = await adminAuth.from('customers').select('id').eq('alpha_tag', alphaTag);
-          if (Array.isArray(fam) && fam.some((r) => String(r.id) === customerId)) authed = true;
+          const famRes = await resolveCustomerFamily(adminAuth, alphaTag);
+          if (famRes.error && !famRes.notFound) {
+            return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: famRes.error }) };
+          }
+          if (famRes.fam && famRes.fam.has(customerId)) { authed = true; scopeFam = famRes.fam; }
         }
       }
     }
     if (!authed) {
       return { statusCode: 401, headers, body: JSON.stringify({ ok: false, error: 'Not authorized' }) };
+    }
+
+    // Coach-portal callers may only assign to a team owned by a customer in their family.
+    // (Staff — scopeFam null — are unrestricted, matching their direct-RLS write ability.)
+    if (scopeFam && teamId) {
+      const adminChk = getSupabaseAdmin();
+      const owned = adminChk ? await rosterTeamCustomerId(adminChk, teamId) : { error: 'service-creds-missing' };
+      if (owned.error) {
+        return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: owned.error }) };
+      }
+      if (!owned.customerId || !scopeFam.has(owned.customerId)) {
+        return { statusCode: 403, headers, body: JSON.stringify({ ok: false, error: 'Not authorized for this team' }) };
+      }
     }
 
     // Roster-order invites: provision the coach account (+ team assignment when a
