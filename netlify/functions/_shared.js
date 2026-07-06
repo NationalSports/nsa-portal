@@ -162,6 +162,21 @@ async function resolveCustomerFamily(admin, alphaTag) {
   return { fam };
 }
 
+// Resolve a roster team to the customer_id that owns it (team → session.customer_id).
+// Used to scope coach-portal writes/invites that target a team by id: the team's owning
+// customer must be in the caller's family, or the caller is reaching outside its portal.
+// Returns { customerId } (null if the team doesn't exist) or { error } on a query failure
+// (which callers must treat as a retryable 500, NOT as "not owned").
+async function rosterTeamCustomerId(admin, teamId) {
+  const id = String(teamId || '').trim();
+  if (!id) return { customerId: null };
+  const { data, error } = await admin.from('roster_teams')
+    .select('roster_order_sessions!inner(customer_id)')
+    .eq('id', id).maybeSingle();
+  if (error) return { error: error.message };
+  return { customerId: data?.roster_order_sessions?.customer_id || null };
+}
+
 // Mark the invoice(s) referenced by a succeeded Stripe PaymentIntent's metadata as paid, using the
 // service role. This is the reliable reconciliation path for coach-portal payments: the portal is
 // anonymous and RLS-blocks it from writing `invoices`, and the Stripe webhook can't be relied on as
@@ -290,4 +305,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
