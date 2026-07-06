@@ -25,6 +25,7 @@ import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobRe
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
+import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
 // paint — so the first Excel import or PDF/SVG export has no download wait, while keeping them
@@ -31859,7 +31860,23 @@ export default function App(){
   // MOBILE PORTAL GATE
   if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess}/></ComponentErrorBoundary>;
 
-  return(<div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
+  // Shared state interface for pages extracted out of App() (see src/AppContext.js).
+  // Every key must be an App()-scope binding; extracted pages read these via useAppData().
+  const appData={
+    // core entity collections + setters
+    cust,setCust,sos,setSOs,ests,setEsts,prod,setProd,vend,setVend,invs,setInvs,msgs,setMsgs,REPS,
+    // session / navigation / notify
+    cu,nf,pg,setPg,setESO,setESOC,setESOTab,
+    // QuickBooks page state + handlers
+    connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncAllRef,qbSyncing,setQbSyncing,qbTab,setQbTab,
+    qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,
+    qbBillUploading,setQbBillUploading,qbBillVendor,setQbBillVendor,
+    invAdjLog,invPOs,setInvPOs,submittedBatches,setSubmittedBatches,
+    // commissions page state
+    commMonth,setCommMonth,commOverrides,setCommOverrides,commRep,setCommRep,commTab,setCommTab,
+  };
+
+  return(<AppDataProvider value={appData}><div className="app"><Toast msg={toast?.msg} type={toast?.type}/>
     {/* Mobile sidebar backdrop */}
     <div className={`sidebar-backdrop${mobileMenuOpen?' open':''}`} onClick={()=>setMobileMenuOpen(false)}/>
     <div className={`sidebar${mobileMenuOpen?' open':''}`}><div className="sidebar-logo" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -32531,7 +32548,7 @@ export default function App(){
         <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={(val)=>{setScanModalOpen(false);handleScanResult(val)}} onClose={()=>setScanModalOpen(false)}/>
       </div>
     </div></div>}
-  </div>);
+  </div></AppDataProvider>);
 }
 
 // QB sync fix v2
