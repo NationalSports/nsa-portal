@@ -9235,7 +9235,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const n = await onApplyLogoBulk(entries);
       // Remember each style's final front placement per garment type, so the next
       // hoodie/tee/polo seeds where reps actually put it (quiet write, shared by all reps).
-      if (n > 0 && onSavePlacementMemory) {
+      // Skip for link-only — nothing was visually placed, so there's no placement to learn.
+      if (n > 0 && !linkOnly && onSavePlacementMemory) {
         const memPatch = {};
         for (const g2 of selectedGroups) {
           const pl2 = resolveItemPlacement(frontBase(g2.items[0]), placeByStyle, {}, g2.key, '');
@@ -9243,6 +9244,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         }
         onSavePlacementMemory(memPatch);
       }
+      // Link-only: nothing is placed on the image, so drop the selection — this clears the
+      // draggable placement previews, leaving each card as just the untouched image + its
+      // "Applied" badge (the whole point of Bypass mocks).
+      if (n > 0 && linkOnly) clearSel();
       setDone(n > 0 ? `${linkOnly ? 'Linked art to' : 'Applied to'} ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}${linkOnly ? ' — image unchanged, no mockup.' : '.'}` : 'Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
