@@ -1831,8 +1831,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, loadDetail]);
 
   const updateCatalogItem = useCallback(async (id, fields) => {
-    const { error } = await supabase.from('webstore_products').update(fields).eq('id', id);
-    if (error) { flash('Error: ' + error.message); return; }
+    const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
+    if (error) { flash('Error: ' + error.message); return false; }
+    // A silent 0-row update means RLS blocked the write (e.g. this login isn't a
+    // registered team member). Surface it — otherwise the editor flashes "Saved ✓"
+    // while the change never reached the database.
+    if (!_updated || _updated.length === 0) { flash('Not saved — your login doesn’t have edit access. Ask an admin to add you as a team member.'); return false; }
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
@@ -1879,6 +1883,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       }
     }
     flash('Item updated'); loadDetail(sel);
+    return true;
   }, [sel, detail, flash, loadDetail]);
 
   // Bulk-edit catalog items. Accepts rows of { id, fields }; identical patches are
@@ -5090,7 +5095,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -5179,7 +5184,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} />
                       </div>
                     </div>
                   </td></tr>}
@@ -6051,7 +6056,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
-  const save = () => {
+  const save = async () => {
     const cleanOptions = cleanItemOptions(options);
     const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
@@ -6085,7 +6090,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // Size-level SKU overrides: only persist when there's something set.
       fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
     }
-    onSave(fields);
+    // Only claim success if the write actually landed. onSave returns false when
+    // the DB rejected it (error or RLS-blocked 0-row write) — don't clear the dirty
+    // flag or flash "Saved ✓" in that case, so the edit isn't silently lost.
+    const _ok = await onSave(fields);
+    if (_ok === false) return;
     _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
     if (dirtyRef) dirtyRef.current = false;
     // Stay on the item after saving — just confirm briefly on the button.
