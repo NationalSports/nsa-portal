@@ -4499,9 +4499,14 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
 
-  const totalSales = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
-  const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const totalItems = orderItems.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
+  // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
+  // cancelled orders aren't real sales; exclude them so the banner counts, items,
+  // and sales match reality (and the per-order tabs, which already filter them).
+  const validOrders = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
+  const validOrderIds = new Set(validOrders.map((o) => o.id));
+  const totalSales = validOrders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const fundraiseTotal = validOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const totalItems = orderItems.filter((i) => !i.is_bundle_parent && validOrderIds.has(i.order_id)).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
   // Sales Orders created from this store's batches, with how many orders each covers.
   const soSummary = (() => {
@@ -4633,7 +4638,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start', paddingTop: 2 }}>
-                <BannerStat label="Orders" value={orders.length} />
+                <BannerStat label="Orders" value={validOrders.length} />
                 <BannerStat label="Items" value={totalItems} />
                 <BannerStat label="Sales" value={money(totalSales)} />
                 {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
@@ -10538,8 +10543,12 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
   const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
+  // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
+  // cancelled orders aren't real orders; keep them out of the list so they don't show
+  // as a stray "Paid" duplicate of the shopper's actual order.
+  const listable = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
 
-  const filtered = orders.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
+  const filtered = listable.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
     if (fStatus !== 'all' && lineStatus !== fStatus) return false;
     if (fPay === 'paid' && o.payment_mode !== 'paid') return false;
     if (fPay === 'unpaid' && o.payment_mode === 'paid') return false;
@@ -10552,7 +10561,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     return true;
   });
 
-  if (!orders.length) return <Empty msg="No orders placed in this store yet." />;
+  if (!listable.length) return <Empty msg="No orders placed in this store yet." />;
   const sel = { padding: '7px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, background: '#fff' };
   return (
     <>
@@ -10588,7 +10597,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
           Create Sales Order ({unbatchedCount})
         </button>
       </div>
-      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {orders.length} orders.</div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
