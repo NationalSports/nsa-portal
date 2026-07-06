@@ -5899,7 +5899,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const page = pageProp || pageState;
   const setPage = setPageProp || setPageState;
   // Storefront placement + requirement (new per-item fields).
-  const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
+  // Reflect only the item's own saved category — never fall back to the product's
+  // stock category, or saving any edit (e.g. sizes) would silently file an
+  // uncategorized item under that category. The stock category is still offered
+  // as a datalist suggestion below.
+  const [category, setCategory] = useState(item.category || '');
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
   const [cardStyle, setCardStyle] = useState(item.card_style || '');
