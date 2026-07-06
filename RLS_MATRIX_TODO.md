@@ -1,6 +1,23 @@
 # RLS Authorization Matrix — Hand-off for the Fable session
 
-> ## ✅ RESOLVED — Fable pass (2026-07-05)
+> ## ✅ APPLIED & VERIFIED on production — Fable pass (2026-07-05)
+>
+> `00175` was applied to prod (schema_migrations version `20260706123717`) after an
+> adversarial 4-lens review caught and fixed a read-breakage bug (see below), and was
+> verified live by role simulation:
+> - **staff** (`is_team_member()`=true): reads + writes all 24 tables. ✓
+> - **coach** (authenticated, non-staff): reads `products` (53,421) + `product_inventory`
+>   (1,018) — the catalog works; reads `issues`/`coach_customer_access` = **0** (hardened);
+>   cannot write (only `is_team_member()` write policy remains). ✓
+> - **anon**: still reads the public catalog (`products`, `product_inventory`, `webstores`). ✓
+> - Write exposure: permissive write policies `25 → 0`; `_staff_write` on all 24 tables.
+> - Review found the first draft would have blanked the coach catalog (dropping `ALL(true)`
+>   also stripped the authenticated read); fixed by restoring an explicit `authenticated`
+>   SELECT on `products` + `product_inventory` only.
+> - Note: DB migration version is timestamp-based (`20260706…`) while the repo file is
+>   `00175` — the existing migration-numbering divergence (audit #10), not a blocker.
+>
+
 >
 > The coach-auth model was traced end-to-end. Key facts that made the matrix decidable:
 > - The **only** magic-link-coach client is `supabaseCoach` (used solely in
