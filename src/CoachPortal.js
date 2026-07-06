@@ -2076,13 +2076,14 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
               {isP&&_teamSelect}
             </div>
-            {/* ── Estimates to Approve — inline panel (new design) ── */}
-            {(openEsts.length>0||approvedEsts.length>0)&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+            {/* ── Estimates — always present in the Orders section as a dropdown; lists
+                open (to-approve) first, then approved-awaiting-conversion estimates. ── */}
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
               <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
                 <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
                   {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
                   <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>{openEsts.length>0?'Estimates to Approve':'Estimates'}</span>
-                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{openEsts.length>0?'— approve to start production':'— approved, awaiting your rep'}</span>
+                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{openEsts.length>0?'— approve to start production':approvedEsts.length>0?'— approved, awaiting your rep':'— your rep posts quotes here'}</span>
                 </span>
                 <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>{estOpen?'Hide':'Show'}<span style={{fontSize:12}}>{estOpen?'▾':'▸'}</span></span>
               </button>
@@ -2109,7 +2110,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
                   </div>
                 </div>})}
-            </div>}
+              {estOpen&&openEsts.length===0&&approvedEsts.length===0&&<div style={{padding:'18px 22px',color:'#5A6075',fontSize:13}}>No estimates right now — your rep posts quotes here for you to review &amp; approve.</div>}
+            </div>
             {/* ── Order History table ── */}
             <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
             {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
