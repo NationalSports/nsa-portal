@@ -156,7 +156,45 @@ Spend filters compare `(so.order_date||so.created_at).slice(0,10) >= '2026-01-01
 5. **Harden the ledger** (F6, F8, F9): derive `used` from usage rows, bucket by
    order date, write ISO timestamps.
 
-## Open questions for ownership
+## Ownership decisions (2026-07-06)
+
+Answers received after the initial audit; these define the fix scope:
+
+- **Q1 (paid-only): PAID INVOICES, not SO status.** Qualifying spend for % of
+  Spend earning must count only paid revenue. Note: NetSuite-imported
+  `customer_invoices` are totals-only (no line items), so the margin gate and
+  tax/shipping exclusion can only be computed from SO lines — the design is to
+  compute qualifying spend from SO line items but gate qualification on the
+  order actually being paid.
+- **Q2 (apparel): exclude footwear.** Promo application must skip
+  `is_footwear` line items; everything else is eligible.
+- **Q3 (deco/ship markup): OUT OF SCOPE — leave as-is.** Initially "just do the
+  gear" (promo covers gear at retail only; deco/shipping handled manually), then
+  revised: **ignore the gear-only change, keep current consumption math**
+  (deco ×1.25 and shipping ×1.25 continue to draw from promo). Reps adjust
+  manually when needed. Main priority is the earning/allocation logic.
+- **Q4 (margin gate): KEEP.** The ≥20%-margin qualifier on earning is intended
+  policy.
+- **Q5 (early draw): KEEP.** Drawing against future semesters' allocations is
+  allowed.
+
+Additional requirement (reported as a live bug): **adding a "10% of spend"
+program should immediately auto-calculate the current semester's allocation
+from last semester's spend.** Today the auto true-up effect
+(`CustDetail.js:126-145`) only runs on `[initCust.id, sos]` — it fires on
+customer open, not when a program is added mid-session, so a newly created %
+program shows ALLOCATED $0 until the customer is reopened.
+
+### Fix scope (agreed)
+
+1. % of Spend earning counts **paid** orders only (paid signal per Q1).
+2. Adding/having a % program **auto-materializes** the current period's
+   allocation = last semester's qualifying paid spend × pct (no reload, no
+   manual Pull Forward required for the baseline).
+3. Promo application **skips footwear** items.
+4. No changes to deco/shipping promo consumption, margin gate, or early draw.
+
+## Open questions for ownership (original)
 
 - **Q1 (paid-only):** Should "paid" mean the SO's paid status, or strictly paid
   `customer_invoices` records? (Invoices are the accounting source of truth but
