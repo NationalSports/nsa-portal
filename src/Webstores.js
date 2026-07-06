@@ -922,8 +922,10 @@ async function generateFlyerPdfBase64(store, items = []) {
 // items (bundle components) so the flyer can surface the package's hero image.
 // webstore_products has no image_front_url column — it's image_url here.
 async function loadFlyerItems(store) {
+  // NOTE: webstore_products has NO is_bundle_parent column — selecting it 400s the whole query
+  // (which silently emptied the flyer). Bundles are detected by kind==='bundle' below.
   const { data: cat } = await supabase.from('webstore_products')
-    .select('id,display_name,retail_price,image_url,product_id,kind,is_bundle_parent,active')
+    .select('id,display_name,retail_price,image_url,product_id,kind,active')
     .eq('store_id', store.id).order('sort_order');
   const rows = cat || [];
   const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
@@ -8928,7 +8930,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
   const [selected, setSelected] = useState(() => new Set()); // STYLE keys chosen for apply — a style card covers all its colors
-  const [bulkOpen, setBulkOpen] = useState(false); // bulk apply is an opt-in next step, not the default view
+  const [bulkOpen, setBulkOpen] = useState(true); // the apply-to-items grid IS the main flow — open by default after art is in (collapsible via ✕ Close)
   // Per-color logo choice (keyed by the color row's item id): a real per-CW variant
   // { kind:'variant', url, colorWayId, label } or a recolor { kind:'recolor', choice }.
   const [pickByItem, setPickByItem] = useState({});
