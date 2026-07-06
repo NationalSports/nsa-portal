@@ -1381,3 +1381,39 @@ describe('Job Readiness — isJobReady() regression guards', () => {
     expect(BL.isJobReady(j, o)).toBe(false);
   });
 });
+
+describe('Commission attribution — commissionRepId() must always credit the account owner', () => {
+  const MIKE = '00000000-0000-0000-0000-000000000022';   // account owner (customer.primary_rep_id)
+  const STEVE = '00000000-0000-0000-0000-000000000001';  // SO creator (so.created_by)
+
+  test('account owner wins over the SO creator (Rancho Buena Vista regression)', () => {
+    // RBV is Mike's account; Steve created the order. Commission must credit Mike, not Steve.
+    // A reversed `created_by || primary_rep_id` returns STEVE here — that is the bug this locks out.
+    const customer = { id: 'c-inv-rbv-girls-volleyball', primary_rep_id: MIKE };
+    const so = { id: 'SO-1057', created_by: STEVE };
+    expect(BL.commissionRepId(customer, so)).toBe(MIKE);
+  });
+
+  test('falls back to the SO creator only when the account has no assigned rep', () => {
+    expect(BL.commissionRepId({ id: 'c1', primary_rep_id: null }, { created_by: STEVE })).toBe(STEVE);
+    expect(BL.commissionRepId({ id: 'c1' }, { created_by: STEVE })).toBe(STEVE);
+  });
+
+  test('account owner still wins even when it equals or differs from the creator', () => {
+    // Same rep on both — result is that rep regardless of order.
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, { created_by: MIKE })).toBe(MIKE);
+    // Owner present, no creator — owner.
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, {})).toBe(MIKE);
+  });
+
+  test('returns null when neither an account owner nor a creator is known', () => {
+    expect(BL.commissionRepId({ id: 'c1' }, { id: 'SO-1' })).toBeNull();
+    expect(BL.commissionRepId(null, null)).toBeNull();
+    expect(BL.commissionRepId(undefined, undefined)).toBeNull();
+  });
+
+  test('tolerates a missing customer or missing SO (open invoice with no linked order, etc.)', () => {
+    expect(BL.commissionRepId(undefined, { created_by: STEVE })).toBe(STEVE);
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, undefined)).toBe(MIKE);
+  });
+});

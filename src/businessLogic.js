@@ -974,9 +974,23 @@ function itemsWithWipedQty(clientItems, dbItems) {
   return out;
 }
 
+// ─── Commission / account attribution ───
+// The account OWNER (customer.primary_rep_id) is ALWAYS credited — for earned commission, pipeline,
+// promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
+// for accounts that have no assigned rep. This ordering decides who gets PAID, so it lives here as the
+// single source of truth: a reversed `created_by || primary_rep_id` credited whoever happened to write
+// the order instead of the account's rep, leaking open invoices on another rep's account into the
+// creator's pipeline (the Rancho Buena Vista regression). Route ALL commission attribution through this
+// helper so the rule can never drift or get reversed at one of its call sites again.
+function commissionRepId(customer, so) {
+  return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
+  // Attribution
+  commissionRepId,
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
