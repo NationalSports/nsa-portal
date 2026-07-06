@@ -42,14 +42,29 @@ exports.handler = async (event) => {
       if (sb && pi && pi.id) {
         // Idempotent, and never resurrect a terminal order: only a pending_payment order
         // for this intent flips to paid (a delayed retry must not undo a refund/cancel).
-        await sb.from('webstore_orders').update({ status: 'paid' }).eq('stripe_pi_id', pi.id).eq('status', 'pending_payment');
+        // SECURITY (audit #1): flip to paid ONLY when the succeeded PI amount matches the order
+        // total — the same check webstore-checkout's finalize enforces. Without it, a PI that
+        // succeeded for less than the order total would silently auto-flip to paid here.
+        const { data: _pend } = await sb.from('webstore_orders')
+          .select('id,total').eq('stripe_pi_id', pi.id).eq('status', 'pending_payment').limit(1);
+        const _po = _pend && _pend[0];
+        if (_po) {
+          if (Number(pi.amount) === Math.round((Number(_po.total) || 0) * 100)) {
+            await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', _po.id).eq('status', 'pending_payment');
+          } else {
+            console.error('[stripe-webhook] PI amount != order total — NOT marking paid:', JSON.stringify({ order: _po.id, pi: pi.id, pi_amount: pi.amount, expected_cents: Math.round((Number(_po.total) || 0) * 100) }));
+          }
+        }
         // Fallback confirmation — only if webstore-checkout's finalize hasn't already
         // claimed it (e.g. the buyer closed the tab right after paying). The flag
         // claim is atomic, so the buyer never gets two emails and the coupon-use
         // counter is bumped exactly once.
+        // Only confirm a PAID order — never one whose paid-flip was refused above for an
+        // amount mismatch (audit #1). finalize may already have flipped it to paid; this is the
+        // backstop for when its own confirmation didn't land.
         const { data: claimed } = await sb.from('webstore_orders')
           .update({ confirmation_sent: true })
-          .eq('stripe_pi_id', pi.id).neq('confirmation_sent', true)
+          .eq('stripe_pi_id', pi.id).eq('status', 'paid').neq('confirmation_sent', true)
           .select('id,store_id,buyer_email,buyer_name,total,shipping_fee,discount_amt,coupon_code,payment_mode,ship_method,ship_address').limit(1);
         const order = claimed && claimed[0];
         if (order) {

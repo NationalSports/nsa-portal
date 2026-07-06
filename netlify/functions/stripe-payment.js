@@ -140,20 +140,29 @@ exports.handler = async (event) => {
       if (!intent0 || (intent0.status !== 'requires_payment_method' && intent0.status !== 'requires_confirmation')) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment can no longer be modified.' }) };
       }
+      // SECURITY (audit #1): re-pricing is only legitimate for INVOICE PaymentIntents (the ACH
+      // surcharge-drop flow), where the new amount is validated against the invoice's open
+      // balance using the invoice id in the intent's OWN metadata. A PI with no invoice_id —
+      // notably a webstore PI (metadata.webstore_order_id) — has no server-side balance to
+      // validate against, so re-pricing it would let a buyer set an arbitrary amount (e.g. $0.50
+      // for a $500 order). Refuse. And fail CLOSED: if the balance can't be confirmed, reject
+      // rather than accept the client-supplied amount.
+      const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+      if (!ids.length || (intent0.metadata && intent0.metadata.webstore_order_id)) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'This payment cannot be re-priced.' }) };
+      }
+      let balanceCents = null;
       try {
-        const ids = String((intent0.metadata && intent0.metadata.invoice_id) || '').split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
-        if (ids.length) {
-          const admin = getSupabaseAdmin();
-          const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
-          if (!invErr && invRows && invRows.length) {
-            const balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
-            const maxCents = Math.ceil(balanceCents * 1.05) + 100; // headroom for the CC surcharge + rounding
-            if (balanceCents <= 0 || amount_cents > maxCents) {
-              return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
-            }
-          }
+        const admin = getSupabaseAdmin();
+        const { data: invRows, error: invErr } = await admin.from('invoices').select('id,total,paid').in('id', ids);
+        if (!invErr && invRows && invRows.length) {
+          balanceCents = Math.round(invRows.reduce((a, r) => a + Math.max(0, (Number(r.total) || 0) - (Number(r.paid) || 0)), 0) * 100);
         }
-      } catch (e) { /* fail-open on DB blips, same as create_intent */ }
+      } catch (e) { /* balanceCents stays null -> reject below */ }
+      const maxCents = balanceCents == null ? 0 : Math.ceil(balanceCents * 1.05) + 100; // headroom for CC surcharge + rounding
+      if (balanceCents == null || balanceCents <= 0 || amount_cents > maxCents) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Payment amount does not match the open balance for this invoice.' }) };
+      }
       const updated = await client.paymentIntents.update(intent_id, { amount: Math.round(amount_cents) });
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, amount: updated.amount }) };
     }
