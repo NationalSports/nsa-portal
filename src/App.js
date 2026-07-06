@@ -4216,6 +4216,9 @@ export default function App(){
   // nothing persists to omgStores until "Create Store", so a bad paste is discarded with zero footprint.
   const[omgReviewOpen,setOmgReviewOpen]=useState(false);
   const _omgReviewSelRef=React.useRef(null);_omgReviewSelRef.current=omgSel;// latest staged store for the commit handler (avoids a blur→click race)
+  // Ingest-from-link modal: paste an OMG report link → build a shell → import + stage it → open Review SKUs.
+  // Nothing persists to omgStores until the Review modal's "Create Store", so a bad paste leaves no trace.
+  const[omgIngestOpen,setOmgIngestOpen]=useState(false);const[omgIngestUrl,setOmgIngestUrl]=useState('');
   React.useEffect(()=>{setOmgBulkSel(new Set());setOmgBulkArt('')},[omgSel?.id]);
   const[omgReportUrl,setOmgReportUrl]=useState('');const[omgReportLoading,setOmgReportLoading]=useState(false);const[omgPriceLoading,setOmgPriceLoading]=useState(false);const[omgNotifyLoading,setOmgNotifyLoading]=useState(false);const[omgInvLoading,setOmgInvLoading]=useState(false);const omgInvFetching=useRef(new Set());
 
@@ -4530,6 +4533,34 @@ export default function App(){
     } finally {
       setOmgReportLoading(false);
     }
+  };
+
+  // "Ingest OMG Store" entry point: paste a report link → create a shell → import + stage it in omgSel →
+  // open the Review-SKUs modal. Nothing is added to omgStores until the user hits "Create Store" there,
+  // so a bad paste leaves no trace.
+  const startOmgIngest = async (urlRaw) => {
+    const urlStr = (urlRaw || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { nf('Invalid report URL — needs a valid OMG report link', 'error'); return; }
+    setOmgReportLoading(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      const report = await resp.json();
+      const saleCode = report.options?.filter?.find(f => f.key === 'sale_code')?.value || '';
+      const storeName = report.details?.title || 'OMG Store ' + saleCode;
+      const storeId = 'OMG-sale_' + saleCode;
+      // Already in the portal? Just open it instead of re-ingesting.
+      const existing = omgStores.find(s => s.id === storeId);
+      if (existing) { nf('This store is already in the portal — opening it', 'error'); setOmgIngestOpen(false); setOmgSel(existing); setOmgReportLoading(false); return; }
+      const shell = { id: storeId, store_name: storeName, status: 'open', _omg_source: true, _omg_id: 'sale_' + saleCode, _omg_sale_code: saleCode,
+        _last_synced: new Date().toISOString(), products: [], orders: 0, total_sales: 0, fundraise_total: 0, items_sold: 0, unique_buyers: 0,
+        subdomain: '', channel_type: 'pop-up', _report_url: urlStr };
+      // importOMGReport parses + prices and stages the store in omgSel (its setOmgStores map is a no-op
+      // while the shell isn't in the list, so nothing persists yet). Then hand off to the review modal.
+      const updated = await importOMGReport(shell, urlStr);
+      if (updated) { setOmgIngestOpen(false); setOmgIngestUrl(''); setOmgReviewOpen(true); }
+    } catch (e) { nf('Failed: ' + e.message, 'error'); } finally { setOmgReportLoading(false); }
   };
 
 
@@ -16344,6 +16375,32 @@ export default function App(){
       }
     };
     return(<>
+      {/* Ingest an OMG store from a shared report link → review SKUs → create it. */}
+      <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:12,flexWrap:'wrap'}}>
+        <button className="btn btn-primary" style={{background:'#166534',whiteSpace:'nowrap',fontWeight:700,fontSize:13,padding:'9px 18px'}} onClick={()=>{setOmgIngestUrl('');setOmgIngestOpen(true)}} title="Paste an OMG report link to ingest its items into a new store — review & fix SKUs, then create it">📥 Ingest OMG Store</button>
+        <span style={{fontSize:12,color:'#64748b'}}>Paste a shared OMG report link to pull its products into a new store — you'll review &amp; fix SKUs, then it's created.</span>
+      </div>
+
+      {/* Ingest modal — paste the report link */}
+      {omgIngestOpen&&<div className="modal-overlay" onClick={()=>{if(!omgReportLoading)setOmgIngestOpen(false)}}>
+        <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+          <div className="modal-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+            <h2 style={{margin:0,fontSize:17}}>📥 Ingest OMG Store</h2>
+            <button onClick={()=>{if(!omgReportLoading)setOmgIngestOpen(false)}} style={{background:'none',border:'none',fontSize:22,lineHeight:1,cursor:'pointer',color:'#94a3b8'}}>×</button>
+          </div>
+          <div className="modal-body" style={{padding:'16px 20px 20px'}}>
+            <div style={{fontSize:12,color:'#64748b',marginBottom:10}}>Paste the shared OMG report link. It pulls in every product, size, color and mockup image, then opens a review so you can confirm and fix SKUs — the store is created when you finish.</div>
+            <input type="text" autoFocus placeholder="https://report.ordermygear.com/..." value={omgIngestUrl} onChange={e=>setOmgIngestUrl(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter'&&omgIngestUrl.trim()&&!omgReportLoading)startOmgIngest(omgIngestUrl)}}
+              style={{width:'100%',padding:'10px 12px',border:'1px solid #d1d5db',borderRadius:6,fontSize:13,fontFamily:'monospace',boxSizing:'border-box'}}/>
+          </div>
+          <div style={{padding:'12px 20px',borderTop:'1px solid #e2e8f0',display:'flex',justifyContent:'flex-end',gap:10}}>
+            <button onClick={()=>setOmgIngestOpen(false)} disabled={omgReportLoading} style={{fontSize:12,fontWeight:600,padding:'8px 16px',borderRadius:6,border:'1px solid #cbd5e1',background:'#fff',color:'#64748b',cursor:omgReportLoading?'not-allowed':'pointer'}}>Cancel</button>
+            <button onClick={()=>startOmgIngest(omgIngestUrl)} disabled={omgReportLoading||!omgIngestUrl.trim()} style={{fontSize:13,fontWeight:800,padding:'8px 20px',borderRadius:6,border:'none',background:(omgReportLoading||!omgIngestUrl.trim())?'#94a3b8':'#166534',color:'#fff',cursor:(omgReportLoading||!omgIngestUrl.trim())?'not-allowed':'pointer'}}>{omgReportLoading?'⏳ Importing…':'Import & Review'}</button>
+          </div>
+        </div>
+      </div>}
+
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
