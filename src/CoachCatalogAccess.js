@@ -33,7 +33,8 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
 
   const invite = async (email, name) => {
     try {
-      const r = await fetch('/.netlify/functions/coach-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, name, team: (customer && customer.name) || '' }) });
+      const { data: _s } = await supabase.auth.getSession();
+      const r = await fetch('/.netlify/functions/coach-invite', { method: 'POST', headers: { 'Content-Type': 'application/json', ...(_s?.session?.access_token ? { Authorization: `Bearer ${_s.session.access_token}` } : {}) }, body: JSON.stringify({ email, name, team: (customer && customer.name) || '' }) });
       const d = await r.json().catch(() => ({}));
       note(d.emailed ? ('📧 Invite emailed to ' + email) : ('Account saved — invite email could not send' + (d.error ? ' (' + d.error + ')' : '')), d.emailed ? 'success' : 'error');
     } catch (e) { note('Account saved — invite email failed to send', 'error'); }

@@ -6277,7 +6277,7 @@ export default function App(){
   useEffect(()=>{if(coachAcctsOpen)loadCoachAccts()},[coachAcctsOpen]);// eslint-disable-line react-hooks/exhaustive-deps
   const sendCoachInvite=async(email,name,custId)=>{
     const c2=cust.find(c=>c.id===custId);
-    try{const r=await fetch('/.netlify/functions/coach-invite',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email,name,team:c2?.name||''})});
+    try{const {data:_s}=await supabase.auth.getSession();const r=await fetch('/.netlify/functions/coach-invite',{method:'POST',headers:{'Content-Type':'application/json',...(_s?.session?.access_token?{Authorization:`Bearer ${_s.session.access_token}`}:{})},body:JSON.stringify({email,name,team:c2?.name||''})});
       const d=await r.json().catch(()=>({}));
       nf(d.emailed?('📧 Invite emailed to '+email):('Account saved — invite email could not send'+(d.error?' ('+d.error+')':'')),d.emailed?'success':'error');
     }catch(e){nf('Account saved — invite email failed to send','error')}

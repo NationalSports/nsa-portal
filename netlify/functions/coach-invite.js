@@ -7,6 +7,7 @@
 // role — that path bypasses RLS so a signed-in coach can invite a teammate even
 // though coach_accounts INSERT is otherwise staff-only.
 const { createClient } = require('@supabase/supabase-js');
+const { verifyUser } = require('./_shared');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function getSupabaseAdmin() {
@@ -63,6 +64,28 @@ exports.handler = async (event) => {
     const role = String(body.role || 'editor').trim();
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Valid email required' }) };
+    }
+
+    // Authorization (audit #3): this endpoint provisions coach_accounts +
+    // coach_customer_access grants with the service role, so it must never be callable
+    // anonymously. Accept EITHER (a) a signed-in staff member (Bearer JWT) — used by the
+    // staff admin UIs — OR (b) a coach-portal caller presenting an alpha_tag whose
+    // customer family includes the target customer_id (the same ownership model as
+    // portal-action.js; the coach portal is a public alpha_tag link with no login).
+    let authed = false;
+    try { const v = await verifyUser(event); if (v && v.ok) authed = true; } catch (_) {}
+    if (!authed) {
+      const alphaTag = String(body.alpha_tag || '').trim();
+      if (alphaTag && customerId) {
+        const adminAuth = getSupabaseAdmin();
+        if (adminAuth) {
+          const { data: fam } = await adminAuth.from('customers').select('id').eq('alpha_tag', alphaTag);
+          if (Array.isArray(fam) && fam.some((r) => String(r.id) === customerId)) authed = true;
+        }
+      }
+    }
+    if (!authed) {
+      return { statusCode: 401, headers, body: JSON.stringify({ ok: false, error: 'Not authorized' }) };
     }
 
     // Roster-order invites: provision the coach account (+ team assignment when a

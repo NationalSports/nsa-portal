@@ -192,11 +192,18 @@ async function fetchCatalog(customerId) {
 // team_id, provisions the coach_accounts row + roster_team_coaches assignment with
 // the service role (works for both staff and coach-initiated invites) and emails
 // the magic-link. Returns { coach_id } (may be null if service creds are absent).
-async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, role }) {
+async function inviteRosterCoach({ email, name, teamId, teamLabel, customerId, role, alphaTag }) {
   try {
+    // Staff context: attach the staff Bearer token so coach-invite authorizes via
+    // verifyUser. Coach-portal context: no staff session, so pass the portal alpha_tag
+    // (coach-invite matches it to the customer family). Sending both is harmless.
+    let _token = null;
+    try { const { data } = await supabase.auth.getSession(); _token = data?.session?.access_token || null; } catch (_) {}
+    const _headers = { 'Content-Type': 'application/json' };
+    if (_token) _headers.Authorization = `Bearer ${_token}`;
     const res = await fetch('/.netlify/functions/coach-invite', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, name: name || email, team: teamLabel || '', team_id: teamId, customer_id: customerId, role: role || 'editor' }),
+      method: 'POST', headers: _headers,
+      body: JSON.stringify({ email, name: name || email, team: teamLabel || '', team_id: teamId, customer_id: customerId, role: role || 'editor', alpha_tag: alphaTag || null }),
     });
     const j = await res.json().catch(() => ({}));
     return { coach_id: j.coach_id || null, ok: j.ok !== false, emailed: !!j.emailed };
@@ -1545,7 +1552,7 @@ function SessionDetail({ session, customer, onBack, onNewEst }) {
       const team = teams.find(t => t.id === teamId);
       const { coach_id } = await inviteRosterCoach({
         email, name, teamId, customerId: customer.id,
-        teamLabel: `${team?.name || ''} — ${session.name}`,
+        teamLabel: `${team?.name || ''} — ${session.name}`, alphaTag: customer.alpha_tag,
       });
       setCoachAccounts(prev => ({
         ...prev, [teamId]: [...(prev[teamId] || []).filter(c => c.email !== email), { email, name, role: 'editor', id: coach_id }],
@@ -1779,7 +1786,7 @@ export function RosterOrdersStaff({ customer, nf, onNewEst }) {
     const email = (leadInvite.email || '').trim();
     if (!email) return;
     setLeadInvite(p => ({ ...p, sending: true, done: '' }));
-    const { ok } = await inviteRosterCoach({ email, name: (leadInvite.name || '').trim(), customerId: customer.id, teamLabel: customer.name });
+    const { ok } = await inviteRosterCoach({ email, name: (leadInvite.name || '').trim(), customerId: customer.id, teamLabel: customer.name, alphaTag: customer.alpha_tag });
     setLeadInvite({ open: true, email: '', name: '', sending: false, done: ok ? `Invited ${email} ✓` : 'Could not invite — check email service config.' });
     if (ok) loadCoaches();
   };
@@ -2154,7 +2161,7 @@ export function RosterOrdersCoach({ customer }) {
     setInvite(prev => ({ ...prev, [team.id]: { ...f, sending: true } }));
     const { coach_id } = await inviteRosterCoach({
       email, name: (f.name || '').trim(), teamId: team.id, customerId: customer.id,
-      teamLabel: `${team.name} — ${session.name}`,
+      teamLabel: `${team.name} — ${session.name}`, alphaTag: customer.alpha_tag,
     });
     setCoachesByTeam(prev => ({
       ...prev, [team.id]: [...(prev[team.id] || []).filter(c => c.email !== email), { email, name: f.name, role: 'editor', id: coach_id }],
