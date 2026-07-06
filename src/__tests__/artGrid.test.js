@@ -99,6 +99,25 @@ describe('autoColorChoice', () => {
     const legacy = { color_ways: cws, web_logos: [{ url: 'a.png', color_way: 'Black' }, { url: 'b.png', color_way: 'White' }] };
     expect(autoColorChoice(legacy, 'Black')).toMatchObject({ kind: 'variant', url: 'a.png', colorWayId: 'cw_d' });
   });
+
+  test('fixed-color methods (embroidery/DTF/sublimation) stay Orig even on dark garments', () => {
+    // A single full-color embroidery logo must NOT be recolored to a flat white on a black
+    // garment (that turns the mark into a white silhouette). Thread colors are fixed → Orig.
+    const emb = { deco_type: 'embroidery', web_logos: [{ url: 'sf.png', color_way: '', is_default: true }] };
+    expect(autoColorChoice(emb, 'Black')).toEqual({ kind: 'recolor', choice: 'original' });
+    expect(autoColorChoice(emb, 'Navy')).toEqual({ kind: 'recolor', choice: 'original' });
+    expect(autoColorChoice({ deco_type: 'dtf', web_logos: [{ url: 'a.png' }] }, 'Black')).toEqual({ kind: 'recolor', choice: 'original' });
+    // Screen print is single-ink → still flips to white on a dark garment.
+    expect(autoColorChoice({ deco_type: 'screen_print', web_logos: [{ url: 'a.png' }] }, 'Black')).toEqual({ kind: 'recolor', choice: 'white' });
+  });
+
+  test('preferOriginal (caller detected a multi-color mark) keeps Orig even for screen print', () => {
+    const sp = { deco_type: 'screen_print', web_logos: [{ url: 'a.png' }] };
+    expect(autoColorChoice(sp, 'Black', { preferOriginal: true })).toEqual({ kind: 'recolor', choice: 'original' });
+    // undefined/false opt → unchanged single-ink behavior.
+    expect(autoColorChoice(sp, 'Black', { preferOriginal: false })).toEqual({ kind: 'recolor', choice: 'white' });
+    expect(autoColorChoice(sp, 'Black')).toEqual({ kind: 'recolor', choice: 'white' });
+  });
 });
 
 describe('resolveItemPlacement', () => {

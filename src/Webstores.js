@@ -8843,6 +8843,47 @@ async function recolorToBlob(url, hex) {
 }
 
 const _loadImg = (url) => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+
+// Roughly, does this logo use more than one ink color? A flat white/black recolor (Autocolor's
+// light-on-dark move) turns a MULTI-color mark — e.g. a gold+red+white crest — into a solid
+// silhouette, so Autocolor must leave those as Orig. A single-ink mark (one color + anti-alias
+// edges) can still flip. Returns true only when confident it's multi-color; any load/CORS/parse
+// failure → false (keep the single-ink behavior). SVG: count distinct fill/stroke colors. Raster:
+// bucket opaque pixels into black/white/grey + 12 hue bins and call it multi when ≥2 buckets each
+// hold a meaningful share (≥8%), which discounts anti-aliasing.
+async function logoIsMulticolor(url) {
+  if (!url) return false;
+  try {
+    if (isSvg(url)) {
+      const txt = await fetch(url).then((r) => r.text());
+      const cols = new Set((txt.match(/(?:fill|stroke)\s*[:=]\s*["']?#[0-9a-fA-F]{3,6}/g) || [])
+        .map((m) => m.replace(/.*#/, '#').toLowerCase())
+        .filter((hxc) => !['#fff', '#ffffff', '#000', '#000000'].includes(hxc)));
+      return cols.size >= 2;
+    }
+    const img = await _loadImg(url);
+    const s = 72;
+    const iw = img.naturalWidth || s, ih = img.naturalHeight || s;
+    const scale = Math.min(1, s / Math.max(iw, ih));
+    const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const groups = {}; let opaque = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue;
+      opaque++;
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), v = mx / 255, sat = mx ? (mx - mn) / mx : 0;
+      let key;
+      if (sat < 0.22) key = v < 0.28 ? 'k' : v > 0.82 ? 'w' : 'g'; // near-grey: black / white / grey
+      else { const d = mx - mn; let hue = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hue = (hue * 60 + 360) % 360; key = 'h' + Math.floor(hue / 30); }
+      groups[key] = (groups[key] || 0) + 1;
+    }
+    if (opaque < 20) return false;
+    return Object.values(groups).filter((n) => n / opaque >= 0.08).length >= 2;
+  } catch (_) { return false; }
+}
 const _toHex = (r, g, b) => '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 
 // The logo's own dominant colors, so a rep can pick the white / gold / etc. to change.
@@ -8969,6 +9010,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // Per-color logo choice (keyed by the color row's item id): a real per-CW variant
   // { kind:'variant', url, colorWayId, label } or a recolor { kind:'recolor', choice }.
   const [pickByItem, setPickByItem] = useState({});
+  const [multiColorByArt, setMultiColorByArt] = useState({}); // art id -> is the logo multi-color? (async-detected; keeps Autocolor from whiting out a multi-color mark)
   // One card per style; each card pages through its colors. Placement is per STYLE
   // (drag/resize applies to all its colors — the photos match, so one size reads
   // consistently), with an optional nudge override for the odd color's photo.
@@ -9008,6 +9050,15 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
   const activeArt = (storeArt || []).find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
   const activeUrl = artPlaceUrl(activeArt);
+  // Detect once whether the active logo is multi-color, so Autocolor keeps a multi-color mark
+  // as Orig instead of knocking it out to a white silhouette on dark garments. Cached per art id.
+  const activeMulti = multiColorByArt[activeId];
+  useEffect(() => {
+    if (!activeId || !activeUrl || multiColorByArt[activeId] !== undefined) return;
+    let alive = true;
+    logoIsMulticolor(activeUrl).then((m) => { if (alive) setMultiColorByArt((p) => (p[activeId] !== undefined ? p : { ...p, [activeId]: m })); });
+    return () => { alive = false; };
+  }, [activeId, activeUrl]); // eslint-disable-line react-hooks/exhaustive-deps
   const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
   const _fullBack = ART_PLACEMENTS.find((p) => p.id === 'full_back') || place;
   // The active logo's real per-CW variants (artist cutouts). ≥2 → the card shows variant
@@ -9039,14 +9090,18 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // Autocolor: the per-COLOR pick, resolved from the garment color (real CW variant when
   // the logo has one, else a light/dark recolor). Used as the live default and re-applied
   // in one click by the Autocolor button.
-  const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color);
+  const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color, { preferOriginal: activeMulti });
   const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
   // Autocolor: with styles selected, recolor just those; with NOTHING selected it goes
   // store-wide — selects every style and colors every color in one click.
-  const autocolorSelected = () => {
+  const autocolorSelected = async () => {
     const targets = includedItems.length ? includedItems : allItems;
     if (!includedItems.length) setSelected(new Set(groups.map((g2) => g2.key)));
-    setPickByItem((m) => { const n = { ...m }; for (const it of targets) n[it.id] = autoColorChoice(activeArt, it.color); return n; });
+    // Make sure the multi-color check has resolved before Autocolor commits picks — otherwise a
+    // fast click could still knock a multi-color logo out to white before detection lands.
+    let multi = activeMulti;
+    if (multi === undefined && activeUrl) { multi = await logoIsMulticolor(activeUrl); setMultiColorByArt((p) => (p[activeId] !== undefined ? p : { ...p, [activeId]: multi })); }
+    setPickByItem((m) => { const n = { ...m }; for (const it of targets) n[it.id] = autoColorChoice(activeArt, it.color, { preferOriginal: multi }); return n; });
   };
   // Rep self-serve: turn the shown color's cutout (a recolor, or the base) into a saved,
   // reusable web logo tied to a color way — creating the CW if the rep names a new one.
