@@ -24,11 +24,13 @@ const bad = (code, error) => ({ statusCode: code, headers: CORS, body: JSON.stri
 
 // Allow-listed writable columns per table (defends against a crafted payload writing
 // arbitrary columns — e.g. flipping ownership fields). id/parent keys are handled explicitly.
-// Column names verified against migration 00160.
+// Column names verified against the LIVE schema (information_schema), not just 00160 —
+// the live tables carry columns added after 00160 (qty/notes/size_group on sizes,
+// category on players) that the coach portal actually writes.
 const SESSION_COLS = new Set(['name', 'status', 'season', 'deadline', 'kit_template_id', 'notes', 'kit_items', 'updated_at']);
 const TEAM_COLS = new Set(['name', 'sort_order', 'locked']);
-const PLAYER_COLS = new Set(['first_name', 'last_name', 'jersey_number', 'is_gk', 'is_loaner', 'sort_order', 'updated_at']);
-const SIZE_COLS = new Set(['kit_slot', 'size', 'updated_at']);
+const PLAYER_COLS = new Set(['first_name', 'last_name', 'jersey_number', 'is_gk', 'is_loaner', 'sort_order', 'category', 'updated_at']);
+const SIZE_COLS = new Set(['kit_slot', 'size', 'qty', 'notes', 'size_group', 'updated_at']);
 const pick = (obj, allowed) => {
   const out = {};
   Object.keys(obj || {}).forEach((k) => { if (allowed.has(k)) out[k] = obj[k]; });
