@@ -36,8 +36,10 @@ const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af
 // Wear the team's own colors in the portal header, the way each webstore
 // header is themed by its store colors. customer.school_colors is an array of
 // catalog color-family names (e.g. ["Navy","Orange","White"]); families + hexes
-// match src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js.
-const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// mirror src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js — except
+// Red, which is intentionally the deeper team-brand red here (PMS 200 C, #BA0C2F)
+// rather than the brighter garment-swatch red, so the branded hero reads richer.
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
 // Darkest-first: which team color makes the best deep banner background (white
 // text stays readable). Light/neutral families are intentionally excluded.
 const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
@@ -1520,7 +1522,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,marginBottom:26,flexWrap:'wrap'}}>
           <div>
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:2,textTransform:'uppercase',color:tAccent,marginBottom:8}}>Athletic Department</div>
-            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>Spend &amp; Promo</h1>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>{hasPromo?'Spend & Promo':'Spend Report'}</h1>
             <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',margin:'12px 0 10px'}}/>
             <div style={{fontSize:15,color:'#64748b'}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
           </div>
@@ -1619,7 +1621,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
     {key:'shop',label:'Shop',icon:'🛍️'},
-    ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
+    ...(adData?[{key:'spend',label:adData.hasPromo?'Spend & Promo':'Spend',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
   ];
   // Reorder a saved design through Live Look — deep-links the catalog with the artwork so the
   // coach picks gear and the design rides along to the rep on the order request.
@@ -1676,7 +1678,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary}}>{customer.name}</div>
             <div style={{fontSize:11,color:'#5A6075'}}>{(customer.contacts||[])[0]?.name||'Coach'}</div>
           </div>
-          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:customer.logo_url?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
+          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:cpLogo?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
         </div>
       </div>
     </div>
@@ -1719,13 +1721,19 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Quick Access ── */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary,margin:'8px 0 16px'}}>Quick Access</div>
           <div className="nsa-qa">
-            {(()=>{const qa=[
+            {(()=>{
+              // Surface an open team store right on the dashboard — a live store is
+              // time-sensitive (it closes), so it earns a tile, not just the nav tab.
+              const _openStore=cpStores.find(s=>s.status==='open');
+              const _storeClose=_openStore&&_openStore.close_at?new Date(_openStore.close_at).toLocaleDateString(undefined,{month:'short',day:'numeric'}):'';
+              const qa=[
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
               {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
+              ...(hasStore?[{k:'store',t:'Team Store',sub:openStoreCount>0?('Open now'+(_storeClose?' · closes '+_storeClose:'')):'View store',icon:'🛒',accent:true,sa:openStoreCount>0}]:[]),
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
               {k:'shop',t:'Catalogs',sub:'Browse the team store',icon:'🛍️',accent:false},
-              ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
+              ...(adData?[{k:'spend',t:adData.hasPromo?'Promo & Spend':'Spend Report',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
               <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
