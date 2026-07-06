@@ -15468,12 +15468,15 @@ export default function App(){
       const invLines=invs.filter(inv=>{
         if(inv.status==='paid')return false;
         const so=sos.find(s=>s.id===inv.so_id);
-        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(so?.created_by||cc?.primary_rep_id)===repFilter}
+        // Attribution follows the account owner (customer.primary_rep_id), falling back to the SO
+        // creator — same rule as earned commissions and every other rep rollup. An open invoice on
+        // another rep's account must not surface in the SO creator's pipeline.
+        if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return(cc?.primary_rep_id||so?.created_by)===repFilter}
         return true;
       }).map(inv=>{
         const so=sos.find(s=>s.id===inv.so_id);
         const c=cust.find(x=>x.id===inv.customer_id);
-        const rep=REPS.find(r=>r.id===(so?.created_by||c?.primary_rep_id));
+        const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so?.created_by));
         const gp=calcGP(inv);
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
@@ -15481,7 +15484,7 @@ export default function App(){
         const expRate=willBeLate?0.15:0.30;
         const expComm=Math.round(gp.gp*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
-        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(so?.created_by||c?.primary_rep_id),type:'invoice'};
+        return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:(c?.primary_rep_id||so?.created_by),type:'invoice'};
       });
       // IDs of SOs that already have invoices
       const invoicedSOIds=new Set(invs.map(i=>i.so_id).filter(Boolean));
@@ -15546,7 +15549,7 @@ export default function App(){
         const totalCost=productCost+decoCost+shipCost;
         const soDate=so.created_at?so.created_at.substring(0,10):'';
         const soMonth=soDate?soDate.substring(0,7):'';
-        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:so.created_by};
+        return{so,customer:c,rep,productCost:Math.round(productCost*100)/100,decoCost:Math.round(decoCost*100)/100,shipCost:Math.round(shipCost*100)/100,totalCost:Math.round(totalCost*100)/100,promoAmount:safeNum(so.promo_amount),soDate,soMonth,repId:(c?.primary_rep_id||so.created_by)};
       });
     };
 
