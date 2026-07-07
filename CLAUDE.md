@@ -21,6 +21,21 @@
 - Keep changes focused and minimal.
 - Test that the app still runs after making changes.
 
+## Operating Manual
+
+- Before starting any non-trivial task (multi-file change, ambiguous request, or anything
+  touching money/security/persistence paths), read `OPUS_OPERATING_MANUAL.md` — the
+  working craft: request-reading, decomposition, risk allocation, verification,
+  self-attack, communication. For large refactors or risky-path reviews, also read
+  `FABLE_WORKING_PROCESS.md` (this repo's specific playbooks).
+- Before sending any final answer or pushing any change, run the manual's self-test:
+  1. Am I answering the need or the phrasing?
+  2. Did I re-derive the most load-bearing claim, or does it just sound right?
+  3. Can the reader separate my verified claims from my guesses from the text alone?
+  4. What would prove this wrong — and did I actually look for it?
+  5. If the reader stops after my first sentence, do they leave with the correct
+     takeaway, including bad news and what's left undone?
+
 ## Working with Claude Fable 5
 
 This repo is worked with Claude Fable 5. These habits get noticeably better results
