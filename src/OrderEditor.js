@@ -2009,7 +2009,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>}
     </div>;
   };
-  const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+  const _PO_SZ_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
   // ─── Single-order API submission (S&S / SanMar / Momentec) ───
   // A created PO can be sent to the vendor's API straight from the PO view — it
   // doesn't have to go through the batch queue (e.g. a single order already over
@@ -2049,8 +2049,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     };
   };
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
-  const _recordApiOrder=(desc,r)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return;
-    const stamp={api_order_id:oid,api_ordered_at:new Date().toLocaleString()};
+  const _recordApiOrder=(desc,r,apiLines)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return;
+    // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
+    // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
+    const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+    const stamp={api_order_id:oid,api_ordered_at:new Date().toLocaleString(),...( _vkeys?{vendor_keys:_vkeys}:{})};
     const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,...stamp}:pl)}));
     const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
@@ -2156,7 +2159,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // numeric key that isn't PO metadata). Used to warn before a re-size orphans an existing PO's
   // bucket — the PO keeps its old OSFA/QTY/size keys, so the item's new sizes won't line up against
   // it (see openSizesFor), which is how an already-ordered item can re-appear as "open to order".
-  const _committedPoUnits=(it)=>{const META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+  const _committedPoUnits=(it)=>{const META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
     return(((it&&it.po_lines)||[]).reduce((a,pl)=>a+Object.entries(pl||{}).reduce((s,[k,v])=>s+((!k.startsWith('_')&&!META.has(k)&&typeof v==='number'&&v>0)?v:0),0),0))};
   // Switch an item between apparel / footwear / OSFA size pools. Clears existing
   // size quantities (with confirmation) since the size pools don't overlap, and
@@ -2400,7 +2403,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _costCombined=Object.keys(costArtQty).length>0;
   const totals=useMemo(()=>{
     // PO size-key exclusion list — matches the per-PO modal so we count only true size qty fields.
-    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
     let rev=0,cost=0;safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
     // Use per-size sells when available (vendor items have _sizeSells for 2XL+ upcharges)
     if(!it.is_free_promo){if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}}
@@ -7749,22 +7752,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       })()}
 
       {sanmarPreviewBatch&&<SanMarPreviewModal {...sanmarPreviewBatch} onClose={()=>setSanMarPreviewBatch(null)}/>}
-      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
-      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={r=>_recordApiOrder(apiOrder,r)}/>}
-      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={async r=>{
+      {apiOrder&&apiOrder.vendorKey==='sanmar'&&<SanMarPreviewModal {...apiOrder} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vendorList.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setApiOrder(null)} onSubmitted={(r,apiLines)=>_recordApiOrder(apiOrder,r,apiLines)}/>}
+      {apiOrder&&apiOrder.vendorKey==='sss'&&<SSOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={(r,apiLines)=>_recordApiOrder(apiOrder,r,apiLines)}/>}
+      {apiOrder&&apiOrder.vendorKey==='momentec'&&<MomentecOrderModal {...apiOrder} onClose={()=>setApiOrder(null)} onSubmitted={async (r,apiLines)=>{
         if(apiOrder.isBatch){
-          const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:'momentec',groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r}):null;
+          const orderedNum=onOrderBatch?await onOrderBatch({vendorKey:'momentec',groupKey:apiOrder.groupKey||null,skipSoId:apiOrder.skipSoId,apiResult:r,apiLines}):null;
           if(orderedNum){
             // Promote this SO's own queued lines through the editor copy — App skipped them.
+            // Stamp the API ack + vendor_keys here too (this path used to drop api_order_id).
+            const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
+            const _vk=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
+            const _stamp=_oid?{api_order_id:_oid,api_ordered_at:new Date().toLocaleString(),...(_vk?{vendor_keys:_vk}:{})}:{};
             const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
             if(myBatchIds.size>0){
-              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||'Momentec')}:pl)}));
+              const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||'Momentec'),..._stamp}:pl)}));
               const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
               setO(updated);onSave(updated);
             }
           }
         } else {
-          _recordApiOrder(apiOrder,r);
+          _recordApiOrder(apiOrder,r,apiLines);
         }
       }}/>}
 
@@ -10699,7 +10706,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // Grand totals across every item on this PO (not just the active tab) so the "PO Total"
           // at the bottom reflects the entire purchase order. Falls back to active-line totals when
           // there is only one item on the PO.
-          const _grand=allLines.reduce((acc,ln)=>{const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];if(!it||!pl)return acc;const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='batch_queue_id'&&k!=='batch_po_number'&&k!=='preexisting'&&k!=='email_history'&&k!=='shipping'&&typeof pl[k]==='number');const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);const ord=sk.reduce((a,sz)=>a+(pl[sz]||0),0);const rcvd=sk.reduce((a,sz)=>a+((pl.received||{})[sz]||0),0);const opn=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-((pl.received||{})[sz]||0)-((pl.cancelled||{})[sz]||0)),0);acc.ord+=ord*u;acc.rcvd+=rcvd*u;acc.open+=opn*u;return acc},{ord:0,rcvd:0,open:0});
+          const _grand=allLines.reduce((acc,ln)=>{const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];if(!it||!pl)return acc;const sk=Object.keys(pl).filter(k=>!k.startsWith('_')&&k!=='status'&&k!=='po_id'&&k!=='received'&&k!=='shipments'&&k!=='cancelled'&&k!=='po_type'&&k!=='deco_vendor'&&k!=='deco_type'&&k!=='created_at'&&k!=='memo'&&k!=='notes'&&k!=='expected_date'&&k!=='billed'&&k!=='tracking_numbers'&&k!=='unit_cost'&&k!=='vendor'&&k!=='drop_ship'&&k!=='batch_queue_id'&&k!=='batch_po_number'&&k!=='preexisting'&&k!=='email_history'&&k!=='shipping'&&k!=='api_order_id'&&k!=='vendor_keys'&&typeof pl[k]==='number');const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);const ord=sk.reduce((a,sz)=>a+(pl[sz]||0),0);const rcvd=sk.reduce((a,sz)=>a+((pl.received||{})[sz]||0),0);const opn=sk.reduce((a,sz)=>a+Math.max(0,(pl[sz]||0)-((pl.received||{})[sz]||0)-((pl.cancelled||{})[sz]||0)),0);acc.ord+=ord*u;acc.rcvd+=rcvd*u;acc.open+=opn*u;return acc},{ord:0,rcvd:0,open:0});
           return<>
           <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginBottom:12}}>
             <thead><tr style={{borderBottom:'2px solid #0f172a'}}><th style={{padding:'4px 8px',textAlign:'left',fontSize:10,color:'#64748b'}}></th>{szKeys.map(sz=><th key={sz} style={{padding:'4px 8px',textAlign:'center',minWidth:48}}>{sz}</th>)}<th style={{padding:'4px 8px',textAlign:'center'}}>TOTAL</th><th style={{padding:'4px 8px',textAlign:'right',minWidth:70}}>$</th></tr></thead>
@@ -11193,7 +11200,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Per-line data for every item on this PO (not just the active one) so the PDF
               // captures the full purchase order. Re-derive size keys / totals from the live
               // po line for each item, since the user may have different sizes per line.
-              const _excludeKeys=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+              const _excludeKeys=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
               const linesData=allLines.map(ln=>{
                 const it=o.items[ln.lineIdx];const pl=it?.po_lines?.[ln.poIdx];
                 if(!it||!pl)return null;

@@ -76,7 +76,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     // Only a LIVE order should mark the batch as ordered; a test order places nothing.
     // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order.
     try {
-      if (live) onSubmitted && onSubmitted(r);
+      if (live) onSubmitted && onSubmitted(r, lines);
     } catch (e) {
       console.error('[S&S] order placed but post-order bookkeeping failed:', e);
     }
