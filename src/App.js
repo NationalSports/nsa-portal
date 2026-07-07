@@ -25092,24 +25092,42 @@ export default function App(){
       </>}
 
       {/* BILLS TAB — Supplier Bill PDF Upload & Parse */}
-      {impTab==='bills'&&<>
+      {impTab==='bills'&&(()=>{
+        // ══ NSA brand layer — "1A · Guided Worklist" redesign of Supplier Bills / reconcile.
+        //    Presentation ONLY: navy+red, Barlow Condensed, skewed CTAs. Every handler, state
+        //    setter and data field below is the pre-redesign wiring, left untouched. Helpers are
+        //    call-style (fn(...) → JSX) not inline <Components>, so controlled inputs in the bill
+        //    cards never remount mid-keystroke. ══
+        const FD="'Barlow Condensed','Arial Narrow',sans-serif";
+        const NAVY='#192853',NAVY_DK='#0F1A38',RED='#962C32',RED_LT='#D94A52';
+        const OFFW='#F7F8FB',LGRAY='#EEF1F6',MGRAY='#D1D5DE',TXT='#2A2F3E',TXTL='#5A6075';
+        const GREEN='#1F7A46',GREEN_BG='#E7F2EC',GOLD='#C08A2E',GOLD_D='#8A5A12',GOLD_BG='#F6EEDD',REDBG='#F7E9EA';
+        const HASH='repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)';
+        const nsaMoney=n=>'$'+(Number(n)||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+        const un=c=><span style={{display:'inline-flex',alignItems:'center',gap:7,transform:'skewX(6deg)'}}>{c}</span>;
+        const skBtn=o=><button onClick={o.onClick} disabled={o.disabled} title={o.title} style={{display:'inline-flex',alignItems:'center',justifyContent:'center',border:o.border||'none',background:o.bg,color:o.fg,padding:o.pad||'11px 22px',fontFamily:FD,fontWeight:700,fontSize:o.fs||13,letterSpacing:.7,textTransform:'uppercase',transform:'skewX(-6deg)',cursor:o.disabled?'not-allowed':'pointer',opacity:o.disabled?0.5:1,boxShadow:o.shadow||'none',whiteSpace:'nowrap'}}>{un(o.children)}</button>;
+        const badge=(t,bg,fg)=><span style={{display:'inline-block',fontFamily:FD,fontWeight:700,fontSize:10.5,textTransform:'uppercase',letterSpacing:1.2,padding:'4px 11px',transform:'skewX(-6deg)',background:bg,color:fg}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{t}</span></span>;
+        const pill=(t,bg,fg)=><span style={{display:'inline-block',padding:'3px 9px',borderRadius:3,fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:.5,textTransform:'uppercase',background:bg,color:fg}}>{t}</span>;
+        const secHead=o=><div style={{display:'flex',alignItems:'center',gap:12,margin:o.mt?'26px 0 14px':'0 0 14px',flexWrap:'wrap'}}><span style={{width:9,height:9,borderRadius:'50%',background:o.dot,flex:'0 0 auto'}}/><h3 style={{fontFamily:FD,fontWeight:800,fontSize:18,textTransform:'uppercase',letterSpacing:.5,color:NAVY,margin:0}}>{o.title}{o.count!=null&&<span style={{color:TXTL}}> ({o.count})</span>}</h3><span style={{width:46,height:3,background:RED,transform:'skewX(-12deg)',flex:'0 0 auto'}}/>{o.right?<span style={{marginLeft:'auto'}}>{o.right}</span>:o.note?<span style={{marginLeft:'auto',fontFamily:FD,fontSize:13,letterSpacing:.5,textTransform:'uppercase',color:TXTL}}>{o.note}</span>:null}</div>;
+        const statTile=(val,label,color)=><div><div style={{fontFamily:FD,fontWeight:800,fontSize:38,color:color||'#fff',lineHeight:.9,fontVariantNumeric:'tabular-nums'}}>{val}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>{label}</div></div>;
+        const swStyle=a=>({display:'inline-flex',alignItems:'center',border:'none',background:a?NAVY:'#fff',color:a?'#fff':TXTL,padding:'11px 22px',fontFamily:FD,fontWeight:700,fontSize:15,letterSpacing:.5,textTransform:'uppercase',transform:'skewX(-6deg)',cursor:'pointer',boxShadow:a?'0 8px 20px rgba(25,40,83,.22)':'inset 0 0 0 1px '+LGRAY});
+        return <div className="nsa-bills" style={{fontFamily:"'Source Sans 3','Segoe UI',system-ui,sans-serif",color:TXT}}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');.nsa-bills h2{font-family:${FD};font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:${NAVY};}`}</style>
         {/* Sub-tabs: the import/review flow vs the built-out Look at Later workspace */}
-        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&r._t.bucket!=='captured').length;return<div style={{display:'flex',gap:6,marginBottom:14,borderBottom:'1px solid #e2e8f0',paddingBottom:10}}>
-          {[['import','📥 Import & Review'],['sportsinc','🏀 Sports Inc'+(siOpen?' ('+siOpen+')':'')],['later','🕒 Look at Later'+(parked?' ('+parked+')':'')]].map(([id,label])=>{
-            const accent=id==='later'?'#f59e0b':id==='sportsinc'?'#2563eb':'#7c3aed';
-            return <button key={id} onClick={()=>setBillView(id)} style={{fontSize:12,fontWeight:700,padding:'6px 14px',borderRadius:8,cursor:'pointer',
-              border:'1px solid '+(billView===id?accent:'#e2e8f0'),
-              background:billView===id?accent:'#fff',color:billView===id?'#fff':'#475569'}}>{label}</button>;})}
+        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&r._t.bucket!=='captured').length;return<div style={{display:'flex',gap:10,marginBottom:22,flexWrap:'wrap'}}>
+          {[['import','Import & Review'],['sportsinc','Sports Inc'],['later','Look at Later']].map(([id,label])=>{
+            const n=id==='later'?parked:id==='sportsinc'?siOpen:0;
+            return <button key={id} onClick={()=>setBillView(id)} style={swStyle(billView===id)}><span style={{display:'inline-flex',alignItems:'center',gap:8,transform:'skewX(6deg)'}}>{label}{n?<span style={{fontSize:12,opacity:.7}}>{n}</span>:null}</span></button>;})}
         </div>;})()}
         {billView==='import'&&<>
         {/* QB Connection Status Banner */}
-        <div style={{marginBottom:12,padding:'10px 16px',borderRadius:8,display:'flex',alignItems:'center',gap:10,
-          background:qbConfig.connected?'#f0fdf4':'#fef3c7',border:'1px solid '+(qbConfig.connected?'#bbf7d0':'#fde68a')}}>
-          <span style={{fontSize:16}}>{qbConfig.connected?'✅':'⚠️'}</span>
-          <span style={{fontSize:12,fontWeight:600,color:qbConfig.connected?'#166534':'#92400e'}}>
-            {qbConfig.connected?'QuickBooks Connected'+(qbConfig.companyName?' — '+qbConfig.companyName:''):'QuickBooks Not Connected — bills will be saved locally but NOT pushed to QB'}
+        <div style={{marginBottom:12,padding:'12px 16px',borderRadius:6,display:'flex',alignItems:'center',gap:12,
+          background:'#fff',border:'1px solid '+LGRAY,borderLeft:'4px solid '+(qbConfig.connected?GREEN:RED)}}>
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke={qbConfig.connected?GREEN:RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{qbConfig.connected?<path d="M20 6 9 17l-5-5"/>:<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/>}</svg>
+          <span style={{fontSize:13,color:TXT}}>
+            <strong style={{fontFamily:FD,letterSpacing:.3,color:NAVY}}>{qbConfig.connected?'QuickBooks connected.':'QuickBooks not connected.'}</strong>{' '}{qbConfig.connected?(qbConfig.companyName||''):'Bills save to the Portal but won’t post to QB.'}
           </span>
-          {!qbConfig.connected&&<button className="btn btn-sm" style={{marginLeft:'auto',fontSize:11,background:'#2CA01C',color:'white',border:'none',padding:'4px 12px',borderRadius:6,fontWeight:700,cursor:'pointer'}} onClick={connectQB}>Connect QB</button>}
+          {!qbConfig.connected&&<span style={{marginLeft:'auto'}}>{skBtn({bg:RED,fg:'#fff',fs:12,pad:'8px 16px',onClick:connectQB,children:'Connect QB'})}</span>}
         </div>
         {/* Resume banner — a deploy auto-reload (or crash) mid-review lands back on the upload
             step with the session snapshot intact. Offer to restore it rather than making staff
@@ -25139,22 +25157,22 @@ export default function App(){
           </div>}
         </div>;})()}
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#2563eb',background:'#eff6ff'}}>
+          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#1e40af',display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
+                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
                 <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
               </div>
-              <button className="btn btn-primary" style={{background:'#2563eb',borderColor:'#2563eb',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
                 onClick={()=>pullFromSportsInc()}>
                 {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
               </button>
             </div>
           </div>
-          <div className="card" style={{gridColumn:'1 / -1',borderColor:'#0891b2',background:'#ecfeff'}}>
+          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+RED,background:'#fff',borderRadius:6}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
                 <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders straight from S&amp;S by invoice date &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
                   <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
@@ -25165,7 +25183,7 @@ export default function App(){
                   <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'last 3 months'}</span>
                 </div>
               </div>
-              <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
+              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
                 onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';
                   // both blank → last 3 months (All=True); otherwise an invoice-date window, with a
                   // blank "To" resolved to today so the live call sends a concrete end, not a sentinel.
@@ -25215,10 +25233,10 @@ export default function App(){
               <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>
                 Upload one or more supplier bill PDFs. They'll be parsed automatically to extract PO number, tracking, items, sizes, costs, and freight charges.
               </div>
-              <div style={{border:'2px dashed #7c3aed',borderRadius:12,padding:32,textAlign:'center',cursor:'pointer',background:'#faf5ff',marginBottom:12,transition:'all 0.2s'}}
-                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#3b82f6';e.currentTarget.style.background='#eff6ff'}}
-                onDragLeave={e=>{e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff'}}
-                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';e.currentTarget.style.background='#faf5ff';
+              <div style={{border:'2px dashed '+NAVY,borderRadius:8,padding:32,textAlign:'center',cursor:'pointer',background:'#F1F4FA',marginBottom:12,transition:'all 0.2s'}}
+                onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#962C32';e.currentTarget.style.background='#F7E9EA'}}
+                onDragLeave={e=>{e.currentTarget.style.borderColor='#192853';e.currentTarget.style.background='#F1F4FA'}}
+                onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor='#192853';e.currentTarget.style.background='#F1F4FA';
                   const files=[...e.dataTransfer.files].filter(f=>f.type==='application/pdf'||f.name.endsWith('.pdf'));
                   if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));
                   else nf('Only PDF files accepted','error')}}
@@ -25226,7 +25244,7 @@ export default function App(){
                 <input id="bill-pdf-input" type="file" accept=".pdf" multiple style={{display:'none'}}
                   onChange={e=>{const files=[...e.target.files];if(files.length)setBillImport(x=>({...x,files:[...x.files,...files]}));e.target.value=''}}/>
                 <div style={{fontSize:36,marginBottom:8}}>📄</div>
-                <div style={{fontSize:14,fontWeight:700,color:'#7c3aed'}}>Drop PDF bills here or click to browse</div>
+                <div style={{fontSize:15,fontWeight:700,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3}}>Drop PDF bills here or click to browse</div>
                 <div style={{fontSize:11,color:'#94a3b8',marginTop:4}}>Supports multiple files at once</div>
               </div>
               {billImport.files.length>0&&<>
@@ -25237,7 +25255,7 @@ export default function App(){
                   <button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontWeight:800,fontSize:14}} onClick={()=>setBillImport(x=>({...x,files:x.files.filter((_,fi)=>fi!==i)}))}>x</button>
                 </div>)}
                 <div style={{display:'flex',gap:8,marginTop:12}}>
-                  <button className="btn btn-primary" style={{flex:1,background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading}
+                  <button className="btn btn-primary" style={{flex:1,background:NAVY,borderColor:NAVY,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
                     onClick={()=>processBillPdfs(billImport.files)}>
                     {billImport.uploading?'Parsing...':'Parse '+billImport.files.length+' Bill(s)'}
                   </button>
@@ -25278,19 +25296,19 @@ export default function App(){
             const aiRunning=billImport.parsed.filter(b=>b._aiRunning).length;
             const aiable=issues.filter(b=>!b._aiRunning&&_billNeedsAi(b.parsed));// matched + mismatched → AI can try
             if(!triaged.length)return null;// all pushed/parked
-            if(!issues.length&&!aiRunning)return <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 12px',marginBottom:12,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,fontSize:12,fontWeight:700,color:'#166534'}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
-            return <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'10px 14px',marginBottom:12,background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+            if(!issues.length&&!aiRunning)return <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 16px',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderLeft:'4px solid '+GREEN,borderRadius:6,fontSize:13,fontWeight:600,color:NAVY}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
+            return <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'13px 18px',marginBottom:14,background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6}}>
               <span style={{fontSize:18}}>{aiRunning?'✨':'⚠️'}</span>
               <div style={{flex:1,minWidth:200}}>
                 <div style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{aiRunning>0&&issues.length===0?'AI is reconciling '+aiRunning+' bill'+(aiRunning===1?'':'s')+'…':issues.length+' of '+triaged.length+' bill'+(triaged.length===1?'':'s')+' don’t match up cleanly'}</div>
                 <div style={{fontSize:11,color:'#92400e',marginTop:2}}>{aiRunning>0?'✨ Checking matched bills against their orders — size/SKU label fixes apply automatically.':'No PO match, a duplicate doc #, or billing more than was ordered.'}{clean>0?' '+clean+' match cleanly and can still be pushed.':''}</div>
               </div>
-              {aiable.length>0&&<button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed',whiteSpace:'nowrap'}}
+              {aiable.length>0&&<button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:0.6}}
                 title="Ask AI to reconcile the bills that matched a PO but whose sizes/SKUs don't line up (vendor label quirks). It only touches matched, non-duplicate bills."
                 onClick={()=>{aiable.forEach(b=>_runAiBillMatch(b));nf('Running AI match on '+aiable.length+' bill'+(aiable.length===1?'':'s')+'…')}}>
                 ✨ AI-match {aiable.length}
               </button>}
-              {issues.length>0&&<button className="btn btn-primary" style={{background:'#f59e0b',borderColor:'#f59e0b',whiteSpace:'nowrap'}}
+              {issues.length>0&&<button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:0.6}}
                 title="Move every bill that doesn't match perfectly to Look at later, so you can push the clean ones now"
                 onClick={()=>{const n=issues.length;_parkBillsForLater(issues);nf(n+' bill'+(n===1?'':'s')+' moved to Look at Later — find them under the Look at Later tab')}}>
                 🕒 Move {issues.length} to Look at later
@@ -25306,43 +25324,58 @@ export default function App(){
             const counts={all:0,ready:0,attention:0,done:0};
             billImport.parsed.forEach(b=>{const t=_billTriage(b);counts.all++;if(!t)counts.done++;else if(t.issue)counts.attention++;else counts.ready++});
             const chips=[['all','All',counts.all,'#475569'],['ready','✓ Ready',counts.ready,'#166534'],['attention','⚠ Needs attention',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
-            return<div style={{position:'sticky',top:0,zIndex:20,background:'#fff',padding:'8px 0 6px',marginBottom:12,borderBottom:'1px solid #e2e8f0'}}>
-              <div style={{display:'flex',gap:8,alignItems:'center'}}>
-                <button className="btn btn-secondary" onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null);setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}}>← Upload More</button>
-                <span style={{fontSize:14,fontWeight:700,flex:1}}>{billImport.parsed.length} Bill(s) Parsed</span>
-                <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} disabled={billImport.uploading||!ready.length}
-                  onClick={()=>pushBillsToPortal()}>
-                  Push {ready.length} to Portal{readyTotal>0?' · $'+readyTotal.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):''}
-                </button>
-                <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534'}} disabled={billImport.uploading||!qbSel.length}
-                  onClick={pushBillsToQB}>
-                  {billImport.uploading?'Pushing to QB...':'Push '+qbSel.length+' to QuickBooks'}
-                </button>
+            return<div style={{marginBottom:16}}>
+              <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',flexWrap:'wrap'}}>
+                <div style={{display:'flex',gap:30,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
+                  {statTile(billImport.parsed.length,'Bills parsed')}
+                  <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
+                  {statTile(counts.ready,'Ready to push','#6FD59A')}
+                  {statTile(counts.attention,'Need attention',RED_LT)}
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Ready value</div></div>
+                </div>
+                <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} ready → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
+                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',disabled:billImport.uploading||!qbSel.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+qbSel.length+' to QuickBooks'})}
+                </div>
               </div>
-              <div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
-                {chips.map(([id,label,n,color])=><button key={id} onClick={()=>setBillFilter(id)}
-                  style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:12,cursor:'pointer',
-                    border:'1px solid '+(billFilter===id?color:'#e2e8f0'),
-                    background:billFilter===id?color:'#fff',color:billFilter===id?'#fff':color}}>
-                  {label} ({n})</button>)}
-                {billFilter!=='all'&&<span style={{fontSize:10,color:'#94a3b8',alignSelf:'center'}}>showing {billFilter==='ready'?'bills ready to push':billFilter==='attention'?'bills needing attention':'pushed & parked bills'}</span>}
+              <div style={{display:'flex',gap:10,marginTop:12,alignItems:'center',flexWrap:'wrap'}}>
+                <button onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null);setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}} style={{background:'none',border:'none',color:TXTL,fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.6,textTransform:'uppercase',cursor:'pointer',padding:0}}>← Upload more</button>
+                <span style={{fontFamily:FD,fontWeight:700,color:NAVY,fontSize:14,textTransform:'uppercase',letterSpacing:.4}}>{billImport.parsed.length} Bill(s) parsed</span>
+                <div style={{marginLeft:'auto',display:'inline-flex',background:LGRAY,borderRadius:6,padding:3,gap:3,flexWrap:'wrap'}}>
+                  {chips.map(([id,label,n,color])=><button key={id} onClick={()=>setBillFilter(id)}
+                    style={{border:'none',padding:'7px 13px',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.4,textTransform:'uppercase',borderRadius:4,cursor:'pointer',transform:'skewX(-4deg)',background:billFilter===id?NAVY:'transparent',color:billFilter===id?'#fff':TXTL}}>
+                    <span style={{display:'inline-block',transform:'skewX(4deg)'}}>{label} ({n})</span></button>)}
+                </div>
+                {billFilter!=='all'&&<span style={{fontSize:11,color:TXTL,alignSelf:'center'}}>showing {billFilter==='ready'?'bills ready to push':billFilter==='attention'?'bills needing attention':'pushed & parked bills'}</span>}
               </div>
             </div>;
           })()}
 
-          {billImport.parsed.map((b,bi)=>{
+          {(()=>{
+            const renderBillCard=(b,bi)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
             const bucket=!tri?'done':tri.issue?'attention':'ready';
-            if(billFilter!=='all'&&bucket!==billFilter)return null;// chip filter — bi stays the true index for edits
             const portalPushed=b.portalStatus==='success';
-            return<div key={bi} className="card" style={{marginBottom:12,border:portalPushed?'2px solid #16a34a':b.reviewLater?'2px solid #f59e0b':b.qbStatus==='success'?'2px solid #22c55e':b.qbStatus==='error'?'2px solid #ef4444':tri&&tri.issue?'2px solid #f59e0b':poMatch?'2px solid #3b82f6':'1px solid #e2e8f0',opacity:b.reviewLater?0.85:1}}>
-              <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,background:portalPushed?'#f0fdf4':b.reviewLater?'#fffbeb':b.qbStatus==='success'?'#f0fdf4':b.qbStatus==='error'?'#fef2f2':'#faf5ff'}}>
-                {!b.qbStatus&&!b.reviewLater&&!portalPushed&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18}}/>}
-                {b.qbStatus==='success'&&<span style={{fontSize:16,color:'#22c55e'}}>&#10003;</span>}
-                {b.qbStatus==='error'&&<span style={{fontSize:16,color:'#ef4444'}}>&#10007;</span>}
-                <h2 style={{margin:0,flex:1}}>{b.file}</h2>
+            const stripe=portalPushed?GREEN:b.reviewLater?GOLD:b.qbStatus==='error'?RED:tri&&tri.issue?RED:bucket==='ready'?GREEN:poMatch?NAVY:MGRAY;
+            const hdrBg=portalPushed?'#F0F7F2':b.reviewLater?GOLD_BG:b.qbStatus==='error'?REDBG:tri&&tri.issue?REDBG:'#fff';
+            return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
+              <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:stripe}}/>
+              <div style={{padding:'16px 22px 6px 24px',background:hdrBg}}>
+                <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
+                  {!b.qbStatus&&!b.reviewLater&&!portalPushed&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18,marginTop:3,flex:'0 0 auto'}}/>}
+                  {b.qbStatus==='success'&&<span style={{fontSize:16,color:GREEN,marginTop:2}}>&#10003;</span>}
+                  {b.qbStatus==='error'&&<span style={{fontSize:16,color:RED,marginTop:2}}>&#10007;</span>}
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontFamily:FD,fontWeight:800,fontSize:20,textTransform:'uppercase',letterSpacing:.3,color:NAVY,lineHeight:1.05,wordBreak:'break-word'}}>{bill.vendor||bill.supplier||b.file}</div>
+                    <div style={{fontSize:12.5,color:TXTL,marginTop:4}}>{[bill.doc_number&&('Inv '+bill.doc_number),bill.po_number,bill.doc_date].filter(Boolean).join(' · ')||b.file}</div>
+                  </div>
+                  <div style={{textAlign:'right',flex:'0 0 auto'}}>
+                    <div style={{fontFamily:FD,fontWeight:800,fontSize:28,color:NAVY,lineHeight:.9,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(bill.doc_total||bill.merchandise_total)}</div>
+                  </div>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginTop:10}}>
                 {portalPushed&&(()=>{
                   // Receipt, not just a badge: what landed where, with a click-through to verify.
                   const soId=poMatch?.so_id||poMatch?.so?.id||'';
@@ -25373,8 +25406,9 @@ export default function App(){
                   title='Move this bill to the Look at Later tab and out of this list (so it can&apos;t be pushed to QB by accident)'
                   style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>
                   🕒 Look at later</button>}
+                </div>
               </div>
-              <div className="card-body" style={{padding:0}}>
+              <div style={{padding:0}}>
                 {/* Issue banner — surfaces blocking problems (duplicate doc#, over-billing) immediately */}
                 {tri&&tri.errs.length>0&&<div style={{padding:'8px 14px',background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>
                   <div style={{fontSize:11,fontWeight:800,color:'#b91c1c',marginBottom:2,display:'flex',alignItems:'center',gap:6,justifyContent:'space-between'}}>
@@ -25742,7 +25776,21 @@ export default function App(){
                   {billImport.showRaw[bi]&&<pre style={{marginTop:6,padding:8,background:'#1e293b',color:'#e2e8f0',borderRadius:6,fontSize:10,maxHeight:300,overflow:'auto',whiteSpace:'pre-wrap',wordBreak:'break-all'}}>{b.text||'(no text extracted)'}</pre>}
                 </div>
               </div>
-            </div>})}
+            </div>;};
+            const _bk={ready:[],attention:[],done:[]};
+            billImport.parsed.forEach((b,bi)=>{const t=_billTriage(b);const k=!t?'done':t.issue?'attention':'ready';if(billFilter==='all'||k===billFilter)_bk[k].push([b,bi]);});
+            if(billFilter!=='all')return <div>{_bk[billFilter].map(([b,bi])=>renderBillCard(b,bi))}</div>;
+            // Flat, keyed child list under ONE parent so a bill that changes bucket mid-edit (typing in
+            // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
+            // preserving input focus, exactly like the old single flat map did.
+            const _children=[];
+            [[GREEN,'Ready to push','Clean matches · safe to push','ready'],[RED,'Need attention','Reconcile before pushing','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
+              if(!_bk[k].length)return;
+              _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
+              _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            });
+            return <div>{_children}</div>;
+          })()}
         </>}
 
         {/* Parsing indicator */}
@@ -25915,48 +25963,59 @@ export default function App(){
           const by=b=>siQueue.filter(r=>r._t?.bucket===b);
           const approve=by('approve'),review=by('review'),grab=by('grab'),outside=by('outside'),captured=by('captured');
           const sumD=rows=>rows.reduce((a,r)=>a+(Number(r.doc_total)||0),0);
-          const confPill=c=>{const m=({high:['#dcfce7','#166534'],medium:['#fef9c3','#854d0e'],low:['#fee2e2','#991b1b']})[c]||['#e2e8f0','#475569'];return <span style={{padding:'1px 7px',borderRadius:10,fontSize:10,fontWeight:700,background:m[0],color:m[1]}}>{c==='high'?'high match':c==='medium'?'review match':c||'no match'}</span>;};
+          const confPill=c=>{const m=({high:[GREEN_BG,GREEN],medium:[GOLD_BG,GOLD_D],low:[REDBG,RED]})[c]||[LGRAY,TXTL];return pill(c==='high'?'High match':c==='medium'?'Review match':(c||'No match'),m[0],m[1]);};
+          const siBtn=(k,label,bg,fg,onClick,title,border)=><button key={k} onClick={onClick} title={title} style={{border:border||'none',background:bg,color:fg,padding:'7px 13px',fontFamily:FD,fontWeight:700,fontSize:11.5,letterSpacing:.5,textTransform:'uppercase',transform:'skewX(-6deg)',cursor:'pointer',whiteSpace:'nowrap'}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{label}</span></button>;
           const Row=(r,opts={})=>{
             const t=r._t||{};const p=t.parsed||{};const open=siExpand===r.si_doc_number;
-            return <div key={r.si_doc_number} style={{border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6,background:'#fff'}}>
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'8px 12px',cursor:'pointer'}} onClick={()=>setSiExpand(open?null:r.si_doc_number)}>
+            return <div key={r.si_doc_number} style={{border:'1px solid '+LGRAY,borderLeft:'4px solid '+(opts.stripe||MGRAY),borderRadius:6,marginBottom:8,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
+              <div style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',cursor:'pointer'}} onClick={()=>setSiExpand(open?null:r.si_doc_number)}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:13,fontWeight:700}}>{r.supplier||'—'} <span style={{fontWeight:400,color:'#64748b',fontSize:11}}>· Inv {r.supplier_doc_number||r.si_doc_number}</span></div>
-                  <div style={{fontSize:11,color:'#64748b'}}>{r.po_number||'(no PO)'}{t.match?.candidate?' → '+(t.match.candidate.customer_name||t.match.candidate.po_id):''}{r.is_credit?' · ↩️ credit':''}</div>
+                  <div style={{fontFamily:FD,fontWeight:700,fontSize:16,textTransform:'uppercase',letterSpacing:.2,color:NAVY}}>{r.supplier||'—'} <span style={{fontFamily:"'Source Sans 3',sans-serif",fontWeight:400,color:TXTL,fontSize:12,textTransform:'none',letterSpacing:0}}>· Inv {r.supplier_doc_number||r.si_doc_number}</span></div>
+                  <div style={{fontSize:12,color:TXTL,marginTop:2}}>{r.po_number||'(no PO)'}{t.match?.candidate?' → '+(t.match.candidate.customer_name||t.match.candidate.po_id):''}{r.is_credit?' · ↩️ credit':''}</div>
                 </div>
                 {t.match&&opts.showConf!==false&&confPill(t.match.confidence)}
-                <div style={{fontSize:13,fontWeight:700,width:84,textAlign:'right'}}>{money(r.doc_total)}</div>
-                {opts.actions&&<div style={{display:'flex',gap:4}} onClick={e=>e.stopPropagation()}>{opts.actions(r)}</div>}
+                <div style={{fontFamily:FD,fontWeight:800,fontSize:18,color:NAVY,minWidth:90,textAlign:'right',fontVariantNumeric:'tabular-nums'}}>{money(r.doc_total)}</div>
+                {opts.actions&&<div style={{display:'flex',gap:6}} onClick={e=>e.stopPropagation()}>{opts.actions(r)}</div>}
               </div>
-              {open&&<div style={{borderTop:'1px solid #f1f5f9',padding:'8px 12px',fontSize:11}}>
-                <div style={{color:'#64748b',marginBottom:6}}>SI doc #{r.si_doc_number} · {r.si_doc_date||''} · merch {money(r.merchandise_total)} · freight {money(r.freight_amount)} · SI fee {money(r.si_upcharge)} · doc total {money(r.doc_total)}{t.match?.reasons?.length?' · matched on '+t.match.reasons.join(', '):''}</div>
-                {(p.items||[]).length?<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}><thead><tr style={{color:'#94a3b8',textAlign:'left'}}><th>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit</th><th style={{textAlign:'right'}}>Ext</th></tr></thead><tbody>{p.items.map((it,i)=><tr key={i} style={{borderTop:'1px solid #f8fafc'}}><td>{it.sku}</td><td>{it.size}</td><td>{it.color}</td><td style={{textAlign:'right'}}>{it.qty}</td><td style={{textAlign:'right'}}>{money(it.unit_price)}</td><td style={{textAlign:'right'}}>{money(it.extension)}</td></tr>)}</tbody></table>:<div style={{color:'#94a3b8'}}>No line detail — grab the PDF from Sports Inc.</div>}
+              {open&&<div style={{borderTop:'1px solid '+LGRAY,padding:'10px 16px',fontSize:11,background:OFFW}}>
+                <div style={{color:TXTL,marginBottom:6}}>SI doc #{r.si_doc_number} · {r.si_doc_date||''} · merch {money(r.merchandise_total)} · freight {money(r.freight_amount)} · SI fee {money(r.si_upcharge)} · doc total {money(r.doc_total)}{t.match?.reasons?.length?' · matched on '+t.match.reasons.join(', '):''}</div>
+                {(p.items||[]).length?<table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}><thead><tr style={{color:TXTL,textAlign:'left',fontFamily:FD,textTransform:'uppercase',letterSpacing:.6}}><th>SKU</th><th>Size</th><th>Color</th><th style={{textAlign:'right'}}>Qty</th><th style={{textAlign:'right'}}>Unit</th><th style={{textAlign:'right'}}>Ext</th></tr></thead><tbody>{p.items.map((it,i)=><tr key={i} style={{borderTop:'1px solid '+LGRAY}}><td style={{color:NAVY,fontWeight:600}}>{it.sku}</td><td>{it.size}</td><td>{it.color}</td><td style={{textAlign:'right'}}>{it.qty}</td><td style={{textAlign:'right'}}>{money(it.unit_price)}</td><td style={{textAlign:'right',fontWeight:600}}>{money(it.extension)}</td></tr>)}</tbody></table>:<div style={{color:TXTL}}>No line detail — grab the PDF from Sports Inc.</div>}
               </div>}
             </div>;
           };
-          const Section=(title,color,rows,desc,actions,showConf)=>rows.length>0&&<div style={{marginBottom:18}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}><span style={{fontSize:13,fontWeight:800,color}}>{title}</span><span style={{fontSize:11,color:'#94a3b8'}}>{rows.length} · {money(sumD(rows))}</span></div>
-            {desc&&<div style={{fontSize:11,color:'#64748b',marginBottom:8}}>{desc}</div>}
-            {rows.map(r=>Row(r,{actions,showConf}))}
+          const Section=(dot,title,rows,desc,actions,showConf)=>rows.length>0&&<div style={{marginBottom:22}}>
+            {secHead({dot,title,count:rows.length,note:money(sumD(rows))})}
+            {desc&&<div style={{fontSize:12,color:TXTL,margin:'-8px 0 12px',maxWidth:900}}>{desc}</div>}
+            {rows.map(r=>Row(r,{actions,showConf,stripe:dot}))}
           </div>;
-          const revBtn=(r)=><button key="rev" className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} title="Load into Import & Review — see the match, the write plan, and push from there (nothing applies from this tab)" onClick={()=>_siSendToReview([r])}>→ Review</button>;
-          const outBtn=(r,label)=><button key="out" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'outside_portal','Marked Outside of Portal')}>{label||'Outside'}</button>;
+          const revBtn=(r)=>siBtn('rev','→ Review',NAVY,'#fff',()=>_siSendToReview([r]),'Load into Import & Review — see the match, the write plan, and push from there (nothing applies from this tab)');
+          const outBtn=(r,label)=>siBtn('out',label||'Outside','#fff',NAVY,()=>markSiStatus(r,'outside_portal','Marked Outside of Portal'),'Mark as billed outside the Portal','1.5px solid '+MGRAY);
           return <div>
-            <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:14,padding:'12px 16px',borderRadius:10,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
-              <div style={{flex:1,minWidth:220}}>
-                <div style={{fontSize:14,fontWeight:800,color:'#1e40af'}}>🏀 Sports Inc Bills</div>
-                <div style={{fontSize:11,color:'#475569',marginTop:2}}>{siQueue.length} documents · 🟢 {approve.length} ready · ⚠️ {review.length} review · 🟡 {grab.length} to grab · 🔵 {outside.length} outside · ✅ {captured.length} captured</div>
+            <div style={{background:NAVY,backgroundImage:HASH,borderRadius:8,padding:'20px 26px',marginBottom:20}}>
+              <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,flexWrap:'wrap',marginBottom:16}}>
+                <div>
+                  <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:RED_LT}}>Sports Inc · Invoice Center</div>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>documents captured</span></div>
+                </div>
+                <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
+                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh'})}
+                  {skBtn({bg:RED,fg:'#fff',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:syncSiQueueNow,children:'⚡ Pull now'})}
+                  {approve.length>0&&skBtn({bg:'#fff',fg:NAVY,fs:12,pad:'9px 16px',title:'Load every matched document into Import & Review — one screen, one push, nothing applies from this tab',onClick:()=>_siSendToReview(approve),children:'→ Review all matched ('+approve.length+')'})}
+                </div>
               </div>
-              <button className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} disabled={siQueueLoading} onClick={loadSiQueue}>{siQueueLoading?'Loading…':'↻ Refresh'}</button>
-              <button className="btn btn-sm" style={{fontSize:11,background:'#2563eb',color:'#fff',border:'none'}} disabled={siQueueLoading} onClick={syncSiQueueNow}>⚡ Pull now</button>
-              {approve.length>0&&<button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} title="Load every matched document into Import & Review — one screen, one push, nothing applies from this tab" onClick={()=>_siSendToReview(approve)}>→ Review all matched ({approve.length})</button>}
+              {siQueue.length>0&&<div style={{display:'flex',height:9,borderRadius:5,overflow:'hidden',background:'rgba(255,255,255,.14)'}}>
+                {[[captured.length,GREEN],[grab.length,GOLD],[outside.length,'#8790a3'],[approve.length+review.length,RED]].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
+              </div>}
+              <div style={{display:'flex',gap:24,marginTop:14,flexWrap:'wrap'}}>
+                {[['captured',captured.length,GREEN],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3'],['ready',approve.length,'#6FD59A'],['needs you',review.length,RED_LT]].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
+              </div>
             </div>
-            {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:'#94a3b8',fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
-            {Section('🟢 Matched — ready to review & push','#166534',approve,'Matched to a portal PO (PO# + customer tag + SKUs). “→ Review” loads them into Import & Review — the same screen as every other bill — where you can see exactly what a push will write before pushing. Nothing applies from this tab.',revBtn)}
-            {Section('⚠️ Needs review','#b45309',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Send to Review to match manually or with AI, or mark Outside of Portal.',(r)=>[revBtn(r),outBtn(r)])}
-            {Section('🟡 Grab from Sports Inc','#a16207',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=><button key="g" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'manual_done','Marked grabbed')}>Mark grabbed</button>,false)}
-            {Section('🔵 Outside of Portal','#1d4ed8',outside,'Old-system POs (no space after “PO”) — billed through NetSuite/QuickBooks, not here. Confirm and clear; these never touch the Billed tracking.',(r)=>outBtn(r,'Mark outside'),false)}
-            {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontSize:12,fontWeight:700,color:'#475569',cursor:'pointer'}}>✅ Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:8}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false}))}</div></details>}
+            {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
+            {Section(GREEN,'Matched — ready to review & push',approve,'Matched to a portal PO (PO# + customer tag + SKUs). “→ Review” loads them into Import & Review — the same screen as every other bill — where you can see exactly what a push will write before pushing. Nothing applies from this tab.',revBtn)}
+            {Section(RED,'Needs review',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Send to Review to match manually or with AI, or mark Outside of Portal.',(r)=>[revBtn(r),outBtn(r)])}
+            {Section(GOLD,'Grab from Sports Inc',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=>siBtn('g','Mark grabbed','#fff',NAVY,()=>markSiStatus(r,'manual_done','Marked grabbed'),null,'1.5px solid '+MGRAY),false)}
+            {Section('#8790a3','Outside of Portal',outside,'Old-system POs (no space after “PO”) — billed through NetSuite/QuickBooks, not here. Confirm and clear; these never touch the Billed tracking.',(r)=>outBtn(r,'Mark outside'),false)}
+            {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,cursor:'pointer',textTransform:'uppercase',letterSpacing:.4}}>Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:10}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false,stripe:GREEN}))}</div></details>}
           </div>;
         })()}
 
@@ -25977,7 +26036,9 @@ export default function App(){
           const recentCut=Date.now()-60*60*1000;// "recently moved" = parked within the last hour
           // Triage each parked bill into an issue bucket so the queue is worked by problem
           // shape, not chronology. Precedence: duplicate > no match > over-billed > won't apply.
-          const enriched=rows.map(sb=>{
+          // Computed over ALL parked (not just the filtered rows) so the summary ribbon and the
+          // bucket sections read from ONE classification — no second hand-synced copy.
+          const enrichedAll=parked.map(sb=>{
             const p=sb.parsed||{};
             const matched=_billHasTarget(p);
             const errs=matched?_validateBillForPush(p):[];
@@ -25986,6 +26047,8 @@ export default function App(){
               :errs.some(e=>e.indexOf(' exceeds ')>-1)?'overbilled':'noapply';// ' exceeds ' only occurs in _billOverBillingErrors strings
             return{sb,p,matched,errs,clean:matched&&!errs.length,bucket};
           });
+          const rowIds=new Set(rows.map(sb=>sb.id));
+          const enriched=enrichedAll.filter(e=>rowIds.has(e.sb.id)).sort((a,b)=>(b.sb.reviewLaterAt||0)-(a.sb.reviewLaterAt||0));
           const BUCKETS=[
             ['ready','✅','Ready to push','#16a34a','#f0fdf4','These validate cleanly now — push them, or resolve if handled elsewhere.'],
             ['overbilled','⚠️','Over-billed','#dc2626','#fef2f2','The bill exceeds what the order says was ordered — reconcile below, then correct the order or accept the overage.'],
@@ -26011,89 +26074,109 @@ export default function App(){
           const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
           const selStyle={fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
           const fmtAgo=ts=>{if(!ts)return'';const m=Math.round((Date.now()-ts)/60000);if(m<1)return'just now';if(m<60)return m+'m ago';if(m<1440)return Math.round(m/60)+'h ago';return new Date(ts).toLocaleDateString()};
-          return <><div className="card">
-            <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',background:'#fffbeb'}}>
-              <h2 style={{margin:0,color:'#b45309',display:'flex',alignItems:'center',gap:8}}>🕒 Look at Later <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>({parked.length})</span></h2>
-              {parked.length>0&&<span style={{fontSize:11,fontWeight:700,color:'#92400e'}} title="Total $ parked · age of the oldest parked bill">
-                ${grandTotal.toFixed(2)} parked{oldestDays!=null?' · oldest '+(oldestDays===0?'today':oldestDays+'d'):''}</span>}
-              <div style={{display:'flex',gap:8,alignItems:'center',marginLeft:'auto',flexWrap:'wrap'}}>
-                <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={selStyle} title="Filter by vendor">
+          // Ribbon stats come from the SAME bucket classification as the sections below (enrichedAll)
+          // — one source of truth, per the repo's no-hand-synced-copies rule.
+          const overBills=enrichedAll.filter(e=>e.bucket==='overbilled');
+          const overValue=overBills.reduce((a,e)=>a+safeNum(e.p.doc_total),0);
+          const selDark={fontSize:12.5,padding:'8px 12px',borderRadius:5,border:'1px solid rgba(255,255,255,.2)',background:'rgba(255,255,255,.1)',color:'#fff',fontFamily:FD,fontWeight:600,letterSpacing:.4,textTransform:'uppercase',cursor:'pointer'};
+          return <><div>
+            <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',marginBottom:14,flexWrap:'wrap'}}>
+              <div style={{display:'flex',gap:30,padding:'20px 26px',alignItems:'center',flexWrap:'wrap'}}>
+                <div style={{display:'flex',alignItems:'center',gap:13}}>
+                  <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="rgba(255,255,255,.85)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2"/></svg>
+                  {statTile(parked.length,'Bills parked')}
+                </div>
+                <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
+                <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(grandTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Parked value</div></div>
+                {overBills.length>0&&statTile(overBills.length,'Over-billed',RED_LT)}
+                {oldestDays!=null&&statTile(oldestDays===0?'today':oldestDays+'d','Oldest')}
+              </div>
+              <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,padding:'18px 24px',flexWrap:'wrap'}}>
+                <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={selDark} title="Filter by vendor">
                   <option value="all">All vendors</option>
                   {vendors.map(v=><option key={v} value={v}>{v}</option>)}
                 </select>
-                <select value={billHistTime} onChange={e=>setBillHistTime(e.target.value)} style={selStyle} title="Filter by upload time">
+                <select value={billHistTime} onChange={e=>setBillHistTime(e.target.value)} style={selDark} title="Filter by upload time">
                   <option value="all">All time</option><option value="today">Today</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option>
                 </select>
-                {filtersActive&&<button onClick={()=>{setBillHistVendor('all');setBillHistTime('all')}} style={{...selStyle,cursor:'pointer',color:'#64748b'}}>Clear filters</button>}
+                {filtersActive&&<button onClick={()=>{setBillHistVendor('all');setBillHistTime('all')}} style={{...selDark,background:'transparent'}}>Clear</button>}
               </div>
             </div>
-            <div className="card-body" style={{padding:14}}>
-              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Bills parked here are out of the import list and won&rsquo;t be pushed to QuickBooks or the Portal until you act on them. They now sync across computers and won&rsquo;t come back on the next Sports Inc / S&amp;S pull, so it&rsquo;s safe to leave them here until you get to them.</div>
-              {/* Step-by-step: how to clear the queue. Collapsible (remembered via laterCollapse['__guide']). */}
-              {rows.length>0&&(()=>{
-                const guideOpen=!laterCollapse['__guide'];
-                const steps=[
-                  ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
-                  ['⚠️','Over-billed','Open the bill (▾) and read the ⚖️ Reconcile table — the bill beside the order, size by size. If the bill is right (it usually is), ✏️ Correct order from bill. If the overage is genuinely OK, ⚠️ Accept overage & push and say why.'],
-                  ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
-                  ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
-                  ['♻️','Duplicate','Its doc # was already applied — ♻️ Resolve as duplicate to clear it.'],
-                ];
-                return <div style={{marginBottom:14,border:'1px solid #fde68a',borderRadius:8,background:'#fffef8',overflow:'hidden'}}>
-                  <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'8px 12px',background:'#fef9c3'}}>
-                    <span style={{fontSize:11,color:'#a16207'}}>{guideOpen?'▼':'▶'}</span>
-                    <span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>📋 How to clear this queue</span>
-                    <span style={{fontSize:10,color:'#a16207'}}>{guideOpen?'work the buckets top to bottom':'show the steps'}</span>
-                  </div>
-                  {guideOpen&&<ol style={{margin:0,padding:'8px 12px 10px 30px'}}>
-                    {steps.map(([ic,t,d],i)=><li key={i} style={{fontSize:11,color:'#475569',marginBottom:5,lineHeight:1.5}}>
-                      <b style={{color:'#92400e'}}>{ic} {t}.</b> {d}</li>)}
-                  </ol>}
-                </div>;
-              })()}
+            <p style={{fontSize:13.5,color:TXTL,margin:'0 0 16px',lineHeight:1.6,maxWidth:940}}>Bills parked here are out of the import list and won’t be pushed to QuickBooks or the Portal until you act on them. They sync across computers and won’t come back on the next Sports Inc / S&amp;S pull, so it’s safe to leave them here until you get to them.</p>
+            {overBills.length>0&&<div style={{display:'flex',alignItems:'center',gap:14,background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6,padding:'13px 18px',marginBottom:16,flexWrap:'wrap'}}>
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
+              <div style={{fontSize:14,color:'#7a2429'}}><span style={{fontFamily:FD,fontWeight:800,fontSize:17,color:NAVY,letterSpacing:.3}}>Over-billed ({overBills.length})</span> <strong style={{color:RED,fontFamily:FD,fontSize:16}}>{nsaMoney(overValue)}</strong> — the bill exceeds what the order says was ordered. Correct the order to match, or accept the overage.</div>
+            </div>}
+            {/* Step-by-step: how to clear the queue. Collapsible (remembered via laterCollapse['__guide']). */}
+            {rows.length>0&&(()=>{
+              const guideOpen=!laterCollapse['__guide'];
+              const steps=[
+                ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
+                ['⚠️','Over-billed','Open the bill (▾) and read the ⚖️ Reconcile table — the bill beside the order, size by size. If the bill is right (it usually is), ✏️ Correct order from bill. If the overage is genuinely OK, ⚠️ Accept overage & push and say why.'],
+                ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
+                ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
+                ['♻️','Duplicate','Its doc # was already applied — ♻️ Resolve as duplicate to clear it.'],
+              ];
+              return <div style={{marginBottom:16,border:'1px solid '+LGRAY,borderRadius:6,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
+                <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 16px',background:NAVY,backgroundImage:HASH}}>
+                  <span style={{fontSize:11,color:'rgba(255,255,255,.7)'}}>{guideOpen?'▼':'▶'}</span>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:15,letterSpacing:.5,textTransform:'uppercase',color:'#fff'}}>📋 How to clear this queue</span>
+                  <span style={{fontSize:11,color:'rgba(255,255,255,.6)'}}>{guideOpen?'work the buckets top to bottom':'show the steps'}</span>
+                </div>
+                {guideOpen&&<ol style={{margin:0,padding:'10px 16px 12px 34px'}}>
+                  {steps.map(([ic,t,d],i)=><li key={i} style={{fontSize:12.5,color:TXTL,marginBottom:6,lineHeight:1.55}}>
+                    <b style={{color:NAVY,fontFamily:FD,letterSpacing:.3}}>{ic} {t}.</b> {d}</li>)}
+                </ol>}
+              </div>;
+            })()}
               {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later — every supplier bill is accounted for. Bills you move from the review screen show up here.'}</div>
               :BUCKETS.map(([bkey,bIcon,bLabel,bColor,bBg,bDesc])=>{
                 const list=enriched.filter(e=>e.bucket===bkey);
                 if(!list.length)return null;
                 const bTotal=list.reduce((a,e)=>a+safeNum(e.p.doc_total),0);
                 const collapsed=!!laterCollapse[bkey];
-                return <div key={bkey} style={{marginBottom:14}}>
+                return <div key={bkey} style={{marginBottom:16}}>
                 <div onClick={()=>setLaterCollapse(x=>({...x,[bkey]:!x[bkey]}))}
-                  style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',cursor:'pointer',padding:'7px 12px',borderRadius:8,background:bBg,border:'1px solid '+bColor+'33',marginBottom:8}}>
+                  style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',cursor:'pointer',padding:'9px 14px',borderRadius:6,background:bBg,border:'1px solid '+bColor+'33',borderLeft:'4px solid '+bColor,marginBottom:10}}>
                   <span style={{fontSize:11,color:'#94a3b8'}}>{collapsed?'▶':'▼'}</span>
-                  <span style={{fontSize:12,fontWeight:800,color:bColor}}>{bIcon} {bLabel} ({list.length})</span>
-                  <span style={{fontSize:11,fontWeight:700,color:bColor}}>${bTotal.toFixed(2)}</span>
-                  <span style={{fontSize:10,color:'#64748b'}}>{bDesc}</span>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:15,letterSpacing:.4,textTransform:'uppercase',color:bColor}}>{bIcon} {bLabel} ({list.length})</span>
+                  <span style={{fontFamily:FD,fontSize:13,fontWeight:700,color:bColor,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(bTotal)}</span>
+                  <span style={{fontSize:11,color:TXTL}}>{bDesc}</span>
                 </div>
                 {!collapsed&&list.map(({sb,p,matched,errs,clean,bucket})=>{
                 const reasons=matched?errs:(p.po_number?['No PO match for '+p.po_number]:['No PO number on the bill']);
                 const recent=(sb.reviewLaterAt||0)>=recentCut;
                 const vend=_vendorOf(sb);
                 const expanded=billExpandId===sb.id;
-                return <div key={sb.id} style={{border:'1px solid '+(recent?'#fbbf24':'#e2e8f0'),borderLeft:'4px solid '+(clean?'#16a34a':'#f59e0b'),borderRadius:8,marginBottom:10,background:recent?'#fffdf5':'#fff',overflow:'hidden'}}>
-                  <div style={{padding:'10px 14px',cursor:'pointer'}} onClick={()=>setBillExpandId(expanded?null:sb.id)}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                    <span style={{fontSize:11,color:'#94a3b8'}}>{expanded?'▲':'▼'}</span>
-                    <span style={{fontWeight:700,fontSize:13}}>{p.doc_number?'Doc #'+p.doc_number:(sb.file||'Bill')}</span>
-                    {recent&&<span style={{fontSize:9,fontWeight:800,color:'#b45309',background:'#fef3c7',border:'1px solid #fbbf24',borderRadius:10,padding:'1px 8px'}}>✨ Just moved{sb.reviewLaterAt?' · '+fmtAgo(sb.reviewLaterAt):''}</span>}
-                    {clean
-                      ?<span style={{fontSize:9,fontWeight:800,color:'#166534',background:'#dcfce7',borderRadius:10,padding:'1px 8px'}}>✓ Looks resolved — ready to push</span>
-                      :<span style={{fontSize:9,fontWeight:800,color:'#b91c1c',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:10,padding:'1px 8px'}}>⚠️ {reasons.length} issue{reasons.length>1?'s':''}</span>}
-                    {sb.portalStatus==='success'&&<span style={{fontSize:9,fontWeight:800,color:'#fff',background:'#16a34a',borderRadius:10,padding:'1px 8px'}}>✓ Pushed to Portal</span>}
-                    <span style={{marginLeft:'auto',fontSize:11,color:'#94a3b8'}}>{sb.uploadedAt||''}</span>
+                return <div key={sb.id} style={{position:'relative',background:recent?'#FFFDF5':'#fff',border:'1px solid '+(recent?'#fbbf24':LGRAY),borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:14}}>
+                  <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:clean?GREEN:GOLD}}/>
+                  <div style={{padding:'16px 20px 16px 24px',cursor:'pointer'}} onClick={()=>setBillExpandId(expanded?null:sb.id)}>
+                  <div style={{display:'flex',alignItems:'flex-start',justifyContent:'space-between',gap:16}}>
+                    <div style={{minWidth:0}}>
+                      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                        <span style={{fontFamily:FD,fontWeight:800,fontSize:20,textTransform:'uppercase',letterSpacing:.3,color:NAVY,lineHeight:1}}>{p.doc_number?'Doc #'+p.doc_number:(sb.file||'Bill')}</span>
+                        {recent&&pill('✨ Just moved'+(sb.reviewLaterAt?' · '+fmtAgo(sb.reviewLaterAt):''),GOLD_BG,GOLD_D)}
+                        {clean?pill('✓ Ready to push',GREEN_BG,GREEN):pill('⚠ '+reasons.length+' issue'+(reasons.length>1?'s':''),REDBG,RED)}
+                        {sb.portalStatus==='success'&&badge('✓ Pushed to Portal',GREEN,'#fff')}
+                      </div>
+                      <div style={{fontSize:13,color:TXTL,marginTop:6,display:'flex',gap:12,flexWrap:'wrap'}}>
+                        {vend&&<span>{vend}</span>}
+                        {p.po_number&&<span>PO <b style={{color:NAVY}}>{p.po_number}</b></span>}
+                        {p.items?.length?<span>{p.items.length} line item{p.items.length>1?'s':''}</span>:null}
+                        <span style={{color:'#b8bfcc',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</span>
+                        {sb.uploadedAt?<span style={{color:'#b8bfcc'}}>{sb.uploadedAt}</span>:null}
+                      </div>
+                    </div>
+                    <div style={{textAlign:'right',flex:'0 0 auto'}}>
+                      <div style={{fontFamily:FD,fontWeight:800,fontSize:28,color:NAVY,lineHeight:.9,fontVariantNumeric:'tabular-nums'}}>{p.doc_total?nsaMoney(p.doc_total):'—'}</div>
+                      {p.freight?<div style={{fontSize:12,color:TXTL,marginTop:2}}>freight {nsaMoney(p.freight)}</div>:null}
+                      <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:.5,textTransform:'uppercase',color:TXTL,marginTop:6}}>{expanded?'▲ Hide':'▼ Details'}</div>
+                    </div>
                   </div>
-                  <div style={{fontSize:11,color:'#475569',marginTop:4,display:'flex',gap:10,flexWrap:'wrap'}}>
-                    {p.po_number&&<span>PO <b style={{color:'#7c3aed'}}>{p.po_number}</b></span>}
-                    {vend&&<span>{vend}</span>}
-                    {p.doc_total?<span>Total <b style={{color:'#166534'}}>${Number(p.doc_total).toFixed(2)}</b></span>:null}
-                    {p.freight?<span>Freight ${Number(p.freight).toFixed(2)}</span>:null}
-                    {p.items?.length?<span>{p.items.length} line item{p.items.length>1?'s':''}</span>:null}
-                    <span style={{color:'#94a3b8',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</span>
-                  </div>
-                  {!clean&&<ul style={{margin:'6px 0 0',paddingLeft:18}}>{reasons.map((r,ri)=><li key={ri} style={{fontSize:11,color:'#b45309'}}>{r}</li>)}</ul>}
+                  {!clean&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:6}}>{reasons.map((r,ri)=><div key={ri} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 13px',background:REDBG,borderRadius:5}}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'0 0 auto'}}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg><span style={{fontSize:13,color:'#7a2429',fontWeight:600}}>{r}</span></div>)}</div>}
                   {!expanded&&(()=>{
                     const nextStep={ready:'Push to Portal — or Resolve if you handled it in QuickBooks',overbilled:'Open ▾ and check the Reconcile table, then Correct order from bill or Accept overage',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
-                    return nextStep?<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',marginTop:5}}>👉 Next: {nextStep}</div>:null;
+                    return nextStep?<div style={{fontFamily:FD,fontSize:12,fontWeight:700,letterSpacing:.4,color:NAVY,marginTop:8,textTransform:'uppercase'}}>👉 Next: <span style={{textTransform:'none',letterSpacing:0,fontFamily:'inherit',color:TXTL,fontWeight:600}}>{nextStep}</span></div>:null;
                   })()}
                   </div>
                   {expanded&&(()=>{
@@ -26181,43 +26264,25 @@ export default function App(){
                         :<div style={{color:'#94a3b8',fontSize:11,padding:'4px 0'}}>No line items stored for this bill.</div>}
                     </div>;
                   })()}
-                  <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid #f1f5f9',flexWrap:'wrap',alignItems:'center'}} onClick={e=>e.stopPropagation()}>
-                    {bucket==='ready'&&!sb.portalStatus&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#16a34a',borderColor:'#16a34a'}}
-                      title="Apply this bill to the order's Billed tracking right now — it validates cleanly"
-                      onClick={()=>_pushParkedBill(sb,'pushed from Look at Later','')}>🚀 Push to Portal</button>}
+                  <div style={{display:'flex',alignItems:'center',gap:10,padding:'14px 20px 16px 24px',borderTop:'1px solid '+LGRAY,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
+                    {bucket==='ready'&&!sb.portalStatus&&skBtn({bg:GREEN,fg:'#fff',fs:12,pad:'10px 18px',title:"Apply this bill to the order's Billed tracking right now — it validates cleanly",onClick:()=>_pushParkedBill(sb,'pushed from Look at Later',''),children:'🚀 Push to Portal'})}
                     {bucket==='overbilled'&&<>
-                      <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#0e7490',borderColor:'#0e7490'}}
-                        title="The bill is the source of truth: raise the order's ordered quantities to match what was billed (audit note kept on each line), then this bill validates cleanly"
-                        onClick={()=>_correctOrderFromBill(sb)}>✏️ Correct order from bill</button>
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#b91c1c',borderColor:'#fecaca'}}
-                        title="Push anyway and record why the overage is acceptable (note required)"
-                        onClick={()=>setBillOverrideModal({id:sb.id,note:''})}>⚠️ Accept overage &amp; push…</button>
+                      {skBtn({bg:NAVY,fg:'#fff',fs:12,pad:'10px 18px',title:'The bill is the source of truth: raise the order\'s ordered quantities to match what was billed (audit note kept on each line), then this bill validates cleanly',onClick:()=>_correctOrderFromBill(sb),children:'✏️ Correct order from bill'})}
+                      {skBtn({bg:'#fff',fg:RED,border:'1.5px solid #e6c9cc',fs:12,pad:'9px 16px',title:'Push anyway and record why the overage is acceptable (note required)',onClick:()=>setBillOverrideModal({id:sb.id,note:''}),children:'⚠️ Accept overage & push…'})}
                     </>}
-                    {(bucket==='noapply'||bucket==='nomatch')&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#4f46e5',borderColor:'#4f46e5'}}
-                      title="Open this bill in Review with the Match manually wizard already open"
-                      onClick={()=>{_moveBackToReview(sb,{_wizard:{open:true,query:p.po_number||'',target:null,mappings:{}}});nf('Opened in Review — Match manually is ready')}}>🧵 Fix match…</button>}
-                    {bucket==='nomatch'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
-                      title="Move to Review and let AI search your open POs/SOs for the order this bill belongs to"
-                      onClick={()=>{_moveBackToReview(sb,null,w=>_runAiBillFindPO(w));nf('Moved to Review — ✨ AI is searching your open orders')}}>✨ Find PO with AI</button>}
-                    {bucket==='duplicate'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#64748b',borderColor:'#64748b'}}
-                      title="Confirm this is a duplicate of the already-applied doc and resolve it"
-                      onClick={()=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(p.doc_number)||'an earlier push'))}>♻️ Resolve as duplicate</button>}
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
-                      title="Pull this bill back into the review list so you can fix and push it"
-                      onClick={()=>{_moveBackToReview(sb);nf('Moved back to Import & Review')}}>📤 Move back to Review</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
-                      title="Mark handled — you'll pick why, and it's kept on the bill in Bill History"
-                      onClick={()=>setBillResolveId(billResolveId===sb.id?null:sb.id)}>✓ Resolve ▾</button>
-                    <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fecaca'}}
-                      title="Delete this bill from history entirely"
-                      onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});_deleteBillHold(sb.id)}}}>🗑</button>
-                    {billResolveId===sb.id&&<div style={{width:'100%',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',paddingTop:6,borderTop:'1px dashed #e2e8f0',marginTop:4}}>
-                      <span style={{fontSize:10,color:'#64748b',fontWeight:700}}>Resolved because:</span>
+                    {(bucket==='noapply'||bucket==='nomatch')&&skBtn({bg:NAVY,fg:'#fff',fs:12,pad:'10px 18px',title:'Open this bill in Review with the Match manually wizard already open',onClick:()=>{_moveBackToReview(sb,{_wizard:{open:true,query:p.po_number||'',target:null,mappings:{}}});nf('Opened in Review — Match manually is ready')},children:'🧵 Fix match…'})}
+                    {bucket==='nomatch'&&skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:'Move to Review and let AI search your open POs/SOs for the order this bill belongs to',onClick:()=>{_moveBackToReview(sb,null,w=>_runAiBillFindPO(w));nf('Moved to Review — ✨ AI is searching your open orders')},children:'✨ Find PO with AI'})}
+                    {bucket==='duplicate'&&skBtn({bg:'#8790a3',fg:'#fff',fs:12,pad:'10px 18px',title:'Confirm this is a duplicate of the already-applied doc and resolve it',onClick:()=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(p.doc_number)||'an earlier push')),children:'♻️ Resolve as duplicate'})}
+                    {skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:'Pull this bill back into the review list so you can fix and push it',onClick:()=>{_moveBackToReview(sb);nf('Moved back to Import & Review')},children:'📤 Move back to Review'})}
+                    {skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:"Mark handled — you'll pick why, and it's kept on the bill in Bill History",onClick:()=>setBillResolveId(billResolveId===sb.id?null:sb.id),children:'✓ Resolve ▾'})}
+                    <button title="Delete this bill from history entirely" onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});_deleteBillHold(sb.id)}}} style={{marginLeft:'auto',background:'none',border:'none',color:TXTL,cursor:'pointer',fontSize:16}}>🗑</button>
+                    {billResolveId===sb.id&&<div style={{width:'100%',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',paddingTop:10,borderTop:'1px dashed '+LGRAY,marginTop:6}}>
+                      <span style={{fontFamily:FD,fontSize:12,color:TXTL,fontWeight:700,letterSpacing:.5,textTransform:'uppercase'}}>Resolved because:</span>
                       {[['duplicate','♻️ Duplicate'],['corrected order','✏️ Corrected order'],['handled in QuickBooks','📒 Handled in QB'],['written off','🚮 Written off']].map(([k,l])=>
-                        <button key={k} className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={()=>_resolveBillWithDisposition(sb.id,k,'')}>{l}</button>)}
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}}
+                        <button key={k} className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>_resolveBillWithDisposition(sb.id,k,'')}>{l}</button>)}
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11}}
                         onClick={()=>{const note=window.prompt('Note — why is this bill handled?');if(note!=null&&note.trim())_resolveBillWithDisposition(sb.id,'other',note.trim())}}>✍️ Other…</button>
-                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px',color:'#94a3b8'}} onClick={()=>setBillResolveId(null)}>× cancel</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#94a3b8'}} onClick={()=>setBillResolveId(null)}>× cancel</button>
                     </div>}
                   </div>
                 </div>;
@@ -26225,7 +26290,6 @@ export default function App(){
                 </div>;
               })}
             </div>
-          </div>
           {/* Accept-overage push — note required, kept as the bill's resolution for the audit trail */}
           {billOverrideModal&&(()=>{
             const sb=parked.find(x=>x.id===billOverrideModal.id);
@@ -26233,20 +26297,20 @@ export default function App(){
             const note=billOverrideModal.note||'';
             return <div className="modal-overlay" style={{zIndex:1200}} onClick={()=>setBillOverrideModal(null)}>
               <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
-                <div className="modal-header" style={{background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>
-                  <h2 style={{margin:0,color:'#b91c1c',fontSize:15}}>⚠️ Accept overage &amp; push</h2>
+                <div className="modal-header" style={{background:REDBG,borderBottom:'1px solid #e6c9cc'}}>
+                  <h2 style={{margin:0,color:RED,fontSize:16,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4}}>⚠️ Accept overage &amp; push</h2>
                   <button className="modal-close" onClick={()=>setBillOverrideModal(null)}>×</button>
                 </div>
                 <div className="modal-body">
-                  <div style={{fontSize:12,color:'#475569',lineHeight:1.5,marginBottom:10}}>
-                    This pushes <b>{sb.parsed?.doc_number?'Doc #'+sb.parsed.doc_number:(sb.file||'this bill')}</b> even though it bills more than the order says was ordered. The billed tracking will show the overage. A note is required — say who approved it or why it&rsquo;s right (e.g. &ldquo;vendor shipped extras, rep confirmed&rdquo;).
+                  <div style={{fontSize:13,color:TXTL,lineHeight:1.55,marginBottom:10}}>
+                    This pushes <b style={{color:NAVY}}>{sb.parsed?.doc_number?'Doc #'+sb.parsed.doc_number:(sb.file||'this bill')}</b> even though it bills more than the order says was ordered. The billed tracking will show the overage. A note is required — say who approved it or why it&rsquo;s right (e.g. &ldquo;vendor shipped extras, rep confirmed&rdquo;).
                   </div>
                   <textarea className="form-input" rows={3} style={{width:'100%',fontSize:12}} placeholder="Why is the overage OK? (required)" value={note}
                     onChange={e=>setBillOverrideModal(m=>({...m,note:e.target.value}))} autoFocus/>
                 </div>
                 <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillOverrideModal(null)}>Cancel</button>
-                  <button className="btn btn-primary" disabled={!note.trim()} style={{background:'#dc2626',borderColor:'#dc2626',opacity:note.trim()?1:0.5}}
+                  <button className="btn btn-primary" disabled={!note.trim()} style={{background:RED,borderColor:RED,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,opacity:note.trim()?1:0.5}}
                     onClick={()=>{if(_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()))setBillOverrideModal(null)}}>Push with note</button>
                 </div>
               </div>
@@ -26261,31 +26325,38 @@ export default function App(){
           const m=billPushModal;const nClean=m.cleanBills.length,nProb=m.problemBills.length;
           const _lbl=b=>(b.parsed?.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'));
           const _vend=b=>(b.parsed?.vendor||b.parsed?.supplier||'');
-          return<div className="modal-overlay" style={{zIndex:1200}} onClick={()=>setBillPushModal(null)}>
-            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-              <div className="modal-header" style={{background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
-                <h2 style={{margin:0,display:'flex',alignItems:'center',gap:8,color:'#b45309'}}>⚠️ {nProb} bill{nProb===1?'':'s'} need{nProb===1?'s':''} a look</h2>
+          const CLEAN_CAP=25,PROB_CAP=20,ERR_CAP=6;
+          return<div className="modal-overlay" style={{zIndex:1200,alignItems:'center'}} onClick={()=>setBillPushModal(null)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,display:'flex',flexDirection:'column',overflow:'hidden',maxHeight:'calc(100vh - 80px)'}}>
+              <div className="modal-header" style={{background:'#fff',borderBottom:'1px solid '+LGRAY,flex:'0 0 auto'}}>
+                <h2 style={{margin:0,display:'flex',alignItems:'center',gap:8,color:NAVY,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4}}>⚠️ {nProb} bill{nProb===1?'':'s'} need{nProb===1?'s':''} a look</h2>
                 <button className="modal-close" onClick={()=>setBillPushModal(null)}>×</button>
               </div>
-              <div className="modal-body">
-                <div style={{fontSize:12,color:'#475569',marginBottom:14,lineHeight:1.5}}>A few bills couldn't be matched cleanly — a duplicate doc&nbsp;# or billing more than was ordered. Push the ones that matched exactly and park the rest under <b>🕒 Look at later</b>, or override and push everything.</div>
-                {nClean>0&&<div style={{marginBottom:nProb?14:0,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8}}>
-                  <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:6}}>✅ {nClean} matched exactly — will push</div>
-                  {m.cleanBills.map(b=><div key={b.id} style={{fontSize:11,color:'#15803d',padding:'2px 0'}}>{_lbl(b)}{b.parsed?.po_number?' · PO '+b.parsed.po_number:''}{_vend(b)?' · '+_vend(b):''}</div>)}
+              <div className="modal-body" style={{overflowY:'auto',flex:'1 1 auto',minHeight:0}}>
+                <div style={{fontSize:13,color:TXTL,marginBottom:14,lineHeight:1.55}}>A few bills couldn't be matched cleanly — a duplicate doc&nbsp;# or billing more than was ordered. Push the ones that matched exactly and park the rest under <b style={{color:NAVY}}>Look at later</b>, or override and push everything.</div>
+                {nClean>0&&<div style={{marginBottom:nProb?14:0,padding:'12px 14px',background:GREEN_BG,border:'1px solid #bcdcc8',borderRadius:6}}>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:14,color:GREEN,marginBottom:8,textTransform:'uppercase',letterSpacing:.3}}>✓ {nClean} matched exactly — will push</div>
+                  <div style={{maxHeight:150,overflowY:'auto'}}>
+                    {m.cleanBills.slice(0,CLEAN_CAP).map(b=><div key={b.id} style={{fontSize:12,color:'#15803d',padding:'2px 0'}}>{_lbl(b)}{b.parsed?.po_number?' · PO '+b.parsed.po_number:''}{_vend(b)?' · '+_vend(b):''}</div>)}
+                    {nClean>CLEAN_CAP&&<div style={{fontSize:12,color:GREEN,fontWeight:700,paddingTop:4}}>+ {nClean-CLEAN_CAP} more</div>}
+                  </div>
                 </div>}
-                {nProb>0&&<div style={{padding:'10px 12px',background:'#fff',border:'1px solid #fde68a',borderRadius:8}}>
-                  <div style={{fontSize:12,fontWeight:800,color:'#b45309',marginBottom:8}}>🕒 {nProb} with problems — will move to Look at later</div>
-                  {m.problemBills.map(({bill,errs})=><div key={bill.id} style={{paddingBottom:8,marginBottom:8,borderBottom:'1px solid #fef3c7'}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{_lbl(bill)}{_vend(bill)?' · '+_vend(bill):''}</div>
-                    <ul style={{margin:'4px 0 0',paddingLeft:18}}>{errs.map((e,i)=><li key={i} style={{fontSize:11,color:'#b45309'}}>{e}</li>)}</ul>
-                  </div>)}
+                {nProb>0&&<div style={{padding:'12px 14px',background:GOLD_BG,border:'1px solid #e7d3a6',borderRadius:6}}>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:14,color:GOLD_D,marginBottom:8,textTransform:'uppercase',letterSpacing:.3}}>🕒 {nProb} with problems — will move to Look at later</div>
+                  <div style={{maxHeight:230,overflowY:'auto'}}>
+                    {m.problemBills.slice(0,PROB_CAP).map(({bill,errs})=><div key={bill.id} style={{paddingBottom:8,marginBottom:8,borderBottom:'1px solid #e7d3a6'}}>
+                      <div style={{fontSize:12.5,fontWeight:700,color:'#92400e'}}>{_lbl(bill)}{_vend(bill)?' · '+_vend(bill):''}</div>
+                      <ul style={{margin:'4px 0 0',paddingLeft:18}}>{errs.slice(0,ERR_CAP).map((e,i)=><li key={i} style={{fontSize:11.5,color:'#b45309'}}>{e}</li>)}{errs.length>ERR_CAP&&<li key="more" style={{fontSize:11,color:'#a16207',listStyle:'none',marginLeft:-18}}>+ {errs.length-ERR_CAP} more line{errs.length-ERR_CAP>1?'s':''}</li>}</ul>
+                    </div>)}
+                    {nProb>PROB_CAP&&<div style={{fontSize:12,color:GOLD_D,fontWeight:700,paddingTop:2}}>+ {nProb-PROB_CAP} more bill{nProb-PROB_CAP>1?'s':''} with problems</div>}
+                  </div>
                 </div>}
               </div>
-              <div className="modal-footer" style={{flexWrap:'wrap',justifyContent:'space-between',gap:8}}>
-                <button className="btn btn-secondary" style={{fontSize:11,color:'#b45309',borderColor:'#fcd34d'}} onClick={_pushAllOverride} title="Apply every selected bill anyway, problems included">Push all anyway (override)</button>
+              <div className="modal-footer" style={{flexWrap:'wrap',justifyContent:'space-between',gap:8,flex:'0 0 auto'}}>
+                <button className="btn btn-secondary" style={{fontSize:11,color:RED,borderColor:'#e6c9cc',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5}} onClick={_pushAllOverride} title="Apply every selected bill anyway, problems included">Push all anyway (override)</button>
                 <div style={{display:'flex',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillPushModal(null)}>Cancel</button>
-                  <button className="btn btn-primary" style={{background:'#7c3aed',borderColor:'#7c3aed'}} onClick={_pushCleanParkProblems}>
+                  <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} onClick={_pushCleanParkProblems}>
                     {nClean>0?'Push '+nClean+' · park '+nProb+' for later':'Move '+nProb+' to Look at later'}
                   </button>
                 </div>
@@ -26293,7 +26364,7 @@ export default function App(){
             </div>
           </div>;
         })()}
-      </>}
+      </div>;})()}
 
       {/* INVENTORY CSV UPLOAD TAB */}
       {impTab==='inventory'&&<>
