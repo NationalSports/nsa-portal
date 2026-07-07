@@ -10,6 +10,11 @@ Harnesses:
   (coach art decision: H1 stale-link guard, H2 mock pinning, complete
   reject/approve write sets, SO-1199 contradictory-state heal). Same runner
   recipe as below, substituting the art fixture/scenarios and migration 00172.
+- `webstore_batches_scenarios.sql` — migration `00177` (webstore batch numbering:
+  per-store backfill order, trigger sequencing, upsert-no-clobber, non-webstore SOs
+  untouched, duplicate numbers rejected). Self-contained: run it after
+  `schema_fixture.sql` and it applies 00177 itself. Ends with
+  `ALL_WEBSTORE_BATCH_SCENARIOS_PASSED`.
 - `rls_step1_fixture.sql` + `rls_step1_scenarios.sql` — migration `00173`
   (RLS lockdown step 1). Stubs `auth.uid()` and switches Postgres roles to prove,
   end to end, that anon/authenticated-coach WRITES are blocked while every current

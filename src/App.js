@@ -5257,7 +5257,7 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle,batch_label,batch_cutoff})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -5266,7 +5266,15 @@ export default function App(){
       // Club fundraising collected through the store is money owed to the team, not NSA margin.
       // Booked as an SO-level cost so calcGP excludes it from the GP rep commission pays on.
       _webstore_fundraise:Math.round((Number(fundraise_cost)||0)*100)/100,
-      source:'webstore',webstore_id:webstore_id||null};
+      source:'webstore',webstore_id:webstore_id||null,
+      // Batch identity: the label/cutoff the rep chose in the Create-SO modal. The
+      // per-store batch NUMBER is assigned by a DB trigger on insert (migration 00177) —
+      // deliberately NOT set here so client sessions can't race or drift the numbering.
+      // Keys only included when SET: on a DB without 00177, an always-present unknown
+      // column would fail the first upsert and dbEngine's retry strips ALL _soExtraCols
+      // (including _webstore_fundraise — a silent commission-GP error), so an unlabeled
+      // batch must not send them at all.
+      ...(batch_label?{webstore_batch_label:batch_label}:{}),...(batch_cutoff?{webstore_batch_cutoff:batch_cutoff}:{})};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
     // the caller (webstore batch) immediately tags orders with this so_id, so the
@@ -5280,6 +5288,16 @@ export default function App(){
       nf('Could not save Sales Order '+id+' — orders were NOT batched. Please try again.','error');
       return null;
     }
+    // Pull back the trigger-assigned batch number so this session's copy carries it.
+    // Without it, every later save of this SO re-fires the numbering trigger's
+    // webstores row-lock (an upsert's BEFORE INSERT runs even when it resolves to
+    // UPDATE, and NEW.webstore_batch_no is NULL because the key is absent) — a
+    // needless contention surface on a hot row. Best-effort: the DB value survives
+    // either way since the upsert's SET list never includes an absent key.
+    try{
+      const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
+      if(_bn&&_bn.webstore_batch_no!=null){newSO.webstore_batch_no=_bn.webstore_batch_no;setSOs(prev=>prev.map(s=>s.id===id?{...s,webstore_batch_no:_bn.webstore_batch_no}:s));}
+    }catch{}
     // Webstore money is already collected via Stripe by batch time, so invoice
     // + settle immediately — paid in full when the card funds cover it, else
     // partial with exactly the team-tab gross left as the club's open balance.
