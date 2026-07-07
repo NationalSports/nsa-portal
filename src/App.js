@@ -2180,6 +2180,7 @@ export default function App(){
   // My Day recap window controls
   const[stMdWin,setStMdWin]=useState(3);       // activity look-back in days
   const[stMdDeadline,setStMdDeadline]=useState(14); // deadline look-ahead in days
+  const[stMdRep,setStMdRep]=useState('me');    // My Day rep scope (admins only): 'me' | 'all' | rep id
   const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
   const[qrView,setQrView]=useState(null);
   const[qrSearch,setQrSearch]=useState('');
@@ -6658,7 +6659,9 @@ export default function App(){
             const applyShipped=Math.min(totalOrdered,Math.max(0,(soShippedByItem[key]||0)-used));
             soShipConsumed[key]=used+applyShipped;
             const remainUnits=totalOrdered-applyShipped;
-            if(remainUnits>0)shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,
+            // A no-deco line became ready to ship the moment it finished being pulled — newest pulled pick's timestamp.
+            const ndReadyAt=picks.filter(pk=>pk.status==='pulled').reduce((mx,pk)=>{const d=pk.pulled_at;if(!d)return mx;return(!mx||new Date(d).getTime()>new Date(mx).getTime())?d:mx},null);
+            if(remainUnits>0)shipTasks.push({so,soId:so.id,type:'no_deco',cName,alpha,rep,daysOut,urgent,readyAt:ndReadyAt||so.updated_at,
               desc:item.sku+' · '+item.name,units:remainUnits,shipMethod:dest,shipPref:pref,itemIdxs:[ii]});
           }
         }
@@ -6691,7 +6694,7 @@ export default function App(){
                 deliverDate,deliverDaysOut,holdUntil,_dkey:dkey,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))],
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,shipPref});
             } else if(shipPref!=='rep_delivery'&&shipPref!=='wait_complete'&&shipDateReady){
-              shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,
+              shipTasks.push({so,soId:so.id,type:'deco_done',job:j,cName,alpha,rep,daysOut,urgent,readyAt:j.completed_at||j.updated_at||so.updated_at,
                 desc:j.art_name+' ('+j.deco_type?.replace(/_/g,' ')+')',units:remainingUnits>0?remainingUnits:j.total_units,
                 shipMethod:j.ship_method||'pending',shipPref,itemIdxs:[...new Set((j.items||[]).map(gi=>gi.item_idx))]});
             }
@@ -6703,6 +6706,7 @@ export default function App(){
           decoTasks.push({so,soId:so.id,job:j,cName,alpha,rep,daysOut,urgent,
             artName:j.art_name,decoType:j.deco_type,totalUnits:j.total_units,fulfilledUnits:j.fulfilled_units,
             prodStatus:j.prod_status,artStatus:j.art_status,itemStatus:j.item_status,isReady,
+            readyAt:j.items_received_at||jobReceivedAt(j,safeItems(so))||j.updated_at||so.updated_at,
             machine:MACHINES.find(m=>m.id===j.assigned_machine)?.name,assignedTo:j.assigned_to});
         }
       });
@@ -6719,7 +6723,11 @@ export default function App(){
       const allJobsDone=safeJobs(so).filter(j=>j.prod_status!=='draft').every(j=>j.prod_status==='completed'||j.prod_status==='shipped');
       if(allItemsDone&&allJobsDone&&(safeItems(so).length>0||safeJobs(so).filter(j=>j.prod_status!=='draft').length>0)){
         const totalUnits=safeItems(so).reduce((a,it)=>a+Object.values(it.sizes||{}).reduce((a2,v)=>a2+v,0),0);
-        shipTasks.push({so,soId:so.id,type:'wait_complete',cName,alpha,rep,daysOut,urgent,
+        // A wait-complete order becomes shippable only once its last piece finishes — newest job completion or pull across the order.
+        let wcReadyAt=null;const _bumpWc=(d)=>{if(d&&(!wcReadyAt||new Date(d).getTime()>new Date(wcReadyAt).getTime()))wcReadyAt=d};
+        safeJobs(so).forEach(j=>{if(j.prod_status==='completed'||j.prod_status==='shipped')_bumpWc(j.completed_at||j.updated_at)});
+        safeItems(so).forEach(it=>safePicks(it).filter(pk=>pk.status==='pulled').forEach(pk=>_bumpWc(pk.pulled_at)));
+        shipTasks.push({so,soId:so.id,type:'wait_complete',cName,alpha,rep,daysOut,urgent,readyAt:wcReadyAt||so.updated_at,
           desc:'Full order ready',units:totalUnits,shipMethod:'pending',shipPref:'wait_complete',itemIdxs:safeItems(so).map((_,i)=>i)});
       }
     });
@@ -9963,6 +9971,9 @@ export default function App(){
         const upd={...jj,prod_status:newStatus,assigned_machine:machine||jj.assigned_machine,assigned_to:person||jj.assigned_to};
         // When completing a dual-run job, mark all runs as done
         if(newStatus==='completed'&&jj.run_order){if(!jj.run1_done)upd.run1_done=true;if(!jj.run2_done)upd.run2_done=true}
+        // Stamp when the job finished decoration (= became ready to ship). Read by the Ready-to-Ship queue and prod reports,
+        // which previously fell back to updated_at. Keep the first completion time if it's re-completed after a revert.
+        if(newStatus==='completed'&&!jj.completed_at)upd.completed_at=new Date().toISOString();
         return upd;
       });
       savSO({...s,jobs:updatedJobs});
@@ -15222,6 +15233,8 @@ export default function App(){
     const _whDueSort=t=>t.due_date?String(t.due_date).slice(0,10):'9999-12-31';
     const _whFmtDue=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_whTodayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');const days=Math.round((dt-new Date(_whTodayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
     const _whDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_whTodayStr)return'#dc2626';if(ds===_whTodayStr)return'#d97706';return'#2563eb'};
+    // Format a "became ready" timestamp → {short date, relative age} for the Ready columns on the Deco/Ship tabs. Null when unparseable.
+    const _fmtReadyDate=(d)=>{if(!d)return null;const dt=new Date(d);if(isNaN(dt.getTime()))return null;const label=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][dt.getMonth()]+' '+dt.getDate();const days=Math.floor((Date.now()-dt.getTime())/864e5);const ago=days<=0?'Today':days===1?'1d ago':days+'d ago';return{label,ago,days}};
     const myWhTasks=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to===cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2));
     const delegatedWhTasks=_whCanDelegate?assignedTodos.filter(t=>t.status==='open'&&t.created_by===cu.id&&t.assigned_to!==cu.id).sort((a,b)=>_whDueSort(a).localeCompare(_whDueSort(b))||(a.priority??2)-(b.priority??2)):[];
     const _whTodoComplete=(id)=>{if(!_confirmTodoComplete(id))return;const ts=new Date().toISOString();const upd={status:'completed',completed_at:ts,completed_by:cu.id,updated_at:ts};setAssignedTodos(prev=>prev.map(x=>x.id===id?{...x,...upd}:x));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).map(x=>x.id===id?{...x,...upd}:x);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] todo complete:',r.error.message)}));nf('Task completed!')};
@@ -16181,7 +16194,7 @@ export default function App(){
         {fDeco.length===0?<div className="empty" style={{padding:32,textAlign:'center'}}>No jobs ready for decoration right now</div>:<>
         <div className="card"><div className="card-body" style={{padding:0}}>
           <table style={{fontSize:12}}><thead><tr>
-            <th>Job</th><th>Customer</th><th>Art / Deco</th><th>Items</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Machine</th><th>Rep</th><th style={{textAlign:'center'}}>Due</th><th></th>
+            <th>Job</th><th>Customer</th><th>Art / Deco</th><th>Items</th><th style={{textAlign:'center'}}>Units</th><th style={{textAlign:'center'}}>Machine</th><th>Rep</th><th style={{textAlign:'center'}}>Due</th><th style={{textAlign:'center'}}>Ready</th><th></th>
           </tr></thead><tbody>
             {fDeco.map((t,i)=>{
               return<tr key={t.job?.id||i} style={{background:t.urgent?'#fef2f2':'',cursor:'pointer'}} onClick={()=>{const so2=sos.find(s=>s.id===t.soId);if(so2){const c2=cust.find(cc=>cc.id===so2.customer_id);setESO(so2);setESOC(c2);setESOTab('jobs');setPg('orders')}}}>
@@ -16193,6 +16206,7 @@ export default function App(){
                 <td style={{textAlign:'center'}}>{t.machine?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9'}}>{t.machine}</span>:<span style={{fontSize:10,color:'#94a3b8'}}>Unassigned</span>}</td>
                 <td style={{fontSize:11}}>{t.rep}</td>
                 <td style={{textAlign:'center'}}>{t.daysOut!=null?<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:t.urgent?'#fee2e2':t.daysOut<=7?'#fef3c7':'#dcfce7',color:t.urgent?'#dc2626':t.daysOut<=7?'#92400e':'#166534'}}>{t.daysOut}d</span>:'—'}</td>
+                <td style={{textAlign:'center'}} title={t.readyAt?'Became ready for decoration '+new Date(t.readyAt).toLocaleString():''}>{(()=>{const r=_fmtReadyDate(t.readyAt);return r?<><div style={{fontWeight:600,color:'#334155',fontSize:11}}>{r.label}</div><div style={{fontSize:9,color:'#94a3b8'}}>{r.ago}</div></>:<span style={{color:'#cbd5e1'}}>—</span>})()}</td>
                 <td><div style={{display:'flex',gap:6,justifyContent:'flex-end',alignItems:'center'}}>
                   <button title="Assign this job to a warehouse worker" className="btn btn-sm" style={{fontSize:10,padding:'3px 8px',background:'#0891b2',color:'white',border:'none',borderRadius:6,fontWeight:600,whiteSpace:'nowrap'}}
                     onClick={e=>{e.stopPropagation();_whOpenAssign({title:'Move to deco: '+(t.artName||t.job?.id||t.soId),description:(t.cName||'')+' · '+(t.decoType||'').replace(/_/g,' ')+' · '+t.totalUnits+' units',so:t.so,soId:t.soId,docLabel:t.job?.id||t.soId})}}>👤 Assign</button>
@@ -16216,9 +16230,11 @@ export default function App(){
           const byCustomer={};
           fShip.forEach(t=>{
             const key=t.cName+'|'+(t.shipMethod||'pending');
-            if(!byCustomer[key])byCustomer[key]={cName:t.cName,shipMethod:t.shipMethod,items:[],totalUnits:0,soIds:new Set(),soMap:{}};
+            if(!byCustomer[key])byCustomer[key]={cName:t.cName,shipMethod:t.shipMethod,items:[],totalUnits:0,soIds:new Set(),soMap:{},readyAt:null};
             byCustomer[key].items.push(t);byCustomer[key].totalUnits+=t.units;byCustomer[key].soIds.add(t.soId);
             byCustomer[key].soMap[t.soId]=t.so;
+            // Earliest "became ready" across the grouped items — i.e. how long the oldest piece here has waited to ship.
+            if(t.readyAt&&(!byCustomer[key].readyAt||new Date(t.readyAt).getTime()<new Date(byCustomer[key].readyAt).getTime()))byCustomer[key].readyAt=t.readyAt;
           });
           return<div style={{display:'grid',gap:10}}>
             {Object.values(byCustomer).map((grp,gi)=>{
@@ -16241,6 +16257,7 @@ export default function App(){
                     {grp.shipMethod==='ship_customer'?'📦 Ship':grp.shipMethod==='rep_delivery'?'🚗 Rep Delivery':grp.shipMethod==='customer_pickup'?'🏫 Pickup':'⚠️ Not set'}</span>
                   <span style={{fontSize:10,color:'#94a3b8'}}>{[...grp.soIds].join(', ')}</span>
                   {existingShipments.length>0&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#dcfce7',color:'#166534'}}>{existingShipments.length} pkg shipped</span>}
+                  {(()=>{const r=_fmtReadyDate(grp.readyAt);return r?<span title={'Oldest item ready to ship since '+new Date(grp.readyAt).toLocaleString()} style={{fontSize:9,padding:'2px 6px',borderRadius:4,fontWeight:600,background:'#f1f5f9',color:'#475569'}}>📅 Ready {r.label} · {r.ago}</span>:null})()}
                   <span style={{marginLeft:'auto',fontSize:12,fontWeight:800,color:'#166534'}}>{grp.totalUnits} units</span>
                   <span style={{fontSize:10,color:'#64748b'}}>{grp.items.length} item{grp.items.length!==1?'s':''}</span>
                 </div>
@@ -27433,7 +27450,9 @@ export default function App(){
     // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
     const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
     const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-    const _mdMine=(...ids)=>_mdAdmin||ids.some(id=>id&&id===cu.id);
+    // Admins can scope My Day to a single rep (or All Reps) via the header dropdown; everyone else is locked to their own book.
+    const _mdViewRep=_mdAdmin?(stMdRep==='me'?cu.id:stMdRep):cu.id;
+    const _mdMine=(...ids)=>_mdViewRep==='all'||ids.some(id=>id&&id===_mdViewRep);
     const _mdCustName=(id)=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||'—'};
     const _mdNow=Date.now();
     const _mdWinStart=_mdNow-stMdWin*864e5;
@@ -27548,7 +27567,7 @@ export default function App(){
         return<>
           <div className="card" style={{marginBottom:16}}>
             <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
-              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · All Reps':''}</h2>
+              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · '+(_mdViewRep==='all'?'All Reps':(REPS.find(r=>r.id===_mdViewRep)?.name||'Me')):''}</h2>
               <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
                 <span>Activity in last</span>
                 <select className="form-input" value={stMdWin} onChange={e=>setStMdWin(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
@@ -27556,6 +27575,12 @@ export default function App(){
                 <span>· deadlines next</span>
                 <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
                   {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+                {_mdAdmin&&<><span>· rep</span>
+                <select className="form-input" value={stMdRep} onChange={e=>setStMdRep(e.target.value)} style={{width:'auto',padding:'4px 8px',fontSize:12,maxWidth:170}} title="Scope My Day to a single rep's orders, or All Reps">
+                  <option value="me">Me{(()=>{const m=REPS.find(r=>r.id===cu.id);return m?' ('+(m.name||'').split(' ')[0]+')':''})()}</option>
+                  <option value="all">All Reps</option>
+                  {REPS.filter(r=>r.is_active!==false&&r.id!==cu.id).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+                </select></>}
                 {(()=>{const me=REPS.find(r=>r.id===cu.id);const off=me?.ops_digest_opt_out===true;
                   return<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Toggle the daily recap email of this page" onClick={async()=>{
                     const next=!off;
