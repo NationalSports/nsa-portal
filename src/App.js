@@ -11666,6 +11666,7 @@ export default function App(){
   const[rptChartMode,setRptChartMode]=useState('bars');// bars | trend
   const[rptBreakdown,setRptBreakdown]=useState('customer');// customer | product
   const[rptRadar,setRptRadar]=useState('due');// due | atrisk
+  const[rptPeriod,setRptPeriod]=useState('month');// scorecard window: month | last_month | last90 | ytd | next_month
   const[rptHoverMonth,setRptHoverMonth]=useState(null);
   const[rptToast,setRptToast]=useState(null);
   // Inject NSA brand webfonts + scoped theme tokens once (mirrors QuickMockBuilder)
@@ -11883,21 +11884,34 @@ export default function App(){
     const _custRepMap={};(cust||[]).forEach(c=>{if(c&&c.id)_custRepMap[c.id]=c.primary_rep_id||null});
     const _matchRep=(hi)=>rptRep==='all'?true:(_custRepMap[hi.customer_id]===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
-    let _ytdThis=0,_ytdLast=0,_mtdThis=0,_lastMonthFull=0;
+    let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
     const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
-    (histInvs||[]).forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const m=String(hi.date).match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return;const y=+m[1],mo=+m[2]-1,d=+m[3];const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t});
+    const _t0=new Date(_cy,_cmo,_cday),_t0Ly=new Date(_ly,_cmo,_cday),_lo90=new Date(_cy,_cmo,_cday-90),_lo90Ly=new Date(_ly,_cmo,_cday-90);
+    (histInvs||[]).forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const m=String(hi.date).match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return;const y=+m[1],mo=+m[2]-1,d=+m[3];const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
     const _pctChg=(c,p)=>p>0?Math.round((c-p)/p*100):(c>0?100:0);
     const _ytdDelta=_pctChg(_ytdThis,_ytdLast);
     const _daysInMonth=new Date(_cy,_cmo+1,0).getDate();
     const _projected=_cday>0?_mtdThis/(_cday/_daysInMonth):_mtdThis;
-    const _pacePct=_lastMonthFull>0?Math.round(_projected/_lastMonthFull*100):(_projected>0?100:0);
-    const _paceScale=Math.max(_projected,_lastMonthFull,1)*1.12;
-    const _mtdW=Math.min(100,_mtdThis/_paceScale*100),_projW=Math.min(100,_projected/_paceScale*100),_lastW=Math.min(100,_lastMonthFull/_paceScale*100);
     let _streak=0;for(let i=_cmo-1;i>=0;i--){if(_mThis[i]>0&&_mThis[i]>=_mLast[i])_streak++;else break}
     const _monShort=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const _monFull=['January','February','March','April','May','June','July','August','September','October','November','December'];
     const _repRank=_repObj?(repData.findIndex(r=>r.id===_repObj.id)+1):0;
     const _asOf='As of '+_monShort[_cmo]+' '+_cday+', '+_cy;
+
+    // ── scorecard period selector (billed windows + next-month forecast) ──
+    const _nmo=(_cmo+1)%12,_nyr=_cmo===11?_cy+1:_cy;
+    const _pdt=(v)=>{if(!v)return null;const s=String(v);let mm=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(mm)return{y:+mm[1],mo:+mm[2]-1};mm=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(mm){let yy=+mm[3];if(yy<100)yy+=2000;return{y:yy,mo:+mm[1]-1}}return null};
+    let _nextExp=0,_nextN=0;
+    pipeline.forEach(s=>{if(s._status==='complete')return;const ed=_pdt(s.expected_ship_date||s.expected_date||s.ship_on_date||s.deliver_on_date);if(ed&&ed.y===_nyr&&ed.mo===_nmo){_nextExp+=s._rev;_nextN++}});
+    const _periods=[{key:'month',label:'This Month'},{key:'last_month',label:'Last Month'},{key:'last90',label:'Last 90d'},{key:'ytd',label:'YTD'},{key:'next_month',label:'Next Month'}];
+    let _perEyebrow,_perValue,_perCaption,_perCmpPct=0,_perLy=0,_perMode='yoy',_perTag='';
+    if(rptPeriod==='month'){_perEyebrow=_monFull[_cmo]+' '+_cy;_perValue=_mtdThis;_perCaption='billed so far · day '+_cday+' of '+_daysInMonth;_perCmpPct=_pctChg(_mtdThis,_mtdLast);_perLy=_mtdLast;_perMode='pace';}
+    else if(rptPeriod==='last_month'){_perEyebrow=_monFull[_pmo]+' '+_pmoYear;_perValue=_lastMonthFull;_perCaption='billed · full month';_perCmpPct=_pctChg(_lastMonthFull,_lastMonthLast);_perLy=_lastMonthLast;}
+    else if(rptPeriod==='last90'){_perEyebrow='Last 90 Days';_perValue=_last90;_perCaption='billed · rolling 90 days';_perCmpPct=_pctChg(_last90,_last90Ly);_perLy=_last90Ly;}
+    else if(rptPeriod==='ytd'){_perEyebrow='YTD '+_cy;_perValue=_ytdThis;_perCaption='billed · year to date';_perCmpPct=_ytdDelta;_perLy=_ytdLast;}
+    else{_perEyebrow=_monFull[_nmo]+' '+_nyr;_perValue=_nextExp;_perCaption=_nextN+' open order'+(_nextN===1?'':'s')+' scheduled to ship';_perMode='next';_perTag='Expected';}
+    const _perMax=Math.max(_perValue,_perLy,1);
+    const _perW=Math.min(100,_perValue/_perMax*100),_perLyW=Math.min(100,_perLy/_perMax*100);
 
     // groups + sub-tabs (Warehouse gated to admin/gm)
     const _isWhOk=(cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm');
@@ -12026,28 +12040,34 @@ export default function App(){
       <div style={{background:'linear-gradient(120deg,var(--navy) 0%,#1c2d54 55%,#22345f 100%)',borderRadius:10,position:'relative',overflow:'hidden',boxShadow:'0 10px 30px rgba(16,26,64,.18)',marginBottom:16}}>
         <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.022) 26px,rgba(255,255,255,.022) 52px)',pointerEvents:'none'}}/>
         <div style={{position:'absolute',top:0,right:0,width:340,height:'100%',background:'var(--red)',opacity:.13,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
-        <div className="nsa-scorecard" style={{position:'relative',padding:'24px 26px',display:'grid',gridTemplateColumns:'1.35fr 1fr',gap:26}}>
+        {/* period selector + eyebrow */}
+        <div style={{position:'relative',display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,padding:'16px 26px 0',flexWrap:'wrap'}}>
+          <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:2,textTransform:'uppercase',color:'var(--red-light)'}}>{(rptRep==='all'?'Team Sales':(_repObj?_repObj.name:'My Sales'))+' — '+_perEyebrow+(_perTag?(' · '+_perTag.toUpperCase()):'')}</span>
+          <div style={{display:'flex',gap:2,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.14)',borderRadius:7,padding:3,flexWrap:'wrap'}}>
+            {_periods.map(p=><span key={p.key} className="nsa-rpt-hit" onClick={()=>setRptPeriod(p.key)} style={{fontFamily:FD,fontWeight:700,fontSize:11.5,textTransform:'uppercase',letterSpacing:.4,padding:'5px 10px',borderRadius:5,whiteSpace:'nowrap',background:rptPeriod===p.key?'var(--red)':'transparent',color:rptPeriod===p.key?'#fff':'rgba(255,255,255,.62)'}}>{p.label}</span>)}
+          </div>
+        </div>
+        <div className="nsa-scorecard" style={{position:'relative',padding:'14px 26px 24px',display:'grid',gridTemplateColumns:'1.35fr 1fr',gap:26}}>
           <div>
-            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
-              <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:2,textTransform:'uppercase',color:'var(--red-light)'}}>{(rptRep==='all'?'Team Sales':(_repObj?_repObj.name:'My Sales'))+' — '+_monFull[_cmo]+' '+_cy}</span>
-              <span style={{width:44,height:2,background:'var(--red)',transform:'skewX(-12deg)'}}/>
-            </div>
             <div style={{display:'flex',alignItems:'flex-end',gap:14}}>
-              <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_fmtK1(_mtdThis)}</div>
-              <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>billed so far<br/>day {_cday} of {_daysInMonth}</div></div>
+              <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_fmtK1(_perValue)}</div>
+              <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>{_perCaption}</div></div>
             </div>
-            <div style={{marginTop:22,maxWidth:460}}>
-              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:9}}>
-                <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.8,textTransform:'uppercase',color:'#fff'}}>On pace for {_fmtK1(_projected)}</span>
-                <span style={{fontFamily:FD,fontWeight:800,fontSize:14,color:_pacePct>=100?'#6FCF97':'var(--red-light)'}}>{_pacePct}% of last {_monShort[_pmo]}</span>
+            {_perMode!=='next'&&<div style={{marginTop:22,maxWidth:460}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:9,gap:10}}>
+                <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.8,textTransform:'uppercase',color:'#fff',whiteSpace:'nowrap'}}>{rptPeriod==='month'?('On pace for '+_fmtK1(_projected)):(_perCmpPct>=0?'Ahead of last year':'Behind last year')}</span>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:13.5,color:_perCmpPct>=0?'#6FCF97':'var(--red-light)',whiteSpace:'nowrap'}}>{(_perCmpPct>=0?'▲ +':'▼ ')+Math.abs(_perCmpPct)+'% vs last yr'}</span>
               </div>
               <div style={{position:'relative',height:12,borderRadius:6,background:'rgba(255,255,255,.12)',marginBottom:22}}>
-                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_projW+'%',background:'rgba(255,255,255,.18)',borderRadius:6}}/>
-                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_mtdW+'%',background:'linear-gradient(90deg,var(--red),var(--red-light))',borderRadius:6}}/>
-                <div style={{position:'absolute',top:-3,height:18,width:2,background:'#fff',left:_lastW+'%'}}/>
-                <div style={{position:'absolute',top:19,left:_lastW+'%',transform:'translateX(-50%)',fontSize:9.5,color:'rgba(255,255,255,.62)',whiteSpace:'nowrap'}}>last {_monShort[_pmo]} · {_fmtK1(_lastMonthFull)}</div>
+                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_perLyW+'%',background:'rgba(255,255,255,.18)',borderRadius:6}}/>
+                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_perW+'%',background:'linear-gradient(90deg,var(--red),var(--red-light))',borderRadius:6}}/>
+                <div style={{position:'absolute',top:-3,height:18,width:2,background:'#fff',left:_perLyW+'%'}}/>
+                <div style={{position:'absolute',top:19,left:_perLyW+'%',transform:'translateX(-50%)',fontSize:9.5,color:'rgba(255,255,255,.62)',whiteSpace:'nowrap'}}>same period last yr · {_fmtK1(_perLy)}</div>
               </div>
-            </div>
+            </div>}
+            {_perMode==='next'&&<div style={{marginTop:20,maxWidth:460}}>
+              <div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.55}}>Forecast from open sales orders scheduled to ship in {_monFull[_nmo]} {_nyr} — not yet billed.</div>
+            </div>}
           </div>
           <div className="nsa-score-right" style={{display:'flex',flexDirection:'column',gap:10,borderLeft:'1px solid rgba(255,255,255,.12)',paddingLeft:24}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
