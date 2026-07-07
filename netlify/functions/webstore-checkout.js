@@ -233,6 +233,17 @@ function couponDiscount(coupon, cartTotal, shipping) {
   return r2(base * (Number(coupon.value) || 0) / 100);
 }
 
+// Sales tax follows the amount actually billed: a store (retailer-funded) coupon
+// reduces the taxable product subtotal proportionally, so a 99%-off code taxes
+// ~1% of the subtotal, not the full price. Mirrors couponDiscount's base so the
+// coupon's share of the subtotal is removed before tax is sourced.
+function taxableBaseAfterDiscount(subtotal, discount, cartTotal, shipping, coupon) {
+  const sub = Number(subtotal) || 0;
+  const dBase = (Number(cartTotal) || 0) + (coupon && coupon.cover_shipping !== false ? (Number(shipping) || 0) : 0);
+  if (!(discount > 0) || !(dBase > 0)) return sub;
+  return Math.max(0, r2(sub * (1 - discount / dBase)));
+}
+
 // ── Sales tax ────────────────────────────────────────────────────────
 // CA orders use the free CDTFA address rate service; out-of-state orders use the
 // (metered) TaxCloud edge function, which applies the apparel TIC + each state's
@@ -434,7 +445,7 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, priced.subtotal, { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.subtotal, discount, cartTotal, shipping, coupon), { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
@@ -650,7 +661,7 @@ async function quoteTotals(sb, body) {
   const discount = couponDiscount(coupon, cartTotal, shipping);
   const processing = procFee(store, priced.subtotal);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
-  const taxRes = await calcTax(store, ship || {}, priced.subtotal, billing);
+  const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.subtotal, discount, cartTotal, shipping, coupon), billing);
   const total = r2(preTax + taxRes.tax);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }

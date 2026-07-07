@@ -1866,7 +1866,10 @@ function OrderStatusPage({ store, theme, orderId }) {
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
-  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 14 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  // Team delivery is ~4–5 weeks after the store CLOSES (production runs once the
+  // store closes), not from the order date. Show the later (5-week) edge so we
+  // don't over-promise — matches the "~4–5 weeks after the store closes" copy.
+  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 35 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
   const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 
   // Inline helpers
