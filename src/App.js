@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import * as Sentry from '@sentry/react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
+import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
@@ -5243,6 +5244,9 @@ export default function App(){
   const _isTouchDevice=()=>{try{return('ontouchstart'in window||navigator.maxTouchPoints>0)&&window.innerWidth<=1024}catch{return false}};
   const[mobileMode,setMobileMode]=useState(()=>{try{const pref=localStorage.getItem('nsa_mobile_mode');if(pref==='desktop')return false;if(pref==='mobile')return true;return _isTouchDevice()}catch{return false}});
   useEffect(()=>{_lsSet('nsa_mobile_mode',mobileMode?'mobile':'desktop')},[mobileMode]);
+  // A ?scan= deep link (printed QR labels) that arrives while in mobile mode — handed to
+  // MobilePortal's scan router instead of handleScanResult, which only drives desktop state.
+  const[mobileScanReq,setMobileScanReq]=useState(null);
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
@@ -29446,7 +29450,8 @@ export default function App(){
     const val=_scanParam.trim();
     // Clean the URL param after reading
     try{const u=new URL(window.location);u.searchParams.delete('scan');window.history.replaceState({},'',u)}catch{}
-    handleScanResult(val);
+    if(mobileMode)setMobileScanReq(val);// mobile portal routes it to its own warehouse screens
+    else handleScanResult(val);
   },[_scanParam,dbLoading]);// eslint-disable-line
 
   // ─── PUBLIC QUOTE FORM GATE — ?quote=TOKEN ───
@@ -29483,7 +29488,7 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess}/></ComponentErrorBoundary>;
+  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)}/></ComponentErrorBoundary>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
