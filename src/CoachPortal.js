@@ -39,12 +39,15 @@ const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af
 // mirror src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js — except
 // Red, which is intentionally the deeper team-brand red here (PMS 200 C, #BA0C2F)
 // rather than the brighter garment-swatch red, so the branded hero reads richer.
-const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// Cardinal/Silver aren't in those catalog files (no garment filter needs them
+// yet) but match the Cardinal/Silver hexes already used for thread-color pickers
+// elsewhere (OrderEditor.js, CustDetail.js).
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Silver: '#C0C0C0', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Cardinal: '#8C1515', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
 // Darkest-first: which team color makes the best deep banner background (white
 // text stays readable). Light/neutral families are intentionally excluded.
-const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
+const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Cardinal', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
 // Brightest-first: which team color pops best as the accent underline/eyebrow.
-const CP_ACCENT_PREF = ['Orange', 'Red', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
+const CP_ACCENT_PREF = ['Orange', 'Red', 'Cardinal', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
 const CP_DEFAULT_THEME = { primary: '#1e3a5f', accent: '#2563eb' }; // NSA navy/blue fallback
 // Lighten (pct>0) / darken (pct<0) a hex — mirrors storefront/Storefront.js shade().
 const cpShade = (hex, pct) => {
@@ -73,7 +76,7 @@ function cpTeamTheme(customer, supplement) {
   // Accent from the team's OWN colors first (keep its identity); only borrow the
   // parent department's colors when the team has no distinct accent of its own.
   const pickAccent = (pool) => CP_ACCENT_PREF.find((f) => pool.includes(f) && f !== darkFam)
-    || pool.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
+    || pool.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Silver' && f !== 'Black');
   const accentFam = pickAccent(own) || pickAccent(sup);
   // No distinct second color anywhere? Deepen the primary for the accent — never
   // lighten, which would desaturate a warm primary (red) into pink.
