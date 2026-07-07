@@ -122,7 +122,7 @@ const Badge = ({ variant, children }) => (
   <span className={`mk-badge ${variant}`}><span>{children}</span></span>
 );
 
-export default function Marketing() {
+function ProspectsView() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState(null);
@@ -527,6 +527,299 @@ export default function Marketing() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+// Roles offered in the campaign segment picker (mirrors CIFCS athletic-faculty +
+// coach roles). "Head Coach"/"Assistant Coach" cover every sport.
+const SEGMENT_ROLES = ['Athletic Director', 'Head Coach', 'Assistant Coach', 'Principal', 'Vice Principal', 'Activities Director', 'AD Assistant', 'Athletic Trainer'];
+const MERGE_HINT = ['first_name', 'last_name', 'school_name', 'school_city', 'section_name', 'role', 'sport'];
+
+async function authFetchJson(url, opts) {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not signed in');
+  const res = await fetch(url, { ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + session.access_token } });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+  return j;
+}
+
+const BLANK_CAMPAIGN = {
+  id: null, name: '', subject: '', html_body: '', sender_email: '', reply_to: '', send_rate: 60,
+  segment: { section_id: 'all', role: 'all', sport: '' },
+};
+
+function CampaignsView() {
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [c, setC] = useState(BLANK_CAMPAIGN);
+  const [recipientCount, setRecipientCount] = useState(null);
+  const [testTo, setTestTo] = useState('');
+  const [busy, setBusy] = useState(null); // 'save' | 'test' | 'send'
+  const [msg, setMsg] = useState(null);
+  const [err, setErr] = useState(null);
+  const [results, setResults] = useState({}); // campaignId -> {status: count}
+
+  const loadCampaigns = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.from('marketing_campaigns').select('*').order('created_at', { ascending: false }).limit(200);
+      if (error) throw error;
+      setCampaigns(data || []);
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { loadCampaigns(); }, [loadCampaigns]);
+
+  // Live recipient estimate for the current segment (active, emailable contacts).
+  const seg = c.segment;
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        let q = supabase.from('marketing_contacts').select('id', { count: 'exact', head: true }).eq('status', 'active').not('email', 'is', null);
+        if (seg.section_id !== 'all') q = q.eq('section_id', Number(seg.section_id));
+        if (seg.role !== 'all') q = q.eq('role', seg.role);
+        if (seg.sport && seg.sport.trim()) q = q.eq('sport', seg.sport.trim());
+        const { count } = await q;
+        if (!cancelled) setRecipientCount(count == null ? null : count);
+      } catch { if (!cancelled) setRecipientCount(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [seg.section_id, seg.role, seg.sport]);
+
+  const setField = (k, v) => setC((prev) => ({ ...prev, [k]: v }));
+  const setSeg = (k, v) => setC((prev) => ({ ...prev, segment: { ...prev.segment, [k]: v } }));
+  const editExisting = (row) => {
+    setC({
+      id: row.id, name: row.name || '', subject: row.subject || '', html_body: row.html_body || '',
+      sender_email: row.sender_email || '', reply_to: row.reply_to || '', send_rate: row.send_rate || 60,
+      segment: { section_id: (row.segment && row.segment.section_id) ?? 'all', role: (row.segment && row.segment.role) ?? 'all', sport: (row.segment && row.segment.sport) || '' },
+    });
+    setMsg(null); setErr(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const saveDraft = useCallback(async () => {
+    setBusy('save'); setErr(null); setMsg(null);
+    try {
+      if (!c.name.trim() || !c.subject.trim() || !c.html_body.trim()) throw new Error('Name, subject, and body are required.');
+      const payload = {
+        name: c.name.trim(), subject: c.subject.trim(), html_body: c.html_body,
+        sender_email: c.sender_email.trim() || null, reply_to: c.reply_to.trim() || null,
+        send_rate: Math.max(1, Math.min(100, Number(c.send_rate) || 60)),
+        segment: { section_id: seg.section_id, role: seg.role, sport: (seg.sport || '').trim() },
+        updated_at: new Date().toISOString(),
+      };
+      let saved;
+      if (c.id) {
+        const { data, error } = await supabase.from('marketing_campaigns').update(payload).eq('id', c.id).select().single();
+        if (error) throw error; saved = data;
+      } else {
+        const { data, error } = await supabase.from('marketing_campaigns').insert(payload).select().single();
+        if (error) throw error; saved = data;
+      }
+      setC((prev) => ({ ...prev, id: saved.id }));
+      setMsg('Draft saved.');
+      loadCampaigns();
+      return saved;
+    } catch (e) { setErr(e.message); return null; }
+    finally { setBusy(null); }
+  }, [c, seg, loadCampaigns]);
+
+  const sendTest = useCallback(async () => {
+    setBusy('test'); setErr(null); setMsg(null);
+    try {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(testTo.trim())) throw new Error('Enter a valid test email.');
+      const saved = await saveDraft();
+      if (!saved) throw new Error('Fix the draft first.');
+      const j = await authFetchJson('/.netlify/functions/marketing-campaign-send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaign_id: saved.id, action: 'test', test_to: testTo.trim() }),
+      });
+      setMsg(`Test sent to ${testTo.trim()} (rendered with ${j.renderedWith}).`);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(null); }
+  }, [testTo, saveDraft]);
+
+  const sendCampaign = useCallback(async () => {
+    const n = recipientCount;
+    if (!window.confirm(`Queue this campaign to ${n == null ? 'the segment' : n + ' recipient' + (n === 1 ? '' : 's')}? Suppressed/unsubscribed addresses are skipped automatically. This starts real delivery.`)) return;
+    setBusy('send'); setErr(null); setMsg(null);
+    try {
+      const saved = await saveDraft();
+      if (!saved) throw new Error('Fix the draft first.');
+      const j = await authFetchJson('/.netlify/functions/marketing-campaign-send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaign_id: saved.id, action: 'send' }),
+      });
+      setMsg(`Queued ${j.queued} email${j.queued === 1 ? '' : 's'} (${j.suppressed} suppressed, ${j.alreadyQueued} already queued). Delivering over ~${j.estimatedHours}h via the send queue.`);
+      loadCampaigns();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(null); }
+  }, [recipientCount, saveDraft, loadCampaigns]);
+
+  const loadResults = useCallback(async (id) => {
+    try {
+      const { data, error } = await supabase.from('marketing_sends').select('status').eq('campaign_id', id).limit(5000);
+      if (error) throw error;
+      const tally = {};
+      (data || []).forEach((r) => { tally[r.status] = (tally[r.status] || 0) + 1; });
+      setResults((prev) => ({ ...prev, [id]: tally }));
+    } catch (e) { setErr(e.message); }
+  }, []);
+
+  const insertToken = (t) => setC((prev) => ({ ...prev, html_body: `${prev.html_body}{{${t}}}` }));
+  const canAct = c.name.trim() && c.subject.trim() && c.html_body.trim();
+
+  return (
+    <div>
+      <div className="mk-head">
+        <div className="mk-eyebrow">★ Outreach ★</div>
+        <h1 className="mk-title">{c.id ? 'Edit Campaign' : 'New Campaign'}</h1>
+        <div className="mk-sub">Compose once, personalize per recipient. Every send carries a one-click unsubscribe + your postal address, skips suppressed addresses, and drips through the send queue — never a blast.</div>
+      </div>
+
+      {/* ── Composer ── */}
+      <div className="mk-card">
+        <div className="mk-card-h"><span className="mk-h-title">Compose</span>
+          <span className="mk-h-note">{recipientCount == null ? '' : `${recipientCount.toLocaleString()} recipient${recipientCount === 1 ? '' : 's'} in segment`}</span>
+        </div>
+        <div className="mk-card-b" style={{ flexDirection: 'column', alignItems: 'stretch' }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+            <div className="mk-field" style={{ flex: '2 1 240px' }}>
+              <label>Campaign name (internal)</label>
+              <input className="mk-input" style={{ width: '100%' }} value={c.name} onChange={(e) => setField('name', e.target.value)} placeholder="Central Section — Spring baseball" />
+            </div>
+            <div className="mk-field">
+              <label>Send rate (/hour)</label>
+              <input className="mk-input" type="number" min="1" max="100" style={{ width: 110 }} value={c.send_rate} onChange={(e) => setField('send_rate', e.target.value)} />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+            <div className="mk-field"><label>Segment · Section</label>
+              <select className="mk-select" value={seg.section_id} onChange={(e) => setSeg('section_id', e.target.value)}>
+                <option value="all">All sections</option>
+                {CIFCS_SECTIONS.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </div>
+            <div className="mk-field"><label>Segment · Role</label>
+              <select className="mk-select" value={seg.role} onChange={(e) => setSeg('role', e.target.value)}>
+                <option value="all">All roles</option>
+                {SEGMENT_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <div className="mk-field"><label>Segment · Sport (optional)</label>
+              <input className="mk-input" value={seg.sport} onChange={(e) => setSeg('sport', e.target.value)} placeholder="e.g. Baseball" />
+            </div>
+          </div>
+
+          <div className="mk-field" style={{ marginTop: 12 }}>
+            <label>Subject</label>
+            <input className="mk-input" style={{ width: '100%' }} value={c.subject} onChange={(e) => setField('subject', e.target.value)} placeholder="Team gear for {{school_name}} — a quick idea" />
+          </div>
+
+          <div className="mk-field" style={{ marginTop: 12 }}>
+            <label>Body — plain text with {'{{merge_fields}}'}; links and line breaks preserved</label>
+            <textarea style={{ width: '100%', minHeight: 180, fontFamily: "'Source Sans 3',sans-serif", fontSize: 13, color: '#2A2F3E', border: '1px solid #D1D5DE', borderRadius: 4, padding: 10, outline: 'none', resize: 'vertical' }}
+              value={c.html_body} onChange={(e) => setField('html_body', e.target.value)}
+              placeholder={'Hi Coach {{last_name}},\n\nWe outfit teams across the {{section_name}} and would love to put together a concept for {{school_name}}...'} />
+            <div style={{ marginTop: 6, display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ fontSize: 11, color: '#8A90A0', fontWeight: 600 }}>Insert:</span>
+              {MERGE_HINT.map((t) => <button key={t} onClick={() => insertToken(t)} style={{ cursor: 'pointer', fontFamily: "'Source Sans 3',sans-serif", fontSize: 11, border: '1px solid #D1D5DE', background: '#F7F8FB', borderRadius: 3, padding: '2px 7px', color: '#5A6075' }}>{`{{${t}}}`}</button>)}
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12 }}>
+            <div className="mk-field" style={{ flex: '1 1 220px' }}>
+              <label>From (marketing sender)</label>
+              <input className="mk-input" style={{ width: '100%' }} value={c.sender_email} onChange={(e) => setField('sender_email', e.target.value)} placeholder="reachout@team.nationalsportsapparel.com" />
+            </div>
+            <div className="mk-field" style={{ flex: '1 1 220px' }}>
+              <label>Reply-to (optional)</label>
+              <input className="mk-input" style={{ width: '100%' }} value={c.reply_to} onChange={(e) => setField('reply_to', e.target.value)} placeholder="your.rep@nationalsportsapparel.com" />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, alignItems: 'center' }}>
+            <Btn variant="ghost" onClick={saveDraft} disabled={!canAct || !!busy}>{busy === 'save' ? 'Saving…' : c.id ? 'Save changes' : 'Save draft'}</Btn>
+            <div className="mk-search" style={{ maxWidth: 260 }}>
+              <input placeholder="test@you.com" value={testTo} onChange={(e) => setTestTo(e.target.value)} />
+            </div>
+            <Btn variant="ghost" onClick={sendTest} disabled={!canAct || !!busy}>{busy === 'test' ? 'Sending…' : 'Send test'}</Btn>
+            <Btn variant="navy" onClick={sendCampaign} disabled={!canAct || !!busy || !recipientCount}>{busy === 'send' ? 'Queuing…' : `Send to ${recipientCount == null ? 'segment' : recipientCount.toLocaleString()}`}</Btn>
+            {c.id && <Btn variant="ghost" onClick={() => { setC(BLANK_CAMPAIGN); setMsg(null); setErr(null); }}>New</Btn>}
+          </div>
+          {msg && <div style={{ marginTop: 10 }}><Badge variant="green">✓ {msg}</Badge></div>}
+          {err && <div style={{ marginTop: 10 }}><Badge variant="accent">{err}</Badge></div>}
+        </div>
+      </div>
+
+      {/* ── Campaign list ── */}
+      <div className="mk-card">
+        <div className="mk-card-h"><span className="mk-h-title">{loading ? 'Loading…' : `${campaigns.length} Campaign${campaigns.length === 1 ? '' : 's'}`}</span></div>
+        <div className="mk-table-wrap">
+          <table className="mk-table">
+            <thead><tr><th>Name</th><th>Status</th><th>Segment</th><th>Queued</th><th>Created</th><th style={{ textAlign: 'right' }}>Actions</th></tr></thead>
+            <tbody>
+              {campaigns.map((row) => {
+                const r = results[row.id];
+                const segTxt = [(row.segment && row.segment.section_id && row.segment.section_id !== 'all') ? (CIFCS_SECTIONS.find((s) => String(s.id) === String(row.segment.section_id)) || {}).name : 'All sections',
+                  (row.segment && row.segment.role && row.segment.role !== 'all') ? row.segment.role : null, (row.segment && row.segment.sport) || null].filter(Boolean).join(' · ');
+                return (
+                  <React.Fragment key={row.id}>
+                    <tr>
+                      <td style={{ fontWeight: 600, color: '#192853' }}>{row.name}</td>
+                      <td><Badge variant={row.status === 'sending' ? 'green' : row.status === 'sent' ? 'navy' : row.status === 'cancelled' ? 'accent' : 'slate'}>{row.status}</Badge></td>
+                      <td style={{ color: '#5A6075', fontSize: 12 }}>{segTxt}</td>
+                      <td style={{ color: '#5A6075' }}>{(row.counts && row.counts.queued) || 0}</td>
+                      <td style={{ color: '#8A90A0', fontSize: 12 }}>{(row.created_at || '').slice(0, 10)}</td>
+                      <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                        <Btn variant="ghost" size="sm" onClick={() => editExisting(row)}>Edit</Btn>{' '}
+                        <Btn variant="ghost" size="sm" onClick={() => loadResults(row.id)}>Results</Btn>
+                      </td>
+                    </tr>
+                    {r && (
+                      <tr><td colSpan={6} style={{ background: '#F7F8FB' }}>
+                        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: 12, color: '#5A6075', padding: '2px 0' }}>
+                          {Object.keys(r).length === 0 ? <span>No sends yet.</span> : Object.entries(r).map(([k, v]) => <span key={k}><strong style={{ color: '#192853' }}>{v}</strong> {k}</span>)}
+                        </div>
+                      </td></tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+              {!loading && campaigns.length === 0 && <tr><td colSpan={6} className="mk-empty">No campaigns yet. Compose one above.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TabBtn({ active, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{
+      fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', letterSpacing: '.6px', fontWeight: 700, fontSize: 14,
+      padding: '10px 18px', cursor: 'pointer', background: 'none', border: 'none', color: active ? '#192853' : '#8A90A0',
+      borderBottom: active ? '3px solid #962C32' : '3px solid transparent', marginBottom: -2,
+    }}>{children}</button>
+  );
+}
+
+export default function Marketing() {
+  const [tab, setTab] = useState('prospects');
+  return (
+    <div className="mk-scope">
+      <style>{MK_CSS}</style>
+      <div style={{ display: 'flex', gap: 4, borderBottom: '2px solid #EEF1F6', marginBottom: 18 }}>
+        <TabBtn active={tab === 'prospects'} onClick={() => setTab('prospects')}>Prospects</TabBtn>
+        <TabBtn active={tab === 'campaigns'} onClick={() => setTab('campaigns')}>Campaigns</TabBtn>
+      </div>
+      {tab === 'prospects' ? <ProspectsView /> : <CampaignsView />}
     </div>
   );
 }
