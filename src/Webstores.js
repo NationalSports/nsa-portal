@@ -203,7 +203,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     const wh = ls.ours, ven = ls.vendor, tracked = ls.tracked;
     if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
-    if (!itemAgg[k]) itemAgg[k] = { name: ls.name || i.sku || pid, sku: i._effSku || i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: ls.onOrder };
+    if (!itemAgg[k]) itemAgg[k] = { name: ls.name || i.sku || pid, sku: i._effSku || i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, known: ls.known, onOrder: ls.onOrder };
     const row = itemAgg[k];
     row.needed += need;
     const give = Math.min(need, Math.max(0, remaining[k]));
@@ -228,9 +228,13 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
 
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const itemRow = (r) => {
-    const avail = r.tracked ? r.ours + r.adidas : '—';
+    // Show real stock numbers whenever we HAVE them (r.known) — an untracked /
+    // made-to-order line still never shorts, but e.g. an override SKU's vendor
+    // availability is informative rather than a dash.
+    const show = r.tracked || r.known;
+    const avail = show ? r.ours + r.adidas : '—';
     const sh = r.needed - r.filled;
-    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${r.tracked ? r.ours : '—'}</td><td class="c">${r.tracked ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
   };
   const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
 
@@ -395,10 +399,12 @@ function lineStock(i, stockByPid, stockBySku, madeToOrder) {
   if (i._skuOv) {
     const vst = stockBySku[i._effSku];
     const base = i.product_id ? stockByPid[i.product_id] : null;
-    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), onOrder: !!(vst && vst.eta), name: base && base.name };
+    // known: we have real stock numbers to SHOW even when the item is untracked
+    // (tracking off = never blocked/short, but availability is still informative).
+    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
   }
   const st = i.product_id ? stockByPid[i.product_id] : null;
-  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
 }
 // Aggregation key: overridden sizes pool stock separately from the base SKU.
 const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
@@ -411,7 +417,7 @@ function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
     const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     if (!agg[k]) agg[k] = {
       name: ls.name || i.name || i.sku || pid, sku: i._effSku || i.sku || '', size, need: 0,
-      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, onOrder: ls.onOrder,
+      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
     };
     agg[k].need += need;
   });
@@ -2476,7 +2482,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
       const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
-        .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
+        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
