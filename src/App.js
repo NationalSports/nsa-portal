@@ -2180,6 +2180,7 @@ export default function App(){
   // My Day recap window controls
   const[stMdWin,setStMdWin]=useState(3);       // activity look-back in days
   const[stMdDeadline,setStMdDeadline]=useState(14); // deadline look-ahead in days
+  const[stMdRep,setStMdRep]=useState('me');    // My Day rep scope (admins only): 'me' | 'all' | rep id
   const[qrModal,setQrModal]=useState({open:false,customer_id:'',contact_id:''});
   const[qrView,setQrView]=useState(null);
   const[qrSearch,setQrSearch]=useState('');
@@ -27211,7 +27212,9 @@ export default function App(){
     // ═══ MY DAY — the rep's daily operations recap (same five categories as the emailed rep-ops-digest) ═══
     const _mdRepOf=(so)=>{const c=cust.find(x=>x.id===so.customer_id);return c?.primary_rep_id||so.created_by};
     const _mdAdmin=cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm';
-    const _mdMine=(...ids)=>_mdAdmin||ids.some(id=>id&&id===cu.id);
+    // Admins can scope My Day to a single rep (or All Reps) via the header dropdown; everyone else is locked to their own book.
+    const _mdViewRep=_mdAdmin?(stMdRep==='me'?cu.id:stMdRep):cu.id;
+    const _mdMine=(...ids)=>_mdViewRep==='all'||ids.some(id=>id&&id===_mdViewRep);
     const _mdCustName=(id)=>{const c=cust.find(x=>x.id===id);return c?.name||c?.alpha_tag||'—'};
     const _mdNow=Date.now();
     const _mdWinStart=_mdNow-stMdWin*864e5;
@@ -27326,7 +27329,7 @@ export default function App(){
         return<>
           <div className="card" style={{marginBottom:16}}>
             <div className="card-header" style={{display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}}>
-              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · All Reps':''}</h2>
+              <h2 style={{margin:0}}>☀️ My Day{_mdAdmin?' · '+(_mdViewRep==='all'?'All Reps':(REPS.find(r=>r.id===_mdViewRep)?.name||'Me')):''}</h2>
               <div style={{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#64748b',flexWrap:'wrap'}}>
                 <span>Activity in last</span>
                 <select className="form-input" value={stMdWin} onChange={e=>setStMdWin(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
@@ -27334,6 +27337,12 @@ export default function App(){
                 <span>· deadlines next</span>
                 <select className="form-input" value={stMdDeadline} onChange={e=>setStMdDeadline(Number(e.target.value))} style={{width:'auto',padding:'4px 8px',fontSize:12}}>
                   {[7,14,30].map(d=><option key={d} value={d}>{d} days</option>)}</select>
+                {_mdAdmin&&<><span>· rep</span>
+                <select className="form-input" value={stMdRep} onChange={e=>setStMdRep(e.target.value)} style={{width:'auto',padding:'4px 8px',fontSize:12,maxWidth:170}} title="Scope My Day to a single rep's orders, or All Reps">
+                  <option value="me">Me{(()=>{const m=REPS.find(r=>r.id===cu.id);return m?' ('+(m.name||'').split(' ')[0]+')':''})()}</option>
+                  <option value="all">All Reps</option>
+                  {REPS.filter(r=>r.is_active!==false&&r.id!==cu.id).sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+                </select></>}
                 {(()=>{const me=REPS.find(r=>r.id===cu.id);const off=me?.ops_digest_opt_out===true;
                   return<button className="btn btn-sm btn-secondary" style={{fontSize:11}} title="Toggle the daily recap email of this page" onClick={async()=>{
                     const next=!off;
