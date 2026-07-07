@@ -11660,6 +11660,34 @@ export default function App(){
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
   const toggleWidget=(k)=>setRptWidgets(w=>({...w,[k]:!w[k]}));
+  // ── Redesigned Reports (NSA brand) — shell + Overview interaction state ──
+  const[rptScopeOpen,setRptScopeOpen]=useState(false);
+  const[rptExportOpen,setRptExportOpen]=useState(false);
+  const[rptChartMode,setRptChartMode]=useState('bars');// bars | trend
+  const[rptBreakdown,setRptBreakdown]=useState('customer');// customer | product
+  const[rptRadar,setRptRadar]=useState('due');// due | atrisk
+  const[rptHoverMonth,setRptHoverMonth]=useState(null);
+  const[rptToast,setRptToast]=useState(null);
+  // Inject NSA brand webfonts + scoped theme tokens once (mirrors QuickMockBuilder)
+  React.useEffect(()=>{
+    if(typeof document==='undefined')return;
+    if(!document.getElementById('nsa-brand-fonts')){
+      const l=document.createElement('link');l.id='nsa-brand-fonts';l.rel='stylesheet';
+      l.href='https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap';
+      document.head.appendChild(l);
+    }
+    if(!document.getElementById('nsa-rpt-theme')){
+      const s=document.createElement('style');s.id='nsa-rpt-theme';
+      s.textContent=`.nsa-rpt{--navy:#192853;--navy-dark:#0F1A38;--navy-mid:#1c2d4f;--red:#962C32;--red-bright:#B8333B;--red-light:#D94A52;--rpt-body:'Source Sans 3','Segoe UI',system-ui,sans-serif;--rpt-disp:'Barlow Condensed','Arial Narrow',sans-serif;font-family:var(--rpt-body);color:#2A2F3E}
+.nsa-rpt.num,.nsa-rpt .num{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+.nsa-rpt-hit{cursor:pointer}.nsa-row{cursor:pointer}.nsa-row:hover{background:#F7F9FC!important}
+.nsa-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:16px}
+.nsa-2col{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@keyframes nsaRowIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@media(max-width:940px){.nsa-kpis{grid-template-columns:repeat(2,1fr)}.nsa-2col{grid-template-columns:1fr}.nsa-scorecard{grid-template-columns:1fr!important}.nsa-score-right{border-left:none!important;padding-left:0!important;border-top:1px solid rgba(255,255,255,.12);padding-top:16px;margin-top:4px}.nsa-monthly{grid-template-columns:1fr!important}.nsa-monthly-bd{border-left:none!important;padding-left:0!important;border-top:1px solid #EEF1F6;padding-top:14px;margin-top:4px}}`;
+      document.head.appendChild(s);
+    }
+  },[]);
 
   function rReports(){
     // Mirrors OrderEditor `totals` so pipeline numbers match the SO detail page:
@@ -11837,29 +11865,339 @@ export default function App(){
     const healthBg={active:'#dcfce7',warm:'#fef3c7',cooling:'#ffedd5',at_risk:'#fecaca'};
     const healthLabel={active:'Active',warm:'Warm',cooling:'Cooling',at_risk:'At Risk'};
 
-    return(<>
-      {/* Report controls */}
-      <div style={{display:'flex',gap:8,marginBottom:12,alignItems:'center',flexWrap:'wrap'}}>
-        <div style={{display:'flex',gap:4}}>
-          {[['overview','📊 Overview'],['pipeline','💰 Pipeline'],['customers','👥 Customers'],['products','📦 Products'],['inventory','🗃️ Inventory'],['reps','🏆 Reps'],['production','🏭 Production'],['decorator','👤 Decorator'],['time','⏱️ Time & Labor'],['sales_tax','🧾 Sales Tax'],['csr_tasks','📌 CSR Tasks']].map(([v,l])=>
-            <button key={v} className={`btn btn-sm ${rptTab===v?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab(v)}>{l}</button>)}
-          {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button key="warehouse" className={`btn btn-sm ${rptTab==='warehouse'?'btn-primary':'btn-secondary'}`} onClick={()=>setRptTab('warehouse')}>📦 Warehouse</button>}
+    // ═══════════════════════════════════════════════════════════════════
+    // NSA REDESIGNED REPORTS — brand theme, data derivations & Overview view
+    // ═══════════════════════════════════════════════════════════════════
+    const FD="'Barlow Condensed','Arial Narrow',sans-serif";const RED='#962C32';const NAVY='#192853';
+    const _repObj=rptRep==='all'?null:REPS.find(r=>r.id===rptRep);
+    const _ini=(n)=>(n||'').replace(/[^A-Za-z ]/g,'').split(' ').filter(Boolean).slice(0,2).map(w=>w[0]).join('').toUpperCase()||'—';
+    const _fmtK1=(v)=>{const a=Math.abs(v||0);const s=(v||0)<0?'-':'';if(a>=1000000)return s+'$'+(a/1000000).toFixed(2).replace(/\.?0+$/,'')+'M';if(a>=100000)return s+'$'+Math.round(a/1000)+'k';if(a>=1000)return s+'$'+(a/1000).toFixed(1).replace(/\.0$/,'')+'k';return s+'$'+Math.round(a)};
+    const _miniSpark=(vals,w,h,pad)=>{w=w||128;h=h||30;pad=pad==null?2:pad;const v=(vals&&vals.length?vals:[0,0]);const mn=Math.min(...v),mx=Math.max(...v),rng=(mx-mn)||1,n=v.length;const pts=v.map((x,i)=>({x:pad+(n>1?i/(n-1):0)*(w-2*pad),y:pad+(1-(x-mn)/rng)*(h-2*pad)}));const line=pts.map((p,i)=>(i?'L':'M')+p.x.toFixed(1)+' '+p.y.toFixed(1)).join(' ');const area=line+' L '+pts[n-1].x.toFixed(1)+' '+h+' L '+pts[0].x.toFixed(1)+' '+h+' Z';return{line,area}};
+    const reorderStatusMeta=(s)=>({overdue:{label:'Overdue',t:'#962C32',b:'#F6E3E4',accent:'#962C32'},due:{label:'Due now',t:'#B26B12',b:'#FBEEDB',accent:'#B26B12'},upcoming:{label:'Upcoming',t:'#3A4B72',b:'#EAEEF5',accent:'#3A4B72'},on_track:{label:'On track',t:'#1F7A54',b:'#E4F1EA',accent:'#1F7A54'}}[s]||{label:s||'—',t:'#3A4B72',b:'#EAEEF5',accent:'#3A4B72'});
+
+    // Monthly billed sales (NetSuite history) this year vs last, scoped to selected rep by name snapshot
+    const _now2=new Date();const _cy=_now2.getFullYear();const _ly=_cy-1;const _cmo=_now2.getMonth();const _cday=_now2.getDate();
+    const _repNameLc=_repObj&&_repObj.name?_repObj.name.toLowerCase():null;
+    const _matchRep=(hi)=>{if(!_repNameLc)return true;const rn=(hi.rep_name||'').toLowerCase();if(!rn)return false;return rn===_repNameLc||rn.includes(_repNameLc)||_repNameLc.includes(rn)};
+    const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
+    let _ytdThis=0,_ytdLast=0,_mtdThis=0,_lastMonthFull=0;
+    const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
+    (histInvs||[]).forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const m=String(hi.date).match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return;const y=+m[1],mo=+m[2]-1,d=+m[3];const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t});
+    const _pctChg=(c,p)=>p>0?Math.round((c-p)/p*100):(c>0?100:0);
+    const _ytdDelta=_pctChg(_ytdThis,_ytdLast);
+    const _daysInMonth=new Date(_cy,_cmo+1,0).getDate();
+    const _projected=_cday>0?_mtdThis/(_cday/_daysInMonth):_mtdThis;
+    const _pacePct=_lastMonthFull>0?Math.round(_projected/_lastMonthFull*100):(_projected>0?100:0);
+    const _paceScale=Math.max(_projected,_lastMonthFull,1)*1.12;
+    const _mtdW=Math.min(100,_mtdThis/_paceScale*100),_projW=Math.min(100,_projected/_paceScale*100),_lastW=Math.min(100,_lastMonthFull/_paceScale*100);
+    let _streak=0;for(let i=_cmo-1;i>=0;i--){if(_mThis[i]>0&&_mThis[i]>=_mLast[i])_streak++;else break}
+    const _monShort=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const _monFull=['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const _repRank=_repObj?(repData.findIndex(r=>r.id===_repObj.id)+1):0;
+    const _asOf='As of '+_monShort[_cmo]+' '+_cday+', '+_cy;
+
+    // groups + sub-tabs (Warehouse gated to admin/gm)
+    const _isWhOk=(cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm');
+    const _ico={
+      sales:<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>,
+      customers:<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>,
+      production:<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8l-7 5V8l-7 5V4a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z"/><path d="M7 18h.01M12 18h.01M17 18h.01"/></svg>,
+      finance:<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8M8 11h8M8 15h5"/></svg>,
+    };
+    const _rGroups=[
+      {id:'sales',label:'Sales',icon:_ico.sales,tabs:['overview','pipeline','products','reps']},
+      {id:'customers',label:'Customers',icon:_ico.customers,tabs:['customers','csr_tasks']},
+      {id:'production',label:'Production',icon:_ico.production,tabs:['production','decorator','time','inventory',...(_isWhOk?['warehouse']:[])]},
+      {id:'finance',label:'Finance',icon:_ico.finance,tabs:['sales_tax']},
+    ];
+    const _tabLabels={overview:'Overview',pipeline:'Pipeline',products:'Products',reps:'Reps',customers:'Customers',csr_tasks:'CSR Tasks',production:'Production',decorator:'Decorator',time:'Time & Labor',inventory:'Inventory',warehouse:'Warehouse',sales_tax:'Sales Tax'};
+    const _curGroup=_rGroups.find(g=>g.tabs.includes(rptTab))||_rGroups[0];
+    const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
+    const _salesGroup=_curGroup.id==='sales';
+    const _scopeReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
+    const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:'All Reps');
+    const _scopeSub=rptRep==='all'?'Team total':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view');
+
+    // KPI set (Sales group) — YTD billed carries the real YoY delta; the rest are live pipeline snapshots
+    const _activeSOs=pipeline.filter(s=>s._status!=='complete').length;
+    const _kpis=[
+      {label:'YTD Billed',value:_fmtK1(_ytdThis),topbar:RED,spark:_mThis.slice(0,Math.max(1,_cmo+1)),delta:_ytdDelta,sub:'vs '+_fmtK1(_ytdLast)+' last year'},
+      {label:'Pipeline Rev',value:_fmtK1(totalRev),topbar:NAVY,sub:_activeSOs+' active sales orders'},
+      {label:'Total Units',value:(totalUnits||0).toLocaleString(),topbar:NAVY,sub:'across the pipeline'},
+      {label:'Avg Order',value:'$'+(avgOrderSize||0).toLocaleString(),topbar:NAVY,sub:pipeline.length+' orders'},
+    ];
+
+    // Overview derivations
+    const _stLabel={need_order:'Need Order',waiting_receive:'Waiting Receive',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
+    const _openPipe=pipeline.filter(s=>s._status!=='complete');
+    const _openPipeTotal=_openPipe.reduce((a,s)=>a+s._rev,0);
+    const _statusAgg={};_openPipe.forEach(s=>{const k=s._status||'other';if(!_statusAgg[k])_statusAgg[k]={n:0,rev:0};_statusAgg[k].n++;_statusAgg[k].rev+=s._rev});
+    const _statusRows=Object.entries(_statusAgg).map(([k,v])=>({key:k,label:_stLabel[k]||k,n:v.n,rev:v.rev})).sort((a,b)=>b.rev-a.rev);
+    const _statusMax=Math.max(1,..._statusRows.map(r=>r.rev));
+    const _bdCust=custHealth.filter(c=>c.rev>0).slice(0,6).map(c=>({name:c.name,val:c.rev}));
+    const _bdProd=topProducts.slice(0,6).map(p=>({name:p.name,val:p.rev,units:p.units}));
+    const _bdRows=rptBreakdown==='customer'?_bdCust:_bdProd;
+    const _bdMax=Math.max(1,..._bdRows.map(r=>r.val));
+    const _radarDue=[...reorderData].filter(r=>r.daysUntil<=45).sort((a,b)=>a.daysUntil-b.daysUntil).slice(0,7);
+    const _radarRisk=custHealth.filter(c=>c.health==='cooling'||c.health==='at_risk').sort((a,b)=>b.daysSince-a.daysSince).slice(0,7);
+    const _radarRows=rptRadar==='atrisk'?_radarRisk:_radarDue;
+    const _lbTop=repData.slice(0,5);const _lbMax=Math.max(1,..._lbTop.map(r=>r.rev));
+    const _tp=topProducts.slice(0,6);const _tpMax=Math.max(1,..._tp.map(p=>p.rev));
+    const _funnelRows=[['Open',fDraft,'Estimates open'],['Sent',fSent,'Out to customer'],['Approved',fApproved,'Customer approved'],['Converted',fConverted,'Became a sales order']];
+    const _funnelMax=Math.max(1,fDraft,fSent,fApproved,fConverted);
+    const _funnelRate=funnelEsts.length>0?Math.round(fConverted/funnelEsts.length*100):0;
+    const _lowMargin=pipeline.filter(s=>s._rev>0).sort((a,b)=>a._pct-b._pct).slice(0,7);
+    const _lowMarginCount=pipeline.filter(s=>s._rev>0&&s._pct<25).length;
+    const _mColor=(m)=>m<20?'#962C32':m<25?'#C2410C':m<30?'#B26B12':'#1F7A54';
+
+    // Monthly chart geometry (840x300 viewBox)
+    const _chMax=Math.max(1,..._mThis,..._mLast);
+    const _mag=Math.pow(10,Math.floor(Math.log10(_chMax)));const _stepA=_mag/2;let _ceil=Math.ceil(_chMax/_stepA)*_stepA;if(_ceil<=_chMax)_ceil+=_stepA;const _gstep=_ceil/4;
+    const _VBW=840,_padL=46,_padR=14,_padT=16,_plotH=250,_base=_padT+_plotH;const _plotW=_VBW-_padL-_padR;
+    const _gw=_plotW/12,_bw=Math.min(15,_gw*0.24),_gp=4,_pairW=_bw*2+_gp,_boff=(_gw-_pairW)/2;
+    const _yOf=(v)=>_padT+_plotH-(v/_ceil)*_plotH;
+    const _fmtAxis=(v)=>{if(v>=1000000)return '$'+(v/1000000).toFixed(1).replace(/\.0$/,'')+'M';if(v>=1000)return '$'+Math.round(v/1000)+'k';return '$'+Math.round(v)};
+    const _chGroups=_monShort.map((m,i)=>{const gx=_padL+i*_gw;const lyX=gx+_boff,tyX=lyX+_bw+_gp;const lyV=_mLast[i],tyV=_mThis[i];const future=i>_cmo;return{i,label:m,center:gx+_gw/2,lyX,lyY:_yOf(lyV),lyH:_base-_yOf(lyV),lyV,tyX,tyY:tyV>0?_yOf(tyV):_base-1,tyH:tyV>0?_base-_yOf(tyV):1,tyV,future,hitX:gx,hitW:_gw,labelColor:future?'#B4BDCE':'#5A6075'}});
+    const _chGrid=[];for(let g=0;g<=4;g++){const val=_gstep*g,y=_yOf(val);_chGrid.push({y:y.toFixed(1),ty:(y+3.5).toFixed(1),label:_fmtAxis(val)})}
+    const _tyPts=_chGroups.filter(g=>g.tyV>0).map(g=>({x:+g.center.toFixed(1),y:+g.tyY.toFixed(1)}));
+    const _lyPts=_chGroups.map(g=>({x:+g.center.toFixed(1),y:+g.lyY.toFixed(1)}));
+    const _toPath=(p)=>p.map((q,i)=>(i?'L':'M')+q.x+' '+q.y).join(' ');
+    const _tyPath=_toPath(_tyPts),_lyPath=_toPath(_lyPts);
+    const _tyArea=_tyPts.length?_tyPath+' L '+_tyPts[_tyPts.length-1].x+' '+_base+' L '+_tyPts[0].x+' '+_base+' Z':'';
+
+    // ── presentational helpers ──
+    const RAccent=(mb)=><div style={{width:52,height:3,background:'var(--red)',transform:'skewX(-12deg)',margin:'6px 0 '+(mb==null?0:mb)+'px'}}/>;
+    const RSkew=(t,b,txt)=><span style={{fontFamily:FD,fontWeight:700,fontSize:12,padding:'2px 8px',borderRadius:4,transform:'skewX(-6deg)',display:'inline-block',color:t,background:b}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{txt}</span></span>;
+    const _card={background:'#fff',border:'1px solid #E5EAF2',borderRadius:9,boxShadow:'0 1px 2px rgba(16,26,64,.04)'};
+    const _h17={fontFamily:FD,fontWeight:800,fontSize:17,letterSpacing:.4,textTransform:'uppercase',color:'var(--navy)',whiteSpace:'nowrap'};
+    const _redLink={fontFamily:FD,fontWeight:700,fontSize:12,textTransform:'uppercase',letterSpacing:.5,color:'var(--red)',whiteSpace:'nowrap'};
+    const RKpi=(k,i)=><div key={i} className="num" style={{background:'#fff',border:'1px solid #E5EAF2',borderRadius:8,padding:18,position:'relative',overflow:'hidden',boxShadow:'0 1px 2px rgba(16,26,64,.04)'}}>
+      <span style={{position:'absolute',top:0,left:0,width:'100%',height:3,background:k.topbar}}/>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+        <span style={{fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:1.3,textTransform:'uppercase',color:'#818BA1'}}>{k.label}</span>
+        {k.delta!=null&&<span style={{fontFamily:FD,fontWeight:700,fontSize:12,padding:'2px 7px',borderRadius:4,transform:'skewX(-6deg)',color:k.delta>=0?'#1F7A54':RED,background:k.delta>=0?'#E4F1EA':'#F6E3E4'}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{(k.delta>=0?'▲ ':'▼ ')+Math.abs(k.delta)+'%'}</span></span>}
+      </div>
+      <div style={{fontFamily:FD,fontWeight:800,fontSize:33,lineHeight:1,color:'var(--navy)',marginTop:9}}>{k.value}</div>
+      {k.spark?(()=>{const ms=_miniSpark(k.spark);return<svg viewBox="0 0 128 30" preserveAspectRatio="none" style={{width:'100%',height:26,marginTop:8,display:'block'}}><path d={ms.area} fill="rgba(25,40,83,.07)"/><path d={ms.line} fill="none" stroke="var(--navy)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>})():<div style={{height:26,marginTop:8}}/>}
+      <div style={{fontSize:10.5,color:'#96A0B4',marginTop:9}}>{k.sub}</div>
+    </div>;
+    const _exportReports=(kind)=>{
+      setRptExportOpen(false);
+      if(kind==='print'){window.print();return}
+      const rows=[['SO','Customer','Status','Revenue','Cost','Margin','Margin %','Units'],...pipeline.slice().sort((a,b)=>b._rev-a._rev).map(s=>[s.id,s._cname,s._status,s._rev,s._cost,s._margin,s._pct,s._units])];
+      const csv=rows.map(r=>r.map(v=>{const t=String(v==null?'':v);return /[",\n]/.test(t)?'"'+t.replace(/"/g,'""')+'"':t}).join(',')).join('\n');
+      try{const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='nsa-reports-'+rptTab+'.csv';document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);setRptToast('Exported '+pipeline.length+' pipeline rows to CSV')}catch(e){setRptToast('Export failed')}
+      clearTimeout(window._rptToastT);window._rptToastT=setTimeout(()=>setRptToast(null),2600);
+    };
+    const RScope=()=><div style={{position:'relative'}}>
+      <div className="nsa-rpt-hit" onClick={()=>{setRptScopeOpen(o=>!o);setRptExportOpen(false)}} style={{display:'flex',alignItems:'center',gap:10,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',borderRadius:6,padding:'6px 10px 6px 6px'}}>
+        <span style={{width:32,height:32,borderRadius:5,background:rptRep==='all'?'var(--navy-mid)':'var(--red)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:13,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{rptRep==='all'?'ALL':_ini(_repObj&&_repObj.name)}</span></span>
+        <span style={{display:'flex',flexDirection:'column',lineHeight:1.1,textAlign:'left'}}>
+          <span style={{fontFamily:FD,fontWeight:700,fontSize:14,color:'#fff',letterSpacing:.4,textTransform:'uppercase',whiteSpace:'nowrap'}}>{_scopeName}</span>
+          <span style={{fontSize:10.5,color:'rgba(255,255,255,.55)'}}>{_scopeSub}</span>
+        </span>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.6)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+      {rptScopeOpen&&<div style={{position:'absolute',top:52,right:0,width:244,maxHeight:360,overflowY:'auto',background:'#fff',border:'1px solid #E2E7F0',borderRadius:8,boxShadow:'0 16px 40px rgba(16,26,64,.22)',zIndex:60}}>
+        <div style={{padding:'9px 14px',fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.4,textTransform:'uppercase',color:'#8892A6',borderBottom:'1px solid #EEF1F6'}}>View numbers for</div>
+        {[{id:'all',name:'All Reps — Team'},..._scopeReps].map(o=><div key={o.id} className="nsa-rpt-hit nsa-row" onClick={()=>{setRptRep(o.id);setRptScopeOpen(false)}} style={{display:'flex',alignItems:'center',gap:10,padding:'8px 14px',borderBottom:'1px solid #F4F6FA',background:o.id===rptRep?'#F7F9FC':'#fff'}}>
+          <span style={{width:26,height:26,borderRadius:5,background:'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:11,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{o.id==='all'?'ALL':_ini(o.name)}</span></span>
+          <span style={{flex:1,fontWeight:600,fontSize:13,color:'var(--navy)'}}>{o.name}</span>
+          {o.id===rptRep&&<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--red)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+        </div>)}
+      </div>}
+    </div>;
+    const RExport=()=><div style={{position:'relative'}}>
+      <div className="nsa-rpt-hit" onClick={()=>{setRptExportOpen(o=>!o);setRptScopeOpen(false)}} style={{display:'flex',alignItems:'center',gap:7,background:'var(--red)',borderRadius:6,padding:'9px 15px',transform:'skewX(-3deg)'}}>
+        <svg style={{transform:'skewX(3deg)'}} width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span style={{transform:'skewX(3deg)',fontFamily:FD,fontWeight:700,fontSize:14,letterSpacing:.8,textTransform:'uppercase',color:'#fff'}}>Export</span>
+      </div>
+      {rptExportOpen&&<div style={{position:'absolute',top:48,right:0,width:180,background:'#fff',border:'1px solid #E2E7F0',borderRadius:8,boxShadow:'0 16px 40px rgba(16,26,64,.22)',zIndex:60,overflow:'hidden'}}>
+        {[['CSV — pipeline','csv'],['Print / Save PDF','print']].map(([label,k])=><div key={k} className="nsa-rpt-hit nsa-row" onClick={()=>_exportReports(k)} style={{padding:'10px 14px',borderBottom:'1px solid #F4F6FA',fontWeight:600,fontSize:13,color:'var(--navy)'}}>{label}</div>)}
+      </div>}
+    </div>;
+
+    // ── Overview (redesigned) ──
+    const _renderOverview=()=>(<>
+      {/* Scorecard hero */}
+      <div style={{background:'linear-gradient(120deg,var(--navy) 0%,#1c2d54 55%,#22345f 100%)',borderRadius:10,position:'relative',overflow:'hidden',boxShadow:'0 10px 30px rgba(16,26,64,.18)',marginBottom:16}}>
+        <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 26px,rgba(255,255,255,.022) 26px,rgba(255,255,255,.022) 52px)',pointerEvents:'none'}}/>
+        <div style={{position:'absolute',top:0,right:0,width:340,height:'100%',background:'var(--red)',opacity:.13,clipPath:'polygon(30% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+        <div className="nsa-scorecard" style={{position:'relative',padding:'24px 26px',display:'grid',gridTemplateColumns:'1.35fr 1fr',gap:26}}>
+          <div>
+            <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+              <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:2,textTransform:'uppercase',color:'var(--red-light)'}}>{(rptRep==='all'?'Team Sales':(_repObj?_repObj.name:'My Sales'))+' — '+_monFull[_cmo]+' '+_cy}</span>
+              <span style={{width:44,height:2,background:'var(--red)',transform:'skewX(-12deg)'}}/>
+            </div>
+            <div style={{display:'flex',alignItems:'flex-end',gap:14}}>
+              <div style={{fontFamily:FD,fontWeight:800,fontSize:60,lineHeight:.82,color:'#fff'}}>{_fmtK1(_mtdThis)}</div>
+              <div style={{paddingBottom:6}}><div style={{fontSize:12.5,color:'rgba(255,255,255,.62)',lineHeight:1.35}}>billed so far<br/>day {_cday} of {_daysInMonth}</div></div>
+            </div>
+            <div style={{marginTop:22,maxWidth:460}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:9}}>
+                <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.8,textTransform:'uppercase',color:'#fff'}}>On pace for {_fmtK1(_projected)}</span>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:14,color:_pacePct>=100?'#6FCF97':'var(--red-light)'}}>{_pacePct}% of last {_monShort[_pmo]}</span>
+              </div>
+              <div style={{position:'relative',height:12,borderRadius:6,background:'rgba(255,255,255,.12)',marginBottom:22}}>
+                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_projW+'%',background:'rgba(255,255,255,.18)',borderRadius:6}}/>
+                <div style={{position:'absolute',left:0,top:0,height:'100%',width:_mtdW+'%',background:'linear-gradient(90deg,var(--red),var(--red-light))',borderRadius:6}}/>
+                <div style={{position:'absolute',top:-3,height:18,width:2,background:'#fff',left:_lastW+'%'}}/>
+                <div style={{position:'absolute',top:19,left:_lastW+'%',transform:'translateX(-50%)',fontSize:9.5,color:'rgba(255,255,255,.62)',whiteSpace:'nowrap'}}>last {_monShort[_pmo]} · {_fmtK1(_lastMonthFull)}</div>
+              </div>
+            </div>
+          </div>
+          <div className="nsa-score-right" style={{display:'flex',flexDirection:'column',gap:10,borderLeft:'1px solid rgba(255,255,255,.12)',paddingLeft:24}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+              <div>
+                <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.4,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>YTD Sales</div>
+                <div style={{display:'flex',alignItems:'baseline',gap:8}}><span style={{fontFamily:FD,fontWeight:800,fontSize:30,color:'#fff',lineHeight:1}}>{_fmtK1(_ytdThis)}</span><span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:_ytdDelta>=0?'#6FCF97':'var(--red-light)'}}>{(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%'}</span></div>
+                <div style={{fontSize:11,color:'rgba(255,255,255,.5)'}}>{_fmtK1(Math.abs(_ytdThis-_ytdLast))+(_ytdThis>=_ytdLast?' ahead of':' behind')+' last year'}</div>
+              </div>
+              {(()=>{const hs=_miniSpark(_mThis.slice(0,Math.max(1,_cmo+1)),160,46,3);return<svg viewBox="0 0 160 46" preserveAspectRatio="none" style={{width:150,height:44}}><path d={hs.area} fill="rgba(217,74,82,.16)"/><path d={hs.line} fill="none" stroke="var(--red-light)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>})()}
+            </div>
+            <div style={{height:1,background:'rgba(255,255,255,.1)'}}/>
+            <div style={{display:'flex',gap:10}}>
+              <div style={{flex:1,background:'rgba(255,255,255,.06)',borderRadius:7,padding:'11px 13px'}}>
+                <div style={{fontFamily:FD,fontWeight:700,fontSize:10.5,letterSpacing:1.2,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>{rptRep==='all'?'Reps Up YoY':'Rank'}</div>
+                <div style={{fontFamily:FD,fontWeight:800,fontSize:24,color:'#fff',lineHeight:1.1}}>{rptRep==='all'?(repData.filter(r=>r.mtdPct>=0).length+' / '+repData.length):('#'+(_repRank||'—'))}</div>
+                <div style={{fontSize:10.5,color:'rgba(255,255,255,.5)'}}>{rptRep==='all'?'beating last year':('of '+repData.length+' reps')}</div>
+              </div>
+              <div style={{flex:1,background:'rgba(255,255,255,.06)',borderRadius:7,padding:'11px 13px'}}>
+                <div style={{fontFamily:FD,fontWeight:700,fontSize:10.5,letterSpacing:1.2,textTransform:'uppercase',color:'rgba(255,255,255,.55)'}}>Streak</div>
+                <div style={{fontFamily:FD,fontWeight:800,fontSize:24,color:'#fff',lineHeight:1.1}}>{_streak} mo</div>
+                <div style={{fontSize:10.5,color:'rgba(255,255,255,.5)'}}>{_streak>0?'beating last year':'vs last year'}</div>
+              </div>
+            </div>
+          </div>
         </div>
-        <select className="form-select" style={{width:140,fontSize:11}} value={rptRep} onChange={e=>setRptRep(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
-        <div style={{marginLeft:'auto',fontSize:10,color:'#64748b'}}>Toggle widgets to customize your view</div>
       </div>
 
-      {/* KPI Bar (pipeline-side, SO-driven) — margin tile removed until line-item costs are imported */}
-      <div className="stats-row" style={{marginBottom:16}}>
-        <div className="stat-card"><div className="stat-label">Pipeline Revenue</div><div className="stat-value" style={{color:'#1e40af'}}>${(totalRev/1000).toFixed(1)}k</div></div>
-        <div className="stat-card"><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#7c3aed'}}>{pipeline.filter(s=>s._status!=='complete').length}</div></div>
-        <div className="stat-card"><div className="stat-label">Total Units</div><div className="stat-value">{totalUnits.toLocaleString()}</div></div>
-        <div className="stat-card"><div className="stat-label">Avg Order</div><div className="stat-value" style={{color:'#d97706'}}>${avgOrderSize.toLocaleString()}</div></div>
+      {/* Monthly Sales */}
+      <div style={{..._card,marginBottom:16}}>
+        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'16px 18px 6px',flexWrap:'wrap',gap:10}}>
+          <div>
+            <div style={{display:'flex',alignItems:'center',gap:9}}><span style={_h17}>Monthly Sales</span>{RSkew(_ytdDelta>=0?'#1F7A54':RED,_ytdDelta>=0?'#E4F1EA':'#F6E3E4','YTD '+(_ytdDelta>=0?'▲ ':'▼ ')+Math.abs(_ytdDelta)+'%')}</div>
+            {RAccent()}
+          </div>
+          <div style={{display:'flex',background:'#F1F3F8',borderRadius:7,padding:3}}>
+            {[['bars','Bars'],['trend','Trend']].map(([m,l])=><div key={m} className="nsa-rpt-hit" onClick={()=>setRptChartMode(m)} style={{padding:'6px 14px',borderRadius:5,background:rptChartMode===m?'#fff':'transparent'}}><span style={{fontFamily:FD,fontWeight:700,fontSize:12.5,textTransform:'uppercase',letterSpacing:.5,color:rptChartMode===m?'var(--navy)':'#96A0B4'}}>{l}</span></div>)}
+          </div>
+        </div>
+        <div style={{display:'flex',alignItems:'center',gap:18,padding:'0 18px 4px',flexWrap:'wrap'}}>
+          <div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:11,height:11,borderRadius:2,background:'var(--navy)'}}/><span style={{fontSize:11.5,color:'#5A6075',fontWeight:600}}>This year ({_cy})</span></div>
+          <div style={{display:'flex',alignItems:'center',gap:6}}><span style={{width:11,height:11,borderRadius:2,background:'#C3CBDA'}}/><span style={{fontSize:11.5,color:'#5A6075',fontWeight:600}}>Last year ({_ly})</span></div>
+          <div style={{flex:1}}/><span style={{fontSize:11,color:'#96A0B4'}}>Hover a month for detail</span>
+        </div>
+        <div className="nsa-monthly" style={{display:'grid',gridTemplateColumns:'1.55fr 1fr',gap:18,padding:'6px 18px 16px'}}>
+          <div style={{position:'relative'}} onMouseLeave={()=>setRptHoverMonth(null)}>
+            <svg viewBox="0 0 840 300" preserveAspectRatio="xMidYMid meet" style={{width:'100%',height:'auto',display:'block'}}>
+              {_chGrid.map((gl,i)=><g key={'g'+i}><line x1="46" y1={gl.y} x2="826" y2={gl.y} stroke="#EEF1F6" strokeWidth="1"/><text x="40" y={gl.ty} textAnchor="end" fontSize="10.5" fill="#A7AFC0">{gl.label}</text></g>)}
+              {rptChartMode==='bars'&&_chGroups.map(b=><g key={'b'+b.i}><rect x={b.lyX} y={b.lyY} width={_bw} height={b.lyH} rx="2" fill="#C3CBDA"/><rect x={b.tyX} y={b.tyY} width={_bw} height={b.tyH} rx="2" fill={b.future?'#F1F3F8':'var(--navy)'} stroke={b.future?'#D6DCE8':'none'} strokeWidth={b.future?1:0} strokeDasharray={b.future?'3 3':'0'}/></g>)}
+              {rptChartMode==='trend'&&<g><path d={_tyArea} fill="rgba(25,40,83,.06)"/><path d={_lyPath} fill="none" stroke="#C3CBDA" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/><path d={_tyPath} fill="none" stroke="var(--navy)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/>{_tyPts.map((p,i)=><circle key={'p'+i} cx={p.x} cy={p.y} r="3.5" fill="#fff" stroke="var(--navy)" strokeWidth="2"/>)}</g>}
+              {_chGroups.map(b=><g key={'x'+b.i}><text x={b.center} y="292" textAnchor="middle" fontFamily={FD} fontWeight="600" fontSize="11" fill={b.labelColor} letterSpacing="0.4">{b.label}</text><rect x={b.hitX} y="16" width={b.hitW} height="250" fill="transparent" onMouseEnter={()=>setRptHoverMonth(b.i)} style={{cursor:'pointer'}}/></g>)}
+              {rptHoverMonth!=null&&(()=>{const g=_chGroups[rptHoverMonth];const cx=Math.max(78,Math.min(_VBW-78,g.center));const d=(g.tyV>0&&g.lyV>0)?Math.round((g.tyV-g.lyV)/g.lyV*100):null;return<g><line x1={cx} y1="16" x2={cx} y2="266" stroke="var(--red)" strokeWidth="1" strokeDasharray="3 3" opacity="0.5"/><g transform={'translate('+(cx-75)+',10)'}><rect width="150" height={d!=null?66:52} rx="6" fill="var(--navy)"/><text x="12" y="19" fontFamily={FD} fontWeight="700" fontSize="12.5" fill="#fff" letterSpacing="0.5">{_monFull[rptHoverMonth]}</text><text x="12" y="37" fontSize="11" fill="rgba(255,255,255,.72)">{_cy}</text><text x="138" y="37" textAnchor="end" fontWeight="700" fontSize="11.5" fill="#fff">{g.tyV>0?_fmtK1(g.tyV):'—'}</text><text x="12" y="53" fontSize="11" fill="rgba(255,255,255,.72)">{_ly}</text><text x="138" y="53" textAnchor="end" fontWeight="700" fontSize="11.5" fill="#C3CBDA">{_fmtK1(g.lyV)}</text>{d!=null&&<text x="12" y="63" fontFamily={FD} fontWeight="700" fontSize="11" fill={d>=0?'#6FCF97':'var(--red-light)'}>{(d>=0?'▲ +':'▼ ')+Math.abs(d)+'% vs '+_ly}</text>}</g></g>})()}
+            </svg>
+          </div>
+          <div className="nsa-monthly-bd" style={{borderLeft:'1px solid #EEF1F6',paddingLeft:18}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+              <span style={{fontFamily:FD,fontWeight:700,fontSize:13,letterSpacing:.6,textTransform:'uppercase',color:'var(--navy)',whiteSpace:'nowrap'}}>Top by {rptBreakdown==='customer'?'Customer':'Product'}</span>
+              <div style={{display:'flex',background:'#F1F3F8',borderRadius:6,padding:2}}>{[['customer','Customer'],['product','Product']].map(([m,l])=><span key={m} className="nsa-rpt-hit" onClick={()=>setRptBreakdown(m)} style={{fontFamily:FD,fontWeight:700,fontSize:11,textTransform:'uppercase',letterSpacing:.4,padding:'4px 9px',borderRadius:4,background:rptBreakdown===m?'#fff':'transparent',color:rptBreakdown===m?'var(--navy)':'#8892A6'}}>{l}</span>)}</div>
+            </div>
+            {_bdRows.length===0?<div style={{fontSize:12,color:'#96A0B4',padding:'10px 0'}}>No data.</div>:_bdRows.map((r,i)=><div key={i} style={{marginBottom:11}}><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12.5,fontWeight:600,color:'#3A4256',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:150}}>{r.name}</span><span style={{fontFamily:FD,fontWeight:700,fontSize:12.5,color:'var(--navy)'}}>{_fmtK1(r.val)}</span></div><div style={{height:7,borderRadius:4,background:'#EDF0F6',overflow:'hidden'}}><div style={{height:'100%',width:(r.val/_bdMax*100).toFixed(0)+'%',background:i===0?'var(--red)':'var(--navy)',borderRadius:4}}/></div></div>)}
+          </div>
+        </div>
+      </div>
+
+      {/* Pipeline row: funnel + status */}
+      <div className="nsa-2col" style={{marginBottom:16}}>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Estimate → SO Funnel</span>{RSkew('#1F7A54','#E4F1EA',_funnelRate+'% converted')}</div>
+          {RAccent(16)}
+          {_funnelRows.map((x,i)=><div key={i} style={{marginBottom:10}}><div style={{display:'flex',alignItems:'center',gap:10}}><div style={{height:34,borderRadius:5,background:['#0F1A38','#243356','#3A4B72','var(--red)'][i],width:Math.max(14,x[1]/_funnelMax*100)+'%',minWidth:70,display:'flex',alignItems:'center',padding:'0 12px',transform:'skewX(-8deg)'}}><span style={{transform:'skewX(8deg)',fontFamily:FD,fontWeight:800,fontSize:17,color:'#fff'}}>{x[1]}</span></div><div style={{display:'flex',flexDirection:'column',lineHeight:1.15}}><span style={{fontFamily:FD,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:.4,color:'var(--navy)'}}>{x[0]}</span><span style={{fontSize:11,color:'#96A0B4'}}>{(i>0&&_funnelRows[i-1][1]>0?Math.round(x[1]/_funnelRows[i-1][1]*100)+'% of prior · ':'')+x[2]}</span></div></div></div>)}
+        </div>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Open Pipeline by Status</span><span style={{fontFamily:FD,fontWeight:800,fontSize:17,color:'var(--navy)'}}>{_fmtK1(_openPipeTotal)}</span></div>
+          {RAccent(16)}
+          {_statusRows.length===0?<div style={{fontSize:12,color:'#96A0B4'}}>No open orders.</div>:_statusRows.map((s,i)=><div key={i} style={{marginBottom:12}}><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12.5,fontWeight:600,color:'#3A4256'}}>{s.label} <span style={{color:'#A7AFC0',fontWeight:500}}>· {s.n} SOs</span></span><span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'var(--navy)'}}>{_fmtK1(s.rev)}</span></div><div style={{height:8,borderRadius:4,background:'#EDF0F6',overflow:'hidden'}}><div style={{height:'100%',width:(s.rev/_statusMax*100).toFixed(0)+'%',background:'var(--navy)',borderRadius:4}}/></div></div>)}
+        </div>
+      </div>
+
+      {/* Leaderboard + Top Products */}
+      <div className="nsa-2col" style={{marginBottom:16}}>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Rep Leaderboard</span><span className="nsa-rpt-hit" onClick={()=>setRptTab('reps')} style={_redLink}>Full board →</span></div>
+          {RAccent(14)}
+          {_lbTop.length===0?<div style={{fontSize:12,color:'#96A0B4'}}>No rep data.</div>:_lbTop.map((r,i)=><div key={r.id} style={{display:'flex',alignItems:'center',gap:11,padding:'7px 0',borderBottom:'1px solid #F4F6FA',background:r.id===rptRep?'#FBF0F0':'transparent',borderRadius:5}}><span style={{fontFamily:FD,fontWeight:800,fontSize:15,color:i===0?'var(--red)':'#8892A6',width:22,textAlign:'center'}}>{i+1}</span><span style={{width:28,height:28,borderRadius:5,background:r.id===rptRep?'var(--red)':'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:11,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{_ini(r.name)}</span></span><span style={{flex:1,fontWeight:600,fontSize:13,color:'var(--navy)'}}>{r.name}{r.id===(cu&&cu.id)?<span style={{fontFamily:FD,fontWeight:700,fontSize:9.5,letterSpacing:.6,color:'#fff',background:'var(--red)',borderRadius:3,padding:'1px 5px',transform:'skewX(-6deg)',display:'inline-block',marginLeft:6}}>You</span>:null}</span><div style={{width:88,height:6,borderRadius:3,background:'#EDF0F6',overflow:'hidden'}}><div style={{height:'100%',width:(r.rev/_lbMax*100).toFixed(0)+'%',background:'var(--navy)'}}/></div><span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'var(--navy)',width:52,textAlign:'right'}}>{_fmtK1(r.rev)}</span></div>)}
+        </div>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><span style={_h17}>Top Products</span><span className="nsa-rpt-hit" onClick={()=>setRptTab('products')} style={_redLink}>All products →</span></div>
+          {RAccent(14)}
+          {_tp.length===0?<div style={{fontSize:12,color:'#96A0B4'}}>No product data.</div>:_tp.map((p,i)=><div key={i} style={{marginBottom:11}}><div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}><span style={{fontSize:12.5,fontWeight:600,color:'#3A4256',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:180}}>{p.name}</span><span style={{fontFamily:FD,fontWeight:700,fontSize:12.5,color:'var(--navy)'}}>{_fmtK1(p.rev)} <span style={{color:'#A7AFC0',fontWeight:500,fontFamily:'var(--rpt-body)'}}>· {(p.units||0).toLocaleString()} u</span></span></div><div style={{height:7,borderRadius:4,background:'#EDF0F6',overflow:'hidden'}}><div style={{height:'100%',width:(p.rev/_tpMax*100).toFixed(0)+'%',background:i===0?'var(--red)':'var(--navy)',borderRadius:4}}/></div></div>)}
+        </div>
+      </div>
+
+      {/* Reorder Radar + Lowest Margin */}
+      <div className="nsa-2col" style={{alignItems:'start'}}>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div style={{display:'flex',alignItems:'center',gap:9}}><span style={{width:9,height:9,borderRadius:'50%',background:'var(--red)'}}/><span style={_h17}>Reorder Radar</span></div><span className="nsa-rpt-hit" onClick={()=>setRptTab('customers')} style={_redLink}>All customers →</span></div>
+          {RAccent(12)}
+          <div style={{display:'flex',flexDirection:'column',alignItems:'flex-start',gap:10,marginBottom:12}}>
+            <div style={{display:'flex',background:'#F1F3F8',borderRadius:7,padding:3}}>{[['due','Due / Upcoming'],['atrisk','At-Risk']].map(([m,l])=><span key={m} className="nsa-rpt-hit" onClick={()=>setRptRadar(m)} style={{fontFamily:FD,fontWeight:700,fontSize:12,textTransform:'uppercase',letterSpacing:.4,padding:'6px 13px',borderRadius:5,whiteSpace:'nowrap',background:rptRadar===m?'#fff':'transparent',color:rptRadar===m?'var(--navy)':'#8892A6'}}>{l}</span>)}</div>
+            <div style={{fontSize:12,color:'#7A8299'}}>{(rptRadar==='atrisk'?'Cooling & at-risk by days since last order':'Forecast reorder window · from order cadence')+' · '}<span style={{fontFamily:FD,fontWeight:700,color:'var(--navy)'}}>{_radarRows.length+' accounts'}</span></div>
+          </div>
+          {_radarRows.length===0?<div style={{fontSize:12,color:'#96A0B4',padding:'8px 0'}}>Nothing in this view.</div>:_radarRows.map((a,i)=>{const cid=a.cid||a.id;const st=rptRadar==='atrisk'?null:reorderStatusMeta(a.status);const accent=rptRadar==='atrisk'?(a.health==='at_risk'?'#962C32':'#D26A2E'):st.accent;return<div key={i} className="nsa-rpt-hit nsa-row" onClick={()=>{const c=cust.find(x=>x.id===cid);if(c){setSelC(c);setPg('customers')}}} style={{display:'flex',alignItems:'center',gap:13,padding:'10px 8px',borderBottom:'1px solid #F1F4F9'}}><span style={{width:4,alignSelf:'stretch',background:accent,borderRadius:2}}/><span style={{width:34,height:34,flex:'none',borderRadius:6,background:'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:12,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{_ini(a.name)}</span></span><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,color:'var(--navy)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{a.name}</div><div style={{fontSize:11.5,color:'#96A0B4'}}>{rptRadar==='atrisk'?(healthLabel[a.health]||''):('every ~'+a.avgCycle+'d')}</div></div>{rptRadar==='atrisk'?RSkew(healthColor[a.health],healthBg[a.health],healthLabel[a.health]):RSkew(st.t,st.b,st.label)}<div style={{width:92,textAlign:'right',flex:'none'}}><div style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'var(--navy)',lineHeight:1}}>{_fmtK1(a.rev)}</div><div style={{fontSize:9.5,color:'#A7AFC0',textTransform:'uppercase',letterSpacing:.5,marginTop:2}}>{rptRadar==='atrisk'?(a.daysSince+'d idle'):('exp '+(a.nextExpected?new Date(a.nextExpected).toLocaleDateString('en-US',{month:'short',day:'numeric'}):'—'))}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C2C9D6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg></div>})}
+        </div>
+        <div style={{..._card,padding:'16px 18px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div style={{display:'flex',alignItems:'center',gap:9}}><span style={{width:9,height:9,borderRadius:'50%',background:'var(--red)'}}/><span style={_h17}>Lowest Margin by Order</span></div><span className="nsa-rpt-hit" onClick={()=>setRptTab('pipeline')} style={_redLink}>Margin report →</span></div>
+          {RAccent(12)}
+          <div style={{fontSize:12,color:'#7A8299',marginBottom:14}}>Gross margin by order — flagged under 25% · <span style={{fontFamily:FD,fontWeight:700,color:'var(--red)'}}>{_lowMarginCount+' under target'}</span></div>
+          {_lowMargin.length===0?<div style={{fontSize:12,color:'#96A0B4'}}>No orders yet.</div>:_lowMargin.map((m,i)=><div key={m.id} className="nsa-rpt-hit nsa-row" onClick={()=>{const c=cust.find(x=>x.id===m.customer_id);setESO(sos.find(x=>x.id===m.id));setESOC(c);setPg('orders')}} style={{display:'flex',alignItems:'center',gap:13,padding:'10px 8px',borderBottom:'1px solid #F1F4F9'}}><span style={{width:4,alignSelf:'stretch',background:_mColor(m._pct),borderRadius:2}}/><span style={{width:34,height:34,flex:'none',borderRadius:6,background:'var(--navy)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:11,color:'#fff',transform:'skewX(-6deg)'}}><span style={{transform:'skewX(6deg)'}}>{_ini(m._cname)}</span></span><div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,color:'var(--navy)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m._cname}</div><div style={{fontSize:11.5,color:'#96A0B4',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.memo||m.id}</div></div><div style={{width:66,textAlign:'right',flex:'none'}}><div style={{fontFamily:FD,fontWeight:800,fontSize:17,lineHeight:1,color:_mColor(m._pct)}}>{m._pct}%</div><div style={{fontSize:9.5,color:'#A7AFC0',textTransform:'uppercase',letterSpacing:.5,marginTop:2}}>margin</div></div><div style={{width:74,textAlign:'right',flex:'none',whiteSpace:'nowrap'}}><div style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'var(--navy)'}}>{_fmtK1(m._rev)}</div><div style={{fontSize:10,color:'#A7AFC0'}}>{m.id}</div></div><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#C2C9D6" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'none'}}><polyline points="9 18 15 12 9 6"/></svg></div>)}
+        </div>
+      </div>
+    </>);
+
+    return(<>
+      {/* ══ NSA REDESIGNED REPORTS SHELL ══ */}
+      <div className="nsa-rpt num">
+        {/* striped brand rule */}
+        <div style={{height:5,background:'repeating-linear-gradient(-45deg,var(--red) 0 16px,var(--navy) 16px 32px)'}}/>
+        {/* app bar */}
+        <div style={{background:'var(--navy)',position:'relative',overflow:'hidden'}}>
+          <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)',pointerEvents:'none'}}/>
+          <div style={{position:'absolute',top:0,right:0,width:220,height:'100%',background:'var(--red)',opacity:.14,clipPath:'polygon(38% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+          <div style={{maxWidth:1360,margin:'0 auto',padding:'10px 20px',display:'flex',alignItems:'center',gap:16,position:'relative',flexWrap:'wrap',minHeight:44}}>
+            <span style={{width:38,height:38,borderRadius:6,background:'var(--red)',display:'flex',alignItems:'center',justifyContent:'center',fontFamily:FD,fontWeight:800,fontSize:15,color:'#fff',transform:'skewX(-6deg)',letterSpacing:.5}}><span style={{transform:'skewX(6deg)'}}>NSA</span></span>
+            <div style={{display:'flex',flexDirection:'column',lineHeight:1}}>
+              <span style={{fontFamily:FD,fontWeight:800,fontSize:20,letterSpacing:.6,color:'#fff',textTransform:'uppercase'}}>Reports</span>
+              <span style={{fontSize:11,color:'rgba(255,255,255,.55)',marginTop:3}}>Team Dealer Portal</span>
+            </div>
+            <div style={{flex:1,minWidth:20}}/>
+            {RScope()}
+            {RExport()}
+          </div>
+          {/* group nav */}
+          <div style={{maxWidth:1360,margin:'0 auto',padding:'0 20px',display:'flex',gap:4,position:'relative',flexWrap:'wrap'}}>
+            {_rGroups.map(g=>{const active=g.tabs.includes(rptTab);return<div key={g.id} className="nsa-rpt-hit" onClick={()=>setRptTab(g.tabs[0])} style={{display:'flex',alignItems:'center',gap:8,padding:'11px 16px 12px',position:'relative',fontFamily:FD,fontWeight:700,fontSize:14.5,letterSpacing:.7,textTransform:'uppercase',color:active?'#fff':'rgba(255,255,255,.6)'}}><span style={{display:'flex',opacity:active?1:.6}}>{g.icon}</span>{g.label}{active&&<span style={{position:'absolute',left:14,right:14,bottom:0,height:3,background:'var(--red)',transform:'skewX(-12deg)'}}/>}</div>})}
+          </div>
+        </div>
+        {/* sub-tabs */}
+        <div style={{background:'#fff',borderBottom:'1px solid #E2E7F0',boxShadow:'0 2px 10px rgba(16,26,64,.04)'}}>
+          <div style={{maxWidth:1360,margin:'0 auto',padding:'0 20px',display:'flex',alignItems:'center',gap:2,minHeight:46,overflowX:'auto'}}>
+            {_curTabs.map(t=>{const active=t.id===rptTab;return<div key={t.id} className="nsa-rpt-hit" onClick={()=>setRptTab(t.id)} style={{display:'flex',alignItems:'center',gap:7,padding:'8px 15px',borderRadius:'6px 6px 0 0',position:'relative',whiteSpace:'nowrap',background:active?'#fff':'transparent'}}><span style={{fontFamily:FD,fontWeight:700,fontSize:14,letterSpacing:.5,textTransform:'uppercase',color:active?'var(--navy)':'#8892A6'}}>{t.label}</span>{active&&<span style={{position:'absolute',left:6,right:6,bottom:0,height:3,background:'var(--red)',transform:'skewX(-12deg)'}}/>}</div>})}
+            <div style={{flex:1}}/><span style={{fontSize:11.5,color:'#96A0B4',paddingRight:2,whiteSpace:'nowrap'}}>{_asOf}</span>
+          </div>
+        </div>
+        {/* content: KPI row (sales group) + redesigned Overview */}
+        <div style={{maxWidth:1360,margin:'0 auto',padding:'20px 20px 4px'}}>
+          {_salesGroup&&<div className="nsa-kpis">{_kpis.map(RKpi)}</div>}
+          {rptTab==='overview'&&_renderOverview()}
+        </div>
+        {(rptScopeOpen||rptExportOpen)&&<div onClick={()=>{setRptScopeOpen(false);setRptExportOpen(false)}} style={{position:'fixed',inset:0,zIndex:50}}/>}
+        {rptToast&&<div style={{position:'fixed',bottom:24,left:'50%',transform:'translateX(-50%)',background:'var(--navy)',color:'#fff',borderRadius:8,padding:'12px 20px',boxShadow:'0 12px 34px rgba(16,26,64,.3)',zIndex:80,fontSize:13.5,fontWeight:600,animation:'nsaRowIn .25s ease'}}>{rptToast}</div>}
       </div>
 
       {/* HISTORICAL SALES — NetSuite invoice history (read-only), this year vs last year by month */}
-      {rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
+      {false&&rptTab==='overview'&&<div className="card" style={{marginBottom:12}}>
         <WH id="histSales" title="Sales Performance — This Year vs Last Year" icon="📈"/>
         {rptWidgets.histSales&&(()=>{
           // Resolve the rep filter against rep_name on histInvs (NetSuite stored rep as a string snapshot).
@@ -12031,7 +12369,7 @@ export default function App(){
       </div>}
 
       {/* OVERVIEW / PIPELINE TAB */}
-      {(rptTab==='overview'||rptTab==='pipeline')&&<>
+      {rptTab==='pipeline'&&<>
         {/* Conversion Funnel */}
         <div className="card" style={{marginBottom:12}}>
           <WH id="convFunnel" title="Estimate → SO Conversion Funnel" icon="🔄"/>
@@ -12213,7 +12551,7 @@ export default function App(){
       </>}
 
       {/* REP LEADERBOARD */}
-      {(rptTab==='overview'||rptTab==='reps')&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='reps'&&<div className="card" style={{marginBottom:12}}>
         <WH id="repLeaderboard" title="Rep Leaderboard" icon="🏆"/>
         {rptWidgets.repLeaderboard&&<div className="card-body" style={{padding:0}}>
           <table><thead><tr><th>Rank</th><th>Rep</th><th>Revenue</th><th>Margin</th><th>MTD Sales</th><th>vs Last Yr</th><th>SOs</th><th>Customers</th><th>Conv Rate</th><th>Collected</th><th>Open A/R</th><th></th></tr></thead>
@@ -12456,7 +12794,7 @@ export default function App(){
         })()}
       </div>}
 
-      {(rptTab==='overview'||rptTab==='customers')&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='customers'&&<div className="card" style={{marginBottom:12}}>
         <WH id="custHealth" title="Customer Health & Retention" icon="❤️"/>
         {rptWidgets.custHealth&&<div className="card-body">
           {/* Health summary bar */}
@@ -12674,7 +13012,7 @@ export default function App(){
       </div>}
 
       {/* PRODUCT MIX */}
-      {(rptTab==='overview'||rptTab==='products')&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='products'&&<div className="card" style={{marginBottom:12}}>
         <WH id="productMix" title="Product Mix & Popularity" icon="📦"/>
         {rptWidgets.productMix&&<div className="card-body" style={{padding:0}}>
           <table><thead><tr><th>SKU</th><th>Product</th><th>Brand</th><th>Revenue</th><th>Cost</th><th>Margin</th><th>Units</th><th>SOs</th><th></th></tr></thead>
@@ -12841,7 +13179,7 @@ export default function App(){
         </>})()}
 
       {/* MARGIN ANALYSIS */}
-      {(rptTab==='overview'||rptTab==='pipeline')&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='pipeline'&&<div className="card" style={{marginBottom:12}}>
         <WH id="margins" title="Margin Analysis — Where to Improve" icon="📈"/>
         {rptWidgets.margins&&<div className="card-body">
           <div style={{fontSize:12,color:'#64748b',marginBottom:8}}>Orders sorted by margin % — lowest first. Focus on improving pricing on low-margin orders.</div>
@@ -12856,7 +13194,7 @@ export default function App(){
       </div>}
 
       {/* LOW MARGIN ALERT — highlight jobs under 25% */}
-      {(rptTab==='overview'||rptTab==='pipeline')&&<div className="card" style={{marginBottom:12}}>
+      {rptTab==='pipeline'&&<div className="card" style={{marginBottom:12}}>
         <WH id="lowMargin" title="⚠️ Low Margin Alert — Under 25%" icon="🔴"/>
         {rptWidgets.lowMargin&&(()=>{
           const lowMarginSOs=pipeline.filter(s=>s._rev>0&&s._pct<25).sort((a,b)=>a._pct-b._pct);
@@ -12881,7 +13219,7 @@ export default function App(){
       </div>}
 
       {/* OMG STORES by status */}
-      {(rptTab==='overview')&&<div className="card" style={{marginBottom:12}}>
+      {false&&(rptTab==='overview')&&<div className="card" style={{marginBottom:12}}>
         <WH id="omgStores" title="OMG Team Stores" icon="🏪"/>
         {rptWidgets.omgStores&&(()=>{
           const stores=omgStores||[];
@@ -12910,7 +13248,7 @@ export default function App(){
       </div>}
 
       {/* AT-RISK CUSTOMERS — bought last year same period, haven't bought yet */}
-      {(rptTab==='overview')&&<div className="card" style={{marginBottom:12}}>
+      {false&&(rptTab==='overview')&&<div className="card" style={{marginBottom:12}}>
         <WH id="atRisk" title="🚨 At-Risk Customers — Retention Watch" icon="📉"/>
         {rptWidgets.atRisk&&(()=>{
           const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();// 0-indexed
