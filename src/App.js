@@ -7233,6 +7233,9 @@ export default function App(){
     {dashView==='admin'&&<>
     <div className="stats-row"><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setEstF(f=>({...f,status:'open',rep:'_me_'}));setPg('estimates')}}><div className="stat-label">Open Estimates</div><div className="stat-value" style={{color:'#d97706'}}>{ests.filter(e=>e.status==='draft'||e.status==='sent').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setSOF(f=>({...f,status:'active',rep:'_me_'}));setPg('orders')}}><div className="stat-label">Active SOs</div><div className="stat-value" style={{color:'#2563eb'}}>{sos.filter(s=>calcSOStatus(s)!=='complete').length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setJobFilters({statuses:['hold','staging','in_process'],rep:'_me_',deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:''});setPg('jobs')}}><div className="stat-label">Active Jobs</div><div className="stat-value" style={{color:'#7c3aed'}}>{activeJobs.length}</div></div><div className="stat-card" style={{cursor:'pointer'}} onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}><div className="stat-label">Unread Msgs</div><div className="stat-value" style={{color:unreadMsgs.length>0?'#dc2626':''}}>{unreadMsgs.length}</div></div>{unreadMentions.length>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#f59e0b'}} onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><div className="stat-label">@ Mentions</div><div className="stat-value" style={{color:'#d97706'}}>{unreadMentions.length}</div></div>}
       {isA&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#fbbf24'}} onClick={()=>{setInvTab('stock');setPg('inventory')}}><div className="stat-label">Stock Alerts</div><div className="stat-value" style={{color:'#d97706'}}>{al.length}</div></div>}
+      {/* Bills Inbox — the morning glance for supplier-bill intake: S&S + Sports Inc docs the
+          daily syncs flagged new, plus locally-parked bills. Click → Import & Review. */}
+      {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
     {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
@@ -20283,7 +20286,8 @@ export default function App(){
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
   const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
   const[siQueueLoading,setSiQueueLoading]=useState(false);
-  const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
+  const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (badge + Bills Inbox tile)
+  const[siNewCount,setSiNewCount]=useState(0);// # of si_documents rows still 'new' (Bills Inbox tile)
   const[billFilter,setBillFilter]=useState('all');// review-list filter chip: all | ready | attention | done
   // S&S pull invoice-date window. "From" is a persisted floor (default 6/1/2026) so pulls stop
   // dragging in pre-cutover bills; "To" blank = up to now. Empty From = the last-3-months default.
@@ -20309,13 +20313,16 @@ export default function App(){
   // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
   // or the DB is down, the badge just stays hidden — it never blocks the screen.
   useEffect(()=>{
-    if(!supabase||billView!=='import')return;
+    // Fire wherever the counts are visible: the dashboard (Bills Inbox tile) and the imports
+    // page (S&S card badge). Two head-only count queries.
+    if(!supabase||!(pg==='dashboard'||pg==='import'))return;
     let cancelled=false;
     supabase.from('ss_documents').select('order_number',{count:'exact',head:true}).eq('status','new')
-      .then(({count})=>{if(!cancelled)setSsNewCount(count||0)})
-      .catch(()=>{if(!cancelled)setSsNewCount(0)});
+      .then(({count})=>{if(!cancelled)setSsNewCount(count||0)},()=>{if(!cancelled)setSsNewCount(0)});
+    supabase.from('si_documents').select('si_doc_number',{count:'exact',head:true}).eq('status','new')
+      .then(({count})=>{if(!cancelled)setSiNewCount(count||0)},()=>{if(!cancelled)setSiNewCount(0)});
     return ()=>{cancelled=true};
-  },[billView]);
+  },[pg,billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
   // ── Sports Inc Bills queue loader (hoisted to component scope) ──────────────────────
   // Lives here rather than inside rImport() so both the Bills page AND a global-search
@@ -21664,19 +21671,22 @@ export default function App(){
     // Non-matching/over-billing bills just stay flagged for manual review — nothing is
     // applied here; that only happens when staff click "Push to Portal".
     const _finishBillReview=(results,opts={})=>{
-      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed',extraNote=''}=opts;
+      const{skippedDups=[],sourceCount=0,sourceNoun='PDF(s)',verb='parsed',extraNote='',append=false}=opts;
       const dupNote=skippedDups.length?' — '+skippedDups.length+' duplicate(s) skipped (already on the Portal)':'';
       // Persist skip detail (doc # + where it was applied) for the collapsible drawer — the
       // toast vanishes, and "where did my bill go?" deserves a durable, inspectable answer.
       const skippedInfo=skippedDups.map(d=>({doc:d,where:_docAppliedWhere(d)}));
       if(!results.length){
-        // Nothing new came in (all duplicates/scanned/unreadable) — don't drop into an empty review.
-        setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
+        // Nothing new came in (all duplicates/scanned/unreadable). Append mode must not clobber
+        // an in-progress review; a fresh import resets to the upload step as before.
+        if(append)setBillImport(x=>({...x,uploading:false,skipped:skippedInfo.length?skippedInfo:x.skipped,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
+        else setBillImport(x=>({...x,parsed:[],step:'upload',uploading:false,progress:null,files:[],skipped:skippedInfo,showSkipped:skippedInfo.length>0&&skippedInfo.length<=15}));
         const base=skippedDups.length?'Skipped '+skippedDups.length+' duplicate(s) already on the Portal — nothing new to import':(extraNote?'Nothing new to import':'No bills could be parsed');
         nf(base+extraNote,(skippedDups.length||extraNote)?'success':'error');
         return;
       }
-      setBillImport(x=>({...x,parsed:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
+      // Append mode (queue → review) adds to whatever is already under review instead of replacing it.
+      setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
@@ -21747,6 +21757,9 @@ export default function App(){
         nf('No new Sports Inc documents found (nothing active in the Invoice Center)','success');
         return;
       }
+      // Mirror the pulled docs into the shared si_documents ledger (best-effort, non-blocking) so
+      // the Sports Inc tab's completeness view is whole no matter which door the docs came through.
+      _siUpsertDocs(docs).catch(()=>{/* ledger fills on the next daily cron */});
       const seenDocs=new Set();const skippedDups=[];const results=[];let scanned=0;let idx=0;
       docs.forEach(doc=>{
         let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
@@ -21867,73 +21880,79 @@ export default function App(){
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
     // The daily cron does the same server-side; this lets staff refresh on demand + seed testing.
+    // Upsert raw SportsLink docs into the shared si_documents queue — header fields + raw only,
+    // merge-duplicates so human decisions (status/resolved_*) are never clobbered. Shared by the
+    // tab's "Pull now" AND fired best-effort by the review pull, so the completeness ledger fills
+    // no matter which door the docs came through.
+    const _siUpsertDocs=async(docs)=>{
+      if(!supabase)return 0;
+      const dateOnly=v=>(String(v||'').match(/^\d{4}-\d{2}-\d{2}/)||[null])[0];
+      const rows=(docs||[]).filter(d=>d&&d.siDocNumber!=null).map(d=>{const b=mapSportsLinkDocToBill(d);return{
+        si_doc_number:d.siDocNumber,supplier_doc_number:b.supplier_doc_number||null,po_number:b.po_number||null,supplier:b.supplier||null,
+        si_doc_date:dateOnly(d.siDocDate),supplier_doc_date:dateOnly(d.supplierDocDate),ship_date:dateOnly(d.shipDate),due_date:dateOnly(d.dueDate),
+        tracking_number:b.tracking||null,merchandise_total:b.merchandise_total,freight_amount:b.freight,si_upcharge:b.si_upcharge,doc_total:b.doc_total,
+        is_credit:b.is_credit,supplier_method:b.supplier_method,source_type:b.source_type,raw:d,si_historical:false,updated_at:new Date().toISOString()};});
+      for(let i=0;i<rows.length;i+=200){const{error}=await supabase.from('si_documents').upsert(rows.slice(i,i+200),{onConflict:'si_doc_number'});if(error)throw error}
+      return rows.length;
+    };
     const syncSiQueueNow=async()=>{
       if(!supabase){nf('Database not connected','error');return}
       setSiQueueLoading(true);
       try{
         const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});
-        const dateOnly=v=>(String(v||'').match(/^\d{4}-\d{2}-\d{2}/)||[null])[0];
-        const rows=docs.filter(d=>d&&d.siDocNumber!=null).map(d=>{const b=mapSportsLinkDocToBill(d);return{
-          si_doc_number:d.siDocNumber,supplier_doc_number:b.supplier_doc_number||null,po_number:b.po_number||null,supplier:b.supplier||null,
-          si_doc_date:dateOnly(d.siDocDate),supplier_doc_date:dateOnly(d.supplierDocDate),ship_date:dateOnly(d.shipDate),due_date:dateOnly(d.dueDate),
-          tracking_number:b.tracking||null,merchandise_total:b.merchandise_total,freight_amount:b.freight,si_upcharge:b.si_upcharge,doc_total:b.doc_total,
-          is_credit:b.is_credit,supplier_method:b.supplier_method,source_type:b.source_type,raw:d,si_historical:false,updated_at:new Date().toISOString()};});
-        for(let i=0;i<rows.length;i+=200){const{error}=await supabase.from('si_documents').upsert(rows.slice(i,i+200),{onConflict:'si_doc_number'});if(error)throw error}
+        const n=await _siUpsertDocs(docs);
         await loadSiQueue();
-        nf('Pulled '+rows.length+' Sports Inc document(s)','success');
+        nf('Pulled '+n+' Sports Inc document(s)','success');
       }catch(e){nf('Pull failed: '+(e.message||e),'error');setSiQueueLoading(false)}
     };
-    // Approve a queued bill → apply to the SO Billed tracking + Costs via the SAME applyBillToSO
-    // path the PDF flow uses (so commissions/GP see identical cost data), then mark it captured.
-    const approveSiDoc=async(row)=>{
-      const t=row._t||_siTriage(row,_siBuildCandidates());
-      const parsed={...t.parsed};
-      // Already billed (pushed from Import & Review, or approved earlier)? The queue and the
-      // review flow share ONE Billed tracking — capture the row instead of applying twice.
-      const _sdn=String(parsed.si_doc_number||row.si_doc_number||'').trim();
-      if(_docAlreadyApplied(parsed.doc_number)||(_sdn&&_docAlreadyApplied(_sdn))){
-        const dupUpd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
-          match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
-        try{await supabase.from('si_documents').update(dupUpd).eq('si_doc_number',row.si_doc_number)}catch(e){/* status sync retried on reload */}
-        setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...dupUpd,_t:{...r._t,bucket:'captured'}}:r));
-        nf('Already billed on the Portal — marked captured','success');
-        return true;
-      }
-      // Use the matched portal PO's exact id string so the proven rematchBill/applyBillToSO path
-      // writes billed qty, unit cost, freight and tracking onto the right PO line.
-      if(t.match?.candidate?.po_id)parsed.po_number=t.match.candidate.po_id;
-      const matched=rematchBill(parsed);
-      if(!matched.matchedPO){nf('No portal PO matched — send to Review','error');return false}
-      // Same $0-freight trap as the review push (this path calls applyBillToSO directly): the
-      // default so_po apply writes billed qty only alongside freight, so auto-map to explicit
-      // line mappings — and refuse honestly if the lines can't be mapped, never a fake success.
-      if(matched.matchedPOSource==='so_po'&&matched.kind!=='decoration'&&!(matched._lineMappings||[]).length&&safeNum(matched.freight)<=0){
-        const auto=_soPoAutoMappings(matched);
-        if(auto)matched._lineMappings=auto;
-        else{nf('Nothing to apply: $0 freight and lines don\'t match the PO — match it manually in Import & Review','error');return false}
-      }
-      applyBillToSO(matched);
-      const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
-        matched_so_id:matched.matchedPO.so_id||matched.matchedPO.so?.id||null,matched_po_id:matched.matchedPO.po_id||null,
-        match_confidence:t.match?.confidence||'high',match_method:t.match?.method||'po_core',match_reason:(t.match?.reasons||[]).join(' · ')};
-      try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){/* applied locally; status sync retried on reload */}
-      // "Mark as imported" in the SI Invoice Center (Active → Historical) so the daily active-docs
-      // pull stops re-scanning it. Best-effort: a failed flip is dedup-skipped next pull anyway.
-      sportsLinkSetStatus([row.si_doc_number],false).catch(()=>{/* stays Active; dedup covers it */});
-      setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
-      return true;
+    // ONE money path: the queue routes bills INTO Import & Review instead of applying directly.
+    // (The old approveSiDoc called applyBillToSO straight from the tab — a second apply path
+    // that skipped push validation, the problems modal, write plans, and bill history, and once
+    // enabled a double-apply. The tab is now read-and-route; the hardened review push is the
+    // only writer, and pushing already marks the queue row approved + flips the doc Historical.)
+    const _siSendToReview=(rowsIn)=>{
+      const rows=(rowsIn||[]).filter(Boolean);
+      if(!rows.length)return;
+      const cands=_siBuildCandidates();
+      const inReview=new Set(billImport.parsed.map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+      const results=[];const dups=[];let idx=0;
+      rows.forEach(row=>{
+        const t=row._t||_siTriage(row,cands);
+        const parsed={...t.parsed};
+        // Already billed (from either door)? Self-heal: capture the queue row, don't re-add.
+        const sdn=String(parsed.si_doc_number||row.si_doc_number||'').trim();
+        if(_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn))){
+          dups.push(parsed.doc_number||row.si_doc_number);
+          const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
+            match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
+          if(supabase)supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number).then(()=>{},()=>{/* retried on reload */});
+          setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+          return;
+        }
+        const dn=(parsed.doc_number||'').trim().toLowerCase();
+        if(dn&&inReview.has(dn))return;// already sitting in the review list — don't add twice
+        if(dn)inReview.add(dn);
+        // Seed the queue's triangulated match (PO# + customer alpha-tag + SKUs — richer than a raw
+        // string compare) as the PO, then run the standard rematch so the review card behaves like
+        // any other bill: wizard, AI reconcile, write plan and validation all apply before money moves.
+        if(t.match?.candidate?.po_id&&(t.match.confidence==='high'||t.match.confidence==='medium')){
+          if(parsed.po_number&&parsed.po_number!==t.match.candidate.po_id)parsed._po_raw=parsed.po_number;
+          parsed.po_number=t.match.candidate.po_id;
+        }
+        const bill=rematchBill(parsed);
+        const label='Sports Inc · '+(bill.supplier||'Supplier')+' · Inv '+(bill.supplier_doc_number||bill.doc_number||'?')+(bill.po_number?' · '+bill.po_number:'');
+        results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed:bill,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
+        idx++;
+      });
+      setBillView('import');
+      setBillFilter('all');
+      _finishBillReview(results,{skippedDups:dups,sourceCount:rows.length,sourceNoun:'queued document(s)',verb:'loaded for review',extraNote:results.length?' — review below, then Push to Portal':'',append:true});
     };
     const markSiStatus=async(row,status,verb)=>{
       const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
       try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){nf('Update failed: '+(e.message||e),'error');return}
       setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
       nf(verb||'Updated','success');
-    };
-    const approveAllSiHighConf=async()=>{
-      const rows=siQueue.filter(r=>r._t?.bucket==='approve'&&r._t?.match?.confidence==='high');
-      if(!rows.length){nf('No high-confidence bills ready','error');return}
-      let ok=0;for(const r of rows){try{if(await approveSiDoc(r))ok++}catch{}}
-      nf('Approved '+ok+' of '+rows.length+' — applied to Billed tracking',ok?'success':'error');
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -24895,7 +24914,6 @@ export default function App(){
           const by=b=>siQueue.filter(r=>r._t?.bucket===b);
           const approve=by('approve'),review=by('review'),grab=by('grab'),outside=by('outside'),captured=by('captured');
           const sumD=rows=>rows.reduce((a,r)=>a+(Number(r.doc_total)||0),0);
-          const highConf=approve.filter(r=>r._t?.match?.confidence==='high');
           const confPill=c=>{const m=({high:['#dcfce7','#166534'],medium:['#fef9c3','#854d0e'],low:['#fee2e2','#991b1b']})[c]||['#e2e8f0','#475569'];return <span style={{padding:'1px 7px',borderRadius:10,fontSize:10,fontWeight:700,background:m[0],color:m[1]}}>{c==='high'?'high match':c==='medium'?'review match':c||'no match'}</span>;};
           const Row=(r,opts={})=>{
             const t=r._t||{};const p=t.parsed||{};const open=siExpand===r.si_doc_number;
@@ -24920,7 +24938,7 @@ export default function App(){
             {desc&&<div style={{fontSize:11,color:'#64748b',marginBottom:8}}>{desc}</div>}
             {rows.map(r=>Row(r,{actions,showConf}))}
           </div>;
-          const apBtn=(r)=><button key="ap" className="btn btn-sm" style={{fontSize:11,background:'#16a34a',color:'#fff',border:'none'}} onClick={()=>approveSiDoc(r).then(ok=>ok&&nf('Approved — applied to Billed tracking','success'))}>Approve</button>;
+          const revBtn=(r)=><button key="rev" className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} title="Load into Import & Review — see the match, the write plan, and push from there (nothing applies from this tab)" onClick={()=>_siSendToReview([r])}>→ Review</button>;
           const outBtn=(r,label)=><button key="out" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'outside_portal','Marked Outside of Portal')}>{label||'Outside'}</button>;
           return <div>
             <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:14,padding:'12px 16px',borderRadius:10,background:'#eff6ff',border:'1px solid #bfdbfe'}}>
@@ -24930,11 +24948,11 @@ export default function App(){
               </div>
               <button className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} disabled={siQueueLoading} onClick={loadSiQueue}>{siQueueLoading?'Loading…':'↻ Refresh'}</button>
               <button className="btn btn-sm" style={{fontSize:11,background:'#2563eb',color:'#fff',border:'none'}} disabled={siQueueLoading} onClick={syncSiQueueNow}>⚡ Pull now</button>
-              {highConf.length>0&&<button className="btn btn-sm" style={{fontSize:11,background:'#16a34a',color:'#fff',border:'none'}} onClick={approveAllSiHighConf}>✓ Approve all high-confidence ({highConf.length})</button>}
+              {approve.length>0&&<button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} title="Load every matched document into Import & Review — one screen, one push, nothing applies from this tab" onClick={()=>_siSendToReview(approve)}>→ Review all matched ({approve.length})</button>}
             </div>
             {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:'#94a3b8',fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
-            {Section('🟢 Ready to approve','#166534',approve,'Matched to a portal PO. Approving writes billed qty, unit cost, freight & tracking to the order’s Tracking & Costs tabs — the same path as PDF bills, so commissions/GP see identical numbers.',apBtn)}
-            {Section('⚠️ Needs review','#b45309',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Verify and Approve, or mark Outside of Portal.',(r)=>[apBtn(r),outBtn(r)])}
+            {Section('🟢 Matched — ready to review & push','#166534',approve,'Matched to a portal PO (PO# + customer tag + SKUs). “→ Review” loads them into Import & Review — the same screen as every other bill — where you can see exactly what a push will write before pushing. Nothing applies from this tab.',revBtn)}
+            {Section('⚠️ Needs review','#b45309',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Send to Review to match manually or with AI, or mark Outside of Portal.',(r)=>[revBtn(r),outBtn(r)])}
             {Section('🟡 Grab from Sports Inc','#a16207',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=><button key="g" className="btn btn-sm" style={{fontSize:11,background:'#fff',border:'1px solid #cbd5e1'}} onClick={()=>markSiStatus(r,'manual_done','Marked grabbed')}>Mark grabbed</button>,false)}
             {Section('🔵 Outside of Portal','#1d4ed8',outside,'Old-system POs (no space after “PO”) — billed through NetSuite/QuickBooks, not here. Confirm and clear; these never touch the Billed tracking.',(r)=>outBtn(r,'Mark outside'),false)}
             {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontSize:12,fontWeight:700,color:'#475569',cursor:'pointer'}}>✅ Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:8}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false}))}</div></details>}
