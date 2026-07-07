@@ -73,7 +73,11 @@ export default function CommissionsPage(){
         // GP cost reflects a shared screen run across manually-linked jobs on other SOs.
         const _combLinked=!!so&&Object.keys(linkedArtCostQty(so,{},sos)).length>0;
         const invDate=parseDate(inv.date);
-        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):(inv.updated_at?parseDate(inv.updated_at):invDate);
+        // No updated_at fallback: any unrelated invoice edit bumps updated_at, which silently
+        // flipped the 30%/15% rate and moved the line to a different statement month whenever
+        // payment rows hadn't hydrated. A paid invoice with no payment rows falls back to the
+        // invoice date (days-to-pay 0 → standard rate, statement month = invoice month).
+        const paidDate=inv.payments?.length>0?parseDate(inv.payments[inv.payments.length-1].date):invDate;
         const daysToPay=paidDate&&invDate?Math.round((paidDate-invDate)/(1000*60*60*24)):null;
         const isLate=daysToPay!==null&&daysToPay>90;
         // Override shape: legacy `true` = restore to 30% on a late invoice; number = explicit per-invoice rate (decimal, e.g. 0.25 for 25%).
