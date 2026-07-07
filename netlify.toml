@@ -178,10 +178,11 @@
   schedule = "30 16 * * *"
 
 # S&S Activewear orders sync — daily at 12:30 UTC (~7:30 AM ET / 6:30 AM CT, before the
-# workday). The cron fires ss-orders-sync-background, which pulls the last 3 months of S&S
-# orders (GET /Orders?All=True&lines=true) into the ss_documents queue and emails the daily
-# digest. S&S bills bypass Sports Inc (which only scans them); `yourSku` echoes our own SKU
-# back → exact match. Env: SS_ACCOUNT_NUMBER, SS_API_KEY, SS_DIGEST_EMAIL (optional).
+# workday). The cron fires ss-orders-sync-background, which pulls S&S orders invoiced on/after
+# the cutover floor (GET /Orders?invoicestartdate=…&invoiceenddate=…&lines=true) into the
+# ss_documents queue and emails the daily digest. S&S bills bypass Sports Inc (which only scans
+# them). Env: SS_ACCOUNT_NUMBER, SS_API_KEY, SS_ORDERS_SINCE_DATE (default 2026-06-01),
+# SS_DIGEST_EMAIL (optional).
 [functions."ss-orders-sync-cron"]
   schedule = "30 12 * * *"
 

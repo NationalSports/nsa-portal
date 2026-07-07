@@ -28,15 +28,23 @@ const _pick = (o, ...keys) => {
 // 3 months" — exactly what the manual "Pull from S&S" button wants. `lines=true` is always
 // set so each order carries its per-size line detail (without it we can't fill Billed
 // tracking). Optional filters: an identifier (PO/Order/Invoice #, path segment) or an
-// invoice date range (invoicestartdate + invoiceenddate, both required by S&S).
+// invoice date range.
+//
+// S&S filters on INVOICE date and requires BOTH bounds for a range. For billing that's the
+// right key — an order only gets an invoice date once it ships/invoices, i.e. once there's
+// something to bill; an open "from 6/1 on" therefore keeps every billable bill and skips the
+// older ones. An open-ended side is filled with a wide sentinel (nothing is invoiced in the
+// far past/future, so the bound is a no-op) so "from X" or "up to X" work with one date.
+const _SS_FAR_PAST = '2000-01-01';
+const _SS_FAR_FUTURE = '2999-12-31';
 export const buildSsOrdersQuery = (filter = {}) => {
   let path = '/Orders/';
   const id = filter.identifier || filter.poNumber || filter.orderNumber || filter.invoiceNumber;
   if (id) path += encodeURIComponent(String(id).trim());
   const p = new URLSearchParams();
-  if (filter.startDate && filter.endDate) {
-    p.set('invoicestartdate', filter.startDate);
-    p.set('invoiceenddate', filter.endDate);
+  if (filter.startDate || filter.endDate) {
+    p.set('invoicestartdate', filter.startDate || _SS_FAR_PAST);
+    p.set('invoiceenddate', filter.endDate || _SS_FAR_FUTURE);
   } else if (filter.invoiceDate) {
     p.set('invoicedate', filter.invoiceDate);
   } else if (!id) {

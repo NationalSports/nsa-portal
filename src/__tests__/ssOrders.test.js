@@ -112,6 +112,14 @@ describe('buildSsOrdersQuery', () => {
     expect(buildSsOrdersQuery({ startDate: '2026-01-01', endDate: '2026-03-31' }))
       .toBe('/Orders/?invoicestartdate=2026-01-01&invoiceenddate=2026-03-31&lines=true');
   });
+  test('open-ended "from" fills the end with a far-future sentinel (S&S needs both bounds)', () => {
+    expect(buildSsOrdersQuery({ startDate: '2026-06-01' }))
+      .toBe('/Orders/?invoicestartdate=2026-06-01&invoiceenddate=2999-12-31&lines=true');
+  });
+  test('open-ended "to" fills the start with a far-past sentinel', () => {
+    expect(buildSsOrdersQuery({ endDate: '2026-06-30' }))
+      .toBe('/Orders/?invoicestartdate=2000-01-01&invoiceenddate=2026-06-30&lines=true');
+  });
   test('puts a specific identifier (PO/order/invoice #) in the path segment', () => {
     expect(buildSsOrdersQuery({ poNumber: 'PO 3421' })).toBe('/Orders/PO%203421?lines=true');
     expect(buildSsOrdersQuery({ invoiceNumber: '98765432' })).toBe('/Orders/98765432?lines=true');

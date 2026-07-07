@@ -18,6 +18,7 @@
 // Env: SS_ACCOUNT_NUMBER, SS_API_KEY, REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 //      REACT_APP_BREVO_API_KEY (digest, optional),
 //      SS_DIGEST_EMAIL (default accounting@nationalsportsapparel.com),
+//      SS_ORDERS_SINCE_DATE (invoice-date floor, default 2026-06-01),
 //      SS_ORDERS_BASE_URL (default https://api.ssactivewear.com/V2), PORTAL_PUBLIC_URL.
 
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? null : n; };
@@ -74,10 +75,16 @@ exports.handler = async () => {
   const base = (process.env.SS_ORDERS_BASE_URL || 'https://api.ssactivewear.com/V2').replace(/\/+$/, '');
   const auth = Buffer.from(`${account}:${apiKey}`).toString('base64');
 
-  // 1) Pull all orders from the last 3 months (?All=True), with line detail.
+  // 1) Pull orders invoiced on/after the cutover floor (default 2026-06-01), with line detail.
+  //    S&S filters on invoice date and needs both bounds; the end is today (server date) so we
+  //    never rely on a far-future sentinel. Anything invoiced later today lands on tomorrow's run.
+  //    Set SS_ORDERS_SINCE_DATE to move the floor. (An order gets an invoice date only once it
+  //    ships/invoices — i.e. once there's a bill — so the invoice-date floor keeps every billable bill.)
+  const since = process.env.SS_ORDERS_SINCE_DATE || '2026-06-01';
+  const today = new Date().toISOString().slice(0, 10);
   let orders;
   try {
-    const r = await fetch(base + '/orders/?All=True&lines=true&mediatype=json', {
+    const r = await fetch(base + '/orders/?invoicestartdate=' + since + '&invoiceenddate=' + today + '&lines=true&mediatype=json', {
       headers: {
         Authorization: 'Basic ' + auth,
         Accept: 'application/json',
@@ -100,8 +107,8 @@ exports.handler = async () => {
   // 2) Map to queue rows (header + raw only — never the human-decision fields).
   const rows = orders.map(mapOrderToRow).filter((row) => row.order_number);
   if (!rows.length) {
-    console.log('[ss-orders-sync] no orders returned');
-    return { statusCode: 200, body: 'No S&S orders in the last 3 months' };
+    console.log('[ss-orders-sync] no orders returned since', since);
+    return { statusCode: 200, body: 'No S&S orders invoiced since ' + since };
   }
 
   // 2b) Ship-later resurfacing: an order that arrived unshipped gets pulled once, marked
