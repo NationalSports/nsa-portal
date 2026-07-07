@@ -1716,7 +1716,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
         </div></>
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
-        <Field label="Player's name (who this gear is for)"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
+        <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
         <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
       )}
 
