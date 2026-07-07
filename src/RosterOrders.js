@@ -1783,7 +1783,7 @@ function CreateSessionModal({ customer, onCreated, onClose }) {
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#94a3b8' }}>×</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 20 }}>
-          {[['name', 'Session name', 'e.g. Younger Girls 2026', '1 / -1'],
+          {[['name', 'Session name', 'e.g. BU18 2026', '1 / -1'],
             ['season', 'Season', 'e.g. 2026', undefined],
             ['deadline', 'Deadline (coaches lock by)', undefined, undefined, 'date'],
             ['notes', 'Notes', undefined, undefined]].map(([field, label, placeholder, gridCol, type]) => (
@@ -2323,7 +2323,7 @@ export function RosterOrdersCoach({ customer }) {
 
       <InstructionsCard storageKey="nsa_roster_tip_sessions" title="How this works"
         steps={[
-          'Create a season order (e.g. "Younger Girls 2026") — or open one that already exists below.',
+          'Create a season order (e.g. "BU18 2026") — or open one that already exists below.',
           'Add each of your teams to that order.',
           'Click a team to add its players and pick sizes for each item.',
           'Once every team is filled in, submit the order to your rep from inside it.',
@@ -2333,7 +2333,7 @@ export function RosterOrdersCoach({ customer }) {
         <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, padding: 14, marginBottom: 12, background: '#f8fafc' }}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div><div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Order name</div>
-              <input autoFocus value={newSession.name} placeholder="e.g. Younger Girls 2026" onChange={e => setNewSession(n => ({ ...n, name: e.target.value }))}
+              <input autoFocus value={newSession.name} placeholder="e.g. BU18 2026" onChange={e => setNewSession(n => ({ ...n, name: e.target.value }))}
                 style={{ padding: '7px 10px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 13, width: 220 }} /></div>
             <div><div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4 }}>Season</div>
               <input value={newSession.season} placeholder="2026" onChange={e => setNewSession(n => ({ ...n, season: e.target.value }))}
