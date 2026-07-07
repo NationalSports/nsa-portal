@@ -966,8 +966,19 @@ const _matchRestoreItem=(oi,items)=>{
   });
   return best;
 };
+// Stale-write cooldown for SOs — mirrors the estimate _dbStaleCooldown. When a save is blocked as
+// stale (our copy is out of date and would drop another session's items), retrying can NEVER succeed
+// until a reload/realtime-heal refreshes the copy — so returning `false` (which makes _diffSave roll
+// back the snapshot and immediately re-fire the save) spins a runaway loop that floods
+// sales_orders + so_item_po_lines and trips the circuit breaker across every open order. Instead we
+// back off: set a short cooldown and return 'stale' (truthy → _diffSave clears pending, no rollback,
+// no re-fire). Cleared on the next successful save. The write stays BLOCKED either way.
+const _dbSaveSOCooldown=new Map();// soId → epoch-ms until which to skip re-saving a stale SO
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
+  // Backing off a stale copy? Skip with zero network until the cooldown lapses (copy heals via reload/poll).
+  const _soCd=_dbSaveSOCooldown.get(so.id);
+  if(_soCd&&Date.now()<_soCd)return 'stale';
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
   // Optimistic locking: check version before saving (auto-heal on conflict). Record the conflict
   // rather than only adopting the server version: a bumped server version means ANOTHER session saved
@@ -1067,7 +1078,12 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
         if(_dbNotify)_dbNotify('Save blocked — '+so.id+' was changed in another session ('+_uncovered.join(', ')+' would be dropped). Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'stale-version save would drop DB item(s) ['+_uncovered.join(', ')+'] — local v'+_versionConflict.local+' vs server v'+_versionConflict.server});
-        return false;
+        // Back off instead of return false: a stale copy can't save until it's reloaded/healed, and
+        // false makes _diffSave roll back + immediately re-fire this same save — the runaway loop that
+        // floods the DB and trips the breaker across all orders. 'stale' (truthy) stops the loop; the
+        // write is still blocked and the reload prompt above still fired.
+        _dbSaveSOCooldown.set(so.id,Date.now()+_STALE_COOLDOWN_MS);
+        return 'stale';
       }
     }
     // Sync art_files BEFORE the bgSync item-shrink guard so art changes persist even when a background sync
@@ -1474,7 +1490,7 @@ const _dbSaveSOInner = async (so) => {
       await supabase.from('sales_orders').update({updated_at:finalUpdatedAt}).eq('id',so.id);
     }
     if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
-    _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
+    _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();_dbSaveSOCooldown.delete(so.id);
     // Bump local version to match server (DB trigger increments on UPDATE)
     if(so._version)so._version=so._version+1;
     return true;
