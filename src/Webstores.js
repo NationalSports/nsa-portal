@@ -3220,7 +3220,7 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
   );
 }
 
-// Styled confirm for "Create Sales Order" — replaces the native window.confirm.
+// Styled confirm for "Create Batch" — replaces the native window.confirm.
 // The rep scopes the batch here (an order-date cutoff and/or per-order checkboxes —
 // unselected orders stay open for the next batch while the store keeps running),
 // names it, and sees inventory shortfalls recomputed live for that selection.
@@ -3268,7 +3268,7 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
     <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 560, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
         <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Batch</div>
           <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} of {orders.length} open order{orders.length === 1 ? '' : 's'} into one production Sales Order.{leftOut > 0 ? ` ${leftOut} stay open for the next batch.` : ''}</div>
         </div>
         <div style={{ padding: '20px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
@@ -3317,7 +3317,7 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
           <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" onClick={go} disabled={busy || count === 0}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
+          <button className="btn btn-primary" onClick={go} disabled={busy || count === 0}>{busy ? 'Creating…' : `Create Batch${shortages.length ? ' anyway' : ''}`}</button>
         </div>
       </div>
     </div>
@@ -4687,6 +4687,27 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
 
+  // Real per-store batch numbers for the linked SOs (webstore_batch_no lives on the
+  // Sales Order, not the order row). Fetched once here and shared by the "Batches
+  // created" chips and the Orders tab's Batch column/sort, so both show the same
+  // numbers with a single load. Keyed on the sorted so_id list so it only refetches
+  // when the set of linked SOs actually changes.
+  const [soBatch, setSoBatch] = useState({}); // so_id -> { no, label }
+  const soIdsKey = [...new Set(orders.map((o) => o.so_id).filter(Boolean))].sort().join(',');
+  useEffect(() => {
+    const ids = soIdsKey ? soIdsKey.split(',') : [];
+    if (!ids.length) { setSoBatch({}); return; }
+    let dead = false;
+    (async () => {
+      const { data } = await supabase.from('sales_orders').select('id,webstore_batch_no,webstore_batch_label').in('id', ids);
+      if (dead) return;
+      const m = {};
+      (data || []).forEach((so) => { m[so.id] = { no: so.webstore_batch_no, label: so.webstore_batch_label }; });
+      setSoBatch(m);
+    })();
+    return () => { dead = true; };
+  }, [soIdsKey]);
+
   // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
   // cancelled orders aren't real sales; exclude them so the banner counts, items,
   // and sales match reality (and the per-order tabs, which already filter them).
@@ -4696,11 +4717,18 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const fundraiseTotal = validOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const totalItems = orderItems.filter((i) => !i.is_bundle_parent && validOrderIds.has(i.order_id)).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
-  // Sales Orders created from this store's batches, with how many orders each covers.
+  // Batches created from this store (each batch = one Sales Order), with how many
+  // orders each covers. Ordered by SO id, which increases with creation, so the
+  // chips read in batch order (Batch 1, 2, 3…).
   const soSummary = (() => {
     const m = {};
     orders.forEach((o) => { if (o.so_id) m[o.so_id] = (m[o.so_id] || 0) + 1; });
-    return Object.entries(m).map(([id, count]) => ({ id, count }));
+    return Object.entries(m).map(([id, count]) => ({ id, count, batchNo: soBatch[id] ? soBatch[id].no : null, batchLabel: soBatch[id] ? soBatch[id].label : null }))
+      // By real batch number when known; fall back to the SO id's numeric part
+      // (increases with creation) until the batch numbers finish loading.
+      .sort((a, b) => (a.batchNo != null && b.batchNo != null)
+        ? a.batchNo - b.batchNo
+        : (Number(String(a.id).replace(/\D/g, '')) || 0) - (Number(String(b.id).replace(/\D/g, '')) || 0));
   })();
 
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
@@ -4837,11 +4865,11 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       })()}
 
       {soSummary.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sales Orders created</span>
-        {soSummary.map((so) => (
-          <button key={so.id} onClick={() => onOpenSO && onOpenSO(so.id)} title="Open in Sales Orders"
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Batches created</span>
+        {soSummary.map((so, i) => (
+          <button key={so.id} onClick={() => onOpenSO && onOpenSO(so.id)} title={`Open the batch's Sales Order (${so.id})`}
             style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 8, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e40af', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
-            {so.id} <span style={{ fontFamily: 'inherit', fontWeight: 500, color: '#64748b' }}>· {so.count} order{so.count === 1 ? '' : 's'} ↗</span>
+            <span style={{ fontFamily: 'inherit', color: '#6d28d9' }}>Batch {so.batchNo != null ? so.batchNo : i + 1}{so.batchLabel ? ` · ${so.batchLabel}` : ''}</span> {so.id} <span style={{ fontFamily: 'inherit', fontWeight: 500, color: '#64748b' }}>· {so.count} order{so.count === 1 ? '' : 's'} ↗</span>
           </button>
         ))}
       </div></div>}
@@ -4852,7 +4880,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -10543,7 +10571,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
 
   if (sos === null) return <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading batches…</div>;
   if (err) return <Empty msg={'Could not load batches: ' + err} />;
-  if (!sos.length) return <Empty msg="No Sales Orders batched from this store yet. Use Orders → Create Sales Order." />;
+  if (!sos.length) return <Empty msg="No batches created from this store yet. Use Orders → Create Batch." />;
 
   const stockHealth = (item) => {
     const st = productStock[item.product_id];
@@ -10825,7 +10853,7 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -10858,6 +10886,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
   const [fStatus, setFStatus] = useState('all');   // all | pending | in_production | shipped | complete
   const [fPay, setFPay] = useState('all');         // all | paid | unpaid
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
+  const [sortBy, setSortBy] = useState('default'); // default | batch_new | batch_old
   const [editId, setEditId] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [, setTick] = useState(0);
@@ -10921,6 +10950,18 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     return true;
   });
 
+  // Batch number for an order's linked SO (null = not yet batched). Sorting by batch
+  // groups orders by when they were processed; unbatched orders sort to the bottom
+  // (they haven't been processed yet). Array.sort is stable, so within a batch orders
+  // keep their existing order.
+  const batchNoOf = (o) => (o.so_id && soBatch[o.so_id] && soBatch[o.so_id].no != null) ? soBatch[o.so_id].no : null;
+  const sorted = sortBy === 'default' ? filtered : [...filtered].sort((a, b) => {
+    const an = batchNoOf(a.o), bn = batchNoOf(b.o);
+    if ((an == null) !== (bn == null)) return an == null ? 1 : -1; // unbatched last
+    if (an == null && bn == null) return 0;
+    return sortBy === 'batch_old' ? an - bn : bn - an;
+  });
+
   if (!listable.length) return <Empty msg="No orders placed in this store yet." />;
   const sel = { padding: '7px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, background: '#fff' };
   return (
@@ -10930,6 +10971,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
         <select style={sel} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>{['all', 'pending', 'in_production', 'shipped', 'complete'].map((s) => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}</option>)}</select>
         <select style={sel} value={fPay} onChange={(e) => setFPay(e.target.value)}><option value="all">All payment</option><option value="paid">Paid</option><option value="unpaid">Team tab</option></select>
         <select style={sel} value={fBatch} onChange={(e) => setFBatch(e.target.value)}><option value="all">All</option><option value="unbatched">Not batched</option><option value="batched">Batched</option></select>
+        <select style={sel} value={sortBy} onChange={(e) => setSortBy(e.target.value)} title="Sort orders by the batch they were processed in">
+          <option value="default">Sort: default</option>
+          <option value="batch_new">Batch: newest first</option>
+          <option value="batch_old">Batch: oldest first</option>
+        </select>
         {onAvailabilityReport && (
           <button className="btn btn-secondary" disabled={!unbatchedCount} onClick={onAvailabilityReport} title={unbatchedCount ? 'What can we fill, and whose items fall short?' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
             📋 Availability report
@@ -10953,18 +10999,18 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             <option value="orders">Orders CSV</option>
           </select>
         )}
-        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
-          Create Sales Order ({unbatchedCount})
+        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+          Create Batch ({unbatchedCount})
         </button>
       </div>
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
+            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>Batch</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {filtered.map(({ o, items, players, numbers, lineStatus }) => {
+            {sorted.map(({ o, items, players, numbers, lineStatus }) => {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
@@ -10980,7 +11026,12 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
-                <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>{o.so_id ? (
+                  <div onClick={(e) => { e.stopPropagation(); onOpenSO && onOpenSO(o.so_id); }} style={{ cursor: onOpenSO ? 'pointer' : 'default' }} title={`${o.so_id}${soBatch[o.so_id] && soBatch[o.so_id].label ? ' · ' + soBatch[o.so_id].label : ''}`}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: '#6d28d9', background: '#ede9fe', borderRadius: 5, padding: '1px 6px', whiteSpace: 'nowrap' }}>{soBatch[o.so_id] && soBatch[o.so_id].no != null ? `Batch ${soBatch[o.so_id].no}` : 'Batched'}</span>
+                    <div style={{ fontSize: 10.5, fontFamily: 'monospace', color: '#1e40af', marginTop: 2 }}>{o.so_id}</div>
+                  </div>
+                ) : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
                 <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
               {isOpen && (
