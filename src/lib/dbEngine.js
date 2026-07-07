@@ -70,6 +70,10 @@ const _missing404Tables=new Map();// table → timestamp
 const _MISSING_TABLE_TTL=5*60*1000;// 5 minutes
 // Track which tables timed out during the most recent _dbLoad — cleared at start of each load
 const _lastLoadTimedOut=new Set();
+// Tables whose paged fetch hit the hardLimit row cap with more rows still on the server.
+// Anything aggregating over these arrays (Reports especially) is silently missing rows and
+// must warn the user. Set/cleared per table on each fetch so partial reloads self-correct.
+const _truncatedTables=new Set();
 // Sticky per-entity hydration: ids of SOs/estimates whose items loaded cleanly at least once this
 // session. A later flaky/timed-out refresh keeps the in-memory items but can flip the per-load
 // _itemsHydrated flag to false; the save guards also honor this set so a legitimate edit/addition on a
@@ -140,7 +144,7 @@ const _safeQuery=(table,opts)=>{
       _lastLoadTimedOut.add(table);return first;
     }
     const all=(first.data||[]).slice();
-    if(all.length<pageSize)return{data:all,error:null,status:200};
+    if(all.length<pageSize){_truncatedTables.delete(table);return{data:all,error:null,status:200};}
     // Larger table: fetch the remaining pages in bounded-concurrency WAVES rather than one sequential
     // round-trip per 1000 rows. First-open paged ~20 (products) / ~10 (app_state) / ~9 (history) pages
     // one at a time — a network round-trip each — which dominated the ~16s load. Pages stay correctly
@@ -160,6 +164,9 @@ const _safeQuery=(table,opts)=>{
         if(rows.length<pageSize)done=true;// reached the final (short) page
       }
     }
+    // Exiting with pages still full means the server has rows beyond hardLimit — flag it.
+    if(!done){_truncatedTables.add(table);console.warn('[DB] '+table+' hit the '+hardLimit+'-row cap — loaded data is INCOMPLETE (oldest rows dropped for date-ordered tables)');}
+    else _truncatedTables.delete(table);
     return{data:all,error:null,status:200};
   };
   // Add per-query timeout to prevent individual queries from hanging forever
@@ -2232,6 +2239,7 @@ export {
   _sbGetMyProfile,
   _dbLoad,
   _dbSeed,
+  _truncatedTables,
   _authErrorDetected,
   _bgSync,
   _diffSaveSkipLogged,

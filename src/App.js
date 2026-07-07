@@ -49,7 +49,10 @@ if (typeof window !== 'undefined' && !new URLSearchParams(window.location.search
   if ('requestIdleCallback' in window) window.requestIdleCallback(_warmHeavyLibs, { timeout: 10000 });
   else setTimeout(_warmHeavyLibs, 4000);
 }
-const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+// Date-only strings (YYYY-MM-DD) parse as LOCAL midnight, not UTC: `new Date('2026-07-01')`
+// is UTC midnight, which is the previous calendar day in US timezones — it shifted AR-aging
+// buckets, days-to-pay, and days-since by one day and displayed date-only values a day early.
+const parseDate=d=>{if(!d)return null;try{const m=typeof d==='string'?d.match(/^(\d{4})-(\d{2})-(\d{2})$/):null;if(m)return new Date(+m[1],+m[2]-1,+m[3]);return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
 // PO-wide status for global search: a PO can span multiple line items (SKUs/colors). The per-line
@@ -377,6 +380,7 @@ import {
   _setLsQuotaWarned,
   _bgSyncInc,
   _bgSyncDec,
+  _truncatedTables,
 } from './lib/dbEngine';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -11931,7 +11935,7 @@ export default function App(){
       const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
       const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
       const lastSO=cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0];
-      const daysSince=lastSO?.created_at?Math.floor((new Date()-new Date(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
+      const daysSince=lastSO?.created_at?Math.floor((new Date()-parseDate(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
       const openBal=cInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const paidBal=cInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const hasOpen=cSOs.some(s=>calcSOStatus(s)!=='complete');
@@ -12374,6 +12378,10 @@ export default function App(){
       <div className="nsa-rpt num">
         {/* striped brand rule */}
         <div style={{height:5,background:'repeating-linear-gradient(-45deg,var(--red) 0 16px,var(--navy) 16px 32px)'}}/>
+        {/* Partial-data guard: every number on this page is a client-side reduce over the loaded
+            arrays. If a source table hit the row cap in dbEngine, totals silently understate —
+            say so instead of showing confident wrong numbers. */}
+        {(()=>{const _rptSrc={sales_orders:'sales orders',invoices:'invoices',customer_invoices:'invoice history',estimates:'quotes',customers:'customers'};const _trunc=Object.keys(_rptSrc).filter(t=>_truncatedTables.has(t));return _trunc.length?<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600}}>⚠️ Report totals are incomplete: {_trunc.map(t=>_rptSrc[t]).join(', ')} exceeded the row-load cap, so the oldest rows are missing from every number on this page.</div>:null})()}
         {/* app bar */}
         <div style={{background:'var(--navy)',position:'relative',overflow:'hidden'}}>
           <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)',pointerEvents:'none'}}/>
@@ -13890,7 +13898,6 @@ export default function App(){
       {(rptTab==='sales_tax')&&(()=>{
         // Build tax data from invoices (realized tax) and SOs (expected tax)
         const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
-        const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
         const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
         const qLabel=q=>'Q'+(q+1);
         const getQ=m=>Math.floor(m/3); // 0=Q1(Jan-Mar), 1=Q2(Apr-Jun), 2=Q3(Jul-Sep), 3=Q4(Oct-Dec)
@@ -13913,12 +13920,15 @@ export default function App(){
         const yearTax=thisYearInvs.reduce((a,i)=>a+(i.tax||0),0);
         const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
 
-        // Tax expected from open SOs (not yet invoiced)
-        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0&&so.source!=='webstore'}).map(so=>{
-          const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
-          const taxAmt=m.rev*(c.tax_rate||0);
-          return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
-        });
+        // Tax expected from open SOs (not yet invoiced) — via calcOrderTotals, the tax source of
+        // truth, so filing projections honor SO-level tax_exempt / tax_rate overrides and exclude
+        // free-promo lines, exactly like the invoice will. (Was rev*(c.tax_rate) — a drifted copy.)
+        const taxSOs=filtSOs.filter(so=>so.source!=='webstore').map(so=>{
+          const c=cust.find(x=>x.id===so.customer_id);if(!c||c.tax_exempt)return null;
+          const t=calcOrderTotals(so,c.tax_rate||0);if(!(t.tax>0))return null;
+          const state=c.shipping_state||c.billing_state||'Unknown';
+          return{id:so.id,memo:so.memo,_cname:c.name||'Unknown',_state:state.toUpperCase().trim(),_rev:t.rev,_tax:t.tax,_rate:t.rev>0?t.tax/t.rev:0,status:so.status};
+        }).filter(Boolean);
 
         // Tax-exempt customers
         const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
