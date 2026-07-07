@@ -25549,11 +25549,19 @@ export default function App(){
                 </div>
               </div>
             </div>;};
-            const _grp=(dot,title,note,arr,mt)=>arr.length>0?<React.Fragment>{secHead({dot,title,count:arr.length,note,mt})}{arr.map(([b,bi])=>renderBillCard(b,bi))}</React.Fragment>:null;
             const _bk={ready:[],attention:[],done:[]};
             billImport.parsed.forEach((b,bi)=>{const t=_billTriage(b);const k=!t?'done':t.issue?'attention':'ready';if(billFilter==='all'||k===billFilter)_bk[k].push([b,bi]);});
             if(billFilter!=='all')return <div>{_bk[billFilter].map(([b,bi])=>renderBillCard(b,bi))}</div>;
-            return <div>{_grp(GREEN,'Ready to push','Clean matches · safe to push',_bk.ready)}{_grp(RED,'Need attention','Reconcile before pushing',_bk.attention,true)}{_grp(MGRAY,'Pushed / parked',null,_bk.done,true)}</div>;
+            // Flat, keyed child list under ONE parent so a bill that changes bucket mid-edit (typing in
+            // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
+            // preserving input focus, exactly like the old single flat map did.
+            const _children=[];
+            [[GREEN,'Ready to push','Clean matches · safe to push','ready'],[RED,'Need attention','Reconcile before pushing','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
+              if(!_bk[k].length)return;
+              _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
+              _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            });
+            return <div>{_children}</div>;
           })()}
         </>}
 
