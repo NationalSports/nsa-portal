@@ -279,9 +279,9 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
-import { mapSsOrderToBill, resolveSsBillLines } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import {
   supabase,
@@ -20873,6 +20873,8 @@ export default function App(){
   const[ssPullFrom,setSsPullFrom]=useState(()=>{try{const v=localStorage.getItem('nsa_ss_pull_from');return v==null?'2026-06-01':v}catch(e){return'2026-06-01'}});
   const[ssPullTo,setSsPullTo]=useState('');
   useEffect(()=>{try{localStorage.setItem('nsa_ss_pull_from',ssPullFrom||'')}catch(e){}},[ssPullFrom]);
+  // CrossRef seeder (admin, dry-run-first): {open, step, plan, progress, result}
+  const[ssXref,setSsXref]=useState({open:false,step:'idle',plan:null,progress:null,result:null});
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
   useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
@@ -22455,6 +22457,66 @@ export default function App(){
       setBillImport(x=>({...x,step:'review',parsed:bills,uploading:false,progress:null,files:[]}));
       setReviewSnap(null);
       nf(bills.length+' bill(s) restored to review — matches re-checked live','success');
+    };
+
+    // ── S&S CrossRef seeder (dry-run first) ──────────────────────────────────────
+    // Seeds S&S CrossRef so `yourSku` returns our style on future order lines — promoting S&S
+    // bills from a color+size guess to an exact SKU match (kills the two-styles-same-color case).
+    // Grounded in matched order history: reuses the all-or-nothing resolver, so only fully-
+    // confident orders contribute a mapping and we never teach S&S a wrong pairing.
+    const _ssCrossRefProposals=(orders)=>{
+      const out=[];let cands=null;
+      (orders||[]).forEach(order=>{
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        if(!parsed.matchedPO)return;
+        let r;try{r=_ssResolveLineMappings(parsed,cands||(cands=_buildMatchCandidates()))}catch(e){return}
+        if(!r)return;// all-or-nothing: only fully-resolved orders yield proposals
+        (r.items||[]).forEach(it=>{
+          const ssSku=it._vendor_sku;const yourSku=it.sku;// after resolve: sku=our style, _vendor_sku=S&S part #
+          if(ssSku&&yourSku&&String(ssSku).toUpperCase()!==String(yourSku).toUpperCase())
+            out.push({ssSku,yourSku,color:it.color||'',size:it.size||''});
+        });
+      });
+      return out;
+    };
+    const _ssPlanCrossRef=async()=>{
+      setSsXref(x=>({...x,step:'planning',plan:null,result:null,progress:null}));
+      try{
+        const f=ssPullFrom||'';const filters=f?{startDate:f,endDate:new Date().toISOString().slice(0,10)}:{};
+        const orders=await ssGetOrders(filters);
+        const proposals=_ssCrossRefProposals(orders);
+        if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0}}));nf('No confidently-matched S&S lines to map yet — nothing to seed','error');return}
+        // What's already on the account for the styles we'd assign (idempotency).
+        const styles=[...new Set(proposals.map(p=>p.yourSku))];
+        let existing=[];
+        try{for(let i=0;i<styles.length;i+=50)existing=existing.concat(await ssGetCrossRefs(styles.slice(i,i+50)))}catch(e){/* GET failed → plan as if none set; PUT stays idempotent via 200/201 */}
+        const plan=planCrossRefs(proposals,existing);
+        setSsXref(x=>({...x,step:'planned',plan:{...plan,orders:orders.length,proposals:proposals.length}}));
+        nf('CrossRef plan: '+plan.toWrite.length+' to write · '+plan.alreadySet.length+' already set · '+plan.conflicts.length+' conflict(s)','success');
+      }catch(e){setSsXref(x=>({...x,step:'idle'}));nf('CrossRef plan failed: '+(e.message||e),'error')}
+    };
+    const _ssWriteCrossRef=async()=>{
+      const rows=(ssXref.plan&&ssXref.plan.toWrite)||[];
+      if(!rows.length)return;
+      if(!window.confirm('Write '+rows.length+' CrossRef mapping(s) to your LIVE S&S account?\n\nThis assigns your style as `yourSku` on those S&S products. It is idempotent (safe to re-run) and reversible (DELETE CrossRef). The first write is verified before the rest run.'))return;
+      setSsXref(x=>({...x,step:'writing',progress:{done:0,total:rows.length},result:null}));
+      let ok=0,created=0,updated=0,failed=0;const errs=[];let aborted=false;
+      for(let i=0;i<rows.length;i++){
+        const r=rows[i];
+        try{
+          const res=await ssPutCrossRef(r.yourSku,r.ssSku);
+          ok++;if(res.created)created++;if(res.updated)updated++;
+          if(i===0){// verify the very first mapping reads back before trusting the batch (resolves any API-shape doubt live)
+            const back=await ssGetCrossRefs([r.yourSku]);
+            const hit=(back||[]).some(z=>String(z.sku||'').toUpperCase()===String(r.ssSku).toUpperCase());
+            if(!hit)throw new Error('round-trip verify failed — the first mapping did not read back; aborting so a wrong assumption can\'t write a whole batch');
+          }
+        }catch(e){failed++;errs.push((r.ssSku||'?')+'→'+(r.yourSku||'?')+': '+(e.message||e));if(i===0){aborted=true;break}}
+        setSsXref(x=>({...x,progress:{done:i+1,total:rows.length}}));
+        if(i%40===39)await new Promise(res=>setTimeout(res,1100));// stay under S&S's 60 req/min
+      }
+      setSsXref(x=>({...x,step:'done',result:{ok,created,updated,failed,errs,aborted}}));
+      nf(aborted?'CrossRef aborted — first mapping failed verification, nothing else written':(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
     };
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
@@ -24844,6 +24906,41 @@ export default function App(){
               </button>
             </div>
           </div>
+          {/* CrossRef seeder — admin, dry-run first. Teaches S&S to echo our style back as `yourSku`
+              on future orders, so bill lines match by exact SKU instead of a color+size guess. */}
+          {(cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm')&&<div className="card" style={{gridColumn:'1 / -1',borderColor:'#c4b5fd',background:'#faf5ff'}}>
+            <div className="card-body" style={{padding:'10px 14px'}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>setSsXref(x=>({...x,open:!x.open}))}>
+                <span style={{fontSize:15}}>🔗</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:800,color:'#6d28d9'}}>S&amp;S CrossRef seeder <span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#ede9fe',borderRadius:8,padding:'1px 7px'}}>admin</span></div>
+                  <div style={{fontSize:11,color:'#7c3aed',opacity:0.85}}>Map our styles onto S&amp;S products so <code>yourSku</code> comes back exact on future orders — no more color+size guessing.</div>
+                </div>
+                <span style={{fontSize:11,color:'#7c3aed'}}>{ssXref.open?'▲':'▼'}</span>
+              </div>
+              {ssXref.open&&<div style={{marginTop:10,borderTop:'1px solid #e9d5ff',paddingTop:10}}>
+                <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Builds a plan from your matched S&amp;S order history (invoiced from <b>{ssPullFrom||'the last 3 months'}</b>). <b>Nothing writes until you review the plan and click Write.</b> Idempotent + reversible; the first mapping is verified before the rest run.</div>
+                <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+                  <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} disabled={ssXref.step==='planning'||ssXref.step==='writing'} onClick={_ssPlanCrossRef}>{ssXref.step==='planning'?'Planning…':'1 · Build plan (dry run)'}</button>
+                  {ssXref.step==='planned'&&ssXref.plan&&<button className="btn btn-sm" style={{fontSize:11,background:ssXref.plan.toWrite.length?'#16a34a':'#cbd5e1',color:'#fff',border:'none'}} disabled={!ssXref.plan.toWrite.length} onClick={_ssWriteCrossRef}>2 · Write {ssXref.plan.toWrite.length} to S&amp;S →</button>}
+                  {ssXref.step==='writing'&&ssXref.progress&&<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>Writing {ssXref.progress.done}/{ssXref.progress.total}…</span>}
+                </div>
+                {ssXref.step==='planned'&&ssXref.plan&&<div style={{marginTop:10,fontSize:11}}>
+                  <div style={{color:'#334155',fontWeight:700,marginBottom:4}}>From {ssXref.plan.orders} order(s) · {ssXref.plan.proposals} confident line(s): <span style={{color:'#166534'}}>{ssXref.plan.toWrite.length} to write</span> · <span style={{color:'#64748b'}}>{ssXref.plan.alreadySet.length} already set</span>{ssXref.plan.conflicts.length?<span style={{color:'#b91c1c'}}> · {ssXref.plan.conflicts.length} conflict(s) skipped</span>:null}</div>
+                  {ssXref.plan.toWrite.length>0&&<div style={{maxHeight:150,overflow:'auto',border:'1px solid #e9d5ff',borderRadius:6,background:'#fff',padding:'6px 8px'}}>
+                    {ssXref.plan.toWrite.slice(0,50).map((w,i)=><div key={i} style={{color:'#475569',fontFamily:'monospace',fontSize:10}}><b style={{color:'#7c3aed'}}>{w.ssSku}</b> → yourSku <b style={{color:'#166534'}}>{w.yourSku}</b>{w.color||w.size?<span style={{color:'#94a3b8'}}> · {[w.color,w.size].filter(Boolean).join(' ')}</span>:null}</div>)}
+                    {ssXref.plan.toWrite.length>50&&<div style={{color:'#94a3b8',marginTop:2}}>+{ssXref.plan.toWrite.length-50} more…</div>}
+                  </div>}
+                  {ssXref.plan.conflicts.length>0&&<div style={{marginTop:6,color:'#b45309'}}>⚠️ Skipped (one S&amp;S sku resolved to two styles — check the order data): {ssXref.plan.conflicts.slice(0,8).map(c=>c.ssSku).join(', ')}</div>}
+                </div>}
+                {ssXref.step==='done'&&ssXref.result&&<div style={{marginTop:10,fontSize:11,padding:'8px 10px',borderRadius:6,background:ssXref.result.aborted||ssXref.result.failed?'#fef2f2':'#f0fdf4',border:'1px solid '+(ssXref.result.aborted||ssXref.result.failed?'#fecaca':'#bbf7d0')}}>
+                  <div style={{fontWeight:700,color:ssXref.result.aborted||ssXref.result.failed?'#b91c1c':'#166534'}}>{ssXref.result.aborted?'Aborted after the first mapping failed verification — nothing else written.':('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
+                  {(ssXref.result.errs||[]).slice(0,6).map((e,i)=><div key={i} style={{color:'#b91c1c',fontFamily:'monospace',fontSize:10,marginTop:2}}>{e}</div>)}
+                  <button className="btn btn-sm" style={{fontSize:10,marginTop:6,background:'#fff',border:'1px solid #cbd5e1'}} onClick={_ssPlanCrossRef}>Re-plan (check what's left)</button>
+                </div>}
+              </div>}
+            </div>
+          </div>}
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
             <div className="card-body">
