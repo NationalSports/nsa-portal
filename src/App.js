@@ -9852,7 +9852,9 @@ export default function App(){
         });
       }
     });
-    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach').forEach(e=>{
+    // Skip approved estimates that already have a sales order — they're converted, so never nag to
+    // convert them again even if the estimate's status field is stale (mirrors the desktop dashboard).
+    ests.filter(e=>e.status==='approved'&&e.approved_by==='Coach'&&!sos.some(s=>s.estimate_id===e.id)).forEach(e=>{
       const c2=cust.find(x=>x.id===e.customer_id);const tag2=c2?.name||c2?.alpha_tag||e.id;
       if(c2?.payment_terms==='prepay'){
         todos.push({type:'deposit_needed',priority:1,msg:'Deposit required before ordering: '+(e.memo||e.id),detail:tag2+' · Prepay customer',action:'Collect Deposit',role:'sales',est:e,estC:c2,date:e.approved_at||e.updated_at||e.created_at});
