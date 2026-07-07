@@ -22,6 +22,8 @@ const { unsubUrl } = require('./_marketingShared');
 const { renderTemplate, buildFooterHtml, wrapEmailHtml, throttleSchedule, normEmail } = require('../../src/lib/marketingEmail');
 
 const MAX_RECIPIENTS = 2000;   // per-campaign safety cap for this phase
+const HARD_FETCH = 8000;       // fetch ceiling; if a segment's rows reach it we can't guarantee
+                               // we saw them all after de-dup, so we refuse rather than truncate silently
 const CHUNK = 200;             // DB insert batch size
 const BLOCKED_SENDERS = ['noreply@nationalsportsapparel.com']; // transactional identity — never for marketing
 
@@ -58,14 +60,18 @@ async function resolveRecipients(admin, segment) {
     if (segment.sport && segment.sport !== 'all') q = q.eq('sport', segment.sport);
     if (segment.role && segment.role !== 'all') q = q.eq('role', segment.role);
   }
-  const { data, error } = await q.limit(MAX_RECIPIENTS + 1);
+  const { data, error } = await q.limit(HARD_FETCH);
   if (error) throw new Error(error.message);
+  const rows = data || [];
   // De-dupe by address (a coach can hold several roles) — first row wins.
   const byEmail = new Map();
-  for (const c of data || []) {
+  for (const c of rows) {
     const e = normEmail(c.email);
     if (e && !byEmail.has(e)) byEmail.set(e, { ...c, email: e });
   }
+  // If we hit the fetch ceiling, some matching rows went unseen — refusing beats silently
+  // dropping recipients (a segment that de-dups under the cap could otherwise mask the overflow).
+  if (rows.length >= HARD_FETCH) throw new Error('SEGMENT_TOO_LARGE');
   return Array.from(byEmail.values());
 }
 
@@ -133,7 +139,10 @@ exports.handler = async (event) => {
 
   let recipients;
   try { recipients = await resolveRecipients(admin, campaign.segment); }
-  catch (e) { return json(500, { error: `Segment query failed: ${e.message}` }); }
+  catch (e) {
+    if (e.message === 'SEGMENT_TOO_LARGE') return json(400, { error: `Segment is too large for one campaign in this phase (cap ${MAX_RECIPIENTS}). Narrow it by section, role, or sport.` });
+    return json(500, { error: `Segment query failed: ${e.message}` });
+  }
   if (recipients.length > MAX_RECIPIENTS) return json(400, { error: `Segment has over ${MAX_RECIPIENTS} recipients — narrow it for this phase.` });
   if (!recipients.length) return json(400, { error: 'Segment matches no active contacts with email' });
 
@@ -187,7 +196,13 @@ exports.handler = async (event) => {
       status: 'queued',
     }));
     const { error: msErr } = await admin.from('marketing_sends').upsert(sendRows, { onConflict: 'campaign_id,email', ignoreDuplicates: true });
-    if (msErr) return json(500, { error: `Send-log insert failed: ${msErr.message}` });
+    if (msErr) {
+      // The queue rows are already committed and WOULD send — but with no send-log guard, a retry
+      // (which skips only addresses already in marketing_sends) would re-queue them → double-send.
+      // Roll the queue insert back so the address stays un-queued and a retry is clean.
+      await admin.from('scheduled_emails').delete().in('id', (inserted || []).map((r) => r.id));
+      return json(500, { error: `Send-log insert failed (queue rolled back, safe to retry): ${msErr.message}` });
+    }
     queued += slice.length;
   }
 

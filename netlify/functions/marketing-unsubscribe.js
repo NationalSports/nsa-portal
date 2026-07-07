@@ -28,6 +28,7 @@ function page(title, msg) {
 }
 
 const html = (status, body) => ({ statusCode: status, headers: { 'Content-Type': 'text/html; charset=utf-8' }, body });
+const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 exports.handler = async (event) => {
   const qs = event.queryStringParameters || {};
@@ -51,5 +52,5 @@ exports.handler = async (event) => {
     return html(500, page('Something went wrong', 'We could not process your request. Please try again, or reply to the email and we will remove you manually.'));
   }
 
-  return html(200, page("You're unsubscribed", `${email} will not receive marketing email from us again. No further action is needed.`));
+  return html(200, page("You're unsubscribed", `${esc(email)} will not receive marketing email from us again. No further action is needed.`));
 };
