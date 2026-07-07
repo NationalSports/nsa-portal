@@ -234,9 +234,9 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     const show = r.tracked || r.known;
     const avail = show ? r.ours + r.adidas : '—';
     const sh = r.needed - r.filled;
-    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh} short</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '<span class="pos">✓ Good</span>'}</td></tr>`;
   };
-  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
+  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Status</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
 
   const orderBlock = (b) => {
     const o = b.order;
@@ -260,7 +260,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}
     .grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ord{border:1px solid #fecaca;border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fff}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
@@ -455,7 +455,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
     .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}.grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
     @media print{.chip,.grid tr.r td,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
