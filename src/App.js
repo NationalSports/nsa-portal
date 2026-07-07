@@ -20863,6 +20863,9 @@ export default function App(){
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
   const[billView,setBillView]=useState('import');// Supplier Bills sub-view: 'import' (upload/review) | 'later' (Look at Later page) | 'sportsinc' (API queue)
+  const[laterCollapse,setLaterCollapse]=useState({});// Look at Later: collapsed bucket keys
+  const[billResolveId,setBillResolveId]=useState(null);// Look at Later: bill id with the resolve-disposition chips open
+  const[billOverrideModal,setBillOverrideModal]=useState(null);// Look at Later: {id} — accept-overage push, note required
   const[siQueue,setSiQueue]=useState([]);// Sports Inc API bill queue (si_documents rows, triaged with ._t)
   const[siQueueLoading,setSiQueueLoading]=useState(false);
   const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (badge + Bills Inbox tile)
@@ -23315,7 +23318,8 @@ export default function App(){
             if(!sb)return;
             let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
             const key='b|'+(sb.id||sb.po_number)+'|'+size;
-            (groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,label:(sb.po_number||'Batch')+' size '+size,sku:m.sku||'',size,sizeKey:size,po:sb.po_number||'Batch',so:''})).add+=add;
+            const g=(groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,billCost:0,label:(sb.po_number||'Batch')+' size '+size,sku:m.sku||'',size,sizeKey:size,po:sb.po_number||'Batch',so:'',item_id:''}));
+            g.add+=add;g.billCost+=safeNum(m.bill_cost);
           }else{
             const so=sos.find(s=>s.id===m.so_id);if(!so)return;
             let poRef=null,item=null;
@@ -23326,31 +23330,37 @@ export default function App(){
             }
             if(!poRef)return;
             const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
-            (groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||'',so:so.id})).add+=add;
+            // _itRef/_poRef: the exact live item/po_line objects — _correctOrderFromBill matches on
+            // identity, never by SKU (SOs legitimately carry duplicate-SKU lines via "Copy line").
+            const g=(groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,billCost:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||so.id,so:so.id,_itRef:item,_poRef:poRef,poCost:safeNum(m.unit_cost)||safeNum(poRef.unit_cost)}));
+            g.add+=add;g.billCost+=safeNum(m.bill_cost);
           }
         });
         return Object.values(groups);
       }
       // Auto-matched bills (no explicit mappings) apply their line items by size.
       const out=[];
-      const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty)o[it.size]=(o[it.size]||0)+safeNum(it.qty)});return o};
+      // Per-size qty + bill cost (extension, or unit_price×qty) so the recon table can tie out $.
+      const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const e=o[it.size]||(o[it.size]={qty:0,cost:0});e.qty+=safeNum(it.qty);e.cost+=safeNum(it.extension||0)||safeNum(it.unit_price||0)*safeNum(it.qty)}});return o};
       if(p.matchedPOSource==='batch'&&p.matchedPO){
         const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
         const _bk=[...new Set((sb.source_pos||[]).flatMap(sp=>(sp.items||[]).flatMap(it=>Object.keys(it.sizes||{}))))];
-        Object.entries(addBySize()).forEach(([size,add])=>{
+        Object.entries(addBySize()).forEach(([size,e])=>{
+          const add=e.qty;
           const k=_alignSize(size,_bk);
           let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])}));
           const billed=safeNum((sb.billed||{})[k]);
-          out.push({ordered,billed,add,label:(sb.po_number||'Batch')+' size '+size,sku:'',size,sizeKey:k,po:sb.po_number||'Batch',so:''});
+          out.push({ordered,billed,add,billCost:e.cost,label:(sb.po_number||'Batch')+' size '+size,sku:'',size,sizeKey:k,po:sb.po_number||'Batch',so:'',item_id:''});
         });
       }else if(p.matchedPOSource==='inv_po'&&p.matchedPO){
         const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
         const _ik=[...new Set((po.items||[]).flatMap(it=>Object.keys(it.sizes||{})))];
-        Object.entries(addBySize()).forEach(([size,add])=>{
+        Object.entries(addBySize()).forEach(([size,e])=>{
+          const add=e.qty;
           const k=_alignSize(size,_ik);
           let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])});
           const billed=safeNum((po.billed||{})[k]);
-          out.push({ordered,billed,add,label:(po.po_number||'PO')+' size '+size,sku:'',size,sizeKey:k,po:po.po_number||'PO',so:''});
+          out.push({ordered,billed,add,billCost:e.cost,label:(po.po_number||'PO')+' size '+size,sku:'',size,sizeKey:k,po:po.po_number||'PO',so:'',item_id:''});
         });
       }else if(p.matchedPOSource==='so_po'&&p.matchedPO&&safeNum(p.freight)>0){
         // Auto so_po only writes billed qty when freight is present (via _applyFreightToSOs),
@@ -23358,7 +23368,7 @@ export default function App(){
         const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
         if(so){
           const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
-          const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();(addBySku[sk]=addBySku[sk]||{})[it.size]=(addBySku[sk][it.size]||0)+safeNum(it.qty)}});
+          const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();const bySz=(addBySku[sk]=addBySku[sk]||{});const e=bySz[it.size]||(bySz[it.size]={qty:0,cost:0});e.qty+=safeNum(it.qty);e.cost+=safeNum(it.extension||0)||safeNum(it.unit_price||0)*safeNum(it.qty)}});
           (so.items||[]).forEach(it=>{
             const _bsk=Object.keys(addBySku).find(bs=>_billSkuMatchesItem(bs,it));
             const adds=_bsk?addBySku[_bsk]:null;if(!adds)return;
@@ -23366,10 +23376,11 @@ export default function App(){
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return;
               const _pk=_poLineSizeKeys(po);
-              Object.entries(adds).forEach(([size,add])=>{
+              Object.entries(adds).forEach(([size,e])=>{
+                const add=e.qty;
                 const k=_alignSize(size,_pk);
                 const ordered=safeNum(po[k]);const billed=safeNum((po.billed||{})[k]);
-                out.push({ordered,billed,add,label:it.sku+' '+size+' on '+(po.po_id||so.id),sku:it.sku,size,sizeKey:k,po:po.po_id||so.id,so:so.id});
+                out.push({ordered,billed,add,billCost:e.cost,label:it.sku+' '+size+' on '+(po.po_id||so.id),sku:it.sku,size,sizeKey:k,po:po.po_id||so.id,so:so.id,_itRef:it,_poRef:po,poCost:safeNum(po.unit_cost)});
               });
             });
           });
@@ -23394,7 +23405,7 @@ export default function App(){
       // Order side: every size bucket on the matched target with ordered/billed-so-far.
       let open=[];
       if(p.matchedPOSource==='so_po'){
-        open=_soPoTargetItems(p).map(t=>({sku:t.sku,size:String(t.size),ordered:t.ordered,billed:t.ordered-t.qty,po:t.po_id||'',so:t.so_id||''}));
+        open=_soPoTargetItems(p).map(t=>({sku:t.sku,size:String(t.size),ordered:t.ordered,billed:t.ordered-t.qty,po:t.po_id||'',so:t.so_id||'',poCost:safeNum(t.unit_cost)}));
       }else if(p.matchedPOSource==='batch'){
         const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
         const ordered={};(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>Object.entries(it.sizes||{}).forEach(([k,v])=>{ordered[k]=(ordered[k]||0)+safeNum(v)})));
@@ -23424,6 +23435,80 @@ export default function App(){
       }
       if(!groups.length&&!untouched.length&&!lost.length)return null;
       return{groups,untouched,lost,hasMaps:!!(maps&&maps.length)};
+    };
+
+    // Resolve a parked bill WITH a disposition — the why is kept on the saved-bill row
+    // (shown in Bill History), so month-end completeness stays provable.
+    const _resolveBillWithDisposition=(billId,disposition,note)=>{
+      setSavedBills(prev=>{
+        const u=prev.map(sb=>sb.id===billId?{...sb,reviewLater:false,resolution:{disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()}}:sb);
+        _lsSet('nsa_saved_bills',JSON.stringify(u));return u;
+      });
+      setBillResolveId(null);
+      nf('Resolved — '+disposition);
+    };
+
+    // "Correct the order from the bill" (accounting SOP: the bill is the source of truth).
+    // For every over-billed SO-target group, raise the po_line's ordered qty for that size
+    // to cover billed+this-bill, with an audit entry on the line (_order_corrections).
+    // Batch-target groups are not auto-correctable (their ordered qty derives from the
+    // batch's source POs) — those are reported, not touched.
+    const _correctOrderFromBill=(sb)=>{
+      const p=sb.parsed||{};
+      const recon=_billReconData(p);
+      // Only groups that captured the exact live item/po_line objects are correctable —
+      // identity matching (not SKU) so a duplicate-SKU sibling line can never be touched.
+      const fixes=(recon?.groups||[]).filter(g=>g.so&&g._itRef&&g._poRef&&g.billed+g.add>g.ordered);
+      const skipped=(recon?.groups||[]).filter(g=>!g.so&&g.billed+g.add>g.ordered);
+      if(!fixes.length){nf(skipped.length?'These over-billed lines are on a batch PO — correct the batch\'s source PO instead':'Nothing to correct — no over-billed lines on an order','error');return}
+      const summary=fixes.map(g=>(g.sku?g.sku+' ':'')+g.size+' on '+g.po+': '+g.ordered+' → '+(g.billed+g.add)).join('\n');
+      if(!window.confirm('Correct the order from the bill?\n\nOrdered quantities will be raised to match what was billed:\n\n'+summary+'\n\nAn audit note is kept on each corrected line.'))return;
+      const today=new Date().toISOString().slice(0,10);
+      setSOs(prev=>prev.map(s=>{
+        const soFixes=fixes.filter(g=>g.so===s.id);
+        if(!soFixes.length)return s;
+        let changed=false;
+        const updatedItems=(s.items||[]).map(it=>{
+          const itFixes=soFixes.filter(g=>g._itRef===it);
+          if(!itFixes.length)return it;
+          return{...it,po_lines:(it.po_lines||[]).map(po=>{
+            const lineFixes=itFixes.filter(g=>g._poRef===po);
+            if(!lineFixes.length)return po;
+            const np={...po};const corr=[...(po._order_corrections||[])];
+            lineFixes.forEach(g=>{
+              const to=g.billed+g.add;
+              if(safeNum(np[g.sizeKey])>=to)return;// already covers it (another render corrected it)
+              corr.push({doc:p.doc_number||'',date:today,size:g.sizeKey,from:safeNum(np[g.sizeKey]),to,by:(cu?.name||cu?.email||'')});
+              np[g.sizeKey]=to;
+            });
+            if(corr.length===(po._order_corrections||[]).length)return po;
+            changed=true;
+            return{...np,_order_corrections:corr};
+          })};
+        });
+        if(!changed)return s;
+        const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
+        _dbSaveSO(updatedSO);
+        return updatedSO;
+      }));
+      nf('Order corrected from bill — '+fixes.length+' line'+(fixes.length===1?'':'s')+' updated'+(skipped.length?' · '+skipped.length+' batch line'+(skipped.length===1?'':'s')+' left as-is':''));
+    };
+
+    // Push one parked bill straight from the Look at Later card, recording why. Failure is
+    // loud (the card stays parked); success resolves the card with the given disposition.
+    const _pushParkedBill=(sb,disposition,note)=>{
+      const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
+      const applied=_applyBillsToPortal([billObj]);
+      if(applied>0){
+        setSavedBills(prev=>{
+          const u=prev.map(x=>x.id===sb.id?{...x,reviewLater:false,portalStatus:'success',parsed:billObj.parsed,resolution:{disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()}}:x);
+          _lsSet('nsa_saved_bills',JSON.stringify(u));return u;
+        });
+        nf('Pushed to Portal — '+disposition);
+      }else{
+        nf('Push failed: '+(billObj.portalMsg||'could not apply — check the match'),'error');
+      }
+      return applied>0;
     };
 
     // Blocking problems for a bill about to be pushed: duplicate doc#, PO over-billing, and
@@ -25509,7 +25594,10 @@ export default function App(){
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
                     <button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
                       style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,border:'1px solid '+(sb.reviewLater?'#fbbf24':'#e2e8f0'),background:sb.reviewLater?'#fef3c7':'#fff',color:sb.reviewLater?'#b45309':'#94a3b8'}}>
-                      {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button></td>
+                      {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button>
+                    {!sb.reviewLater&&sb.resolution&&<div style={{fontSize:8,fontWeight:700,color:'#64748b',marginTop:2}}
+                      title={'Resolved'+(sb.resolution.by?' by '+sb.resolution.by:'')+(sb.resolution.at?' · '+new Date(sb.resolution.at).toLocaleString():'')+(sb.resolution.note?' — '+sb.resolution.note:'')}>
+                      ✓ {sb.resolution.disposition}</div>}</td>
                   <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
                 </tr>
                 {expanded&&<tr style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
@@ -25607,12 +25695,44 @@ export default function App(){
           const vendors=[...new Set(parked.map(_vendorOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
           const rows=parked.filter(sb=>(billHistVendor==='all'||_vendorOf(sb)===billHistVendor)&&_timeOk(sb)).sort((a,b)=>(b.reviewLaterAt||0)-(a.reviewLaterAt||0));
           const recentCut=Date.now()-60*60*1000;// "recently moved" = parked within the last hour
+          // Triage each parked bill into an issue bucket so the queue is worked by problem
+          // shape, not chronology. Precedence: duplicate > no match > over-billed > won't apply.
+          const enriched=rows.map(sb=>{
+            const p=sb.parsed||{};
+            const matched=_billHasTarget(p);
+            const errs=matched?_validateBillForPush(p):[];
+            const dup=_docAlreadyApplied(p.doc_number);
+            const bucket=dup?'duplicate':!matched?'nomatch':!errs.length?'ready'
+              :errs.some(e=>e.indexOf(' exceeds ')>-1)?'overbilled':'noapply';// ' exceeds ' only occurs in _billOverBillingErrors strings
+            return{sb,p,matched,errs,clean:matched&&!errs.length,bucket};
+          });
+          const BUCKETS=[
+            ['ready','✅','Ready to push','#16a34a','#f0fdf4','These validate cleanly now — push them, or resolve if handled elsewhere.'],
+            ['overbilled','⚠️','Over-billed','#dc2626','#fef2f2','The bill exceeds what the order says was ordered — reconcile below, then correct the order or accept the overage.'],
+            ['noapply','🧩','Won’t apply cleanly','#d97706','#fffbeb','Matched an order, but the lines don’t map — fix the match.'],
+            ['nomatch','🔍','No PO match','#4f46e5','#eef2ff','No order found for this bill’s PO number.'],
+            ['duplicate','♻️','Duplicates','#64748b','#f8fafc','This doc # was already applied — confirm and resolve.'],
+          ];
+          const grandTotal=parked.reduce((a,sb)=>a+safeNum(sb.parsed?.doc_total),0);
+          const oldestTs=parked.reduce((a,sb)=>Math.min(a,sb.reviewLaterAt||_billTs(sb)||Infinity),Infinity);
+          const oldestDays=Number.isFinite(oldestTs)?Math.floor((Date.now()-oldestTs)/86400000):null;
+          // Pull a parked bill back into Import & Review, optionally patching parsed (to deep-link
+          // the match wizard) and running a follow-up (to kick off the AI PO search) on the wrapper.
+          const _moveBackToReview=(sb,extraParsed,after)=>{
+            const wrapper={...sb,selected:true,reviewLater:false,portalStatus:sb.portalStatus||null,qbStatus:null,parsed:{...sb.parsed,...(extraParsed||{})}};
+            setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),wrapper]}));
+            setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+            setBillView('import');
+            if(after)after(wrapper);
+          };
           const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
           const selStyle={fontSize:11,padding:'4px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
           const fmtAgo=ts=>{if(!ts)return'';const m=Math.round((Date.now()-ts)/60000);if(m<1)return'just now';if(m<60)return m+'m ago';if(m<1440)return Math.round(m/60)+'h ago';return new Date(ts).toLocaleDateString()};
-          return <div className="card">
+          return <><div className="card">
             <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',background:'#fffbeb'}}>
               <h2 style={{margin:0,color:'#b45309',display:'flex',alignItems:'center',gap:8}}>🕒 Look at Later <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>({parked.length})</span></h2>
+              {parked.length>0&&<span style={{fontSize:11,fontWeight:700,color:'#92400e'}} title="Total $ parked · age of the oldest parked bill">
+                ${grandTotal.toFixed(2)} parked{oldestDays!=null?' · oldest '+(oldestDays===0?'today':oldestDays+'d'):''}</span>}
               <div style={{display:'flex',gap:8,alignItems:'center',marginLeft:'auto',flexWrap:'wrap'}}>
                 <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={selStyle} title="Filter by vendor">
                   <option value="all">All vendors</option>
@@ -25626,12 +25746,21 @@ export default function App(){
             </div>
             <div className="card-body" style={{padding:14}}>
               <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Bills parked here are out of the import list and won&rsquo;t be pushed to QuickBooks or the Portal until you act on them. Re-open one to fix &amp; push, or resolve it once it&rsquo;s handled.</div>
-              {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later. Bills you move from the review screen show up here.'}</div>
-              :rows.map(sb=>{
-                const p=sb.parsed||{};
-                const matched=_billHasTarget(p);
-                const errs=matched?_validateBillForPush(p):[];
-                const clean=matched&&errs.length===0;
+              {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later — every supplier bill is accounted for. Bills you move from the review screen show up here.'}</div>
+              :BUCKETS.map(([bkey,bIcon,bLabel,bColor,bBg,bDesc])=>{
+                const list=enriched.filter(e=>e.bucket===bkey);
+                if(!list.length)return null;
+                const bTotal=list.reduce((a,e)=>a+safeNum(e.p.doc_total),0);
+                const collapsed=!!laterCollapse[bkey];
+                return <div key={bkey} style={{marginBottom:14}}>
+                <div onClick={()=>setLaterCollapse(x=>({...x,[bkey]:!x[bkey]}))}
+                  style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',cursor:'pointer',padding:'7px 12px',borderRadius:8,background:bBg,border:'1px solid '+bColor+'33',marginBottom:8}}>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>{collapsed?'▶':'▼'}</span>
+                  <span style={{fontSize:12,fontWeight:800,color:bColor}}>{bIcon} {bLabel} ({list.length})</span>
+                  <span style={{fontSize:11,fontWeight:700,color:bColor}}>${bTotal.toFixed(2)}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{bDesc}</span>
+                </div>
+                {!collapsed&&list.map(({sb,p,matched,errs,clean,bucket})=>{
                 const reasons=matched?errs:(p.po_number?['No PO match for '+p.po_number]:['No PO number on the bill']);
                 const recent=(sb.reviewLaterAt||0)>=recentCut;
                 const vend=_vendorOf(sb);
@@ -25674,6 +25803,9 @@ export default function App(){
                           ...recon.untouched.slice(0,MAX_OPEN).map(o=>({...o,add:0,after:o.billed,kind:'open'}))
                         ];
                         const moreOpen=Math.max(0,recon.untouched.length-MAX_OPEN);
+                        // Cost tie-out: per-unit PO cost vs per-unit bill cost, flagged when they differ.
+                        const unitBill=r=>r.add>0&&safeNum(r.billCost)>0?r.billCost/r.add:null;
+                        const hasCost=rows.some(r=>unitBill(r)!=null||safeNum(r.poCost)>0);
                         const stat=r=>r.kind==='bill'&&r.ordered<=0?['#dc2626','✗ not on order']
                           :r.after>r.ordered?['#dc2626','✗ exceeds by '+(r.after-r.ordered)]
                           :r.kind==='open'?(r.billed>=r.ordered?['#94a3b8','✓ already fully billed']:['#94a3b8','not on this bill — '+(r.ordered-r.billed)+' open'])
@@ -25685,10 +25817,14 @@ export default function App(){
                             <thead><tr style={{background:'#fef3c7'}}>
                               <th style={thL}>SKU</th><th style={thL}>Size</th><th style={thL}>PO</th>
                               <th style={th}>Ordered</th><th style={th}>Billed so far</th><th style={th}>This bill</th><th style={th}>After</th>
+                              {hasCost&&<th style={th} title="The order's expected unit cost">PO cost</th>}
+                              {hasCost&&<th style={th} title="This bill's actual per-unit cost">Bill cost</th>}
                               <th style={thL}>Status</th>
                             </tr></thead>
                             <tbody>{rows.map((r,ri)=>{
                               const[color,label]=stat(r);
+                              const ub=unitBill(r);const pc=safeNum(r.poCost)>0?r.poCost:null;
+                              const costOff=ub!=null&&pc!=null&&Math.abs(ub-pc)>0.011;
                               return <tr key={ri} style={{borderTop:'1px solid #fef3c7',opacity:r.kind==='open'?0.75:1}}>
                                 <td style={{padding:'4px 8px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{r.sku||'—'}</td>
                                 <td style={{padding:'4px 8px',color:'#334155',fontWeight:600}}>{r.size}</td>
@@ -25697,13 +25833,16 @@ export default function App(){
                                 <td style={{padding:'4px 8px',textAlign:'right',color:'#64748b'}}>{r.billed}</td>
                                 <td style={{padding:'4px 8px',textAlign:'right',fontWeight:800,color:r.add>0?'#92400e':'#cbd5e1'}}>{r.add>0?'+'+r.add:'—'}</td>
                                 <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700,color:r.after>r.ordered?'#dc2626':'#166534'}}>{r.after}</td>
+                                {hasCost&&<td style={{padding:'4px 8px',textAlign:'right',color:'#64748b'}}>{pc!=null?'$'+pc.toFixed(2):'—'}</td>}
+                                {hasCost&&<td style={{padding:'4px 8px',textAlign:'right',fontWeight:700,color:costOff?'#b45309':'#166534',background:costOff?'#fef3c7':'transparent'}}
+                                  title={costOff?'Bill cost differs from the PO\'s expected cost by $'+Math.abs(ub-pc).toFixed(2)+'/unit':''}>{ub!=null?'$'+ub.toFixed(2)+(costOff?' ⚠':''):'—'}</td>}
                                 <td style={{padding:'4px 8px',color,fontWeight:700}}>{label}</td>
                               </tr>;
                             })}</tbody>
                           </table>
                           {moreOpen>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>…and {moreOpen} more open order line{moreOpen>1?'s':''} this bill doesn&rsquo;t touch.</div>}
                           {recon.lost.length>0&&<div style={{marginTop:6,padding:'6px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:10,color:'#b91c1c'}}>
-                            <b>✗ {recon.lost.length} bill line{recon.lost.length>1?'s':''} with no home on this order</b> — {recon.lost.map(it=>(it.sku||'?')+' '+(it.size||'')+' ×'+it.qty).join(' · ')}. Use Move back to Review → Match manually or Find PO with AI.</div>}
+                            <b>✗ {recon.lost.length} bill line{recon.lost.length>1?'s':''} with no home on this order</b> — {recon.lost.map(it=>(it.sku||'?')+' '+(it.size||'')+' ×'+it.qty).join(' · ')}. Use 🧵 Fix match… below.</div>}
                         </div>;
                       })()}
                       {!recon&&_billHasTarget(p)&&<div style={{marginBottom:8,fontSize:11,color:'#92400e'}}>Matched to an order, but there&rsquo;s nothing size-level to compare — see the bill lines below.</div>}
@@ -25733,21 +25872,78 @@ export default function App(){
                         :<div style={{color:'#94a3b8',fontSize:11,padding:'4px 0'}}>No line items stored for this bill.</div>}
                     </div>;
                   })()}
-                  <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid #f1f5f9',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
-                    <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
-                      title="Pull this bill back into the review list so you can fix and push it"
-                      onClick={()=>{setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),{...sb,selected:true,reviewLater:false,portalStatus:sb.portalStatus||null,qbStatus:null}]}));setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});setBillView('import');nf('Moved back to Import & Review')}}>📤 Move back to Review</button>
+                  <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid #f1f5f9',flexWrap:'wrap',alignItems:'center'}} onClick={e=>e.stopPropagation()}>
+                    {bucket==='ready'&&!sb.portalStatus&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#16a34a',borderColor:'#16a34a'}}
+                      title="Apply this bill to the order's Billed tracking right now — it validates cleanly"
+                      onClick={()=>_pushParkedBill(sb,'pushed from Look at Later','')}>🚀 Push to Portal</button>}
+                    {bucket==='overbilled'&&<>
+                      <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#0e7490',borderColor:'#0e7490'}}
+                        title="The bill is the source of truth: raise the order's ordered quantities to match what was billed (audit note kept on each line), then this bill validates cleanly"
+                        onClick={()=>_correctOrderFromBill(sb)}>✏️ Correct order from bill</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#b91c1c',borderColor:'#fecaca'}}
+                        title="Push anyway and record why the overage is acceptable (note required)"
+                        onClick={()=>setBillOverrideModal({id:sb.id,note:''})}>⚠️ Accept overage &amp; push…</button>
+                    </>}
+                    {(bucket==='noapply'||bucket==='nomatch')&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#4f46e5',borderColor:'#4f46e5'}}
+                      title="Open this bill in Review with the Match manually wizard already open"
+                      onClick={()=>{_moveBackToReview(sb,{_wizard:{open:true,query:p.po_number||'',target:null,mappings:{}}});nf('Opened in Review — Match manually is ready')}}>🧵 Fix match…</button>}
+                    {bucket==='nomatch'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
+                      title="Move to Review and let AI search your open POs/SOs for the order this bill belongs to"
+                      onClick={()=>{_moveBackToReview(sb,null,w=>_runAiBillFindPO(w));nf('Moved to Review — ✨ AI is searching your open orders')}}>✨ Find PO with AI</button>}
+                    {bucket==='duplicate'&&<button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#64748b',borderColor:'#64748b'}}
+                      title="Confirm this is a duplicate of the already-applied doc and resolve it"
+                      onClick={()=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(p.doc_number)||'an earlier push'))}>♻️ Resolve as duplicate</button>}
                     <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
-                      title="Mark handled — remove from Look at Later (kept in Bill History)"
-                      onClick={()=>{_setBillReviewLater(sb.id,false);nf('Resolved — removed from Look at Later')}}>✓ Resolve</button>
+                      title="Pull this bill back into the review list so you can fix and push it"
+                      onClick={()=>{_moveBackToReview(sb);nf('Moved back to Import & Review')}}>📤 Move back to Review</button>
+                    <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                      title="Mark handled — you'll pick why, and it's kept on the bill in Bill History"
+                      onClick={()=>setBillResolveId(billResolveId===sb.id?null:sb.id)}>✓ Resolve ▾</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fecaca'}}
                       title="Delete this bill from history entirely"
                       onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u})}}}>🗑</button>
+                    {billResolveId===sb.id&&<div style={{width:'100%',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',paddingTop:6,borderTop:'1px dashed #e2e8f0',marginTop:4}}>
+                      <span style={{fontSize:10,color:'#64748b',fontWeight:700}}>Resolved because:</span>
+                      {[['duplicate','♻️ Duplicate'],['corrected order','✏️ Corrected order'],['handled in QuickBooks','📒 Handled in QB'],['written off','🚮 Written off']].map(([k,l])=>
+                        <button key={k} className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={()=>_resolveBillWithDisposition(sb.id,k,'')}>{l}</button>)}
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}}
+                        onClick={()=>{const note=window.prompt('Note — why is this bill handled?');if(note!=null&&note.trim())_resolveBillWithDisposition(sb.id,'other',note.trim())}}>✍️ Other…</button>
+                      <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px',color:'#94a3b8'}} onClick={()=>setBillResolveId(null)}>× cancel</button>
+                    </div>}
                   </div>
+                </div>;
+                })}
                 </div>;
               })}
             </div>
-          </div>;
+          </div>
+          {/* Accept-overage push — note required, kept as the bill's resolution for the audit trail */}
+          {billOverrideModal&&(()=>{
+            const sb=parked.find(x=>x.id===billOverrideModal.id);
+            if(!sb)return null;
+            const note=billOverrideModal.note||'';
+            return <div className="modal-overlay" style={{zIndex:1200}} onClick={()=>setBillOverrideModal(null)}>
+              <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:480}}>
+                <div className="modal-header" style={{background:'#fef2f2',borderBottom:'1px solid #fecaca'}}>
+                  <h2 style={{margin:0,color:'#b91c1c',fontSize:15}}>⚠️ Accept overage &amp; push</h2>
+                  <button className="modal-close" onClick={()=>setBillOverrideModal(null)}>×</button>
+                </div>
+                <div className="modal-body">
+                  <div style={{fontSize:12,color:'#475569',lineHeight:1.5,marginBottom:10}}>
+                    This pushes <b>{sb.parsed?.doc_number?'Doc #'+sb.parsed.doc_number:(sb.file||'this bill')}</b> even though it bills more than the order says was ordered. The billed tracking will show the overage. A note is required — say who approved it or why it&rsquo;s right (e.g. &ldquo;vendor shipped extras, rep confirmed&rdquo;).
+                  </div>
+                  <textarea className="form-input" rows={3} style={{width:'100%',fontSize:12}} placeholder="Why is the overage OK? (required)" value={note}
+                    onChange={e=>setBillOverrideModal(m=>({...m,note:e.target.value}))} autoFocus/>
+                </div>
+                <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8}}>
+                  <button className="btn btn-secondary" onClick={()=>setBillOverrideModal(null)}>Cancel</button>
+                  <button className="btn btn-primary" disabled={!note.trim()} style={{background:'#dc2626',borderColor:'#dc2626',opacity:note.trim()?1:0.5}}
+                    onClick={()=>{if(_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()))setBillOverrideModal(null)}}>Push with note</button>
+                </div>
+              </div>
+            </div>;
+          })()}
+          </>;
         })()}
 
         {/* Push-problems dialog — styled replacement for the old browser confirm. Push the exact-match
