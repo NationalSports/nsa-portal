@@ -9291,7 +9291,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
-          // and an explicit false makes artProdFilesConfirmed refuse stale files (incl. an old .dst).
+          // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
           const repFiles=artReqModal.files||[];
           const updArtFiles2=safeArt(o).map(a=>artIds2.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
           const _an2=(artists2.find(a=>a.id===artReqModal.artist)||{}).name||'artist';
@@ -10213,7 +10213,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
           // prod_files_attached must not survive an update — the old separations are for the old art,
-          // and an explicit false makes artProdFilesConfirmed refuse stale files (incl. an old .dst).
+          // and resetting status to waiting_for_art re-queues the design so an old .dst no longer counts.
           const repFiles=artReqModal.files||[];
           const updArtFiles3=safeArt(o).map(a=>artIds3.includes(a.id)?{...a,...(repFiles.length>0?{sample_art:[...(a.sample_art||[]),...repFiles]}:{}),status:'waiting_for_art',prod_files_attached:false}:a);
           const _an3=(artists.find(a=>a.id===artReqModal.artist)||{}).name||'artist';

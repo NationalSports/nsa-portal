@@ -13,6 +13,12 @@
  * explicit checkbox (or an embroidery .dst — that IS the production file).
  * artProdFilesReady() keeps its looser semantics for marking staged jobs complete.
  *
+ * Update: a .dst is proof the embroidery production file is on the row, so it
+ * confirms on its own even when prod_files_attached is an explicit false (this
+ * brings artProdFilesConfirmed in line with buildJobs' _prodConfirmed, which
+ * always counted the .dst). Staleness after a recall/update is gated by the art
+ * file's status flipping to waiting_for_art, not by the prod_files_attached flag.
+ *
  * SAFE: pure functions from constants.js — no Supabase, no UI, no network.
  */
 
@@ -47,6 +53,16 @@ describe('artProdFilesConfirmed — explicit gate for skipping the separations s
   test('embroidery .dst counts as the production file — in files or prod_files', () => {
     expect(artProdFilesConfirmed({ deco_type: 'embroidery', files: [{ name: 'logo.DST' }] })).toBe(true);
     expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files: [{ name: 'logo.dst' }] })).toBe(true);
+  });
+
+  test('embroidery .dst confirms even when prod_files_attached is an explicit false (the .dst is proof)', () => {
+    // The DST is the production file; an unchecked checkbox must not veto it. Matches buildJobs.
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files_attached: false, prod_files: [{ name: 'DG-374031.DST' }] })).toBe(true);
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files_attached: false, files: [{ name: 'logo.dst' }] })).toBe(true);
+  });
+
+  test('embroidery with prod_files_attached false and NO dst is still unconfirmed', () => {
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files_attached: false, prod_files: [{ name: 'spec.pdf' }] })).toBe(false);
   });
 
   test('embroidery with only a PDF is not confirmed', () => {
