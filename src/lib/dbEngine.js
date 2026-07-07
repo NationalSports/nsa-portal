@@ -971,6 +971,17 @@ const _matchRestoreItem=(oi,items)=>{
   });
   return best;
 };
+// Post-insert verification count with the error surfaced. The 2026-07-07 storm: the verify count query
+// itself failed (transient 429/timeout hit all in-flight read-backs in the same second), count came back
+// null, and `(count||0) < expected` read that as "0 rows persisted" → 8 SOs emailed 🚨 "Items lost" at
+// 9:44:08 while every row was intact. An errored read-back is INCONCLUSIVE, not zero — retry the count
+// once, and if it still errors report {error} so the caller can say "verification failed" truthfully
+// (the save is still queued for retry either way; old rows stay canonical under the insert-first swap).
+const _countInsertedChildRows=async(table,itemIds)=>{
+  let{count,error}=await supabase.from(table).select('id',{count:'exact',head:true}).in('so_item_id',itemIds);
+  if(error)({count,error}=await supabase.from(table).select('id',{count:'exact',head:true}).in('so_item_id',itemIds));
+  return{count:count||0,error};
+};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
@@ -1410,11 +1421,15 @@ const _dbSaveSOInner = async (so) => {
         }
         // Post-insert verification: count rows actually persisted; if fewer than expected, mark failed so we retry rather than accept a partial save as canonical.
         if(!saveFailed){
-          const{count:_verifyCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
-          if((_verifyCount||0)<allDecoRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+(_verifyCount||0)+' of '+allDecoRows.length+' rows persisted');
+          const{count:_verifyCount,error:_verifyErr}=await _countInsertedChildRows('so_item_decorations',insertedItems.map(i=>i.id));
+          if(_verifyErr){
+            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: verification read-back failed: '+_verifyErr.message);
+            console.error('[DB] SO deco verification read-back failed (inconclusive, save queued for retry):',_verifyErr.message);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:null,reason:'so_item_decorations: verification read-back failed ('+_verifyErr.message+') — data intact, save queued for retry'});
+          }else if(_verifyCount<allDecoRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_decorations: only '+_verifyCount+' of '+allDecoRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO deco insert verification failed — expected',allDecoRows.length,'got',_verifyCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount||0,reason:'so_item_decorations: wrote '+allDecoRows.length+', persisted '+(_verifyCount||0)+' — save queued for retry'});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allDecoRows.length,got:_verifyCount,reason:'so_item_decorations: wrote '+allDecoRows.length+', persisted '+_verifyCount+' — save queued for retry'});
           }
         }
       }
@@ -1424,11 +1439,15 @@ const _dbSaveSOInner = async (so) => {
         if(pickErr){saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: '+pickErr.message);console.error('[DB] so_item_pick_lines batch failed:',pickErr.message)}
         // Post-insert verification: confirm rows persisted rather than letting a partial save drop picks silently.
         if(!saveFailed){
-          const{count:_verifyPickCount}=await supabase.from('so_item_pick_lines').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
-          if((_verifyPickCount||0)<allPickRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+(_verifyPickCount||0)+' of '+allPickRows.length+' rows persisted');
+          const{count:_verifyPickCount,error:_verifyPickErr}=await _countInsertedChildRows('so_item_pick_lines',insertedItems.map(i=>i.id));
+          if(_verifyPickErr){
+            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: verification read-back failed: '+_verifyPickErr.message);
+            console.error('[DB] SO pick-line verification read-back failed (inconclusive, save queued for retry):',_verifyPickErr.message);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:null,reason:'so_item_pick_lines: verification read-back failed ('+_verifyPickErr.message+') — data intact, save queued for retry'});
+          }else if(_verifyPickCount<allPickRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_pick_lines: only '+_verifyPickCount+' of '+allPickRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO pick-line insert verification failed — expected',allPickRows.length,'got',_verifyPickCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount||0,reason:'so_item_pick_lines: wrote '+allPickRows.length+', persisted '+(_verifyPickCount||0)+' — save queued for retry'});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPickRows.length,got:_verifyPickCount,reason:'so_item_pick_lines: wrote '+allPickRows.length+', persisted '+_verifyPickCount+' — save queued for retry'});
           }
         }
       }
@@ -1444,11 +1463,15 @@ const _dbSaveSOInner = async (so) => {
         // Post-insert verification: confirm rows actually persisted; if fewer than expected, mark failed so we retry
         // rather than letting a partial save become canonical (and silently drop PO lines).
         if(!saveFailed){
-          const{count:_verifyPoCount}=await supabase.from('so_item_po_lines').select('id',{count:'exact',head:true}).in('so_item_id',insertedItems.map(i=>i.id));
-          if((_verifyPoCount||0)<allPoRows.length){
-            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: only '+(_verifyPoCount||0)+' of '+allPoRows.length+' rows persisted');
+          const{count:_verifyPoCount,error:_verifyPoErr}=await _countInsertedChildRows('so_item_po_lines',insertedItems.map(i=>i.id));
+          if(_verifyPoErr){
+            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: verification read-back failed: '+_verifyPoErr.message);
+            console.error('[DB] SO PO-line verification read-back failed (inconclusive, save queued for retry):',_verifyPoErr.message);
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:null,reason:'so_item_po_lines: verification read-back failed ('+_verifyPoErr.message+') — data intact, save queued for retry'});
+          }else if(_verifyPoCount<allPoRows.length){
+            saveFailed=true;_failMsg=_failMsg||('so_item_po_lines: only '+_verifyPoCount+' of '+allPoRows.length+' rows persisted');
             console.error('[DB] SAFETY: SO PO-line insert verification failed — expected',allPoRows.length,'got',_verifyPoCount);
-            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount||0,reason:'so_item_po_lines: wrote '+allPoRows.length+', persisted '+(_verifyPoCount||0)+' — save queued for retry'});
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allPoRows.length,got:_verifyPoCount,reason:'so_item_po_lines: wrote '+allPoRows.length+', persisted '+_verifyPoCount+' — save queued for retry'});
           }
         }
       }
