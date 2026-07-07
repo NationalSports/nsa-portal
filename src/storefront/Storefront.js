@@ -1562,7 +1562,10 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [stripePromise, setStripePromise] = useState(null);
   useEffect(() => { if (allowPaid) _getStripePromise().then((p) => setStripePromise(p || null)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '' });
+  // player_name = who the gear is for (often a parent buys for their kid). On
+  // club/team stores it's required so every order tags to a player for the
+  // player report + bagging; pre-filled from the roster link when present.
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -1620,7 +1623,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
-    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.zip || '').length === 5));
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : (((buyer.zip || '').length === 5) && (buyer.player_name || '').trim()));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
@@ -1645,7 +1648,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   };
 
   const submitUnpaid = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
@@ -1659,7 +1662,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
     setBusy(true);
     const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
     if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
@@ -1713,6 +1716,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
         </div></>
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
+        <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
         <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
       )}
 

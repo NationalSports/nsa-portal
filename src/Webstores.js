@@ -234,9 +234,9 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     const show = r.tracked || r.known;
     const avail = show ? r.ours + r.adidas : '—';
     const sh = r.needed - r.filled;
-    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh} short</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '<span class="pos">✓ Good</span>'}</td></tr>`;
   };
-  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
+  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Status</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
 
   const orderBlock = (b) => {
     const o = b.order;
@@ -260,7 +260,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}
     .grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ord{border:1px solid #fecaca;border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fff}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
@@ -308,17 +308,27 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const nm = (i.player_name || '').trim();
     const num = (i.player_number != null ? String(i.player_number) : '').trim();
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
-    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
+    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
     p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    // Who placed it + where it goes — the "more info" for each player block.
+    if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
+  const shipLine = (s) => s
+    ? [s.name, s.street1, s.street2, [s.city, s.state, s.zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')
+    : (store.delivery_mode === 'ship_home' ? '' : 'Delivered to the club');
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const notOrdered = (roster || []).filter((r) => !r.ordered);
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
     const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const contacts = Object.values(p.orders).map((c) => {
+      const sh = shipLine(c.ship);
+      return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
+    }).join('');
     return `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
+      ${contacts}
       <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   };
   printHtml(`<!doctype html><html><head><title>Player report — ${esc(store.name)}</title><style>
@@ -334,6 +344,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     .sub{font-size:11px;color:#94a3b8}
     .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
     .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
   </style></head><body>
     <h1>Player Report</h1>
@@ -455,7 +466,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
     .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}.grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
     @media print{.chip,.grid tr.r td,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}

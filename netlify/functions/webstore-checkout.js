@@ -468,14 +468,19 @@ async function placeOrder(sb, body) {
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
   };
 
+  // Order-level "who this is for" name (checkout's Player name field). Used as the
+  // player_name for any line that doesn't already carry a garment-personalized
+  // name, so the player report + packing lists group parent-placed orders under
+  // the actual player. It never drives decoration — that's the item's takes_name.
+  const orderPlayer = String((buyer && buyer.player_name) || '').trim().slice(0, 60) || null;
   const items = []; // no order_id yet — the transaction (or legacy path) injects it
   for (const l of priced.lines) {
     if (l.kind === 'bundle') {
       const bref = require('crypto').randomUUID();
       items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name || orderPlayer, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
   }
 
