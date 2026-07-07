@@ -20982,6 +20982,22 @@ export default function App(){
     return ()=>{cancelled=true};
   },[pg,billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
+  // Durable si_documents status writeback. The queue is SHARED accounting state — a silently
+  // dropped update leaves an applied bill showing "pending" to every user (wrong completeness
+  // counts, an Approve button inviting a duplicate run) until the next pull self-heals it.
+  // Retries with backoff, mirrors the change into the local queue view, and on final failure
+  // says so out loud instead of the old empty .catch.
+  const _siMarkDoc=async(sdn,upd,retries=3)=>{
+    if(!supabase||!sdn)return false;
+    let lastErr=null;
+    for(let i=0;i<=retries;i++){
+      if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+      try{const{error}=await supabase.from('si_documents').update(upd).eq('si_doc_number',sdn);if(!error){setSiQueue(prev=>prev.map(r=>r.si_doc_number===sdn?{...r,...upd}:r));return true}lastErr=error}
+      catch(e){lastErr=e}
+    }
+    nf('Sports Inc queue row '+sdn+' didn\'t update ('+(lastErr?.message||lastErr)+') — it will show as still open for everyone until the next pull captures it','error');
+    return false;
+  };
   // ── Sports Inc Bills queue loader (hoisted to component scope) ──────────────────────
   // Lives here rather than inside rImport() so both the Bills page AND a global-search
   // supplier-invoice deep-link can trigger it. Builds PO-match candidates from the live orders
@@ -22686,7 +22702,7 @@ export default function App(){
           dups.push(parsed.doc_number||row.si_doc_number);
           const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
             match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
-          if(supabase)supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number).then(()=>{},()=>{/* retried on reload */});
+          _siMarkDoc(row.si_doc_number,upd);
           setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
           return;
         }
@@ -24057,11 +24073,8 @@ export default function App(){
       // applied; a failed flip just means the doc shows up next pull and gets dedup-skipped.
       const siPushed=bills.filter(b=>b.portalStatus==='success'&&b.parsed?.source==='sportsinc'&&b.parsed?.si_doc_number);
       if(siPushed.length){
-        if(supabase)siPushed.forEach(b=>{
-          supabase.from('si_documents')
-            .update({status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()})
-            .eq('si_doc_number',b.parsed.si_doc_number)
-            .then(()=>{},()=>{/* row may not be mirrored yet — cron upsert preserves nothing-to-update */});
+        siPushed.forEach(b=>{
+          _siMarkDoc(b.parsed.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()});
         });
         sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false)
           .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
