@@ -308,17 +308,27 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const nm = (i.player_name || '').trim();
     const num = (i.player_number != null ? String(i.player_number) : '').trim();
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
-    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
+    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
     p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    // Who placed it + where it goes — the "more info" for each player block.
+    if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
+  const shipLine = (s) => s
+    ? [s.name, s.street1, s.street2, [s.city, s.state, s.zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')
+    : (store.delivery_mode === 'ship_home' ? '' : 'Delivered to the club');
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const notOrdered = (roster || []).filter((r) => !r.ordered);
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
     const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const contacts = Object.values(p.orders).map((c) => {
+      const sh = shipLine(c.ship);
+      return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
+    }).join('');
     return `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
+      ${contacts}
       <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   };
   printHtml(`<!doctype html><html><head><title>Player report — ${esc(store.name)}</title><style>
@@ -334,6 +344,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     .sub{font-size:11px;color:#94a3b8}
     .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
     .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
   </style></head><body>
     <h1>Player Report</h1>
