@@ -3050,6 +3050,9 @@ export default function App(){
   // per-SO dedupe doesn't help (each SO is a different key), so cap total emails per rolling window. Tracks the
   // current window and how many alert emails were sent vs suppressed within it.
   const _alertFloodRef=React.useRef({windowStart:0,sent:0,suppressed:0,noticed:false});
+  // Per-SO verify_fail escalation tracker: {first,n,emailedAt} per SO, so a transient read-back blip
+  // (healed by the 60s retry) never emails, while a save that KEEPS failing verification does.
+  const _verifyFailRef=React.useRef({});
     _setDataLossAlert(({kind,soId,prevCount,newCount,reason,restored})=>{
     try{
       // Auto-restore is a SUCCESS, not a loss: the DB save layer re-injected PO/pick lines the client's save
@@ -3058,6 +3061,27 @@ export default function App(){
       // false "Items lost" alarms (the 2026-06-30 storm: ~340 emails across as many SOs, every SO's data intact).
       if(kind==='po_restored'||kind==='picks_restored'){
         logChange('data_restored','SO',soId,'Auto-restored '+(restored!=null?restored+' ':'')+(kind==='po_restored'?'PO':'pick')+' line(s) the save had dropped (stale state — no data lost)');
+        return;
+      }
+      // verify_fail: a post-insert read-back came back short or errored. The insert-first save keeps the OLD
+      // rows canonical and rolls the new ones back, so nothing is lost — the save sits in the 60s retry queue
+      // and a transient blip heals on the next pass (the 2026-07-07 storm: one blip failed 8 SOs' read-backs
+      // in the same second → 8 🚨 "Items lost" emails, every SO intact). Log every event; email only when the
+      // SAME SO is still failing after the retry has had time to run — and say what's true ("save not
+      // persisting — data intact"), never "Items lost".
+      if(kind==='verify_fail'){
+        logChange('save_incomplete','SO',soId,'Save verification failed: '+(reason||'(none)')+' — previous data intact, save queued for retry');
+        const now=Date.now();const rec=_verifyFailRef.current[soId]||{first:0,n:0,emailedAt:0};
+        if(now-rec.first>30*60*1000){rec.first=now;rec.n=0}
+        rec.n++;_verifyFailRef.current[soId]=rec;
+        if(rec.n<2||now-rec.first<2*60*1000)return; // first strike, or repeats within the initial save burst — let the retry heal it
+        if(now-rec.emailedAt<30*60*1000)return; // escalate at most once per SO per 30 min
+        rec.emailedAt=now;
+        sendBrevoEmail({to:[{email:'steve@nationalsportsapparel.com',name:'Steve Peterson'}],subject:'⚠️ NSA Portal — Save not persisting on '+soId,htmlContent:'<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a">'
+          +'<h2 style="color:#d97706;margin:0 0 8px">Save not persisting: '+soId+'</h2>'
+          +'<p><strong>SO:</strong> '+soId+'<br/><strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/><strong>When:</strong> '+new Date().toLocaleString()+'<br/><strong>Reason:</strong> '+(reason||'(none)')+'</p>'
+          +'<p><strong>No data has been lost</strong> — the previous rows stay in place until a new save fully verifies. But this SO\'s save has now failed verification more than once, so the portal\'s automatic retry isn\'t healing it. Check the user\'s connection and System Health → Change Log.</p>'
+          +'</div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
         return;
       }
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
