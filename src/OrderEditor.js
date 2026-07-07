@@ -2044,8 +2044,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   // After a real submit, stamp the returned order id on the PO's lines for traceability.
   const _recordApiOrder=(desc,r)=>{const oid=r&&(r.orderId||r.orderNumber||r.transactionId);if(!desc||!oid)return;
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,api_order_id:oid,api_ordered_at:new Date().toLocaleString()}:pl)}));
-    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);};
+    const stamp={api_order_id:oid,api_ordered_at:new Date().toLocaleString()};
+    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,...stamp}:pl)}));
+    const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
+    // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
+    // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
+    setPoFullPage(pf=>(pf&&pf.po&&pf.po.po_id===desc.poNumber)?{...pf,po:{...pf.po,...stamp}}:pf);
+    nf('✅ '+desc.vendorName+' order '+oid+' recorded on '+desc.poNumber);};
   const uSz=(i,sz,v)=>{
     const n=v===''?0:parseInt(v)||0;
     const item=o.items[i];if(!item)return;
@@ -11725,6 +11730,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {isDropShipFP&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
               {po.po_type==='outside_deco'&&<span className="badge badge-blue" style={{fontSize:10}}>Decoration PO</span>}
               <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:11}} onClick={()=>{setEditPO({lineIdx:allLines?.[0]?.lineIdx||0,poIdx:soItems?.[allLines?.[0]?.lineIdx]?.po_lines?.findIndex(p=>p.po_id===po.po_id)||0,po,allLines:allLines||[{lineIdx:0,poIdx:0}]});setPoFullPage(null)}}>Edit PO</button>
+              {/* Order via API — surface the same submit path that lives in the Edit PO modal directly on
+                  the PO page. Hidden once the PO carries an api_order_id (apiPo) so an already-placed order
+                  can't be double-submitted; buildApiOrderFromPO returns null for non-API vendors / deco POs. */}
+              {(()=>{const _ao=!apiPo&&buildApiOrderFromPO(po,allLines);return _ao?
+                <button className="btn btn-sm" style={{marginLeft:6,fontSize:11,background:'#16a34a',color:'white',border:'none'}} title={'Place this PO directly with '+_ao.vendorName+' via API — nothing is sent until you review and confirm'} onClick={()=>setApiOrder(_ao)}>🚀 Order via API</button>:null})()}
             </div>
             <div style={{textAlign:'right'}}>
               <div style={{fontSize:11,color:'#64748b'}}>SO: <span style={{fontWeight:700,color:'#1e40af',cursor:'pointer',textDecoration:'underline'}} onClick={()=>setPoFullPage(null)} title="Back to Sales Order">{soId}</span></div>
