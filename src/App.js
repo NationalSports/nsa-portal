@@ -2237,6 +2237,12 @@ export default function App(){
   // reminder. baseline=true marks stores already present when this shipped, so
   // we don't backfill tasks for the entire history.
   const[omgFirstSeen,setOmgFirstSeen]=useState(()=>loadState('omg_first_seen',{}));
+  // Store sales-tax remittance ledger: {[rowId]:{at,by,amount}}. OMG collects
+  // tax from parents and remits it to NSA bundled in the payout; webstores
+  // collect it at Stripe checkout — NSA files both with the state manually
+  // (not Stripe Tax). This tracks which store/state rows have been remitted so
+  // nothing is missed or double-paid. Durable in app_state like omgFirstSeen.
+  const[omgTaxRemit,setOmgTaxRemit]=useState(()=>loadState('omg_tax_remit',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
@@ -3482,6 +3488,40 @@ export default function App(){
     }));
   },[sos,ests]);
   React.useEffect(()=>{_saveAppState('omg_first_seen',omgFirstSeen)},[omgFirstSeen]);
+  React.useEffect(()=>{_saveAppState('omg_tax_remit',omgTaxRemit)},[omgTaxRemit]);
+  // Webstore-collected sales tax, aggregated per store + buyer state for the
+  // remittance report. Webstores charge tax at checkout (CDTFA/TaxCloud rates)
+  // on the buyer's destination, so one store can owe several states. Card
+  // orders collect the tax at Stripe checkout; team-tab (unpaid) orders bill it
+  // to the club and collect it when the club PAYS the batched invoice — so tab
+  // tax is tracked per so_id here and counted as collected only once that
+  // invoice is paid (gating happens in the panel, which has live invoice
+  // status). Fetched when the OMG page (where the report lives) is visited.
+  const[webTaxAgg,setWebTaxAgg]=useState([]);
+  const _webTaxLoaded=React.useRef(false);
+  React.useEffect(()=>{
+    if(pg!=='omg'||!supabase||_webTaxLoaded.current)return;
+    _webTaxLoaded.current=true;
+    (async()=>{try{
+      const{data,error}=await supabase.from('webstore_orders')
+        .select('store_id,so_id,tax,payment_mode,status,ship_address,created_at,webstores!inner(source,name)')
+        .eq('webstores.source','webstore').gt('tax',0);
+      if(error){console.warn('[web tax] fetch failed:',error.message);return}
+      const byKey={};
+      (data||[]).forEach(o=>{
+        if(!o||o.status==='cancelled'||o.status==='refunded')return;
+        const st=String((o.ship_address&&(o.ship_address.state||o.ship_address.State))||'—').toUpperCase();
+        const k=o.store_id+':'+st;
+        const b=byKey[k]||(byKey[k]={storeId:o.store_id,name:o.webstores?.name||'Webstore',state:st,cardTax:0,tabBySo:{},orders:0,firstAt:o.created_at});
+        const tax=+o.tax||0;
+        if(o.payment_mode==='paid')b.cardTax+=tax;                                  // collected at checkout
+        else b.tabBySo[o.so_id||'_unbatched']=(b.tabBySo[o.so_id||'_unbatched']||0)+tax; // collected when the club pays
+        b.orders++;
+        if(o.created_at&&(!b.firstAt||o.created_at<b.firstAt))b.firstAt=o.created_at;
+      });
+      setWebTaxAgg(Object.values(byKey));
+    }catch(e){console.warn('[web tax] error:',e.message)}})();
+  },[pg]);
   // OMG stores are settled from store deposit funds (not a coach payment), so
   // 4 weeks after a store is brought into the portal, remind accounting (Andrea
   // Jung) to apply those funds to its invoice. Stores already present when this
@@ -3539,17 +3579,24 @@ export default function App(){
     (async()=>{
       try{
         const{data,error}=await supabase.from('webstore_orders')
-          .select('so_id,payment_mode,status,total,refunded_amt,webstores!inner(source,name)')
+          .select('so_id,payment_mode,status,total,refunded_amt,subtotal,fundraise_amt,tax,webstores!inner(source,name)')
           .eq('webstores.source','webstore').not('so_id','is',null);
         if(error){console.warn('[webstore settle] fetch failed:',error.message);return}
         const agg={};
         (data||[]).forEach(o=>{
           if(!o||!o.so_id||o.status==='cancelled')return;
-          const a=agg[o.so_id]||(agg[o.so_id]={prepaid:0,teamTab:0,refunded:0,orders:0,name:o.webstores?.name||''});
+          const a=agg[o.so_id]||(agg[o.so_id]={prepaid:0,teamTab:0,tabProduct:0,tabTax:0,refunded:0,orders:0,name:o.webstores?.name||''});
           a.orders++;const refunded=+o.refunded_amt||0;a.refunded+=refunded;
           if(o.status==='refunded')return; // fully refunded — not collected
           if(o.payment_mode==='paid')a.prepaid+=Math.max(0,(+o.total||0)-refunded);
-          else if(o.payment_mode==='unpaid')a.teamTab+=(+o.total||0);
+          else if(o.payment_mode==='unpaid'){
+            a.teamTab+=(+o.total||0);
+            // Product share (subtotal+fundraise) vs the extras (tax/ship/processing)
+            // the team also owes — the auto-invoice bills both, so the open balance
+            // equals the team-tab gross.
+            a.tabProduct+=(+o.subtotal||0)+(+o.fundraise_amt||0);
+            a.tabTax+=(+o.tax||0);
+          }
         });
         setWebstoreSettle(agg);
       }catch(e){console.warn('[webstore settle] error:',e.message)}
@@ -5166,7 +5213,7 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -5189,6 +5236,10 @@ export default function App(){
       nf('Could not save Sales Order '+id+' — orders were NOT batched. Please try again.','error');
       return null;
     }
+    // Webstore money is already collected via Stripe by batch time, so invoice
+    // + settle immediately — paid in full when the card funds cover it, else
+    // partial with exactly the team-tab gross left as the club's open balance.
+    if(settle){try{createAndSettleWebstoreInvoice(newSO,settle)}catch(e){console.warn('[Webstore] auto-invoice failed:',e.message)}}
     // Jump the user straight into the new SO in the Sales Orders editor.
     setESO(newSO);setESOC(cust.find(c=>c.id===customer_id)||null);setPg('orders');
     nf('Created '+id+' from webstore — '+(items||[]).length+' line(s)');
@@ -11626,6 +11677,60 @@ export default function App(){
     return inv;
   };
 
+  // ── Webstore invoice + settlement in one step ────────────────────────
+  // Webstore card orders are pre-paid via NSA's own Stripe at checkout, so by
+  // batch time the money is in hand. The batcher prices SO items so their sum
+  // reconciles to the PRODUCT (+fundraise) collected; tax/shipping/processing
+  // ride on top of each Stripe charge but aren't SO lines. This builds one
+  // invoice for the whole SO — product lines plus the TEAM-TAB orders' extras
+  // (their tax/ship/processing, carried in the shipping field) — and stamps
+  // the Stripe-collected share as a 'store' payment at birth. Net effect: the
+  // invoice's open balance is EXACTLY the team-tab gross the club still owes
+  // (the production note's "invoice the club for the team-tab total only"),
+  // while the card revenue still flows through the invoice for commissions,
+  // AR and reports. No team-tab → invoice is born fully paid.
+  // settle: {cardTotal, tabTotal, tabExtras} — from the batch flow, or rebuilt
+  // from webstore_orders sums for queue-driven backlog settles. All amounts
+  // are clamped so a data surprise can only under-apply (visible partial),
+  // never overpay. Idempotent: any-invoice guard + the 'WEB <so id>' ref.
+  const createAndSettleWebstoreInvoice=(so,settle)=>{
+    if(!so||so.omg_store_id)return null;
+    if(invs.some(i=>i.so_id===so.id)){nf('SO '+so.id+' already has an invoice','error');return null}
+    const r2=n=>Math.round((+n||0)*100)/100;
+    const c=cust.find(x=>x.id===so.customer_id);
+    const lineItems=safeItems(so).map(it=>{
+      const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty);
+      if(!qty)return null;
+      return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:safeNum(it.unit_sell),amount:r2(qty*safeNum(it.unit_sell)),_sku:it.sku,_name:it.name,_color:it.color};
+    }).filter(Boolean);
+    const itemsTotal=r2(lineItems.reduce((a,l)=>a+l.amount,0));
+    const tabGross=Math.max(0,r2(settle?.tabTotal||0));
+    const tabExtras=Math.min(Math.max(0,r2(settle?.tabExtras||0)),tabGross);
+    const total=r2(itemsTotal+tabExtras);
+    // Card share = whatever of the invoice the team-tab doesn't owe, capped at
+    // what Stripe actually collected.
+    const applied=r2(Math.min(Math.max(0,total-tabGross),Math.max(0,r2(settle?.cardTotal||0))));
+    const dateStr=new Date().toLocaleDateString('en-CA');
+    const termDays=parseInt((c?.payment_terms||'net30').replace(/\D/g,''))||30;
+    const dueBase=new Date(dateStr+'T00:00:00');dueBase.setDate(dueBase.getDate()+termDays);
+    const payDate=new Date().toLocaleDateString('en-US',{month:'2-digit',day:'2-digit',year:'numeric'});
+    const ref='WEB '+so.id;
+    const inv={id:nextInvId(invs),type:'invoice',inv_type:'full',customer_id:so.customer_id,so_id:so.id,
+      date:dateStr,due_date:dueBase.toLocaleDateString('en-CA'),
+      total,paid:applied,status:applied>=total-0.005?'paid':applied>0?'partial':'open',
+      memo:'Invoice — '+(so.memo||so.id)+(tabExtras>0?' (shipping line = team-tab tax/ship/processing)':''),
+      _rep:so.created_by||cu?.id||null,
+      tax:0,tax_rate:0,tax_exempt:true,shipping:tabExtras,
+      line_items:lineItems,
+      items:safeItems(so).map(it=>{const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}}),
+      payments:applied>0?[{amount:applied,method:'store',ref,date:payDate,cc_fee:0}]:[],
+      created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString()};
+    setInvs(prev=>[inv,...prev]);
+    logChange('create','Invoice',inv.id,'Auto-created from webstore batch '+so.id+(applied>0?' — $'+applied.toFixed(2)+' Stripe store funds applied':''));
+    nf('Invoice '+inv.id+' created for $'+total.toFixed(2)+(applied>=total-0.005?' — settled in full from Stripe store funds 🏪':applied>0?' — $'+applied.toFixed(2)+' applied, $'+r2(total-applied).toFixed(2)+' team-tab balance owed by the club':''));
+    return inv;
+  };
+
 ;
 
   // REPORTS & ANALYTICS PAGE
@@ -14767,6 +14872,95 @@ export default function App(){
           </div>
         </div>
       </div>}
+
+      {/* Store Sales Tax — remittance report, OMG + webstores. Reads _omg_tax
+          across ALL OMG stores plus per-order webstore tax (Stripe-paid orders,
+          grouped by store + buyer state), independent of the list filters below,
+          so it's a true running total. The liability exists the moment the tax
+          is collected, regardless of invoicing or settlement. Tracked manually
+          against the California list (not Stripe Tax). */}
+      {(()=>{
+        const $=n=>'$'+(+n||0).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+        const omgRows=(omgStores||[]).filter(s=>s&&(+s._omg_tax||0)>0.005).map(s=>{
+          const c=cust.find(x=>x.id===s.customer_id);
+          const rec=omgTaxRemit[s.id];
+          const dRaw=s._report_imported_at||s._last_synced||null;
+          return{id:s.id,src:'OMG',name:s.store_name||s.id,code:s._omg_sale_code||'',
+            state:(c?.shipping_state||c?.billing_state||'—'),cust:c?.name||'',
+            tax:Math.round((+s._omg_tax)*100)/100,pending:0,date:dRaw?String(dRaw).slice(0,10):'',
+            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+        });
+        // Webstore rows keyed store+state (one store can owe several states).
+        // Card tax is collected at checkout; team-tab tax counts as collected
+        // only once its batched invoice is PAID — until then it's "pending"
+        // (owed to the state when the club pays, shown but not in the totals).
+        const _wPaidSo=new Set((invs||[]).filter(i=>i.status==='paid'&&i.so_id).map(i=>i.so_id));
+        const webRows=(webTaxAgg||[]).map(b=>{
+          let tabCollected=0,tabPending=0;
+          Object.entries(b.tabBySo||{}).forEach(([soId,t])=>{ if(soId!=='_unbatched'&&_wPaidSo.has(soId))tabCollected+=t; else tabPending+=t; });
+          const id='ws:'+b.storeId+':'+b.state;
+          const rec=omgTaxRemit[id];
+          return{id,src:'WEB',name:b.name,code:'',state:b.state,cust:'',
+            tax:Math.round((b.cardTax+tabCollected)*100)/100,pending:Math.round(tabPending*100)/100,
+            date:b.firstAt?String(b.firstAt).slice(0,10):'',
+            remitted:!!rec,remittedAt:rec?String(rec.at).slice(0,10):'',remittedBy:rec?.by||null};
+        }).filter(b=>b.tax>0.005||b.pending>0.005);
+        const rows=[...omgRows,...webRows].sort((a,b)=>(a.remitted-b.remitted)||(b.tax-a.tax));
+        if(!rows.length)return null;
+        const total=Math.round(rows.reduce((a,r)=>a+r.tax,0)*100)/100;
+        const remitted=Math.round(rows.filter(r=>r.remitted).reduce((a,r)=>a+r.tax,0)*100)/100;
+        const outstanding=Math.round((total-remitted)*100)/100;
+        const pendingTotal=Math.round(rows.reduce((a,r)=>a+(r.pending||0),0)*100)/100; // team-tab tax not yet collected (club unpaid)
+        const byState={};rows.forEach(r=>{const b=byState[r.state]||(byState[r.state]={total:0,out:0});b.total+=r.tax;if(!r.remitted)b.out+=r.tax});
+        const markRemit=(id,amt)=>setOmgTaxRemit(prev=>({...prev,[id]:{at:new Date().toISOString(),by:cu?.id||null,amount:amt}}));
+        const unmarkRemit=(id)=>setOmgTaxRemit(prev=>{const n={...prev};delete n[id];return n});
+        const exportCsv=()=>{
+          const head=['Source','Store','Sale Code','State','Customer','Report Date','Collected Tax','Pending (team tab)','Remitted','Remitted On'];
+          const body=rows.map(r=>[r.src,r.name,r.code,r.state,r.cust,r.date,r.tax.toFixed(2),(r.pending||0).toFixed(2),r.remitted?'Yes':'No',r.remittedAt]);
+          const esc=v=>'"'+String(v==null?'':v).replace(/"/g,'""')+'"';
+          const csv=[head,...body,['','','','','','TOTAL',total.toFixed(2),pendingTotal.toFixed(2),'',''],['','','','','','OUTSTANDING',outstanding.toFixed(2),'','','']].map(r=>r.map(esc).join(',')).join('\r\n');
+          try{const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='store-sales-tax-'+new Date().toISOString().slice(0,10)+'.csv';document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);}catch(e){nf('Export failed: '+e.message,'error')}
+        };
+        const tile=(label,val,color)=><div style={{flex:'1 1 140px',padding:'10px 14px',background:color+'0d',border:'1px solid '+color+'40',borderRadius:8}}>
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',letterSpacing:0.4}}>{label}</div>
+          <div style={{fontSize:20,fontWeight:800,color}}>{$(val)}</div></div>;
+        return <div className="card" style={{marginBottom:12,border:'1px solid #fca5a5'}}><div style={{padding:'14px 16px'}}>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,flexWrap:'wrap',marginBottom:10}}>
+            <div style={{fontSize:15,fontWeight:800,color:'#b91c1c'}}>🧾 Store Sales Tax — Remittance <span style={{fontSize:10,fontWeight:600,color:'#94a3b8'}}>(OMG + webstores)</span></div>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={exportCsv}>⬇ Export CSV</button>
+          </div>
+          <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:10}}>
+            {tile('Outstanding — owed',outstanding,'#dc2626')}
+            {tile('Remitted',remitted,'#166534')}
+            {tile('Total collected',total,'#334155')}
+          </div>
+          {Object.keys(byState).length>0&&<div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10,alignItems:'center'}}>
+            {Object.entries(byState).sort((a,b)=>b[1].out-a[1].out).map(([st,b])=>
+              <span key={st} style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#f1f5f9',color:'#334155',fontWeight:600}}>
+                {st}: <strong style={{color:b.out>0.005?'#dc2626':'#166534'}}>{$(b.out)}</strong> owed <span style={{color:'#94a3b8'}}>of {$(b.total)}</span></span>)}
+            {pendingTotal>0.005&&<span style={{fontSize:11,padding:'3px 10px',borderRadius:12,background:'#fffbeb',color:'#92400e',fontWeight:600}} title="Team-tab sales tax billed to clubs but not yet collected — becomes owed when the club pays its invoice">+ {$(pendingTotal)} pending club payment</span>}
+          </div>}
+          <details>
+            <summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:'#475569',marginBottom:6}}>Per-store detail — {rows.length} store{rows.length!==1?'s':''}</summary>
+            <table style={{width:'100%',fontSize:12,borderCollapse:'collapse',marginTop:6}}><thead><tr style={{textAlign:'left',color:'#94a3b8',fontSize:10}}>
+              <th style={{padding:'4px 8px'}}>STORE</th><th style={{padding:'4px 8px'}}>STATE</th><th style={{padding:'4px 8px'}}>REPORT DATE</th>
+              <th style={{padding:'4px 8px',textAlign:'right'}}>COLLECTED TAX</th><th style={{padding:'4px 8px'}}>STATUS</th></tr></thead><tbody>
+              {rows.map(r=><tr key={r.id} style={{borderTop:'1px solid #e2e8f0',background:r.remitted?'#f0fdf4':'#fff'}}>
+                <td style={{padding:'6px 8px'}}><span style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,marginRight:6,background:r.src==='WEB'?'#e0f2fe':'#ede9fe',color:r.src==='WEB'?'#0369a1':'#6d28d9'}}>{r.src}</span><span style={{fontWeight:600}}>{r.name}</span> <span style={{fontFamily:'monospace',fontSize:10,color:'#64748b'}}>{r.code}</span></td>
+                <td style={{padding:'6px 8px'}}>{r.state}</td>
+                <td style={{padding:'6px 8px',color:'#64748b'}}>{r.date||'—'}</td>
+                <td style={{padding:'6px 8px',textAlign:'right',fontWeight:700}}>{$(r.tax)}{r.pending>0.005&&<div style={{fontSize:9,fontWeight:600,color:'#b45309'}}>+{$(r.pending)} pending</div>}</td>
+                <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
+                  {r.remitted
+                    ?<><span style={{fontSize:11,color:'#166534',fontWeight:700}}>✓ Remitted {r.remittedAt}</span> <button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',marginLeft:6,background:'#fff',border:'1px solid #cbd5e1',color:'#64748b'}} onClick={()=>unmarkRemit(r.id)}>Undo</button></>
+                    :r.tax>0.005?<button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'#166534',color:'#fff',border:'none'}} onClick={()=>markRemit(r.id,r.tax)}>Mark remitted</button>
+                    :<span style={{fontSize:10,color:'#b45309',fontStyle:'italic'}}>awaiting club payment</span>}
+                </td></tr>)}
+            </tbody></table>
+          </details>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>OMG collects sales tax from parents and remits it to NSA bundled in the payout; webstores collect it at Stripe checkout (CDTFA/TaxCloud rates by buyer destination). NSA files both with the state manually — the store invoices stay tax-exempt, so this liability lives here, not on an invoice. Webstore rows are per store per state. Team-tab tax (billed to the club, not charged at checkout) shows as <strong>pending</strong> until the club pays its invoice, then counts as collected. Marking a row remitted is a bookkeeping record, not a filing.</div>
+        </div></div>;
+      })()}
 
       {/* Filters */}
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
@@ -28630,7 +28824,7 @@ export default function App(){
     // commissions page state
     commMonth,setCommMonth,commOverrides,setCommOverrides,commRep,setCommRep,commTab,setCommTab,
     // invoices page state + handlers
-    CC_FEE_PCT,PAY_METHODS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,
+    CC_FEE_PCT,PAY_METHODS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,
     deleteInvoice,editingInvRep,setEditingInvRep,histInvs,setHistInvs,invBackPg,setInvBackPg,
     invEditModal,setInvEditModal,invF,setInvF,invSendModalDirect,setInvSendModalDirect,
     invSort,setInvSort,omgStores,payModal,setPayModal,pdBulkModal,setPdBulkModal,portalSettings,

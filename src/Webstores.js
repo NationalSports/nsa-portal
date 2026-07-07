@@ -2751,12 +2751,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
+    // Team-tab extras = the tab orders' tax/shipping/processing beyond their
+    // product (+fundraise) share. The auto-invoice adds these on top of the SO's
+    // product lines so the club's open balance equals the team-tab gross.
+    const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
+    const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost });
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+      // Money split for the automatic invoice+settle: Stripe-collected card total,
+      // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
+      settle: { cardTotal, tabTotal, tabExtras } });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
