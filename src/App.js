@@ -3846,12 +3846,20 @@ export default function App(){
     if(isAux)return;// non-middle aux button, ignore
     openHere&&openHere();
   },[_newTabHref]);
+  // Deep-link precedence over the saved-record resume lives in this ref (declared here so
+  // the handler below can claim it before it strips the deep-link param from the URL).
+  const _resumeDone=React.useRef(false);
   // Handle ?so= / ?est= / ?cust= deep links to open a specific record in a new tab
   React.useEffect(()=>{
     if(dbLoading)return;
     try{
       const p=new URLSearchParams(window.location.search);
       const soId=p.get('so');const estId=p.get('est');const custId=p.get('cust');const invId=p.get('inv');const vendId=p.get('vend');const prodId=p.get('prod');const poId=p.get('po');const ifId=p.get('if');
+      // A deep-link always wins over the saved-record resume. Claim precedence up front:
+      // this effect deletes the param from the URL after resolving, and the resume effect
+      // (which runs after this one) would then no longer see it and would restore the last
+      // record instead — reopening e.g. SO-1141 instead of the SO-1047 the email linked to.
+      if(soId||estId||custId||invId||vendId||prodId||poId||ifId)_resumeDone.current=true;
       const u=new URL(window.location);let changed=false;
       if(soId&&sos.length>0){
         const so=sos.find(s=>s.id===soId);
@@ -3964,7 +3972,6 @@ export default function App(){
   // on boot using the SAME open-by-id logic as the ?so=/?est= deep-link handler, so the idle auto-reload
   // / a manual refresh / a re-login resume exactly where the rep was. An explicit deep-link (?so= etc.)
   // always wins; invoices use a separate view state declared later and aren't covered here.
-  const _resumeDone=React.useRef(false);
   React.useEffect(()=>{
     if(!_resumeDone.current)return;// don't clobber the saved record before the restore effect below runs
     try{
