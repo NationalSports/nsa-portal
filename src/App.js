@@ -6401,8 +6401,8 @@ export default function App(){
   const[coachAcctsOpen,setCoachAcctsOpen]=useState(false);
   const[coachAccts,setCoachAccts]=useState(null);
   const[coachForm,setCoachForm]=useState({email:'',name:'',customer_id:null,q:''});
-  const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Navy','Royal','Blue','Red','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
-  const CATALOG_COLOR_HEX={Black:'#191919',White:'#FFFFFF',Grey:'#9AA1AC',Navy:'#1B2A4A',Royal:'#2148C7',Blue:'#3B82F6',Red:'#C8102E',Maroon:'#6B1F2A',Orange:'#EA580C',Gold:'#C9A227',Yellow:'#EAB308',Green:'#15803D',Purple:'#6D28D9',Pink:'#EC4899',Brown:'#7C4A21'};
+  const CATALOG_COLOR_FAMILIES=['Black','White','Grey','Silver','Navy','Royal','Blue','Red','Cardinal','Maroon','Orange','Gold','Yellow','Green','Purple','Pink','Brown'];
+  const CATALOG_COLOR_HEX={Black:'#191919',White:'#FFFFFF',Grey:'#9AA1AC',Silver:'#C0C0C0',Navy:'#1B2A4A',Royal:'#2148C7',Blue:'#3B82F6',Red:'#C8102E',Cardinal:'#8C1515',Maroon:'#6B1F2A',Orange:'#EA580C',Gold:'#C9A227',Yellow:'#EAB308',Green:'#15803D',Purple:'#6D28D9',Pink:'#EC4899',Brown:'#7C4A21'};
   // Catalog brands an account can be locked to (must match CATALOG_BRANDS in src/storefront/AdidasInventory.js). Empty = all brands.
   const CATALOG_BRANDS=['Adidas','Under Armour','Nike'];
   const loadCoachAccts=()=>{if(!supabase)return;supabase.from('coach_accounts').select('*').order('created_at',{ascending:false}).then(r=>{if(!r.error)setCoachAccts(r.data||[]);else{setCoachAccts([]);nf('Coach accounts: '+r.error.message,'error')}})};
