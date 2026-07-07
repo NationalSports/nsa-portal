@@ -134,7 +134,7 @@ export default function OrderTrack() {
             {hero.icon} {hero.label}
           </div>
           <div style={{ fontSize: 15, opacity: 0.9, marginTop: 6 }}>{hero.blurb}</div>
-          {order.omg_order_number && <div style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>Order #{order.omg_order_number}{order.buyer_name ? ` · ${order.buyer_name}` : ''}</div>}
+          {(order.omg_order_number || order.order_number) && <div style={{ fontSize: 12, opacity: 0.7, marginTop: 12 }}>Order #{order.omg_order_number || order.order_number}{order.buyer_name ? ` · ${order.buyer_name}` : ''}</div>}
         </div>
 
         {/* Vertical progress timeline */}

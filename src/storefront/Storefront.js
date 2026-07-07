@@ -1866,7 +1866,9 @@ function OrderStatusPage({ store, theme, orderId }) {
   const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
 
   // Labels
-  const shortId = '#' + (order.id || '').slice(0, 8).toUpperCase();
+  // Friendly running order number (migration 00177) once present; older orders
+  // fall back to a short slice of the UUID so they still show *something*.
+  const shortId = order.order_number ? ('#' + order.order_number) : ('#' + (order.id || '').slice(0, 8).toUpperCase());
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
