@@ -10644,7 +10644,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     if (fBatch === 'batched' && !o.so_id) return false;
     if (fBatch === 'unbatched' && o.so_id) return false;
     if (q.trim()) {
-      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')}`.toLowerCase();
+      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')} ${o.order_number || ''}`.toLowerCase();
       if (!hay.includes(q.toLowerCase())) return false;
     }
     return true;
@@ -10702,7 +10702,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               <React.Fragment key={o.id}>
               <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
-                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
+                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div>{o.order_number && <div style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>#{o.order_number}</div>}</td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
                 <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
@@ -10817,6 +10817,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
+            {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
               {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
               {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
