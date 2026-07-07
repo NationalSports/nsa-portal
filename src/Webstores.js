@@ -1050,7 +1050,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
-  const [soPrompt, setSoPrompt] = useState(null); // { count, shortages[], proceed() } for the Create-SO modal
+  const [soPrompt, setSoPrompt] = useState(null); // { orders[], shortagesFor(selIds), proceed(overrides, selIds, batchMeta) } for the Create-SO modal
   const [storeStats, setStoreStats] = useState({});
   // Applying an item template outside the store-detail view (Templates page):
   const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
@@ -2522,20 +2522,31 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // produced to demand, so they're never a stock shortfall — same as products with
     // no stock record.
     const mto = madeToOrderPids(detail.catalog);
-    const demand = {};
-    lines.forEach((i) => { if (!i.product_id) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
-    const shortages = [];
-    Object.values(demand).forEach(({ line: i, q }) => {
-      const pid = i.product_id, size = i.size || 'OS';
-      const ls = lineStock(i, stockByPid, stockBySku, mto);
-      if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
-      const avail = ls.ours + ls.vendor;
-      const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
-      if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
-    });
+    // Shortfall check for whichever subset of orders is currently selected in the
+    // modal (the rep can narrow the batch by cutoff date / checkboxes, and the
+    // shortage list re-runs live against just those orders' demand).
+    const shortagesFor = (selIds) => {
+      const demand = {};
+      lines.forEach((i) => { if (!i.product_id || !selIds.has(i.order_id)) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
+      const shortages = [];
+      Object.values(demand).forEach(({ line: i, q }) => {
+        const pid = i.product_id, size = i.size || 'OS';
+        const ls = lineStock(i, stockByPid, stockBySku, mto);
+        if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
+        const avail = ls.ours + ls.vendor;
+        const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
+        if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
+      });
+      return shortages;
+    };
     // Everything from here on runs once the user confirms in the modal below.
     // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
-    const proceed = async (inlineOverrides = {}) => {
+    // selIds: the order ids the rep left checked (defaults to every open order).
+    // batchMeta: { label, cutoff } — the batch name + order-date cutoff for the SO.
+    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}) => {
+    const bOrders = open.filter((o) => selIds.has(o.id));
+    if (!bOrders.length) { flash('No orders selected to batch'); return; }
+    const bLines = lines.filter((i) => selIds.has(i.order_id));
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
@@ -2552,7 +2563,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
     const retailByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
-    const allItems = (detail.orderItems || []).filter((i) => openIds.has(i.order_id));
+    const allItems = (detail.orderItems || []).filter((i) => selIds.has(i.order_id));
     // Group each order's bundle parent(s) + components by order_id + bundle_product_id.
     // NOTE: older orders' PARENT rows have bundle_ref = null (it was added later), so we
     // cannot match parent→component by bundle_ref — doing so dropped the entire package
@@ -2584,7 +2595,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const sizeSkusByCatPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
     const byProduct = {};
-    lines.forEach((i) => {
+    bLines.forEach((i) => {
       const basePid = i.product_id || i.sku || 'unknown';
       const sz = i.size || 'OS';
       const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
@@ -2599,7 +2610,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
       }
     });
-    const pids = [...new Set(lines.map((i) => i.product_id).filter(Boolean))];
+    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
     if (pids.length) {
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
@@ -2611,14 +2622,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // garment share of each order's discount is capped at its garment subtotal (the rest
     // came off shipping). With no coupons in the batch the ratio is 1 — no change.
     const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
-    const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
+    const totalDiscount = bOrders.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
     const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
     // Club fundraising is a passthrough NSA owes the team, not rep margin. Its dollars are
     // baked into each garment's unit_sell (so the SO total reconciles to what was collected),
     // so we carry the same amount as an SO-level COST (_webstore_fundraise): calcGP subtracts
     // it, keeping fundraising out of the GP that rep commission is paid on. Scaled by discRatio
     // to match the fundraise embedded in the (already discount-scaled) unit_sells.
-    const batchFundraiseGross = open.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+    const batchFundraiseGross = bOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
     const fundraiseCost = r2(batchFundraiseGross * discRatio);
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
@@ -2669,7 +2680,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
     const itemMockups = {};
-    lines.forEach((i) => {
+    bLines.forEach((i) => {
       const rsku = i.sku || skuByPid[i.product_id] || '';
       if (!rsku) return;
       const img = i.image_url || catImgByPid[i.product_id] || '';
@@ -2746,8 +2757,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const discNote = totalDiscount > 0 ? `\nCoupon discounts applied: −$${totalDiscount.toFixed(2)} (spread across line prices).` : '';
     // Payment split — production runs as ONE order, but card orders are already
     // collected via Stripe; only the team-tab total should be invoiced to the club.
-    const cardOrders = open.filter((o) => o.payment_mode === 'paid');
-    const tabOrders = open.filter((o) => o.payment_mode !== 'paid');
+    const cardOrders = bOrders.filter((o) => o.payment_mode === 'paid');
+    const tabOrders = bOrders.filter((o) => o.payment_mode !== 'paid');
     const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
@@ -2757,26 +2768,29 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
     const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
+    const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${new Date(batchMeta.cutoff).toLocaleDateString()} — the store stays open; later orders go into the next batch.` : '';
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+      batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
       // Money split for the automatic invoice+settle: Stripe-collected card total,
       // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
       settle: { cardTotal, tabTotal, tabExtras } });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]).is('so_id', null).select('id');
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
-    else if ((linked || []).length < openIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${openIds.size} (some were just batched elsewhere)`);
-    else flash(`Created ${soId} · linked ${open.length} orders`);
+    else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
+    else flash(`Created ${soId} · linked ${bOrders.length} orders`);
     loadDetail(sel);
     }; // end proceed
 
-    // Open the styled confirm modal; it calls proceed() on Create.
-    setSoPrompt({ count: open.length, shortages, proceed, stockByPid, storeId: sel.id });
+    // Open the styled confirm modal; it calls proceed() on Create with the rep's
+    // final selection (cutoff/checkboxes) and batch label.
+    setSoPrompt({ orders: open, shortagesFor, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -2880,7 +2894,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
+      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta); }} />}
 
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
@@ -3167,27 +3181,65 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
   );
 }
 
-// Styled confirm for "Create Sales Order" — replaces the native window.confirm,
-// shows the order count and any inventory shortfalls before the batch runs.
+// Styled confirm for "Create Sales Order" — replaces the native window.confirm.
+// The rep scopes the batch here (an order-date cutoff and/or per-order checkboxes —
+// unselected orders stay open for the next batch while the store keeps running),
+// names it, and sees inventory shortfalls recomputed live for that selection.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {}, storeId }) {
+function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
+  const [selIds, setSelIds] = useState(() => new Set(orders.map((o) => o.id)));
+  const [label, setLabel] = useState('');
+  const [cutoff, setCutoff] = useState(''); // yyyy-mm-dd; selects orders placed through end of that day
   const setOverride = (pid, size, val) => setOverrideSkus((prev) => {
     const k = pid + '|' + size; const n = { ...prev };
     const v = val.trim().toUpperCase(); if (v) n[k] = v; else delete n[k]; return n;
   });
-  const go = async () => { setBusy(true); try { await onConfirm(overrideSkus); } finally { setBusy(false); } };
+  const cutoffEnd = (v) => new Date(v + 'T23:59:59.999');
+  const applyCutoff = (v) => {
+    setCutoff(v);
+    if (!v) { setSelIds(new Set(orders.map((o) => o.id))); return; }
+    const end = cutoffEnd(v);
+    setSelIds(new Set(orders.filter((o) => o.created_at && new Date(o.created_at) <= end).map((o) => o.id)));
+  };
+  const toggle = (id) => setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const shortages = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  const count = selIds.size;
+  const leftOut = orders.length - count;
+  const go = async () => {
+    setBusy(true);
+    try { await onConfirm(overrideSkus, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }); }
+    finally { setBusy(false); }
+  };
   return (
     <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 560, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
         <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
           <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
-          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
+          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} of {orders.length} open order{orders.length === 1 ? '' : 's'} into one production Sales Order.{leftOut > 0 ? ` ${leftOut} stay open for the next batch.` : ''}</div>
         </div>
         <div style={{ padding: '20px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <label style={{ flex: '1 1 220px', fontSize: 11.5, fontWeight: 700, color: '#475569' }}>Batch label <span style={{ fontWeight: 500, color: '#94a3b8' }}>(optional)</span>
+              <input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={'e.g. "Spring round 1"'} style={{ marginTop: 4, fontSize: 13 }} />
+            </label>
+            <label style={{ flex: '0 1 190px', fontSize: 11.5, fontWeight: 700, color: '#475569' }}>Orders through <span style={{ fontWeight: 500, color: '#94a3b8' }}>(cutoff)</span>
+              <input type="date" className="form-input" value={cutoff} onChange={(e) => applyCutoff(e.target.value)} style={{ marginTop: 4, fontSize: 13 }} />
+            </label>
+          </div>
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 14, maxHeight: 200, overflowY: 'auto' }}>
+            {orders.map((o, i) => (
+              <label key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: i ? '1px solid #f1f5f9' : 'none', cursor: 'pointer', fontSize: 12.5, background: selIds.has(o.id) ? '#fff' : '#f8fafc', color: selIds.has(o.id) ? '#0f172a' : '#94a3b8' }}>
+                <input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggle(o.id)} />
+                <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.buyer_name || o.buyer_email || o.id}</span>
+                <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>{o.created_at ? new Date(o.created_at).toLocaleDateString() : ''}</span>
+                <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{money(o.total)}</span>
+              </label>
+            ))}
+          </div>
           {shortages.length ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
@@ -3210,12 +3262,12 @@ function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid
               <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
             </>
           ) : (
-            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
+            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>{count === 0 ? 'No orders selected — pick at least one order (or clear the cutoff) to create a batch.' : 'Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?'}</div>
           )}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
           <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" onClick={go} disabled={busy}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
+          <button className="btn btn-primary" onClick={go} disabled={busy || count === 0}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
         </div>
       </div>
     </div>
@@ -10240,6 +10292,39 @@ function AddNumberSet({ onAdd, onClose }) {
 
 // Batches: the Sales Orders created from this store, with full fulfillment
 // status — ordered qty, picked qty, and stock health per line item.
+// Batched SOs for a set of stores, with the fulfillment children the tracking views
+// need (items + their PO/pick lines, decorations, jobs). Shared by BatchesTab
+// (per-store) and StoreBackordersView (store or whole-customer scope) so the two
+// views can't drift on what "a batch's fulfillment state" means. Throws on error.
+async function fetchStoreSOFulfillment(storeIds) {
+  const { data: orders, error } = await supabase.from('sales_orders').select('id,webstore_id,status,created_at,memo,production_notes,_shipping_status,_tracking_number,webstore_batch_no,webstore_batch_label,webstore_batch_cutoff').in('webstore_id', storeIds).order('created_at', { ascending: false });
+  if (error) throw error;
+  const ids = (orders || []).map((o) => o.id);
+  if (!ids.length) return [];
+  const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
+  const itemIds = (items || []).map((i) => i.id);
+  let picks = [], decos = [], pos = [];
+  if (itemIds.length) {
+    const [plRes, decoRes, poRes] = await Promise.all([
+      supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
+      supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
+      supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
+    ]);
+    picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
+  }
+  const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
+  const jobs = jobRes || [];
+  const pickedByItem = {};
+  picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
+  const decosByItem = {};
+  decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
+  // Attach PO + pick lines per item so the per-customer tracking grid can
+  // read Billed/Received (PO lines) and on-IF (pick lines).
+  const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
+  const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
+  return (orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) }));
+}
+
 function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [], onPullTransfers }) {
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
@@ -10378,32 +10463,8 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   useEffect(() => {
     (async () => {
       setSos(null); setErr('');
-      const { data: orders, error } = await supabase.from('sales_orders').select('id,status,created_at,memo,production_notes,_shipping_status,_tracking_number').eq('webstore_id', store.id).order('created_at', { ascending: false });
-      if (error) { setErr(error.message); setSos([]); return; }
-      const ids = (orders || []).map((o) => o.id);
-      if (!ids.length) { setSos([]); return; }
-      const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
-      const itemIds = (items || []).map((i) => i.id);
-      let picks = [], decos = [], jobs = [], pos = [];
-      if (itemIds.length) {
-        const [plRes, decoRes, poRes] = await Promise.all([
-          supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
-          supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
-          supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
-        ]);
-        picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
-      }
-      const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
-      jobs = jobRes || [];
-      const pickedByItem = {};
-      picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
-      const decosByItem = {};
-      decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
-      // Attach PO + pick lines per item so the per-customer tracking grid can
-      // read Billed/Received (PO lines) and on-IF (pick lines).
-      const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
-      const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
-      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
+      try { setSos(await fetchStoreSOFulfillment([store.id])); }
+      catch (e) { setErr(e.message || 'Load failed'); setSos([]); }
     })();
   }, [store.id]);
 
@@ -10432,7 +10493,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
         <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
         {tBtn('batch', '📦 By batch')}
         {tBtn('all', '🏬 All orders (overall)')}
+        {tBtn('backorders', '⏳ Backorders')}
       </div>
+      {trackMode === 'backorders' && <StoreBackordersView store={store} onOpenSO={onOpenSO} />}
       {trackMode === 'all' && (
         <div className="card"><div style={{ padding: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>All customer orders — {store.name}</div>
@@ -10449,8 +10512,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
           <div key={o.id} className="card"><div style={{ padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <div>
-                <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  {o.webstore_batch_no != null && <span style={{ fontSize: 12, fontWeight: 800, color: '#6d28d9', background: '#ede9fe', borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' }}>Batch {o.webstore_batch_no}{o.webstore_batch_label ? ` · ${o.webstore_batch_label}` : ''}</span>}
+                  <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}{o.webstore_batch_cutoff ? ` · orders through ${new Date(o.webstore_batch_cutoff).toLocaleDateString()}` : ''}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
@@ -10545,6 +10611,135 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
         );
       })}
     </div>
+  );
+}
+
+// Cross-batch backorder rollup: every ordered unit still waiting on stock, aggregated
+// by SKU + size across ALL of the store's batches — and optionally across every store
+// belonging to the same customer, since multiple batches (and stores) often ride on
+// the same incoming stock shipment. Reuses computeOrderTracking (the same FIFO
+// allocation the tracking grids use) so "Open" here always matches the per-line Need
+// column in the batch views.
+function StoreBackordersView({ store, onOpenSO }) {
+  const [scope, setScope] = useState('store'); // 'store' | 'customer' (all this customer's stores)
+  const [data, setData] = useState(null);      // { stores, sos, orders, items }
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setData(null); setErr('');
+      try {
+        let stores = [{ id: store.id, name: store.name }];
+        if (scope === 'customer' && store.customer_id) {
+          const { data: sibs, error: sErr } = await supabase.from('webstores').select('id,name').eq('customer_id', store.customer_id);
+          if (sErr) throw sErr;
+          if (sibs && sibs.length) stores = sibs;
+        }
+        const storeIds = stores.map((s) => s.id);
+        const sos = await fetchStoreSOFulfillment(storeIds);
+        const { data: ords, error: oErr } = await supabase.from('webstore_orders').select('id,store_id,so_id,status,buyer_name,buyer_email,created_at').in('store_id', storeIds).not('so_id', 'is', null);
+        if (oErr) throw oErr;
+        const live = (ords || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending_payment');
+        const oIds = live.map((o) => o.id);
+        const items = [];
+        for (let i = 0; i < oIds.length; i += 300) {
+          const { data: chunk, error: iErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oIds.slice(i, i + 300));
+          if (iErr) throw iErr;
+          items.push(...(chunk || []));
+        }
+        if (!dead) setData({ stores, sos, orders: live, items });
+      } catch (e) { if (!dead) { setErr(e.message || 'Load failed'); setData({ stores: [], sos: [], orders: [], items: [] }); } }
+    })();
+    return () => { dead = true; };
+  }, [store.id, store.name, store.customer_id, scope]);
+
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const { stores, sos, orders, items } = data;
+    const storeName = {}; stores.forEach((s) => { storeName[s.id] = s.name; });
+    const soById = {}; sos.forEach((s) => { soById[s.id] = s; });
+    const itemsByOrder = {}; items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+    // Same per-batch FIFO allocation the tracking grids use: incoming/received stock
+    // covers the earliest orders first, within each batch.
+    const track = {};
+    sos.forEach((so) => {
+      const bOrders = orders.filter((w) => w.so_id === so.id).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
+      if (bOrders.length) Object.assign(track, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: [], includeIF: true }));
+    });
+    const agg = {};
+    orders.forEach((w) => {
+      const so = soById[w.so_id]; if (!so) return;
+      (itemsByOrder[w.id] || []).forEach((i) => {
+        if (i.is_bundle_parent) return;
+        const t = track[i.id];
+        if (!t || !(t.need > 0) || t.status === 'shipped') return;
+        if (i.line_status === 'shipped' || i.line_status === 'cancelled') return;
+        const sku = t.sku || i.sku || '';
+        const k = (sku || i.product_id || i.name || '?') + '|' + (i.size || 'OS');
+        const r = agg[k] = agg[k] || { sku, name: t.soName || i.name || sku || 'Item', size: i.size || 'OS', open: 0, ordered: 0, incoming: 0, received: 0, buyers: new Set(), batches: new Map() };
+        r.open += t.need; r.ordered += t.ordered; r.incoming += t.billed; r.received += t.received;
+        r.buyers.add(w.buyer_email || w.buyer_name || w.id);
+        const b = r.batches.get(so.id) || { soId: so.id, no: so.webstore_batch_no, label: so.webstore_batch_label, storeName: storeName[so.webstore_id] || '', open: 0 };
+        b.open += t.need; r.batches.set(so.id, b);
+      });
+    });
+    return Object.values(agg).map((r) => ({ ...r, buyers: r.buyers.size, batches: [...r.batches.values()] })).sort((a, b) => b.open - a.open || String(a.name).localeCompare(String(b.name)));
+  }, [data]);
+
+  const totalOpen = rows.reduce((a, r) => a + r.open, 0);
+  const batchCount = new Set(rows.flatMap((r) => r.batches.map((b) => b.soId))).size;
+  const exportCsv = () => {
+    const header = ['Item', 'SKU', 'Size', 'Open', 'Incoming', 'Received', 'Buyers', 'Batches'];
+    const rws = rows.map((r) => [r.name, r.sku, r.size, r.open, r.incoming, r.received, r.buyers, r.batches.map((b) => `${b.storeName ? b.storeName + ' ' : ''}Batch ${b.no != null ? b.no : '?'} (${b.soId})`).join('; ')]);
+    downloadCsv(`${(store.slug || store.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-backorders.csv`, header, rws);
+  };
+  const scopeBtn = (v, lbl) => <button onClick={() => setScope(v)} style={{ padding: '5px 12px', borderRadius: 7, border: '1px solid ' + (scope === v ? '#0f172a' : '#e2e8f0'), background: scope === v ? '#0f172a' : '#fff', color: scope === v ? '#fff' : '#334155', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{lbl}</button>;
+  const ctd = { ...td, textAlign: 'center' };
+  return (
+    <div className="card"><div style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>Open backorders — all batches</div>
+        {store.customer_id && <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          {scopeBtn('store', 'This store')}
+          {scopeBtn('customer', 'All customer stores')}
+        </div>}
+        {rows.length > 0 && <button className="btn btn-sm btn-secondary" onClick={exportCsv}>⬇️ CSV</button>}
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Every item unit that's batched but not yet covered by received (or in-house) stock, regardless of which batch it's in — so when a shipment lands, this is the one list of what it can fill.
+        {data && <span style={{ fontWeight: 700, color: '#0f172a' }}> {totalOpen} units open · {rows.length} item/size line{rows.length === 1 ? '' : 's'} · {batchCount} batch{batchCount === 1 ? '' : 'es'}{scope === 'customer' ? ` · ${data.stores.length} store${data.stores.length === 1 ? '' : 's'}` : ''}</span>}
+      </div>
+      {err && <div style={{ fontSize: 12.5, color: '#b91c1c', padding: '8px 0' }}>Could not load backorders: {err}</div>}
+      {!data && !err && <div style={{ fontSize: 13, color: '#64748b', padding: '14px 0' }}>Loading backorders…</div>}
+      {data && !err && rows.length === 0 && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 600, padding: '10px 0' }}>✓ Nothing on backorder — every batched item is covered by received or in-house stock.</div>}
+      {rows.length > 0 && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+            {[['Item', ''], ['SKU', ''], ['Size', ''], ['Open', 'c'], ['Incoming', 'c'], ['Received', 'c'], ['Buyers', 'c'], ['Batches', '']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Open' ? 'Units still not covered by received or in-house stock' : h === 'Incoming' ? 'Units on vendor bills, allocated to these lines (earliest orders first)' : undefined}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri} style={{ borderTop: '1px solid #f1f5f9' }}>
+                <td style={td}><span style={{ fontWeight: 600 }}>{r.name}</span></td>
+                <td style={td}>{r.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }}>{r.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>{r.size}</td>
+                <td style={ctd}><span style={{ background: '#fee2e2', color: '#b91c1c', borderRadius: 6, padding: '1px 8px', fontWeight: 800 }}>{r.open}</span></td>
+                <td style={ctd}><span style={{ color: r.incoming > 0 ? '#1d4ed8' : '#cbd5e1', fontWeight: r.incoming > 0 ? 700 : 500 }}>{r.incoming}</span></td>
+                <td style={ctd}><span style={{ color: r.received > 0 ? '#166534' : '#cbd5e1', fontWeight: r.received > 0 ? 700 : 500 }}>{r.received}</span></td>
+                <td style={ctd}><span style={{ color: '#475569' }}>{r.buyers}</span></td>
+                <td style={td}><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {r.batches.map((b) => (
+                    <span key={b.soId} onClick={() => onOpenSO && onOpenSO(b.soId)} title={`${b.soId}${b.label ? ' · ' + b.label : ''} — ${b.open} open unit${b.open === 1 ? '' : 's'}`} style={{ fontSize: 10.5, fontWeight: 700, color: '#6d28d9', background: '#ede9fe', borderRadius: 5, padding: '1px 7px', whiteSpace: 'nowrap', cursor: onOpenSO ? 'pointer' : 'default' }}>
+                      {scope === 'customer' && b.storeName ? b.storeName + ' · ' : ''}B{b.no != null ? b.no : '?'} · {b.open}
+                    </span>
+                  ))}
+                </div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div></div>
   );
 }
 

@@ -5253,7 +5253,7 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
-  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle})=>{
+  const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle,batch_label,batch_cutoff})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
@@ -5262,7 +5262,11 @@ export default function App(){
       // Club fundraising collected through the store is money owed to the team, not NSA margin.
       // Booked as an SO-level cost so calcGP excludes it from the GP rep commission pays on.
       _webstore_fundraise:Math.round((Number(fundraise_cost)||0)*100)/100,
-      source:'webstore',webstore_id:webstore_id||null};
+      source:'webstore',webstore_id:webstore_id||null,
+      // Batch identity: the label/cutoff the rep chose in the Create-SO modal. The
+      // per-store batch NUMBER is assigned by a DB trigger on insert (migration 00177) —
+      // deliberately NOT set here so client sessions can't race or drift the numbering.
+      webstore_batch_label:batch_label||null,webstore_batch_cutoff:batch_cutoff||null};
     setSOs(prev=>[newSO,...prev]);
     // Persist the SO and CONFIRM it landed in the DB BEFORE returning its id —
     // the caller (webstore batch) immediately tags orders with this so_id, so the
