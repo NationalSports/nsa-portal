@@ -5,7 +5,7 @@
 // shape mapSportsLinkDocToBill / parseSingleInvoice produce so the match / review / push
 // pipeline consumes it unchanged. These lock in the field mapping, the shipped-qty-only rule,
 // the two-key dedup, credit handling, and the query builder.
-const { mapSsOrderToBill, buildSsOrdersQuery, resolveSsBillLines } = require('../ssOrders');
+const { mapSsOrderToBill, buildSsOrdersQuery, resolveSsBillLines, planCrossRefs } = require('../ssOrders');
 
 // Realistic shape of a GET /Orders?lines=true item (camelCase, as S&S V2 returns).
 const ssOrder = {
@@ -214,5 +214,60 @@ describe('resolveSsBillLines', () => {
     const dupe = [cand('L', 6.63), cand('L', 6.63)]; // same item_id/po_id/size twice
     const r = resolveSsBillLines([{ sku: 'B1', size: 'L', color: 'Ivory', qty: 10 }], dupe);
     expect(r[0].cand && r[0].cand.sku).toBe('3023CL');
+  });
+});
+
+describe('planCrossRefs', () => {
+  test('dedupes proposals into writes; a S&S sku maps to our style once', () => {
+    const props = [
+      { ssSku: 'B18008335', yourSku: '3023CL', color: 'Ivory', size: 'L' },
+      { ssSku: 'B18008335', yourSku: '3023CL', color: 'Ivory', size: 'L' }, // seen again on another order
+      { ssSku: 'B18008333', yourSku: '3023CL', color: 'Ivory', size: 'S' },
+    ];
+    const { toWrite, alreadySet, conflicts } = planCrossRefs(props, []);
+    expect(conflicts).toHaveLength(0);
+    expect(alreadySet).toHaveLength(0);
+    expect(toWrite.map(w => w.ssSku).sort()).toEqual(['B18008333', 'B18008335']);
+    expect(toWrite.every(w => w.yourSku === '3023CL')).toBe(true);
+  });
+
+  test('skips mappings already set on the account (idempotent), case-insensitively', () => {
+    const props = [{ ssSku: 'B18008335', yourSku: '3023CL' }, { ssSku: 'B18008333', yourSku: '3023CL' }];
+    const existing = [{ sku: 'b18008335', skuID: 111, yourSku: '3023cl' }]; // already mapped
+    const { toWrite, alreadySet } = planCrossRefs(props, existing);
+    expect(alreadySet.map(a => a.ssSku)).toEqual(['B18008335']);
+    expect(toWrite.map(w => w.ssSku)).toEqual(['B18008333']);
+  });
+
+  test('re-writes when the account has a DIFFERENT yourSku for the sku (fix a stale mapping)', () => {
+    const props = [{ ssSku: 'B18008335', yourSku: '3023CL' }];
+    const existing = [{ sku: 'B18008335', yourSku: 'OLD-STYLE' }];
+    const { toWrite, alreadySet } = planCrossRefs(props, existing);
+    expect(alreadySet).toHaveLength(0);
+    expect(toWrite).toHaveLength(1);
+    expect(toWrite[0].yourSku).toBe('3023CL');
+  });
+
+  test('flags a S&S sku that resolved to two different styles as a conflict (never guesses)', () => {
+    const props = [
+      { ssSku: 'B999', yourSku: '3023CL' },
+      { ssSku: 'B999', yourSku: '18000' },
+    ];
+    const { toWrite, conflicts } = planCrossRefs(props, []);
+    expect(toWrite).toHaveLength(0);
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].kind).toBe('ambiguous');
+    expect(conflicts[0].yourSkus.sort()).toEqual(['18000', '3023CL']);
+  });
+
+  test('drops blanks and no-op pairs (ssSku already equals our sku)', () => {
+    const props = [
+      { ssSku: '', yourSku: '3023CL' },
+      { ssSku: 'B1', yourSku: '' },
+      { ssSku: '18000', yourSku: '18000' }, // already our sku — nothing to map
+      { ssSku: 'B18008335', yourSku: '3023CL' },
+    ];
+    const { toWrite } = planCrossRefs(props, []);
+    expect(toWrite.map(w => w.ssSku)).toEqual(['B18008335']);
   });
 });

@@ -187,3 +187,37 @@ export const resolveSsBillLines = (billItems, candidates, opts = {}) => {
     return { cand: null, via: 'none' };
   });
 };
+
+// Plan a CrossRef seed: given (S&S sku → our style) proposals gathered from matched order
+// history, and the crossrefs already on the account, decide what to PUT. Pure + testable.
+//   proposals: [{ ssSku, yourSku, style?, color?, size? }]  (ssSku = S&S's part #, yourSku = our style)
+//   existing:  [{ sku, skuID, yourSku }]                     (GET /CrossRef records already set)
+// Returns { toWrite, alreadySet, conflicts }:
+//   - toWrite:    new/changed mappings to PUT
+//   - alreadySet: the account already maps ssSku → this exact yourSku (idempotent skip)
+//   - conflicts:  one ssSku resolved to two different styles across orders (a match error → skip, flag)
+export const planCrossRefs = (proposals, existing = []) => {
+  const up = (s) => String(s || '').trim().toUpperCase();
+  const norm = (s) => String(s || '').trim();
+  // Existing yourSku keyed by S&S sku (uppercased) for idempotency.
+  const exBySku = new Map();
+  (existing || []).forEach((r) => { if (r && r.sku != null) exBySku.set(up(r.sku), norm(r.yourSku)); });
+  // Group proposals by S&S sku; a sku pointing at >1 distinct style is a match conflict.
+  const bySku = new Map();
+  (proposals || []).forEach((p) => {
+    const k = up(p && p.ssSku);
+    const ys = norm(p && p.yourSku);
+    if (!k || !ys || up(p.ssSku) === up(ys)) return; // skip blanks + no-op (ssSku already == our sku)
+    if (!bySku.has(k)) bySku.set(k, { ssSku: norm(p.ssSku), yourSkus: new Set(), sample: p });
+    bySku.get(k).yourSkus.add(ys);
+  });
+  const toWrite = [], alreadySet = [], conflicts = [];
+  for (const e of bySku.values()) {
+    if (e.yourSkus.size > 1) { conflicts.push({ ...e.sample, ssSku: e.ssSku, kind: 'ambiguous', yourSkus: [...e.yourSkus] }); continue; }
+    const yourSku = [...e.yourSkus][0];
+    const ex = exBySku.get(up(e.ssSku));
+    if (ex != null && ex !== '' && up(ex) === up(yourSku)) alreadySet.push({ ...e.sample, ssSku: e.ssSku, yourSku });
+    else toWrite.push({ ...e.sample, ssSku: e.ssSku, yourSku });
+  }
+  return { toWrite, alreadySet, conflicts };
+};

@@ -41,9 +41,12 @@ exports.handler = async (event) => {
   const url = `https://api.ssactivewear.com/V2${path}${separator}mediatype=json`;
   const auth = Buffer.from(`${accountNumber}:${apiKey}`).toString('base64');
 
+  // Forward the write verbs S&S uses (POST orders, PUT/DELETE CrossRef); anything else is a GET.
+  const _m = String(event.httpMethod || 'GET').toUpperCase();
+  const method = ['POST', 'PUT', 'DELETE'].includes(_m) ? _m : 'GET';
   try {
     const response = await fetch(url, {
-      method: event.httpMethod === 'POST' ? 'POST' : 'GET',
+      method,
       headers: {
         'Authorization': `Basic ${auth}`,
         'Content-Type': 'application/json',
