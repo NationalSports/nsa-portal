@@ -27,8 +27,10 @@ export const _artCols=['id','name','deco_type','ink_colors','thread_colors','sti
 // Maps a DB art-file row (estimate_art_files / so_art_files) to the client shape. Single shared mapper
 // so every column in _artCols round-trips: a column saved but missing from this map silently reverts on
 // reload — and worse, postgrest bulk upserts send the UNION of keys across all rows (PostgREST substitutes
-// DEFAULT for rows missing a key), so one loaded row in a mixed batch can wipe the DB value back to its
-// default (hit mock_links/design_id first, then stitches/sample_art). artRowRoundTrip.test.js guards this.
+// NULL for rows missing a key — NOT the column default, absent a Prefer: missing=default header supabase-js
+// doesn't send), so one loaded row in a mixed batch can wipe the DB value to NULL — or 400 the whole batch
+// on a NOT NULL column like mock_links (the SO-1459 blank-order bug; _sanitizeArtRow force-fills it).
+// artRowRoundTrip.test.js guards this.
 export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colors:a.ink_colors,thread_colors:a.thread_colors,stitches:a.stitches??null,art_size:a.art_size,art_sizes:a.art_sizes||{},garment_colors:a.garment_colors||{},color_ways:a.color_ways||[],files:a.files||[],mockup_files:a.mockup_files||[],item_mockups:a.item_mockups||{},mock_links:a.mock_links||{},design_id:a.design_id||null,sample_art:a.sample_art||[],prod_files:a.prod_files||[],prod_files_attached:a.prod_files_attached||false,preview_url:a.preview_url||'',web_logos:a.web_logos||[],web_logo_url:a.web_logo_url||'',notes:a.notes,status:a.status,archived:a.archived||false,uploaded:a.uploaded,_version:a._version});
 // Columns that may not exist in art file tables — stripped on retry (incl. mock_links/design_id
 // until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
