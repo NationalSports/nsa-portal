@@ -25869,7 +25869,29 @@ export default function App(){
               </div>
             </div>
             <div className="card-body" style={{padding:14}}>
-              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Bills parked here are out of the import list and won&rsquo;t be pushed to QuickBooks or the Portal until you act on them. Re-open one to fix &amp; push, or resolve it once it&rsquo;s handled.</div>
+              <div style={{fontSize:12,color:'#64748b',marginBottom:12}}>Bills parked here are out of the import list and won&rsquo;t be pushed to QuickBooks or the Portal until you act on them. They now sync across computers and won&rsquo;t come back on the next Sports Inc / S&amp;S pull, so it&rsquo;s safe to leave them here until you get to them.</div>
+              {/* Step-by-step: how to clear the queue. Collapsible (remembered via laterCollapse['__guide']). */}
+              {rows.length>0&&(()=>{
+                const guideOpen=!laterCollapse['__guide'];
+                const steps=[
+                  ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
+                  ['⚠️','Over-billed','Open the bill (▾) and read the ⚖️ Reconcile table — the bill beside the order, size by size. If the bill is right (it usually is), ✏️ Correct order from bill. If the overage is genuinely OK, ⚠️ Accept overage & push and say why.'],
+                  ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
+                  ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
+                  ['♻️','Duplicate','Its doc # was already applied — ♻️ Resolve as duplicate to clear it.'],
+                ];
+                return <div style={{marginBottom:14,border:'1px solid #fde68a',borderRadius:8,background:'#fffef8',overflow:'hidden'}}>
+                  <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',padding:'8px 12px',background:'#fef9c3'}}>
+                    <span style={{fontSize:11,color:'#a16207'}}>{guideOpen?'▼':'▶'}</span>
+                    <span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>📋 How to clear this queue</span>
+                    <span style={{fontSize:10,color:'#a16207'}}>{guideOpen?'work the buckets top to bottom':'show the steps'}</span>
+                  </div>
+                  {guideOpen&&<ol style={{margin:0,padding:'8px 12px 10px 30px'}}>
+                    {steps.map(([ic,t,d],i)=><li key={i} style={{fontSize:11,color:'#475569',marginBottom:5,lineHeight:1.5}}>
+                      <b style={{color:'#92400e'}}>{ic} {t}.</b> {d}</li>)}
+                  </ol>}
+                </div>;
+              })()}
               {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later — every supplier bill is accounted for. Bills you move from the review screen show up here.'}</div>
               :BUCKETS.map(([bkey,bIcon,bLabel,bColor,bBg,bDesc])=>{
                 const list=enriched.filter(e=>e.bucket===bkey);
@@ -25910,6 +25932,10 @@ export default function App(){
                     <span style={{color:'#94a3b8',maxWidth:240,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{sb.file}</span>
                   </div>
                   {!clean&&<ul style={{margin:'6px 0 0',paddingLeft:18}}>{reasons.map((r,ri)=><li key={ri} style={{fontSize:11,color:'#b45309'}}>{r}</li>)}</ul>}
+                  {!expanded&&(()=>{
+                    const nextStep={ready:'Push to Portal — or Resolve if you handled it in QuickBooks',overbilled:'Open ▾ and check the Reconcile table, then Correct order from bill or Accept overage',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
+                    return nextStep?<div style={{fontSize:10,fontWeight:700,color:'#7c3aed',marginTop:5}}>👉 Next: {nextStep}</div>:null;
+                  })()}
                   </div>
                   {expanded&&(()=>{
                     const dupWhere=_docAlreadyApplied(p.doc_number)?_docAppliedWhere(p.doc_number):null;
