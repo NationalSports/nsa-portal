@@ -20951,6 +20951,45 @@ export default function App(){
     if(supabase&&pg==='import'&&billView==='sportsinc'&&!siQueue.length&&!siQueueLoading)loadSiQueue();
   },[pg,billView]);// eslint-disable-line react-hooks/exhaustive-deps
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
+  // Load the server-backed "Look at Later" holds once per import-page visit and merge them into
+  // savedBills, so the parked/resolved worklist is the same on every machine (and the pull dedup,
+  // which reads savedBills, skips held docs everywhere — not just the browser that parked them).
+  const _billHoldsLoaded=React.useRef(false);
+  const loadBillHolds=async()=>{
+    if(!supabase||_billHoldsLoaded.current)return;
+    _billHoldsLoaded.current=true;
+    try{
+      // Only the ACTIVE worklist — parked (still to reconcile) and resolved (handled, must stay
+      // suppressed). 'pushed' holds are intentionally not loaded: an applied bill is already caught
+      // cross-machine by _docAlreadyApplied (via the SO's _bill_details), so re-loading them would
+      // just bloat savedBills. Held rows are never capped away below, so the dedup set is complete.
+      const{data,error}=await supabase.from('supplier_bill_holds').select('*').in('status',['parked','resolved']).order('held_at',{ascending:false}).limit(2000);
+      if(error)throw error;
+      if(!data||!data.length)return;
+      setSavedBills(prev=>{
+        const byId={};prev.forEach(sb=>{byId[sb.id]=sb});
+        const heldIds=new Set();
+        data.forEach(h=>{
+          const parked=h.status==='parked';
+          const ts=h.held_at?Date.parse(h.held_at):0;
+          const base=byId[h.id]||{id:h.id,file:h.file||(h.parsed?.doc_number?'Doc #'+h.parsed.doc_number:'Bill'),uploadedAt:h.held_at?new Date(h.held_at).toLocaleString():'',uploadedTs:ts||0,qbStatus:null};
+          byId[h.id]={...base,parsed:base.parsed||h.parsed||{},reviewLater:parked,reviewLaterAt:parked?(ts||base.reviewLaterAt):base.reviewLaterAt,resolution:h.resolution||base.resolution,portalStatus:h.portal_status||base.portalStatus||null};
+          heldIds.add(h.id);
+        });
+        // Keep every held row (the dedup + worklist set must be complete on every machine); only the
+        // non-held local history is subject to the size cap.
+        const all=Object.values(byId);
+        const held=all.filter(sb=>heldIds.has(sb.id));
+        const rest=all.filter(sb=>!heldIds.has(sb.id));
+        const merged=[...held,...rest].slice(0,Math.max(300,held.length));
+        _lsSet('nsa_saved_bills',JSON.stringify(merged));return merged;
+      });
+    }catch(e){_billHoldsLoaded.current=false;/* let a later import visit retry; localStorage still backs the queue meanwhile */}
+  };
+  // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
+  // before any manual pull, so the dedup sees server holds; a teammate's mid-session hold is picked
+  // up on the next reload. Best-effort — localStorage still backs the queue if this can't reach the DB.
+  useEffect(()=>{if(supabase&&pg==='import')loadBillHolds();},[pg]);// eslint-disable-line react-hooks/exhaustive-deps
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -22342,7 +22381,7 @@ export default function App(){
       // Mirror the pulled docs into the shared si_documents ledger (best-effort, non-blocking) so
       // the Sports Inc tab's completeness view is whole no matter which door the docs came through.
       _siUpsertDocs(docs).catch(()=>{/* ledger fills on the next daily cron */});
-      const seenDocs=new Set();const skippedDups=[];const results=[];let scanned=0;let idx=0;
+      const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let scanned=0;let idx=0;
       docs.forEach(doc=>{
         let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
         // Belt-and-suspenders: skip any scanned/"SEE VENDOR INVOICE FOR DETAIL" doc that slips
@@ -22355,12 +22394,14 @@ export default function App(){
         // doc_number would re-add — and let staff re-push — an already-billed invoice (double-bill).
         const sdn=String(parsed.si_doc_number||'').trim();
         if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
+        if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
         const label='Sports Inc · '+(parsed.supplier||'Supplier')+' · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
         idx++;
       });
-      const extraNote=scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'';
+      const extraNote=(scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
     };
 
@@ -22389,7 +22430,7 @@ export default function App(){
         nf('No S&S orders found ('+_win+')','success');
         return;
       }
-      const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let credits=0;let idx=0;
+      const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let empty=0;let credits=0;let idx=0;
       const pulledOrderNos=[];// every order this pull saw — scopes the badge-clear below
       let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
@@ -22411,12 +22452,14 @@ export default function App(){
         // re-add it. Checking both the invoice # and the order # catches it either way.
         const sdn=String(parsed.si_doc_number||'').trim();
         if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
+        if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
         const label='S&S Activewear · Inv '+(parsed.supplier_doc_number||parsed.doc_number||'?')+(parsed.po_number?' · '+parsed.po_number:'');
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'ss_orders'});
         idx++;
       });
-      const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'');
+      const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
       _markSsReviewed(pulledOrderNos);// staff have now seen these → clear the "new" badge from the daily cron
     };
@@ -22697,8 +22740,19 @@ export default function App(){
     // Toggle a bill's "look at later" flag from saved history / the Look at Later page. val=true parks
     // it (also pulling it out of the review list if it's still there); val=false resolves/un-parks it.
     const _setBillReviewLater=(billId,val)=>{
+      const cur=savedBills.find(sb=>sb.id===billId);
       setBillImport(x=>({...x,parsed:val?x.parsed.filter(p=>p.id!==billId):x.parsed.map(p=>p.id===billId?{...p,reviewLater:false}:p)}));
-      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val,reviewLaterAt:val?Date.now():sb.reviewLaterAt}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      // Un-flagging fully releases the bill (clears reviewLater AND resolution) so _docHeld stops
+      // suppressing its doc# on future pulls; flagging parks it.
+      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val,reviewLaterAt:val?Date.now():sb.reviewLaterAt,resolution:val?sb.resolution:undefined}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      // Mirror to the server hold: flagging parks it (survives the next pull), un-flagging drops it
+      // back into the normal flow. _saveBillHold/_deleteBillHold are const-initialized later in the
+      // same render body but only invoked here on a user click, so they're always defined by then.
+      // Loud on a failed park write — a silent failure would quietly reopen the per-browser-snooze bug.
+      if(cur){
+        if(val)_saveBillHold({...cur,reviewLater:true},'parked').then(r=>{if(r&&r.ok===false&&!r.offline)nf('Flagged on this device only — server save failed; it may reappear on another machine','error')});
+        else _deleteBillHold(billId);
+      }
     };
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
@@ -23297,6 +23351,61 @@ export default function App(){
       return false;
     };
 
+    // True if the bill being pulled is currently SET ASIDE in Look at Later — parked or
+    // resolved there (server-backed via supplier_bill_holds, loaded into savedBills by
+    // loadBillHolds), so a fresh pull skips it on EVERY machine, not just the one that parked
+    // it. This is what makes "Look at Later" a real hold, not a per-browser snooze. Takes the
+    // whole parsed bill so it can:
+    //   • match on the supplier doc# OR the SI/S&S order# (the same two keys the pull dedups on), and
+    //   • NOT let an invoice suppress its own credit note (they legitimately share a doc#/order#) —
+    //     credit-vs-invoice is disambiguated by is_credit, so a parked invoice never eats the credit.
+    // Moving a bill back to Review clears reviewLater AND resolution (and deletes its hold), so it
+    // pulls again — a resolution left set would otherwise suppress the doc# forever.
+    const _docHeld=(pull)=>{
+      if(!pull)return false;
+      const dn=(pull.doc_number||'').trim().toLowerCase();
+      const sdn=String(pull.si_doc_number||'').trim().toLowerCase();
+      if(!dn&&!sdn)return false;
+      const credit=!!pull.is_credit;
+      return savedBills.some(sb=>{
+        if(!sb.reviewLater&&!sb.resolution)return false;
+        const q=sb.parsed||{};
+        if(!!q.is_credit!==credit)return false;// invoice never suppresses its credit (shared #), or vice-versa
+        const qdn=(q.doc_number||'').trim().toLowerCase();
+        const qsdn=String(q.si_doc_number||'').trim().toLowerCase();
+        return (dn&&(qdn===dn||qsdn===dn))||(sdn&&(qdn===sdn||qsdn===sdn));
+      });
+    };
+
+    // Write-through for the Look at Later worklist → supplier_bill_holds. Best-effort but the
+    // CALLER surfaces failure loudly (a park/resolve that only hit localStorage can reappear on
+    // another machine's pull). status: 'parked' | 'resolved' | 'pushed'. Returns {ok} / {ok:false}.
+    const _saveBillHold=(sb,status)=>{
+      if(!supabase)return Promise.resolve({ok:false,offline:true});
+      const p=sb.parsed||{};
+      const row={
+        id:sb.id,file:sb.file||null,
+        doc_number:p.doc_number||null,
+        si_doc_number:p.si_doc_number!=null&&p.si_doc_number!==''?String(p.si_doc_number):null,
+        source:p.source||null,vendor:(p.vendor||p.supplier||null),po_number:p.po_number||null,
+        doc_total:safeNum(p.doc_total)||null,freight:safeNum(p.freight)||null,
+        parsed:{...p,rawText:undefined},status,
+        portal_status:sb.portalStatus||null,resolution:sb.resolution||null,
+        held_by:(cu?.name||cu?.email||null),updated_at:new Date().toISOString(),
+      };
+      return supabase.from('supplier_bill_holds').upsert(row,{onConflict:'id'}).then(({error})=>{
+        if(error){console.warn('[bill hold] save failed:',error.message||error);return{ok:false,error:error.message}}
+        return{ok:true};
+      },e=>({ok:false,error:e?.message||String(e)}));
+    };
+    // A bill pulled back into Review (or deleted) is no longer held → drop its server row so it
+    // can be worked/pulled normally again. Best-effort; a stale row would only over-suppress a
+    // re-pull, which the user can fix by re-parking.
+    const _deleteBillHold=(id)=>{
+      if(!supabase||!id)return Promise.resolve();
+      return supabase.from('supplier_bill_holds').delete().eq('id',id).then(()=>{},()=>{});
+    };
+
     // Returns over-billing problems: cases where billed qty (already applied + this bill)
     // would exceed the ordered qty on a PO line/batch. Mirrors the apply paths so the
     // numbers match what would actually be written.
@@ -23440,10 +23549,15 @@ export default function App(){
     // Resolve a parked bill WITH a disposition — the why is kept on the saved-bill row
     // (shown in Bill History), so month-end completeness stays provable.
     const _resolveBillWithDisposition=(billId,disposition,note)=>{
+      const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
+      const cur=savedBills.find(sb=>sb.id===billId);
       setSavedBills(prev=>{
-        const u=prev.map(sb=>sb.id===billId?{...sb,reviewLater:false,resolution:{disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()}}:sb);
+        const u=prev.map(sb=>sb.id===billId?{...sb,reviewLater:false,resolution}:sb);
         _lsSet('nsa_saved_bills',JSON.stringify(u));return u;
       });
+      // Persist the disposition to the server hold so it stays resolved on every machine (and a
+      // fresh pull won't resurface it). Loud if it only hit localStorage.
+      if(cur)_saveBillHold({...cur,reviewLater:false,resolution},'resolved').then(r=>{if(r&&r.ok===false&&!r.offline)nf('Resolved on this device — server save failed; it may reappear on another machine','error')});
       setBillResolveId(null);
       nf('Resolved — '+disposition);
     };
@@ -23500,10 +23614,13 @@ export default function App(){
       const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
       const applied=_applyBillsToPortal([billObj]);
       if(applied>0){
+        const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
         setSavedBills(prev=>{
-          const u=prev.map(x=>x.id===sb.id?{...x,reviewLater:false,portalStatus:'success',parsed:billObj.parsed,resolution:{disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()}}:x);
+          const u=prev.map(x=>x.id===sb.id?{...x,reviewLater:false,portalStatus:'success',parsed:billObj.parsed,resolution}:x);
           _lsSet('nsa_saved_bills',JSON.stringify(u));return u;
         });
+        // Mark the hold pushed on the server too (belt-and-suspenders with the applied-bill dedup).
+        _saveBillHold({id:sb.id,file:sb.file,parsed:billObj.parsed,portalStatus:'success',resolution},'pushed');
         nf('Pushed to Portal — '+disposition);
       }else{
         nf('Push failed: '+(billObj.portalMsg||'could not apply — check the match'),'error');
@@ -23836,6 +23953,10 @@ export default function App(){
         arr.forEach(b=>{if(!prev.some(sb=>sb.id===b.id))updated=[{id:b.id,file:b.file,parsed:{...b.parsed,rawText:undefined},uploadedAt:b.uploadedAt,uploadedTs:b.uploadedTs,reviewLater:true,reviewLaterAt:ts,qbStatus:null,portalStatus:b.portalStatus||null},...updated]});
         _lsSet('nsa_saved_bills',JSON.stringify(updated));return updated;
       });
+      // Persist each hold to the server so the park survives the next pull on every machine. Loud
+      // if any only reached localStorage — otherwise a teammate's pull (or this one's) resurfaces it.
+      if(supabase)Promise.all(arr.map(b=>_saveBillHold({id:b.id,file:b.file,parsed:{...(b.parsed||{}),rawText:undefined},portalStatus:b.portalStatus||null},'parked')))
+        .then(rs=>{const failed=rs.filter(r=>r&&r.ok===false&&!r.offline).length;if(failed)nf(failed+' bill(s) parked on this device only — server save failed; they may reappear on another machine’s pull','error')});
     };
 
     // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
@@ -25719,9 +25840,12 @@ export default function App(){
           // Pull a parked bill back into Import & Review, optionally patching parsed (to deep-link
           // the match wizard) and running a follow-up (to kick off the AI PO search) on the wrapper.
           const _moveBackToReview=(sb,extraParsed,after)=>{
-            const wrapper={...sb,selected:true,reviewLater:false,portalStatus:sb.portalStatus||null,qbStatus:null,parsed:{...sb.parsed,...(extraParsed||{})}};
+            const wrapper={...sb,selected:true,reviewLater:false,resolution:undefined,portalStatus:sb.portalStatus||null,qbStatus:null,parsed:{...sb.parsed,...(extraParsed||{})}};
             setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),wrapper]}));
-            setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+            // Clear reviewLater AND resolution: the bill is re-entering the active flow, so a lingering
+            // resolution must not keep _docHeld suppressing its doc# on future pulls.
+            setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false,resolution:undefined}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+            _deleteBillHold(sb.id);// back in the active flow → drop the hold so it's not suppressed from a pull
             setBillView('import');
             if(after)after(wrapper);
           };
@@ -25901,7 +26025,7 @@ export default function App(){
                       onClick={()=>setBillResolveId(billResolveId===sb.id?null:sb.id)}>✓ Resolve ▾</button>
                     <button className="btn btn-sm btn-secondary" style={{fontSize:10,color:'#dc2626',borderColor:'#fecaca'}}
                       title="Delete this bill from history entirely"
-                      onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u})}}}>🗑</button>
+                      onClick={()=>{if(window.confirm('Delete this bill from history?')){setSavedBills(prev=>{const u=prev.filter(s=>s.id!==sb.id);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});_deleteBillHold(sb.id)}}}>🗑</button>
                     {billResolveId===sb.id&&<div style={{width:'100%',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',paddingTop:6,borderTop:'1px dashed #e2e8f0',marginTop:4}}>
                       <span style={{fontSize:10,color:'#64748b',fontWeight:700}}>Resolved because:</span>
                       {[['duplicate','♻️ Duplicate'],['corrected order','✏️ Corrected order'],['handled in QuickBooks','📒 Handled in QB'],['written off','🚮 Written off']].map(([k,l])=>
