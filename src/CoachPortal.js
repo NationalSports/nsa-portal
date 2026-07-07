@@ -24,6 +24,12 @@ const CP_LINK_TARGET = CP_EMBEDDED ? '_top' : '_blank';
 // Live Look = the live-inventory catalog. Marketing wraps it at /livelook; the
 // portal serves it directly at /adidas.
 const CP_LIVELOOK_URL = CP_EMBEDDED ? `${CP_MARKETING}/livelook` : '/adidas';
+// A team store's public storefront — like CP_LIVELOOK_URL: absolute (marketing
+// domain) when embedded so the click breaks OUT of the iframe to the proxied
+// nationalsportsapparel.com/shop/<slug> instead of the raw portal domain;
+// relative when the portal serves the page directly. Mirrors shopHref() in
+// storefront/TeamStores.js.
+const cpShopHref = (slug) => CP_EMBEDDED ? `${CP_MARKETING}/shop/${slug}` : `/shop/${slug}`;
 
 // Read-only team-store view for the coach: headline order/fundraising/batch
 // summary up top, with the per-player order list as a searchable, collapsible
@@ -158,8 +164,11 @@ function CoachRosterManager({ store, initialRoster }) {
   const [copiedId, setCopiedId] = useState(null);
   const fileRef = useRef();
 
-  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
-  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  // Player invite links are copied and sent to players/parents, so they must be
+  // the canonical public URL (nationalsportsapparel.com/shop/<slug>, proxied to
+  // the storefront) rather than the raw portal domain — same rule the Live Look
+  // share link follows (storefront/AdidasInventory.js).
+  const linkFor = (r) => r.token ? `${CP_MARKETING}/shop/${store.slug}?player=${r.token}` : '';
   const flash = (m) => { setNote(m); setTimeout(() => setNote(''), 3500); };
 
   const reload = async () => {
@@ -370,7 +379,7 @@ function CoachStoreCard({ store: s, d }) {
     <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 14, overflow: 'hidden' }}>
       <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
         <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
-        <a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#bfdbfe', textDecoration: 'none' }}>Visit store ↗</a>
+        <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ fontSize: 12, color: '#bfdbfe', textDecoration: 'none' }}>Visit store ↗</a>
       </div>
       <div style={{ padding: 16 }}>
         {/* Headline KPIs */}
