@@ -11877,8 +11877,11 @@ export default function App(){
 
     // Monthly billed sales (NetSuite history) this year vs last, scoped to selected rep by name snapshot
     const _now2=new Date();const _cy=_now2.getFullYear();const _ly=_cy-1;const _cmo=_now2.getMonth();const _cday=_now2.getDate();
-    const _repNameLc=_repObj&&_repObj.name?_repObj.name.toLowerCase():null;
-    const _matchRep=(hi)=>{if(!_repNameLc)return true;const rn=(hi.rep_name||'').toLowerCase();if(!rn)return false;return rn===_repNameLc||rn.includes(_repNameLc)||_repNameLc.includes(rn)};
+    // Attribute invoice history by the customer's current primary rep (reliable) —
+    // the NetSuite rep_name snapshot is blank on most recent invoices, which
+    // otherwise zeroes out a rep's recent billed totals in the scorecard/chart.
+    const _custRepMap={};(cust||[]).forEach(c=>{if(c&&c.id)_custRepMap[c.id]=c.primary_rep_id||null});
+    const _matchRep=(hi)=>rptRep==='all'?true:(_custRepMap[hi.customer_id]===rptRep);
     const _mThis=Array(12).fill(0),_mLast=Array(12).fill(0);
     let _ytdThis=0,_ytdLast=0,_mtdThis=0,_lastMonthFull=0;
     const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
