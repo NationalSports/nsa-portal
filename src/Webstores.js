@@ -298,6 +298,20 @@ function downloadCsv(filename, header, rows) {
 const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
 const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
 
+// One place for "does this order count": an order that reached Stripe but never paid
+// (pending_payment), was cancelled, or was fully refunded is dead for batching,
+// tracking, and backorder math. NOTE: several older inline copies of this predicate
+// exist in this file (loadStores stats, gatherAll, OrdersTab's `listable`, …) with
+// slightly different exclusion sets — use this helper in new code and fold the old
+// copies in as they're touched.
+const isLiveWebstoreOrder = (o) => o && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded';
+
+// Render the calendar day a batch cutoff instant refers to. The cutoff is stored as
+// the creating rep's LOCAL end-of-day; rendering that instant directly shows the
+// NEXT day for viewers east of the creator. Nudging back 12h lands mid-day of the
+// intended date for any viewer within ±11h of the creator's timezone.
+const batchCutoffDay = (c) => new Date(new Date(c).getTime() - 12 * 3600 * 1000).toLocaleDateString();
+
 // ─── Per-player roll-up ──────────────────────────────────────────────
 // One section per player: exactly what they're getting across the whole store,
 // plus the roster members who haven't ordered yet.
@@ -2506,10 +2520,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
     if (!sel || !detail || !onCreateSO) return;
-    const open = (detail.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded');
+    // Fresh snapshot from the DB — not the possibly-minutes-old detail state — so the
+    // modal's order list includes anything placed since the page loaded and excludes
+    // anything batched/cancelled/refunded elsewhere in the meantime.
+    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null);
+    if (foErr) { flash('Could not load orders: ' + foErr.message); return; }
+    const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
     const openIds = new Set(open.map((o) => o.id));
-    const lines = annotateEffSkus((detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
+    const openItems = [];
+    for (let ii = 0, oidArr = [...openIds]; ii < oidArr.length; ii += 300) {
+      const { data: chunk, error: fiErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oidArr.slice(ii, ii + 300));
+      if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
+      openItems.push(...(chunk || []));
+    }
+    const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
@@ -2544,6 +2569,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // selIds: the order ids the rep left checked (defaults to every open order).
     // batchMeta: { label, cutoff } — the batch name + order-date cutoff for the SO.
     const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}) => {
+    // Last-second re-check: another session may have batched, cancelled, or refunded
+    // some of these orders while the modal sat open. Drop any that are no longer
+    // open BEFORE building the SO, so its items and invoice/settle math only ever
+    // cover orders the link below can actually claim. (A residual race between this
+    // check and the claim remains, but the claim's .is('so_id',null) guard plus the
+    // partial-link flash below still surface it.)
+    try {
+      const { data: cur } = await supabase.from('webstore_orders').select('id,status,so_id').in('id', [...selIds]);
+      const gone = new Set((cur || []).filter((o) => o.so_id || !isLiveWebstoreOrder(o)).map((o) => o.id));
+      if (gone.size) {
+        selIds = new Set([...selIds].filter((id) => !gone.has(id)));
+        flash(`${gone.size} order${gone.size === 1 ? '' : 's'} changed while the modal was open (batched or refunded elsewhere) — excluded from this batch.`);
+      }
+    } catch {} // recheck is best-effort; on failure we proceed from the modal snapshot as before
     const bOrders = open.filter((o) => selIds.has(o.id));
     if (!bOrders.length) { flash('No orders selected to batch'); return; }
     const bLines = lines.filter((i) => selIds.has(i.order_id));
@@ -2563,7 +2602,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
     const retailByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
-    const allItems = (detail.orderItems || []).filter((i) => selIds.has(i.order_id));
+    const allItems = openItems.filter((i) => selIds.has(i.order_id));
     // Group each order's bundle parent(s) + components by order_id + bundle_product_id.
     // NOTE: older orders' PARENT rows have bundle_ref = null (it was added later), so we
     // cannot match parent→component by bundle_ref — doing so dropped the entire package
@@ -2768,7 +2807,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
     const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
-    const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${new Date(batchMeta.cutoff).toLocaleDateString()} — the store stays open; later orders go into the next batch.` : '';
+    const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
     const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
@@ -3203,15 +3242,26 @@ function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockB
     setCutoff(v);
     if (!v) { setSelIds(new Set(orders.map((o) => o.id))); return; }
     const end = cutoffEnd(v);
-    setSelIds(new Set(orders.filter((o) => o.created_at && new Date(o.created_at) <= end).map((o) => o.id)));
+    // Orders with a missing/unparseable created_at can't be judged against the cutoff —
+    // keep them selected (the rep can uncheck) rather than silently dropping them.
+    setSelIds(new Set(orders.filter((o) => { if (!o.created_at) return true; const t = new Date(o.created_at); return isNaN(t) || t <= end; }).map((o) => o.id)));
   };
-  const toggle = (id) => setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  // A manual check/uncheck means the selection no longer equals "everything through
+  // the cutoff", so clear the date — otherwise the SO would persist a cutoff that
+  // misdescribes which orders are actually in the batch.
+  const toggle = (id) => { setCutoff(''); setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
   const shortages = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
   const count = selIds.size;
   const leftOut = orders.length - count;
   const go = async () => {
     setBusy(true);
-    try { await onConfirm(overrideSkus, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }); }
+    // Only pass substitutions that still have a live shortage row behind them — a
+    // substitute typed for a shortage that later disappeared (selection narrowed)
+    // must not silently rewrite that SKU's lines.
+    const validKeys = new Set(shortages.map((s) => s.pid + '|' + s.size));
+    const activeOverrides = {};
+    Object.entries(overrideSkus).forEach(([k, v]) => { if (validKeys.has(k)) activeOverrides[k] = v; });
+    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }); }
     finally { setBusy(false); }
   };
   return (
@@ -10297,11 +10347,16 @@ function AddNumberSet({ onAdd, onClose }) {
 // (per-store) and StoreBackordersView (store or whole-customer scope) so the two
 // views can't drift on what "a batch's fulfillment state" means. Throws on error.
 async function fetchStoreSOFulfillment(storeIds) {
-  const { data: orders, error } = await supabase.from('sales_orders').select('id,webstore_id,status,created_at,memo,production_notes,_shipping_status,_tracking_number,webstore_batch_no,webstore_batch_label,webstore_batch_cutoff').in('webstore_id', storeIds).order('created_at', { ascending: false });
+  // Soft-deleted SOs are excluded — a dead batch's unreceived units must not count
+  // as open demand in the backorder rollup (or show as a batch card).
+  const { data: orders, error } = await supabase.from('sales_orders').select('id,webstore_id,status,created_at,memo,production_notes,_shipping_status,_tracking_number,webstore_batch_no,webstore_batch_label,webstore_batch_cutoff').in('webstore_id', storeIds).is('deleted_at', null).order('created_at', { ascending: false });
   if (error) throw error;
   const ids = (orders || []).map((o) => o.id);
   if (!ids.length) return [];
-  const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
+  // jobs only need `ids` — fire now, await after the item children resolve.
+  const jobsQ = supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
+  const { data: items, error: itemErr } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
+  if (itemErr) throw itemErr;
   const itemIds = (items || []).map((i) => i.id);
   let picks = [], decos = [], pos = [];
   if (itemIds.length) {
@@ -10310,9 +10365,14 @@ async function fetchStoreSOFulfillment(storeIds) {
       supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
       supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
     ]);
+    // A failed child query must be loud: silently-empty pick/PO lines would render
+    // every line as unreceived (or the backorder view as all-clear) instead of an error.
+    const failed = [plRes, decoRes, poRes].find((r) => r.error);
+    if (failed) throw failed.error;
     picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
   }
-  const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
+  const { data: jobRes, error: jobErr } = await jobsQ;
+  if (jobErr) throw jobErr;
   const jobs = jobRes || [];
   const pickedByItem = {};
   picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
@@ -10325,24 +10385,37 @@ async function fetchStoreSOFulfillment(storeIds) {
   return (orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) }));
 }
 
+// Merged per-line tracking across a set of batch SOs: FIFO-allocate each SO's
+// incoming/received stock to its LIVE orders (earliest first, within the batch) and
+// merge the per-line maps. The ONE copy shared by BatchesTab's grids and
+// StoreBackordersView's rollup, so their Need/Open numbers can never drift apart —
+// including which orders count (dead orders must not soak up FIFO supply).
+function mergeStoreTracking(sos, orders, itemsByOrder, products) {
+  const bySo = {};
+  (orders || []).forEach((w) => { if (w.so_id && isLiveWebstoreOrder(w)) (bySo[w.so_id] = bySo[w.so_id] || []).push(w); });
+  const merged = {};
+  (sos || []).forEach((so) => {
+    const bOrders = (bySo[so.id] || []).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
+    if (bOrders.length) Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: products || [], includeIF: true }));
+  });
+  return merged;
+}
+
 function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [], onPullTransfers }) {
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
   const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
   const shipHome = store.delivery_mode !== 'deliver_club';
-  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store)
+  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store) | 'backorders'
   // In-house on-hand by product → {size: qty}, for the "In Inv" column.
   const invProducts = useMemo(() => Object.values(productStock || {}).map((s) => ({ id: s.product_id, _inv: s.size_stock || {} })).filter((p) => p.id), [productStock]);
   // Per-customer-line incoming tracking, FIFO-allocated WITHIN each batch (SO),
   // then merged so the overall view can show every batch at once.
   const trackByLine = useMemo(() => {
-    const merged = {};
-    (sos || []).forEach((o) => {
-      const bOrders = (orders || []).filter((w) => w.so_id === o.id).map((w) => ({ ...w, items: (orderItems || []).filter((i) => i.order_id === w.id) }));
-      Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: o.items }, products: invProducts, includeIF: true }));
-    });
-    return merged;
+    const itemsByOrder = {};
+    (orderItems || []).forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+    return mergeStoreTracking(sos, orders, itemsByOrder, invProducts);
   }, [sos, orders, orderItems, invProducts]);
   const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
   // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
@@ -10485,7 +10558,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     return short === 0 ? { text: 'Stock OK', color: '#166534' } : { text: `Short on ${short} size${short === 1 ? '' : 's'}`, color: '#b91c1c' };
   };
 
-  const allWOrders = (orders || []).filter((w) => sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  // Live orders only, matching mergeStoreTracking — a cancelled/refunded order has no
+  // tracking entry, so rendering it would show a misleading all-defaults row.
+  const allWOrders = (orders || []).filter((w) => isLiveWebstoreOrder(w) && sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -10516,7 +10591,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
                   {o.webstore_batch_no != null && <span style={{ fontSize: 12, fontWeight: 800, color: '#6d28d9', background: '#ede9fe', borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' }}>Batch {o.webstore_batch_no}{o.webstore_batch_label ? ` · ${o.webstore_batch_label}` : ''}</span>}
                   <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
                 </div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}{o.webstore_batch_cutoff ? ` · orders through ${new Date(o.webstore_batch_cutoff).toLocaleDateString()}` : ''}</div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}{o.webstore_batch_cutoff ? ` · orders through ${batchCutoffDay(o.webstore_batch_cutoff)}` : ''}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
@@ -10566,7 +10641,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
             </table>
             <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Customer order tracking</div>
-              {renderTrackTable((orders || []).filter((w) => w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
+              {renderTrackTable((orders || []).filter((w) => isLiveWebstoreOrder(w) && w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
             </div>
             {(o.jobs || []).length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Decoration / production</div>
@@ -10636,17 +10711,20 @@ function StoreBackordersView({ store, onOpenSO }) {
           if (sibs && sibs.length) stores = sibs;
         }
         const storeIds = stores.map((s) => s.id);
-        const sos = await fetchStoreSOFulfillment(storeIds);
-        const { data: ords, error: oErr } = await supabase.from('webstore_orders').select('id,store_id,so_id,status,buyer_name,buyer_email,created_at').in('store_id', storeIds).not('so_id', 'is', null);
-        if (oErr) throw oErr;
-        const live = (ords || []).filter((o) => o.status !== 'cancelled' && o.status !== 'refunded' && o.status !== 'pending_payment');
+        // The SO-fulfillment chain and the orders query are independent — run them together.
+        const [sos, ordsRes] = await Promise.all([
+          fetchStoreSOFulfillment(storeIds),
+          supabase.from('webstore_orders').select('id,store_id,so_id,status,buyer_name,buyer_email,created_at').in('store_id', storeIds).not('so_id', 'is', null),
+        ]);
+        if (ordsRes.error) throw ordsRes.error;
+        const live = (ordsRes.data || []).filter(isLiveWebstoreOrder);
         const oIds = live.map((o) => o.id);
-        const items = [];
-        for (let i = 0; i < oIds.length; i += 300) {
-          const { data: chunk, error: iErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oIds.slice(i, i + 300));
-          if (iErr) throw iErr;
-          items.push(...(chunk || []));
-        }
+        const chunks = [];
+        for (let i = 0; i < oIds.length; i += 300) chunks.push(oIds.slice(i, i + 300));
+        const itemRes = await Promise.all(chunks.map((c) => supabase.from('webstore_order_items').select('*').in('order_id', c)));
+        const failed = itemRes.find((r) => r.error);
+        if (failed) throw failed.error;
+        const items = itemRes.flatMap((r) => r.data || []);
         if (!dead) setData({ stores, sos, orders: live, items });
       } catch (e) { if (!dead) { setErr(e.message || 'Load failed'); setData({ stores: [], sos: [], orders: [], items: [] }); } }
     })();
@@ -10659,13 +10737,9 @@ function StoreBackordersView({ store, onOpenSO }) {
     const storeName = {}; stores.forEach((s) => { storeName[s.id] = s.name; });
     const soById = {}; sos.forEach((s) => { soById[s.id] = s; });
     const itemsByOrder = {}; items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
-    // Same per-batch FIFO allocation the tracking grids use: incoming/received stock
-    // covers the earliest orders first, within each batch.
-    const track = {};
-    sos.forEach((so) => {
-      const bOrders = orders.filter((w) => w.so_id === so.id).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
-      if (bOrders.length) Object.assign(track, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: [], includeIF: true }));
-    });
+    // Same per-batch FIFO allocation (and live-order filter) as BatchesTab's grids —
+    // one shared function, so Open here always equals Need there.
+    const track = mergeStoreTracking(sos, orders, itemsByOrder, []);
     const agg = {};
     orders.forEach((w) => {
       const so = soById[w.so_id]; if (!so) return;
@@ -10676,7 +10750,9 @@ function StoreBackordersView({ store, onOpenSO }) {
         if (i.line_status === 'shipped' || i.line_status === 'cancelled') return;
         const sku = t.sku || i.sku || '';
         const k = (sku || i.product_id || i.name || '?') + '|' + (i.size || 'OS');
-        const r = agg[k] = agg[k] || { sku, name: t.soName || i.name || sku || 'Item', size: i.size || 'OS', open: 0, ordered: 0, incoming: 0, received: 0, buyers: new Set(), batches: new Map() };
+        // i.name first: t.soName is normalized (trimmed/UPPERCASED) inside
+        // computeOrderTracking and would render all-caps here and in the CSV.
+        const r = agg[k] = agg[k] || { sku, name: i.name || i.sku || (t.soName || '').toLowerCase() || 'Item', size: i.size || 'OS', open: 0, ordered: 0, incoming: 0, received: 0, buyers: new Set(), batches: new Map() };
         r.open += t.need; r.ordered += t.ordered; r.incoming += t.billed; r.received += t.received;
         r.buyers.add(w.buyer_email || w.buyer_name || w.id);
         const b = r.batches.get(so.id) || { soId: so.id, no: so.webstore_batch_no, label: so.webstore_batch_label, storeName: storeName[so.webstore_id] || '', open: 0 };

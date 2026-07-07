@@ -32,6 +32,15 @@ CREATE TRIGGER trg_assign_webstore_batch_no
 -- Backfill existing webstore SOs: number per store in creation order. sales_orders.created_at
 -- is a locale-formatted TEXT string (not sortable), so order by the id's numeric part —
 -- SO numbers are strictly increasing at creation (nextSOId).
+--
+-- The backfill must NOT fire the existing BEFORE UPDATE triggers (00041 set_updated_at,
+-- 00049 _version bump) on every webstore SO at once — that would mark every open staff
+-- tab's copy stale-conflicted simultaneously. replica mode disables user triggers for
+-- THIS transaction only; the UPDATE touches only webstore_batch_no (no FK to enforce),
+-- and our own numbering trigger is BEFORE INSERT so it never fired here anyway.
+-- (Outside a transaction — e.g. the pgtest harness — SET LOCAL is a no-op warning,
+-- which is fine: the test fixture has no version/updated_at triggers.)
+SET LOCAL session_replication_role = replica;
 WITH numbered AS (
   SELECT id, ROW_NUMBER() OVER (
            PARTITION BY webstore_id
@@ -42,6 +51,7 @@ WITH numbered AS (
 )
 UPDATE sales_orders s SET webstore_batch_no = n.rn
 FROM numbered n WHERE s.id = n.id;
+RESET session_replication_role;
 
 -- One number per store, enforced loudly (a race becomes a hard insert error the rep
 -- sees and retries, never a silent duplicate batch number).
