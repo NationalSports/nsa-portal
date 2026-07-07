@@ -630,7 +630,12 @@ const _checkVersion=async(table,id,localVersion)=>{
 // ─── Normalized Save Helpers ───
 // Art rows map `stitches` to an INT column. An empty string (or any non-numeric value) must
 // become null or Postgres rejects the whole upsert ("invalid input syntax for type integer").
-const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}if('mock_links' in r&&r.mock_links==null)r.mock_links={};return r};
+// mock_links must ALWAYS be present and non-null: supabase-js bulk upserts send ?columns= as the
+// UNION of keys across all rows, and PostgREST fills a row's missing keys with NULL (not the column
+// default). mock_links is NOT NULL in so_art_files/estimate_art_files, so one row carrying the key
+// while another lacks it (e.g. fresh OMG-import art next to a library copy) 400s the whole batch
+// and aborts the save before items are written (the SO-1459 blank-order bug).
+const _sanitizeArtRow=(r)=>{if('stitches' in r){const n=parseInt(r.stitches,10);r.stitches=Number.isFinite(n)?n:null}if(r.mock_links==null)r.mock_links={};return r};
 // ─── Art-file field-level merge (optimistic-concurrency conflict resolution) ───
 // When an art row's DB copy has advanced past this client's (a _version conflict), we must do neither of the two
 // unsafe extremes: blindly overwriting (clobbers another user's concurrent approval/mockup) nor silently dropping

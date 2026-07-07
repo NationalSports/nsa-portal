@@ -67,6 +67,11 @@ describe('art-file field-level merge', () => {
     expect(_sanitizeArtRow({ stitches: '12000' }).stitches).toBe(12000);
     expect(_sanitizeArtRow({ stitches: 8000 }).stitches).toBe(8000);
     expect(_sanitizeArtRow({ mock_links: null }).mock_links).toEqual({});
+    // Missing key must be force-filled too: supabase-js bulk upsert sends the UNION of keys via
+    // ?columns=, and PostgREST NULL-fills rows missing a key — a NOT NULL violation on mock_links
+    // that aborts the whole save (SO-1459 blank-order bug).
+    expect(_sanitizeArtRow({}).mock_links).toEqual({});
+    expect(_sanitizeArtRow({ mock_links: { 'a|b': 'c|d' } }).mock_links).toEqual({ 'a|b': 'c|d' });
   });
 
   test('_unionArtFiles: scalars prefer client; arrays union by url, db side first', () => {
