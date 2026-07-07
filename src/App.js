@@ -23297,8 +23297,14 @@ export default function App(){
     // Returns over-billing problems: cases where billed qty (already applied + this bill)
     // would exceed the ordered qty on a PO line/batch. Mirrors the apply paths so the
     // numbers match what would actually be written.
-    const _billOverBillingErrors=(p,mapsOverride)=>{
-      const errs=[];
+    // ── Reconciliation groups — one source of truth ────────────────────────────
+    // One computation feeds BOTH the over-billing error strings (_billOverBillingErrors)
+    // and the Look at Later side-by-side table, so the two can never drift. Each group is
+    // a target bucket this bill's push would write to:
+    //   {label, sku, size (bill's label), sizeKey (target's size bucket), po, so,
+    //    ordered, billed (already billed, before this bill), add (this bill)}
+    // Branches mirror the real apply routes (mappings / batch / inv_po / so_po+freight).
+    const _billReconGroups=(p,mapsOverride)=>{
       const maps=(mapsOverride||p._lineMappings||[]).filter(m=>safeNum(m.allocated_qty)>0);
       if(maps.length){
         const groups={};
@@ -23309,7 +23315,7 @@ export default function App(){
             if(!sb)return;
             let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[size])}));
             const key='b|'+(sb.id||sb.po_number)+'|'+size;
-            (groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,label:(sb.po_number||'Batch')+' size '+size})).add+=add;
+            (groups[key]||(groups[key]={ordered,billed:safeNum((sb.billed||{})[size]),add:0,label:(sb.po_number||'Batch')+' size '+size,sku:m.sku||'',size,sizeKey:size,po:sb.po_number||'Batch',so:''})).add+=add;
           }else{
             const so=sos.find(s=>s.id===m.so_id);if(!so)return;
             let poRef=null,item=null;
@@ -23320,13 +23326,13 @@ export default function App(){
             }
             if(!poRef)return;
             const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
-            (groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id)})).add+=add;
+            (groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||'',so:so.id})).add+=add;
           }
         });
-        Object.values(groups).forEach(g=>{if(g.billed+g.add>g.ordered)errs.push(g.label+': billing '+(g.billed+g.add)+' exceeds '+g.ordered+' ordered')});
-        return errs;
+        return Object.values(groups);
       }
       // Auto-matched bills (no explicit mappings) apply their line items by size.
+      const out=[];
       const addBySize=()=>{const o={};(p.items||[]).forEach(it=>{if(it.size&&it.qty)o[it.size]=(o[it.size]||0)+safeNum(it.qty)});return o};
       if(p.matchedPOSource==='batch'&&p.matchedPO){
         const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
@@ -23335,7 +23341,7 @@ export default function App(){
           const k=_alignSize(size,_bk);
           let ordered=0;(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])}));
           const billed=safeNum((sb.billed||{})[k]);
-          if(billed+add>ordered)errs.push((sb.po_number||'Batch')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+          out.push({ordered,billed,add,label:(sb.po_number||'Batch')+' size '+size,sku:'',size,sizeKey:k,po:sb.po_number||'Batch',so:''});
         });
       }else if(p.matchedPOSource==='inv_po'&&p.matchedPO){
         const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
@@ -23344,7 +23350,7 @@ export default function App(){
           const k=_alignSize(size,_ik);
           let ordered=0;(po.items||[]).forEach(it=>{ordered+=safeNum((it.sizes||{})[k])});
           const billed=safeNum((po.billed||{})[k]);
-          if(billed+add>ordered)errs.push((po.po_number||'PO')+' size '+size+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+          out.push({ordered,billed,add,label:(po.po_number||'PO')+' size '+size,sku:'',size,sizeKey:k,po:po.po_number||'PO',so:''});
         });
       }else if(p.matchedPOSource==='so_po'&&p.matchedPO&&safeNum(p.freight)>0){
         // Auto so_po only writes billed qty when freight is present (via _applyFreightToSOs),
@@ -23363,13 +23369,57 @@ export default function App(){
               Object.entries(adds).forEach(([size,add])=>{
                 const k=_alignSize(size,_pk);
                 const ordered=safeNum(po[k]);const billed=safeNum((po.billed||{})[k]);
-                if(billed+add>ordered)errs.push(it.sku+' '+size+' on '+(po.po_id||so.id)+': billing '+(billed+add)+' exceeds '+ordered+' ordered');
+                out.push({ordered,billed,add,label:it.sku+' '+size+' on '+(po.po_id||so.id),sku:it.sku,size,sizeKey:k,po:po.po_id||so.id,so:so.id});
               });
             });
           });
         }
       }
-      return errs;
+      return out;
+    };
+    // Blocking over-billing strings — derived from the shared reconciliation groups so the
+    // error text and the side-by-side table always agree.
+    const _billOverBillingErrors=(p,mapsOverride)=>
+      _billReconGroups(p,mapsOverride).filter(g=>g.billed+g.add>g.ordered)
+        .map(g=>g.label+': billing '+(g.billed+g.add)+' exceeds '+g.ordered+' ordered');
+
+    // Side-by-side reconciliation model for one bill vs its matched order: the buckets this
+    // bill writes (groups), order-side buckets it doesn't touch (untouched), and bill lines
+    // that land nowhere (lost). Null when there's nothing to compare (unmatched/decoration).
+    const _billReconData=(p)=>{
+      if(!p||p.kind==='decoration'||!p.matchedPOSource||!p.matchedPO)return null;
+      const maps=(p._lineMappings&&p._lineMappings.length)?p._lineMappings
+        :(p.matchedPOSource==='so_po'&&safeNum(p.freight)<=0?_soPoAutoMappings(p):null);
+      const groups=_billReconGroups(p,maps&&maps.length?maps:undefined);
+      // Order side: every size bucket on the matched target with ordered/billed-so-far.
+      let open=[];
+      if(p.matchedPOSource==='so_po'){
+        open=_soPoTargetItems(p).map(t=>({sku:t.sku,size:String(t.size),ordered:t.ordered,billed:t.ordered-t.qty,po:t.po_id||'',so:t.so_id||''}));
+      }else if(p.matchedPOSource==='batch'){
+        const sb=submittedBatches.find(b=>(b.id||b.po_number)===(p.matchedPO.id||p.matchedPO.po_number))||p.matchedPO;
+        const ordered={};(sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>Object.entries(it.sizes||{}).forEach(([k,v])=>{ordered[k]=(ordered[k]||0)+safeNum(v)})));
+        open=Object.entries(ordered).map(([size,o])=>({sku:'',size,ordered:o,billed:safeNum((sb.billed||{})[size]),po:sb.po_number||'Batch',so:''}));
+      }else if(p.matchedPOSource==='inv_po'){
+        const po=invPOs.find(x=>x.id===p.matchedPO.id)||p.matchedPO;
+        const ordered={};(po.items||[]).forEach(it=>Object.entries(it.sizes||{}).forEach(([k,v])=>{ordered[k]=(ordered[k]||0)+safeNum(v)}));
+        open=Object.entries(ordered).map(([size,o])=>({sku:'',size,ordered:o,billed:safeNum((po.billed||{})[size]),po:po.po_number||'PO',so:''}));
+      }
+      const covered=new Set(groups.map(g=>((g.sku||'').toUpperCase())+'|'+String(g.sizeKey).toUpperCase()));
+      const untouched=open.filter(o=>o.ordered>0
+        &&!covered.has((o.sku||'').toUpperCase()+'|'+o.size.toUpperCase())
+        &&!covered.has('|'+o.size.toUpperCase()));
+      // Bill lines that land nowhere on the target (invisible in the group rows).
+      let lost=[];
+      const usable=(p.items||[]).map((it,i)=>({it,i})).filter(x=>x.it&&x.it.size&&safeNum(x.it.qty)>0);
+      if(maps&&maps.length){
+        const mapped=new Set(maps.filter(m=>safeNum(m.allocated_qty)>0).map(m=>m.bill_idx));
+        lost=usable.filter(x=>!mapped.has(x.i)).map(x=>x.it);
+      }else if(p.matchedPOSource==='so_po'&&safeNum(p.freight)>0){
+        const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
+        if(so)lost=usable.filter(x=>!(so.items||[]).some(it=>_billSkuMatchesItem((x.it.sku||'').toUpperCase(),it))).map(x=>x.it);
+      }
+      if(!groups.length&&!untouched.length&&!lost.length)return null;
+      return{groups,untouched,lost,hasMaps:!!(maps&&maps.length)};
     };
 
     // Blocking problems for a bill about to be pushed: duplicate doc#, PO over-billing, and
@@ -25604,26 +25654,81 @@ export default function App(){
                   </div>
                   {!clean&&<ul style={{margin:'6px 0 0',paddingLeft:18}}>{reasons.map((r,ri)=><li key={ri} style={{fontSize:11,color:'#b45309'}}>{r}</li>)}</ul>}
                   </div>
-                  {expanded&&<div style={{borderTop:'1px solid #fde68a',background:'#fffbeb',padding:'8px 14px'}}>
-                    {p.items?.length>0
-                      ?<table style={{fontSize:10,width:'100%',borderCollapse:'collapse'}}>
-                        <thead><tr style={{background:'#fef3c7'}}>
-                          <th style={{textAlign:'left',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>SKU</th>
-                          <th style={{textAlign:'left',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Size</th>
-                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Qty</th>
-                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Unit Price</th>
-                          <th style={{textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'}}>Extension</th>
-                        </tr></thead>
-                        <tbody>{p.items.map((it,ii)=><tr key={ii} style={{borderTop:'1px solid #fde68a'}}>
-                          <td style={{padding:'4px 8px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{it.sku||'—'}</td>
-                          <td style={{padding:'4px 8px',color:'#334155'}}>{it.size||'—'}</td>
-                          <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700}}>{it.qty??'—'}</td>
-                          <td style={{padding:'4px 8px',textAlign:'right',color:'#475569'}}>{it.unit_price!=null?'$'+Number(it.unit_price).toFixed(2):'—'}</td>
-                          <td style={{padding:'4px 8px',textAlign:'right',color:'#166534',fontWeight:700}}>{it.extension!=null?'$'+Number(it.extension).toFixed(2):it.unit_price!=null&&it.qty!=null?'$'+(Number(it.unit_price)*it.qty).toFixed(2):'—'}</td>
-                        </tr>)}</tbody>
-                      </table>
-                      :<div style={{color:'#94a3b8',fontSize:11,padding:'4px 0'}}>No line items stored for this bill.</div>}
-                  </div>}
+                  {expanded&&(()=>{
+                    const dupWhere=_docAlreadyApplied(p.doc_number)?_docAppliedWhere(p.doc_number):null;
+                    const recon=_billReconData(p);
+                    const plan=_billApplyPlan(p);
+                    const MAX_OPEN=25;// keep untouched-order rows from swamping big POs
+                    const th={textAlign:'right',padding:'5px 8px',fontWeight:700,color:'#92400e'};
+                    const thL={...th,textAlign:'left'};
+                    return <div style={{borderTop:'1px solid #fde68a',background:'#fffbeb',padding:'8px 14px'}}>
+                      {dupWhere&&<div style={{marginBottom:8,padding:'6px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:11,color:'#b91c1c',fontWeight:600}}>
+                        ⚠️ This doc # was already applied → <b>{dupWhere}</b>. If this is truly a second shipment/invoice, fix the doc # or push with override; otherwise Resolve it as a duplicate.</div>}
+                      {recon&&(()=>{
+                        const rows=[
+                          ...recon.groups.map(g=>({...g,after:g.billed+g.add,kind:'bill'})),
+                          ...recon.untouched.slice(0,MAX_OPEN).map(o=>({...o,add:0,after:o.billed,kind:'open'}))
+                        ];
+                        const moreOpen=Math.max(0,recon.untouched.length-MAX_OPEN);
+                        const stat=r=>r.kind==='bill'&&r.ordered<=0?['#dc2626','✗ not on order']
+                          :r.after>r.ordered?['#dc2626','✗ exceeds by '+(r.after-r.ordered)]
+                          :r.kind==='open'?(r.billed>=r.ordered?['#94a3b8','✓ already fully billed']:['#94a3b8','not on this bill — '+(r.ordered-r.billed)+' open'])
+                          :r.after===r.ordered?['#166534','✓ completes the line']
+                          :['#0369a1','◦ partial — '+(r.ordered-r.after)+' still open'];
+                        return <div style={{marginBottom:10}}>
+                          <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:4}}>⚖️ Reconcile — this bill vs the order{recon.hasMaps?' (via line mappings)':''}</div>
+                          <table style={{fontSize:10,width:'100%',borderCollapse:'collapse',background:'#fff',border:'1px solid #fde68a',borderRadius:6}}>
+                            <thead><tr style={{background:'#fef3c7'}}>
+                              <th style={thL}>SKU</th><th style={thL}>Size</th><th style={thL}>PO</th>
+                              <th style={th}>Ordered</th><th style={th}>Billed so far</th><th style={th}>This bill</th><th style={th}>After</th>
+                              <th style={thL}>Status</th>
+                            </tr></thead>
+                            <tbody>{rows.map((r,ri)=>{
+                              const[color,label]=stat(r);
+                              return <tr key={ri} style={{borderTop:'1px solid #fef3c7',opacity:r.kind==='open'?0.75:1}}>
+                                <td style={{padding:'4px 8px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{r.sku||'—'}</td>
+                                <td style={{padding:'4px 8px',color:'#334155',fontWeight:600}}>{r.size}</td>
+                                <td style={{padding:'4px 8px',color:'#64748b'}}>{r.po||'—'}</td>
+                                <td style={{padding:'4px 8px',textAlign:'right'}}>{r.ordered}</td>
+                                <td style={{padding:'4px 8px',textAlign:'right',color:'#64748b'}}>{r.billed}</td>
+                                <td style={{padding:'4px 8px',textAlign:'right',fontWeight:800,color:r.add>0?'#92400e':'#cbd5e1'}}>{r.add>0?'+'+r.add:'—'}</td>
+                                <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700,color:r.after>r.ordered?'#dc2626':'#166534'}}>{r.after}</td>
+                                <td style={{padding:'4px 8px',color,fontWeight:700}}>{label}</td>
+                              </tr>;
+                            })}</tbody>
+                          </table>
+                          {moreOpen>0&&<div style={{fontSize:10,color:'#94a3b8',marginTop:2}}>…and {moreOpen} more open order line{moreOpen>1?'s':''} this bill doesn&rsquo;t touch.</div>}
+                          {recon.lost.length>0&&<div style={{marginTop:6,padding:'6px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,fontSize:10,color:'#b91c1c'}}>
+                            <b>✗ {recon.lost.length} bill line{recon.lost.length>1?'s':''} with no home on this order</b> — {recon.lost.map(it=>(it.sku||'?')+' '+(it.size||'')+' ×'+it.qty).join(' · ')}. Use Move back to Review → Match manually or Find PO with AI.</div>}
+                        </div>;
+                      })()}
+                      {!recon&&_billHasTarget(p)&&<div style={{marginBottom:8,fontSize:11,color:'#92400e'}}>Matched to an order, but there&rsquo;s nothing size-level to compare — see the bill lines below.</div>}
+                      {!_billHasTarget(p)&&<div style={{marginBottom:8,padding:'6px 10px',background:'#eef2ff',border:'1px solid #c7d2fe',borderRadius:6,fontSize:11,color:'#3730a3'}}>
+                        No order matched yet — nothing to compare against. Use <b>Move back to Review</b>, then <b>Match manually</b> or <b>✨ Find PO with AI</b>.</div>}
+                      {plan&&<div style={{marginBottom:8,fontSize:10,color:'#0c4a6e',background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:6,padding:'5px 10px'}}>
+                        <b>Pushing writes ({plan.via}):</b> {plan.groups.map(g=>(g.po||'PO')+' — '+g.qty+' unit'+(g.qty===1?'':'s')+' · $'+g.cost.toFixed(2)).join(' · ')}
+                        {' · Freight '}{plan.freight>0?'$'+plan.freight.toFixed(2):'$0'}</div>}
+                      <div style={{fontSize:10,fontWeight:800,color:'#92400e',margin:'6px 0 3px'}}>Bill lines</div>
+                      {p.items?.length>0
+                        ?<table style={{fontSize:10,width:'100%',borderCollapse:'collapse'}}>
+                          <thead><tr style={{background:'#fef3c7'}}>
+                            <th style={thL}>SKU</th>
+                            <th style={thL}>Size</th>
+                            <th style={th}>Qty</th>
+                            <th style={th}>Unit Price</th>
+                            <th style={th}>Extension</th>
+                          </tr></thead>
+                          <tbody>{p.items.map((it,ii)=><tr key={ii} style={{borderTop:'1px solid #fde68a'}}>
+                            <td style={{padding:'4px 8px',fontFamily:'monospace',color:'#7c3aed',fontWeight:600}}>{it.sku||'—'}</td>
+                            <td style={{padding:'4px 8px',color:'#334155'}}>{it.size||'—'}</td>
+                            <td style={{padding:'4px 8px',textAlign:'right',fontWeight:700}}>{it.qty??'—'}</td>
+                            <td style={{padding:'4px 8px',textAlign:'right',color:'#475569'}}>{it.unit_price!=null?'$'+Number(it.unit_price).toFixed(2):'—'}</td>
+                            <td style={{padding:'4px 8px',textAlign:'right',color:'#166534',fontWeight:700}}>{it.extension!=null?'$'+Number(it.extension).toFixed(2):it.unit_price!=null&&it.qty!=null?'$'+(Number(it.unit_price)*it.qty).toFixed(2):'—'}</td>
+                          </tr>)}</tbody>
+                        </table>
+                        :<div style={{color:'#94a3b8',fontSize:11,padding:'4px 0'}}>No line items stored for this bill.</div>}
+                    </div>;
+                  })()}
                   <div style={{display:'flex',gap:6,padding:'8px 14px',borderTop:'1px solid #f1f5f9',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                     <button className="btn btn-sm btn-primary" style={{fontSize:10,background:'#7c3aed',borderColor:'#7c3aed'}}
                       title="Pull this bill back into the review list so you can fix and push it"
