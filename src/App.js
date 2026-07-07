@@ -20285,6 +20285,11 @@ export default function App(){
   const[siQueueLoading,setSiQueueLoading]=useState(false);
   const[ssNewCount,setSsNewCount]=useState(0);// # of ss_documents rows the daily S&S cron flagged 'new' (Import & Review badge)
   const[billFilter,setBillFilter]=useState('all');// review-list filter chip: all | ready | attention | done
+  // S&S pull invoice-date window. "From" is a persisted floor (default 6/1/2026) so pulls stop
+  // dragging in pre-cutover bills; "To" blank = up to now. Empty From = the last-3-months default.
+  const[ssPullFrom,setSsPullFrom]=useState(()=>{try{const v=localStorage.getItem('nsa_ss_pull_from');return v==null?'2026-06-01':v}catch(e){return'2026-06-01'}});
+  const[ssPullTo,setSsPullTo]=useState('');
+  useEffect(()=>{try{localStorage.setItem('nsa_ss_pull_from',ssPullFrom||'')}catch(e){}},[ssPullFrom]);
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
   useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
@@ -21772,9 +21777,12 @@ export default function App(){
     const pullFromSS=async(filters={})=>{
       setBillImport(x=>({...x,uploading:true}));
       let orders=[];
+      // Describe the window for messages: a date filter, or the last-3-months default.
+      const _win=filters.startDate?('invoiced '+filters.startDate+(filters.endDate?' to '+filters.endDate:' onward'))
+        :filters.endDate?('invoiced through '+filters.endDate):'in the last 3 months';
       try{
-        // Default (no filters) pulls ?All=True — every S&S order from the last 3 months — with
-        // lines. Covers ALL S&S orders, not just API-placed ones (direct ssactivewear.com orders too).
+        // No date filter → ?All=True (last 3 months). With a window, S&S filters on invoice date —
+        // the right key for billing (an order gets an invoice date only once there's a bill for it).
         orders=await ssGetOrders(filters);
       }catch(e){
         setBillImport(x=>({...x,uploading:false}));
@@ -21783,7 +21791,7 @@ export default function App(){
       }
       if(!orders.length){
         setBillImport(x=>({...x,uploading:false}));
-        nf('No S&S orders found (nothing in the last 3 months)','success');
+        nf('No S&S orders found ('+_win+')','success');
         return;
       }
       const seenDocs=new Set();const skippedDups=[];const results=[];let empty=0;let credits=0;let idx=0;
@@ -24165,10 +24173,21 @@ export default function App(){
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
               <div style={{flex:1,minWidth:240}}>
                 <div style={{fontSize:14,fontWeight:800,color:'#155e75',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders from the last 3 months straight from S&amp;S &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders straight from S&amp;S by invoice date &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
+                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months."/>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
+                  <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
+                  {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
+                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'last 3 months'}</span>
+                </div>
               </div>
               <button className="btn btn-primary" style={{background:'#0891b2',borderColor:'#0891b2',whiteSpace:'nowrap'}} disabled={billImport.uploading}
-                onClick={()=>pullFromSS()}>
+                onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';
+                  // both blank → last 3 months (All=True); otherwise an invoice-date window, with a
+                  // blank "To" resolved to today so the live call sends a concrete end, not a sentinel.
+                  pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}}>
                 {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
               </button>
             </div>
