@@ -12,7 +12,7 @@ import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buil
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
 
 export default function InvoicesPage(){
-  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
+  const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
     const today=new Date();
     const parseD=(ds)=>{if(!ds)return null;const m=ds.match(/(\d{2})\/(\d{2})\/(\d{2})/);return m?new Date('20'+m[3],m[1]-1,m[2]):new Date(ds)};
@@ -1111,28 +1111,38 @@ export default function InvoicesPage(){
       const agg=webstoreSettle[soId];
       if(!agg)return null;
       const prepaid=_r2(agg.prepaid), teamTab=_r2(agg.teamTab);
-      if(prepaid<=0.5)return null; // nothing collected via Stripe — normal AR, not a settlement
+      if(prepaid<=0.5&&teamTab<=0.5)return null; // no money in play yet
       const ref='WEB '+so.id;
       const soInvs=enrichedInvs.filter(i=>i.so_id===so.id);
       if(soInvs.some(i=>(i.payments||[]).some(p=>p.ref===ref)))return null; // already settled
-      const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
-      if(!openInvs.length)return null;
       const name=agg.name||(soInvs[0]&&soInvs[0]._cname)||cust.find(c=>c.id===so.customer_id)?.name||so.id;
+      const openInvs=soInvs.filter(i=>i.status!=='paid'&&i._bal>0.005);
+      if(!openInvs.length){
+        if(soInvs.length)return null; // invoiced & fully paid some other way
+        if(prepaid<=0.5)return null;  // pure team-tab store, nothing prepaid — normal AR flow
+        return{key:'web:'+so.id,source:'web',name,status:'action',act:'invoice',
+          reason:'Stripe funds in hand — one click creates the invoice and settles it',
+          so,inv:null,collected:prepaid,teamTab,_agg:agg,ref};
+      }
       if(openInvs.length>1)return{key:'web:'+so.id,source:'web',name,status:'blocked',reason:openInvs.length+' open invoices — settle manually',so,inv:null,collected:prepaid,teamTab,ref};
       const inv=openInvs[0];
-      const accounted=_r2(prepaid+teamTab); // prepaid + still-owed team tab should equal the invoice
-      const delta=_r2(accounted-inv._bal);
+      // COVERAGE model, same as OMG: the prepaid Stripe gross includes tax,
+      // shipping & processing that the product-only SO invoice doesn't bill
+      // (the batcher prices items so the SO reconciles to product+fundraise
+      // collected). Healthy state: prepaid + still-owed team-tab covers the
+      // balance. With a team-tab, apply up to (balance − team-tab) so exactly
+      // the team's share stays open; without one, close cleanly at the balance.
       const hasTab=teamTab>1;
-      if(Math.abs(delta)>1)return{key:'web:'+so.id,source:'web',name,status:'mismatch',
-        reason:'Prepaid + team-tab ($'+accounted.toFixed(2)+') ≠ invoice balance',
+      const covered=prepaid+teamTab>=inv._bal-1;
+      if(!covered)return{key:'web:'+so.id,source:'web',name,status:'mismatch',
+        reason:'Prepaid + team-tab ($'+_r2(prepaid+teamTab).toFixed(2)+') is short of the invoice balance',
         // Never pre-fill more than the open balance — an over-collection is a
         // discrepancy to investigate, not extra money to post onto the invoice.
         note:hasTab?('incl. $'+teamTab.toFixed(2)+' team-tab'):'',so,inv,collected:prepaid,teamTab,applyAmount:Math.min(prepaid,_r2(inv._bal)),ref};
-      // Reconciles. With a team-tab remainder, apply only the prepaid funds (the
-      // team-tab stays owed); otherwise close cleanly at the invoice balance.
       return{key:'web:'+so.id,source:'web',name,status:'matched',reason:'',
-        note:hasTab?('leaves $'+teamTab.toFixed(2)+' team-tab owed'):'',
-        so,inv,collected:prepaid,teamTab,applyAmount:hasTab?prepaid:_r2(inv._bal),ref};
+        note:hasTab?('leaves $'+Math.min(teamTab,_r2(inv._bal)).toFixed(2)+' team-tab owed'):'',
+        so,inv,collected:prepaid,teamTab,
+        applyAmount:hasTab?Math.min(prepaid,Math.max(0,_r2(inv._bal-teamTab))):_r2(inv._bal),ref};
     }).filter(Boolean);
     const storeSettlements=[...omgProps,...webProps];
     const stMatched=storeSettlements.filter(p=>p.status==='matched');
@@ -1292,7 +1302,11 @@ export default function InvoicesPage(){
               <td style={{padding:'6px 8px',whiteSpace:'nowrap'}}>
                 {(p.status==='matched'||p.status==='mismatch')&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>proposeSettlement(p)}>
                   {p.status==='matched'?'Confirm & Apply':'Apply Partial'}</button>}
-                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{if(p.act==='invoice'&&p.so)createAndSettleOmgInvoice(p.so);else setPg('omg')}}>
+                {p.status==='action'&&<button className="btn btn-sm" style={{fontSize:11,background:clr,color:'white',border:'none',padding:'5px 12px'}} onClick={()=>{
+                  if(p.act!=='invoice'||!p.so){setPg('omg');return}
+                  if(p.source==='web'){const a=p._agg||{};createAndSettleWebstoreInvoice(p.so,{cardTotal:a.prepaid||0,tabTotal:a.teamTab||0,tabExtras:Math.max(0,Math.round(((a.teamTab||0)-(a.tabProduct||0))*100)/100)});}
+                  else createAndSettleOmgInvoice(p.so);
+                }}>
                   {p.act==='invoice'?'Invoice & Settle':'OMG Page'}</button>}
                 {p.status==='matched'&&p.note&&<span style={{marginLeft:8,fontSize:10,color:'#64748b'}}>{p.note}</span>}
                 {p.status==='action'&&<span style={{marginLeft:8,fontSize:11,color:clr}}>{p.reason}</span>}
