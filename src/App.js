@@ -23417,6 +23417,10 @@ export default function App(){
       }else if(p.matchedPOSource==='so_po'&&safeNum(p.freight)>0){
         const so=sos.find(s=>s.id===(p.matchedPO.so_id||p.matchedPO.so?.id));
         if(so)lost=usable.filter(x=>!(so.items||[]).some(it=>_billSkuMatchesItem((x.it.sku||'').toUpperCase(),it))).map(x=>x.it);
+      }else if(p.matchedPOSource==='so_po'){
+        // $0 freight and the strict auto-mapper returned null — nothing on this bill applies,
+        // so every usable line is homeless (the same case _validateBillForPush blocks on).
+        lost=usable.map(x=>x.it);
       }
       if(!groups.length&&!untouched.length&&!lost.length)return null;
       return{groups,untouched,lost,hasMaps:!!(maps&&maps.length)};
