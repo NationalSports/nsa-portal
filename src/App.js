@@ -4977,10 +4977,10 @@ export default function App(){
   // types keep their own follow_up_at logic via snoozeTodo; everything else uses this map.
   const[snoozedTodos,setSnoozedTodos]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_snoozed_todos')||'{}')}catch{return{}}});
   const _todoSnoozed=(key)=>{const u=key&&snoozedTodos[key];return!!u&&u>Date.now()};
-  const snoozeTodoUntil=(t,days)=>{const key=t.dismissKey;if(!key){nf('Cannot snooze this item','error');return}
+  const snoozeTodoUntil=(t,days,note)=>{const key=t.dismissKey;if(!key){nf('Cannot snooze this item','error');return}
     const until=Date.now()+days*86400000;
     setSnoozedTodos(prev=>{const n={...prev};Object.keys(n).forEach(k=>{if(n[k]<=Date.now())delete n[k]});n[key]=until;_lsSet('nsa_snoozed_todos',JSON.stringify(n));return n});
-    setSnoozeOpenKey(null);nf('Snoozed for '+days+' day'+(days!==1?'s':''))};
+    setSnoozeOpenKey(null);nf(note||('Snoozed for '+days+' day'+(days!==1?'s':'')))};
   const _todoIsFollowUp=(t)=>t.type==='follow_up'||t.type==='inv_followup'||t.type==='coach_followup';
   // Unified snooze: follow-ups push their source date; all other to-dos use the snooze map.
   const doSnooze=(t,days)=>{if(_todoIsFollowUp(t))snoozeTodo(t,days);else snoozeTodoUntil(t,days)};
@@ -5053,7 +5053,7 @@ export default function App(){
     setAcMsgKey(null);setAcMsgText('');
     nf('Message sent to '+(c?.name||so.id)+' thread');
   };
-  const snoozeTodo=(t,days)=>{
+  const snoozeTodo=(t,days,note)=>{
     const fuAt=new Date(Date.now()+days*86400000).toISOString();
     const nowIso=new Date().toISOString();
     if(t.type==='follow_up'&&t.est){
@@ -5064,8 +5064,16 @@ export default function App(){
       setSOs(prev=>prev.map(s=>s.id===t.so.id?{...s,jobs:safeJobs(s).map(j=>j.id===t.jobId?{...j,follow_up_at:fuAt}:j),updated_at:nowIso}:s));
     }
     setSnoozeOpenKey(null);
-    nf('Snoozed for '+days+' day'+(days!==1?'s':''));
+    nf(note||('Snoozed for '+days+' day'+(days!==1?'s':'')));
   };
+  // Opening a to-do to actually work it (click-through) clears it from the list "for now" — it rolls
+  // back onto the board tomorrow if it's still open, and stays hidden on every dashboard surface (not
+  // just the one that was clicked). Follow-ups push their source follow_up_at forward; the "Mockup
+  // ready for review" status to-do has no such date, so it uses the generic snooze map. A real state
+  // change (Approve / Send to Coach / Request changes) still clears the mockup to-do for good on its own.
+  const _todoClickedThrough=(t)=>{if(!t)return;
+    if(_todoIsFollowUp(t)){snoozeTodo(t,1,'⏰ Follow-up cleared for now — back tomorrow if still open');return}
+    if(t.type==='art')snoozeTodoUntil(t,1,'🎨 Cleared for now — back tomorrow if it still needs review');};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
   // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
   // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
@@ -6972,6 +6980,10 @@ export default function App(){
         todos.push({type:'follow_up',priority:1,msg:'⏰ Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2+' · Follow-up due '+new Date(e.follow_up_at).toLocaleDateString(),action:'Follow Up',role:'sales',est:e,estC:c2,date:e.email_sent_at||e.updated_at||e.created_at});
         return;
       }
+      // Snoozed / rescheduled: a future follow_up_at means "don't nag me until then". The day-based
+      // tiers below never look at follow_up_at, so without this a snoozed follow-up re-appears on the
+      // next render — the Snooze button (and click-through clear) would do nothing.
+      if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
       const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
       const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
       const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
@@ -7231,7 +7243,7 @@ export default function App(){
         else groups=_groupTodos(todos);
       }
       const _navNotif=t=>{setAcOpen(false);if(t.isTaskComplete){setTodoDetailId(t.todoId)}else if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
-      const _navTodo=t=>{setAcOpen(false);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
+      const _navTodo=t=>{setAcOpen(false);_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};
       const _msgRow=t=>{const open=acMsgKey===_rk(t);return _hasSO(t)?<div style={{marginTop:open?8:0}}>
         {!open?<button title="Send a message about this" style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#eef2ff',color:'#4338ca',border:'1px solid #c7d2fe',fontWeight:600,whiteSpace:'nowrap',cursor:'pointer'}} onClick={e=>{e.stopPropagation();setAcMsgKey(_rk(t));setAcMsgText('')}}>💬 Message</button>:
         <div onClick={e=>e.stopPropagation()} style={{display:'flex',gap:6,alignItems:'flex-start',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:8}}>
@@ -7341,7 +7353,7 @@ export default function App(){
           {actionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'All clear!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=actionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='issue'){setPg('settings')}else if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
@@ -7458,7 +7470,7 @@ export default function App(){
           {myActionTodos.length===0?<div className="empty" style={{padding:20}}>{todoFilter==='all'?'Nothing pending!':'No '+todoFilter.replace(/_/g,' ')+' items'}</div>:
           (()=>{const capped=myActionTodos.slice(0,20);const groups=_groupTodos(capped);return groups.map(g=><div key={g.cat}>
             {groups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
+            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>{_todoClickedThrough(t);if(t.type==='est_update_request'||t.type==='est_approved'||t.type==='follow_up'||t.type==='deposit_needed'){if(t.est){setEEst(t.est);setEEstC(t.estC);setPg('estimates')}}else if(t.type==='inv_followup'&&t.inv){setViewInvoice(t.inv);setPg('invoices')}else if(t.so){if(t.type==='art'&&t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
               <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}{t.repId&&cu.role!=='rep'?<span style={{marginLeft:6,fontSize:10,color:'#2563eb'}}>({REPS.find(r=>r.id===t.repId)?.name?.split(' ')[0]||''})</span>:''}</div></div>
               {_fmtTD(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtTD(t.date)}</span>}
               {(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm'||cu.role==='rep')&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#f0f9ff',color:'#0891b2',border:'1px solid #a5f3fc',borderRadius:8,whiteSpace:'nowrap'}} onClick={e=>{e.stopPropagation();setTodoModal({open:true,title:t.msg.replace(/^[^\w]*/,''),description:t.detail||'',assigned_to:getCsrsForRep(t.repId||cu.id)[0]||'',so_id:t.so?.id||'',customer_id:t.so?.customer_id||t.est?.customer_id||'',priority:t.priority<=1?1:2,due_date:''})}}>Assign</button>}
@@ -9862,6 +9874,8 @@ export default function App(){
         todos.push({type:'follow_up',priority:1,msg:'Follow up on estimate ('+daysSince+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
         return;
       }
+      // Snoozed / rescheduled: a future follow_up_at means "don't nag me until then" (mirrors rDash).
+      if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
       const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
       const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
       const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
