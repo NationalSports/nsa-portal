@@ -22096,24 +22096,38 @@ export default function App(){
     const rematchBill=(bill)=>{
       const updated={...bill,matchedPO:null,matchedPOSource:null};
       if(!bill.po_number)return updated;
-      const poLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+      const rawLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
+      // Hand-typed PO fields arrive with trailing punctuation ("P08689SBFBQ–", en-dash and all) —
+      // strip trailing non-alphanumerics for the compare. Trailing only, so a real mid-string
+      // dash ("PO 3522-B") still compares exactly.
+      const poLc=rawLc.replace(/[^a-z0-9]+$/,'');
+      if(!poLc)return updated;
       // Sports Inc bills often arrive without the "PO "/"DPO " prefix the order carries (the bill says
       // "3083 OLuSPL" where the PO is "PO 3083 OLuSPL"). Also compare with that prefix stripped from
       // both sides — still requiring the rest to match exactly, so it recovers those without a looser
-      // numeric collision. Guarded to ≥3 chars so a bare "PO" can't match everything.
-      const stripPO=s=>s.replace(/^d?po/,'');
+      // numeric collision. Guarded to ≥3 chars so a bare "PO" can't match everything. p[o0] treats a
+      // typo'd zero prefix ("P08689…") as the "PO" it was meant to be.
+      const stripPO=s=>s.replace(/^d?p[o0](?=[a-z0-9])/,'');
       const poStrip=stripPO(poLc);
       const stripEq=pid=>poStrip.length>=3&&stripPO(pid)===poStrip;
+      // When the match needed repair (trailing junk stripped, or prefix/typo equivalence), rewrite
+      // the bill's PO to the order's canonical id: every downstream path (apply, freight split,
+      // target items, write plan) compares raw strings, so canonicalizing once here beats hardening
+      // ten call sites. The original stays on _po_raw and shows in the review card. Deliberately NOT
+      // done for prefix (startsWith) or memo matches — those fire mid-keystroke in the PO edit box.
+      const _canon=(pid,canonPo)=>{
+        if((pid===poLc&&poLc!==rawLc)||(pid!==poLc&&!pid.startsWith(poLc)&&stripEq(pid))){updated._po_raw=bill.po_number;updated.po_number=canonPo}
+      };
       const batchMatch=submittedBatches.find(sb=>{if(!sb.po_number)return false;const n=sb.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
-      if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';return updated}
+      if(batchMatch){updated.matchedPO=batchMatch;updated.matchedPOSource='batch';_canon(batchMatch.po_number.toLowerCase().replace(/\s+/g,''),batchMatch.po_number);return updated}
       const invMatch=invPOs.find(p=>{if(!p.po_number)return false;const n=p.po_number.toLowerCase().replace(/\s+/g,'');return n===poLc||stripEq(n)});
-      if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';return updated}
+      if(invMatch){updated.matchedPO=invMatch;updated.matchedPOSource='inv_po';_canon(invMatch.po_number.toLowerCase().replace(/\s+/g,''),invMatch.po_number);return updated}
       // Check SO-level decoration POs first (so.deco_pos) — these are the new-style cost buckets
       for(const so of sos){for(const dp of (so.deco_pos||[])){
         const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');
         if(pid===poLc||pid.startsWith(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:dp.po_id,deco_po:dp,so};
-          updated.matchedPOSource='so_deco_po';return updated;
+          updated.matchedPOSource='so_deco_po';_canon(pid,dp.po_id);return updated;
         }
       }}
       // Fallback: item-level po_lines (blanks goods POs)
@@ -22122,7 +22136,7 @@ export default function App(){
         const pmemo=(po.memo||'').toLowerCase().replace(/\s+/g,'');
         if(pid===poLc||pid.startsWith(poLc)||pmemo.includes(poLc)||stripEq(pid)){
           updated.matchedPO={so_id:so.id,po_id:po.po_id,po,item:it,so};
-          updated.matchedPOSource='so_po';return updated;
+          updated.matchedPOSource='so_po';_canon(pid,po.po_id);return updated;
         }
       }}}
       return updated;
@@ -24357,17 +24371,34 @@ export default function App(){
                     <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>
                       Matched to {poSrc==='batch'?'Batch PO':poSrc==='so_po'||poSrc==='so_deco_po'?'Sales Order PO':'Inventory PO'}: {poMatch.po_number||poMatch.po_id||''}
                       {poSrc==='batch'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
+                      {poSrc==='batch'&&(()=>{const cs=[...new Set((poMatch.source_pos||[]).map(sp=>sp.customer).filter(Boolean))];return cs.length?<span style={{fontWeight:400,color:'#64748b'}}> · {cs.join(', ')}</span>:null})()}
                       {poSrc==='inv_po'&&poMatch.vendor_name&&<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.vendor_name}</span>}
                       {(poSrc==='so_po'||poSrc==='so_deco_po')&&poMatch.so_id&&(()=>{const soCust=cust.find(cc=>cc.id===poMatch.so?.customer_id);return<span style={{fontWeight:400,color:'#64748b'}}> — {poMatch.so_id}{soCust?.name?' · '+soCust.name:''}</span>})()}
                     </div>
                     <div style={{fontSize:11,color:'#475569',marginTop:2}}>
-                      {poSrc==='batch'&&<>Units: {poMatch.total_units||'?'} | Cost: ${(poMatch.total_cost||0).toFixed(2)}
-                        {bill.doc_total>0&&<>{' '}| Bill Total: ${bill.doc_total.toFixed(2)}
-                          {Math.abs((poMatch.total_cost||0)-bill.doc_total)<1
-                            ?<span style={{color:'#166534',fontWeight:700}}> &#10003; Totals match</span>
-                            :<span style={{color:'#dc2626',fontWeight:700}}> &#9888; Totals differ by ${Math.abs((poMatch.total_cost||0)-bill.doc_total).toFixed(2)}</span>}
-                        </>}
-                      </>}
+                      {poSrc==='batch'&&(()=>{
+                        // Split shipments are NORMAL for batches (S&S invoices each shipment) — a
+                        // partial bill used to scream "⚠ Totals differ by $447" in red on every one.
+                        // Frame it cumulatively instead: units billed so far + this bill vs the batch,
+                        // reserving red for the case that matters (over-shipping the batch).
+                        const totalUnits=safeNum(poMatch.total_units)||(poMatch.source_pos||[]).reduce((a,sp)=>a+(sp.items||[]).reduce((a2,it)=>a2+Object.values(it.sizes||{}).reduce((a3,v)=>a3+safeNum(v),0),0),0);
+                        const billedUnits=Object.values(poMatch.billed||{}).reduce((a,v)=>a+safeNum(v),0);
+                        const thisUnits=(bill.items||[]).reduce((a,it)=>a+(it.size&&it.qty>0?safeNum(it.qty):0),0);
+                        const after=billedUnits+thisUnits;
+                        const batchCost=safeNum(poMatch.total_cost);
+                        const closeTotals=batchCost>0&&bill.doc_total>0&&Math.abs(batchCost-bill.doc_total)<1;
+                        return<>Units: {totalUnits||'?'} | Cost: ${batchCost.toFixed(2)}
+                          {bill.doc_total>0&&<>{' '}| Bill Total: ${bill.doc_total.toFixed(2)}
+                            {closeTotals
+                              ?<span style={{color:'#166534',fontWeight:700}}> &#10003; Totals match</span>
+                              :thisUnits>0&&totalUnits>0&&after<=totalUnits
+                              ?<span style={{color:after===totalUnits?'#166534':'#0369a1',fontWeight:700}}> {after===totalUnits?'✓ completes the batch':'◦ partial shipment'} — {billedUnits>0?billedUnits+' billed + ':''}{thisUnits} this bill = {after} of {totalUnits} units{after<totalUnits?' · $'+Math.max(0,batchCost-bill.doc_total).toFixed(2)+' still to come':''}</span>
+                              :thisUnits>0&&totalUnits>0
+                              ?<span style={{color:'#dc2626',fontWeight:700}}> &#9888; over-ships the batch — {after} of {totalUnits} units after this bill</span>
+                              :<span style={{color:'#dc2626',fontWeight:700}}> &#9888; Totals differ by ${Math.abs(batchCost-bill.doc_total).toFixed(2)}</span>}
+                          </>}
+                        </>;
+                      })()}
                       {poSrc==='inv_po'&&<>Items: {poMatch.items?.length||0} | Status: {poMatch.status||'open'}
                       </>}
                       {poSrc==='so_po'&&<>{poMatch.item?.sku||''} {poMatch.item?.name||''} | {poMatch.so_id}
@@ -24403,6 +24434,7 @@ export default function App(){
                   ].map(([label,val,color],i)=><div key={i} style={{padding:'10px 14px',borderRight:'1px solid #f1f5f9'}}>
                     <div style={{fontSize:9,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',marginBottom:2}}>{label}</div>
                     <div style={{fontSize:13,fontWeight:700,color,wordBreak:'break-all'}}>{val}</div>
+                    {i===0&&bill._po_raw&&<div style={{fontSize:9,color:'#94a3b8',marginTop:1}} title="The PO exactly as it appeared on the bill — matched to the order's canonical PO above">bill: {bill._po_raw}</div>}
                   </div>)}
                 </div>
                 {/* Editable fields */}
@@ -24721,7 +24753,25 @@ export default function App(){
           });
           const filtersActive=billHistVendor!=='all'||billHistTime!=='all';
           const selStyle={fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'#fff',color:'#334155',fontWeight:600};
-          const _custOf=sb=>{const po=sb.parsed?.po_number;if(!po)return'';const so=sos.find(s=>s.po_number===po);if(!so)return'';const c=cust.find(cc=>cc.id===so.customer_id);return c?.name||so.customer_name||''};
+          // Customer for a history row. The old lookup keyed on so.po_number — a field bills never
+          // match — so the column showed "—" on every row. Use the stored match first (batch →
+          // source-SO customers; SO → its customer), then fall back to the same po_lines/deco_pos
+          // PO-string scan the matcher uses, for rows saved before a match stuck.
+          const _custOf=sb=>{
+            const p=sb.parsed||{};const m=p.matchedPO;
+            if(p.matchedPOSource==='batch'&&m)return[...new Set((m.source_pos||[]).map(sp=>sp.customer).filter(Boolean))].join(', ');
+            const soId=m?.so_id||m?.so?.id;
+            if(soId){const so=sos.find(s=>s.id===soId);const c=so&&cust.find(cc=>cc.id===so.customer_id);const n=c?.name||so?.customer_name||m?.so?.customer_name;if(n)return n}
+            const po=(p.po_number||'').toLowerCase().replace(/\s+/g,'');if(!po)return'';
+            for(const so of sos){
+              const hit=(so.items||[]).some(it=>(it.po_lines||[]).some(pl=>{const pid=(pl.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===po||pid.startsWith(po)}))
+                ||(so.deco_pos||[]).some(dp=>{const pid=(dp.po_id||'').toLowerCase().replace(/\s+/g,'');return pid===po||pid.startsWith(po)});
+              if(hit){const c=cust.find(cc=>cc.id===so.customer_id);return c?.name||so.customer_name||''}
+            }
+            const sb2=submittedBatches.find(x=>(x.po_number||'').toLowerCase().replace(/\s+/g,'')===po);
+            if(sb2)return[...new Set((sb2.source_pos||[]).map(sp=>sp.customer).filter(Boolean))].join(', ');
+            return'';
+          };
           return<div className="card" style={{marginTop:16}}>
           <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <h2 style={{margin:0}}>Bill History</h2>
