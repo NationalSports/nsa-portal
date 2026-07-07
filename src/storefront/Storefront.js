@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { placementById } from '../lib/artPlacements';
@@ -1557,6 +1557,50 @@ function couponDiscount(coupon, cart, shipping = 0) {
   return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
+// Billing-ZIP collector for club-delivery (pickup) stores. Instead of a bare manual
+// "Billing ZIP" text box, we source the tax ZIP from a Stripe billing AddressElement —
+// which Link autofills for returning shoppers, so most buyers don't type it at all.
+// IMPORTANT: this Elements instance ONLY hosts the address widget; the real charge still
+// runs through the separate PaymentIntent-backed Elements below, unchanged. The amount
+// here is nominal (never charged) and the options object is module-level constant so the
+// Elements never re-initializes and wipes the buyer's input as the tax total updates.
+const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appearance: { theme: 'stripe' } };
+
+// If the Stripe address widget ever fails to render/init, fall back to the plain ZIP
+// input so club-delivery checkout can never be *blocked* by this enhancement.
+class StripeFieldBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain ZIP:', err && err.message); } catch (e) {} }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+function BillingAddressInner({ onZip }) {
+  return (
+    <AddressElement
+      options={{ mode: 'billing', fields: { phone: 'never' } }}
+      onChange={(e) => {
+        const pc = e && e.value && e.value.address && e.value.address.postal_code;
+        if (pc) onZip(String(pc).replace(/\D/g, '').slice(0, 5));
+      }}
+    />
+  );
+}
+
+// Renders the Stripe billing address (its postal drives the sales-tax quote), or the
+// plain ZIP `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
+// isn't available, or if the widget errors.
+function BillingZip({ stripePromise, disabled, onZip, fallback }) {
+  if (disabled || !stripePromise) return fallback;
+  return (
+    <StripeFieldBoundary fallback={fallback}>
+      <Elements stripe={stripePromise} options={STRIPE_ADDR_OPTS}>
+        <BillingAddressInner onZip={onZip} />
+      </Elements>
+    </StripeFieldBoundary>
+  );
+}
+
 function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) {
   const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
@@ -1717,7 +1761,7 @@ function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) 
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
         <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
-        <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
+        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onZip={(z) => setBuyer((b) => ({ ...b, zip: z }))} fallback={<input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} />} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -1866,7 +1910,9 @@ function OrderStatusPage({ store, theme, orderId }) {
   const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
 
   // Labels
-  const shortId = '#' + (order.id || '').slice(0, 8).toUpperCase();
+  // Friendly running order number (migration 00177) once present; older orders
+  // fall back to a short slice of the UUID so they still show *something*.
+  const shortId = order.order_number ? ('#' + order.order_number) : ('#' + (order.id || '').slice(0, 8).toUpperCase());
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';

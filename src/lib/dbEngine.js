@@ -1150,16 +1150,30 @@ const _dbSaveSOInner = async (so) => {
         return false;
       }
     }
-    // Extra guard: even if oldItemIds came back empty, refuse the wipe when the SO still has jobs in the DB.
-    // Jobs reference so_items by item_idx, so if jobs exist there must have been items — saving empty items
-    // would leave orphaned jobs (the SO-1001 failure mode).
+    // Extra guard: even if oldItemIds came back empty, be careful when the SO still has jobs in the DB.
+    // Jobs reference so_items by item_idx, so if jobs exist there must once have been items (the SO-1001 /
+    // SO-1459 failure mode: an art/item save aborts after jobs are written but before items, stranding them).
+    // Note this point is reachable ONLY when the DB already has 0 so_items — the zero-wipe guard above
+    // (oldItemIds.length>0 && client 0) returns first whenever the DB still holds items, and oldItemIds is a
+    // fresh authoritative read. So there is nothing left to wipe here; any jobs are already orphaned.
     if(!items||items.length===0){
       const{count:dbJobCount}=await supabase.from('so_jobs').select('id',{count:'exact',head:true}).eq('so_id',so.id);
       if(dbJobCount&&dbJobCount>0){
-        console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',dbJobCount,'job(s) for',so.id);
-        if(_dbNotify)_dbNotify('Save blocked — items would be wiped while '+dbJobCount+' job(s) still exist. Please reload the page.','error');
-        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:null,newCount:0,reason:'Client save had 0 items but '+dbJobCount+' job(s) still exist in DB'});
-        return false;
+        // Only block while the empty item list is UNtrustworthy — a timed-out so_items load could have hollowed
+        // it. Keep blocking then; a normal reload (0 rows loads fast, rarely times out) flips _itemsHydrated true
+        // and self-clears this. Gate on hydration, mirroring the count-mismatch guard above (see _itemsHydrated).
+        if(!(so._itemsHydrated||_everHydratedItems.has(so.id))){
+          console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',dbJobCount,'job(s) for',so.id,'(items not hydrated this session)');
+          if(_dbNotify)_dbNotify('Save blocked — items would be wiped while '+dbJobCount+' job(s) still exist. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:null,newCount:0,reason:'Client save had 0 items but '+dbJobCount+' job(s) still exist in DB (items not hydrated)'});
+          return false;
+        }
+        // Items loaded cleanly and the order is genuinely empty. The DB items are already gone, so this save
+        // wipes nothing — blocking here is a pure deadlock that re-fires on every reload (the SO-1459/1460
+        // _version-climb). Allow it as a no-op success so the failed-save retry loop clears. The orphan jobs
+        // are left untouched for get_health_report()/so-health-alert to surface for admin cleanup / re-import.
+        console.warn('[DB] SO',so.id,'saving empty over',dbJobCount,'orphan job(s) — items hydrated & genuinely empty; no-op save, orphan jobs left for health-report cleanup');
+        _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
       }
     }
     // Safety check: if client has 0 decorations but DB has some, abort to prevent data loss — but ONLY when

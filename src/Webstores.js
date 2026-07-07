@@ -6144,6 +6144,32 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setImgBusy(false);
   };
 
+  // The additional-images strip is one ordered gallery: the leftmost photo is the MAIN
+  // (front) image, the rest are extra angles. `image` holds the front override (null = the
+  // catalog stock photo) and `extraImages` the angles, so the effective order the rep sees
+  // and reorders is [front, ...extras]. The BACK photo is kept as its own labelled tile —
+  // it's the canvas the storefront uses for the number/name & back-logo preview, not a
+  // plain angle — so it stays out of this reorderable sequence.
+  const [dragPhoto, setDragPhoto] = useState(null); // index of the tile being dragged to reorder
+  const effFront = image || stockImg || item.image_url || null;
+  const galleryPhotos = [effFront, ...extraImages].filter(Boolean);
+  // Rewrite the front + extra images from a new ordered list — position 0 becomes the main.
+  // Deleting the main promotes the next photo; clearing everything falls back to stock.
+  const applyGallery = (list) => {
+    const clean = list.filter(Boolean);
+    setImage(clean[0] || null);
+    setExtraImages(clean.slice(1));
+  };
+  const movePhoto = (from, to) => {
+    if (from == null || to == null || from === to || from < 0 || to < 0) return;
+    const list = [...galleryPhotos];
+    const [moved] = list.splice(from, 1);
+    list.splice(to, 0, moved);
+    applyGallery(list);
+  };
+  const makeMainPhoto = (i) => movePhoto(i, 0);
+  const deletePhoto = (i) => applyGallery(galleryPhotos.filter((_, j) => j !== i));
+
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
@@ -6570,36 +6596,44 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         <ItemSection title="Additional images" hint="· front, back & extra angles shown on the product page">
           <div
-            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
+            onDragOver={(e) => { if (dragPhoto != null) return; if (!Array.from(e.dataTransfer.types || []).includes('Files')) return; e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
             onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); }}
-            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const first = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (first) addExtraFile(first); else [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
+            onDrop={(e) => { if (dragPhoto != null) return; e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const first = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (first) addExtraFile(first); else [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
             style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: `1.5px dashed ${mainDragOver ? '#2563eb' : '#d7dbe2'}`, borderRadius: 10, background: mainDragOver ? '#eff4ff' : '#fafbfc', transition: 'background .12s, border-color .12s' }}>
-            {/* Front (main) photo */}
-            <div style={{ position: 'relative', cursor: 'pointer' }} title="Front photo — click to change" onClick={() => mainImgRef.current?.click()}>
-              <div style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid #cbd5e1', overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
-                {(image || stockImg || item.image_url) ? <img src={image || stockImg || item.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#94a3b8' }}>No photo</span>}
+            {/* One ordered gallery — the leftmost tile is the MAIN (front) photo. Drag to reorder,
+                ★ to promote another photo to main, × to remove any of them (including the main). */}
+            {galleryPhotos.map((url, i) => { const isMain = i === 0; const dragging = dragPhoto === i; return (
+              <div key={url + '|' + i}
+                draggable
+                onDragStart={(e) => { setDragPhoto(i); e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => { if (dragPhoto != null && dragPhoto !== i) { e.preventDefault(); e.stopPropagation(); } }}
+                onDrop={(e) => { if (dragPhoto == null || dragPhoto === i) return; e.preventDefault(); e.stopPropagation(); movePhoto(dragPhoto, i); setDragPhoto(null); }}
+                onDragEnd={() => setDragPhoto(null)}
+                onClick={isMain ? (() => mainImgRef.current?.click()) : undefined}
+                title={isMain ? 'Main (front) photo — click to change · drag to reorder' : 'Drag to reorder · ★ to make main'}
+                style={{ position: 'relative', cursor: isMain ? 'pointer' : 'grab', opacity: dragging ? 0.4 : 1 }}>
+                <div style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid ' + (isMain ? '#cbd5e1' : '#e2e8f0'), overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
+                  <img src={url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                {isMain
+                  ? <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
+                  : <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>}
+                <button type="button" title="Remove this photo" onClick={(e) => { e.stopPropagation(); deletePhoto(i); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
               </div>
-              <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
-              {image && <button type="button" title="Remove custom photo (revert to stock)" onClick={(e) => { e.stopPropagation(); setImage(null); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
-            </div>
-            {/* Back photo */}
+            ); })}
+            {/* Back photo — kept separate: it's the canvas the storefront uses for the number,
+                name & back-logo preview, so it isn't part of the reorderable front gallery. */}
             {(backImage || stockBackImg) && (
-              <div style={{ position: 'relative' }} title="Back photo">
+              <div style={{ position: 'relative' }} title="Back photo — used for the number, name & back-logo preview">
                 <img src={backImage || stockBackImg} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
                 <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>BACK</span>
                 {backImage && <button type="button" title="Remove custom back photo" onClick={() => setBackImage(null)} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
               </div>
             )}
-            {extraImages.map((url, i) => (
-              <div key={i} style={{ position: 'relative' }}>
-                <img src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
-                <button type="button" onClick={() => setExtraImages((p) => p.filter((_, j) => j !== i))} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
-              </div>
-            ))}
             <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
             <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Add images'}</button>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Click MAIN to change the front photo · drag any image here to add an extra angle</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, × to remove one. Drop image files here to add extra angles.</div>
         </ItemSection>
         </div>
       </div>
@@ -10644,7 +10678,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     if (fBatch === 'batched' && !o.so_id) return false;
     if (fBatch === 'unbatched' && o.so_id) return false;
     if (q.trim()) {
-      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')}`.toLowerCase();
+      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')} ${o.order_number || ''}`.toLowerCase();
       if (!hay.includes(q.toLowerCase())) return false;
     }
     return true;
@@ -10702,7 +10736,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               <React.Fragment key={o.id}>
               <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
-                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
+                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div>{o.order_number && <div style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>#{o.order_number}</div>}</td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
                 <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
@@ -10817,6 +10851,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
+            {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
               {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
               {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
