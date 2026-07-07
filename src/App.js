@@ -25965,28 +25965,35 @@ export default function App(){
           const m=billPushModal;const nClean=m.cleanBills.length,nProb=m.problemBills.length;
           const _lbl=b=>(b.parsed?.doc_number?'Doc #'+b.parsed.doc_number:(b.file||'Bill'));
           const _vend=b=>(b.parsed?.vendor||b.parsed?.supplier||'');
-          return<div className="modal-overlay" style={{zIndex:1200}} onClick={()=>setBillPushModal(null)}>
-            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
-              <div className="modal-header" style={{background:'#fff',borderBottom:'1px solid '+LGRAY}}>
+          const CLEAN_CAP=25,PROB_CAP=20,ERR_CAP=6;
+          return<div className="modal-overlay" style={{zIndex:1200,alignItems:'center'}} onClick={()=>setBillPushModal(null)}>
+            <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:640,display:'flex',flexDirection:'column',overflow:'hidden',maxHeight:'calc(100vh - 80px)'}}>
+              <div className="modal-header" style={{background:'#fff',borderBottom:'1px solid '+LGRAY,flex:'0 0 auto'}}>
                 <h2 style={{margin:0,display:'flex',alignItems:'center',gap:8,color:NAVY,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4}}>⚠️ {nProb} bill{nProb===1?'':'s'} need{nProb===1?'s':''} a look</h2>
                 <button className="modal-close" onClick={()=>setBillPushModal(null)}>×</button>
               </div>
-              <div className="modal-body">
-                <div style={{fontSize:12,color:'#475569',marginBottom:14,lineHeight:1.5}}>A few bills couldn't be matched cleanly — a duplicate doc&nbsp;# or billing more than was ordered. Push the ones that matched exactly and park the rest under <b>🕒 Look at later</b>, or override and push everything.</div>
-                {nClean>0&&<div style={{marginBottom:nProb?14:0,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8}}>
-                  <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:6}}>✅ {nClean} matched exactly — will push</div>
-                  {m.cleanBills.map(b=><div key={b.id} style={{fontSize:11,color:'#15803d',padding:'2px 0'}}>{_lbl(b)}{b.parsed?.po_number?' · PO '+b.parsed.po_number:''}{_vend(b)?' · '+_vend(b):''}</div>)}
+              <div className="modal-body" style={{overflowY:'auto',flex:'1 1 auto',minHeight:0}}>
+                <div style={{fontSize:13,color:TXTL,marginBottom:14,lineHeight:1.55}}>A few bills couldn't be matched cleanly — a duplicate doc&nbsp;# or billing more than was ordered. Push the ones that matched exactly and park the rest under <b style={{color:NAVY}}>Look at later</b>, or override and push everything.</div>
+                {nClean>0&&<div style={{marginBottom:nProb?14:0,padding:'12px 14px',background:GREEN_BG,border:'1px solid #bcdcc8',borderRadius:6}}>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:14,color:GREEN,marginBottom:8,textTransform:'uppercase',letterSpacing:.3}}>✓ {nClean} matched exactly — will push</div>
+                  <div style={{maxHeight:150,overflowY:'auto'}}>
+                    {m.cleanBills.slice(0,CLEAN_CAP).map(b=><div key={b.id} style={{fontSize:12,color:'#15803d',padding:'2px 0'}}>{_lbl(b)}{b.parsed?.po_number?' · PO '+b.parsed.po_number:''}{_vend(b)?' · '+_vend(b):''}</div>)}
+                    {nClean>CLEAN_CAP&&<div style={{fontSize:12,color:GREEN,fontWeight:700,paddingTop:4}}>+ {nClean-CLEAN_CAP} more</div>}
+                  </div>
                 </div>}
-                {nProb>0&&<div style={{padding:'10px 12px',background:'#fff',border:'1px solid #fde68a',borderRadius:8}}>
-                  <div style={{fontSize:12,fontWeight:800,color:'#b45309',marginBottom:8}}>🕒 {nProb} with problems — will move to Look at later</div>
-                  {m.problemBills.map(({bill,errs})=><div key={bill.id} style={{paddingBottom:8,marginBottom:8,borderBottom:'1px solid #fef3c7'}}>
-                    <div style={{fontSize:12,fontWeight:700,color:'#92400e'}}>{_lbl(bill)}{_vend(bill)?' · '+_vend(bill):''}</div>
-                    <ul style={{margin:'4px 0 0',paddingLeft:18}}>{errs.map((e,i)=><li key={i} style={{fontSize:11,color:'#b45309'}}>{e}</li>)}</ul>
-                  </div>)}
+                {nProb>0&&<div style={{padding:'12px 14px',background:GOLD_BG,border:'1px solid #e7d3a6',borderRadius:6}}>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:14,color:GOLD_D,marginBottom:8,textTransform:'uppercase',letterSpacing:.3}}>🕒 {nProb} with problems — will move to Look at later</div>
+                  <div style={{maxHeight:230,overflowY:'auto'}}>
+                    {m.problemBills.slice(0,PROB_CAP).map(({bill,errs})=><div key={bill.id} style={{paddingBottom:8,marginBottom:8,borderBottom:'1px solid #e7d3a6'}}>
+                      <div style={{fontSize:12.5,fontWeight:700,color:'#92400e'}}>{_lbl(bill)}{_vend(bill)?' · '+_vend(bill):''}</div>
+                      <ul style={{margin:'4px 0 0',paddingLeft:18}}>{errs.slice(0,ERR_CAP).map((e,i)=><li key={i} style={{fontSize:11.5,color:'#b45309'}}>{e}</li>)}{errs.length>ERR_CAP&&<li key="more" style={{fontSize:11,color:'#a16207',listStyle:'none',marginLeft:-18}}>+ {errs.length-ERR_CAP} more line{errs.length-ERR_CAP>1?'s':''}</li>}</ul>
+                    </div>)}
+                    {nProb>PROB_CAP&&<div style={{fontSize:12,color:GOLD_D,fontWeight:700,paddingTop:2}}>+ {nProb-PROB_CAP} more bill{nProb-PROB_CAP>1?'s':''} with problems</div>}
+                  </div>
                 </div>}
               </div>
-              <div className="modal-footer" style={{flexWrap:'wrap',justifyContent:'space-between',gap:8}}>
-                <button className="btn btn-secondary" style={{fontSize:11,color:'#b45309',borderColor:'#fcd34d'}} onClick={_pushAllOverride} title="Apply every selected bill anyway, problems included">Push all anyway (override)</button>
+              <div className="modal-footer" style={{flexWrap:'wrap',justifyContent:'space-between',gap:8,flex:'0 0 auto'}}>
+                <button className="btn btn-secondary" style={{fontSize:11,color:RED,borderColor:'#e6c9cc',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5}} onClick={_pushAllOverride} title="Apply every selected bill anyway, problems included">Push all anyway (override)</button>
                 <div style={{display:'flex',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillPushModal(null)}>Cancel</button>
                   <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} onClick={_pushCleanParkProblems}>
