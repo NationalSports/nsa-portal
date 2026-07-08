@@ -287,6 +287,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
+import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
   supabase,
   scheduleEmailSend,
@@ -5428,6 +5429,125 @@ export default function App(){
   // A ?scan= deep link (printed QR labels) that arrives while in mobile mode — handed to
   // MobilePortal's scan router instead of handleScanResult, which only drives desktop state.
   const[mobileScanReq,setMobileScanReq]=useState(null);
+
+  // ─── BOX TRACKING (BX-#### license plates — BOX_TRACKING_PLAN.md v1, migration 00185) ───
+  // Persists what the ephemeral whViewIF._boxes UI never captured: which physical box holds
+  // which SKUs×sizes for which IF/SO, and where it is. While the boxes table isn't deployed,
+  // every path degrades silently to today's behavior (IF-coded labels, no box rows) — the
+  // missing-table twin of the webstore-checkout missingFn pattern.
+  const[boxRows,setBoxRows]=useState([]);
+  const[boxModal,setBoxModal]=useState(null);// {box, combineWith} — scan-action modal (desktop)
+  const _boxesMissing=useRef(false);
+  const _boxTableGone=(error)=>!!error&&(error.code==='42P01'||error.code==='PGRST205'||/relation .*boxes.* does not exist|schema cache/i.test(error.message||''));
+  const _loadBoxes=async()=>{
+    if(!supabase||_boxesMissing.current)return;
+    try{
+      const{data,error}=await supabase.from('boxes').select('*').order('created_at',{ascending:false}).limit(2000);
+      if(error){
+        if(_boxTableGone(error)){_boxesMissing.current=true;console.warn('[boxes] table not deployed — box tracking off (labels stay IF-coded)')}
+        else console.warn('[boxes] load failed:',error.message);
+        return;
+      }
+      setBoxRows(data||[]);
+    }catch(e){console.warn('[boxes] load threw:',e)}
+  };
+  useEffect(()=>{if(!dbLoading)_loadBoxes()},[dbLoading]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Durable full-row upsert (the _siMarkDoc retry shape): a dropped box write means a printed
+  // plate that scans to nothing, so retry with backoff and say so on final failure.
+  const _dbSaveBox=async(row,retries=3)=>{
+    if(!supabase||_boxesMissing.current||!row?.id)return false;
+    let lastErr=null;
+    for(let i=0;i<=retries;i++){
+      if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+      try{
+        const{error}=await supabase.from('boxes').upsert(row);
+        if(!error){setBoxRows(prev=>prev.some(b=>b.id===row.id)?prev.map(b=>b.id===row.id?{...b,...row}:b):[row,...prev]);return true}
+        if(_boxTableGone(error)){_boxesMissing.current=true;console.warn('[boxes] table not deployed — box not persisted');return false}
+        lastErr=error;
+      }catch(e){lastErr=e}
+    }
+    nf('Box '+row.id+' didn\'t save ('+(lastErr?.message||lastErr)+') — its label will scan to nothing until re-created','error');
+    return false;
+  };
+  // Durable partial update (status / bin / contents), mirrored into local rows + the open modal.
+  const _boxUpdate=async(id,upd,retries=3)=>{
+    if(!supabase||_boxesMissing.current||!id)return false;
+    const patch={...upd,updated_at:new Date().toISOString()};
+    let lastErr=null;
+    for(let i=0;i<=retries;i++){
+      if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+      try{
+        const{error}=await supabase.from('boxes').update(patch).eq('id',id);
+        if(!error){
+          setBoxRows(prev=>prev.map(b=>b.id===id?{...b,...patch}:b));
+          setBoxModal(prev=>prev&&prev.box?.id===id?{...prev,box:{...prev.box,...patch}}:prev);
+          return true;
+        }
+        if(_boxTableGone(error)){_boxesMissing.current=true;return false}
+        lastErr=error;
+      }catch(e){lastErr=e}
+    }
+    nf('Box '+id+' didn\'t update ('+(lastErr?.message||lastErr)+') — it shows stale status/location for everyone','error');
+    return false;
+  };
+  // Mint a plate + persist a box for what a pull just physically boxed. Returns the row only
+  // when it persisted (the label should carry the plate) — null means print today's IF label.
+  const createBoxForPull=async({ifId,soId,contents})=>{
+    if(!supabase||_boxesMissing.current||!(contents||[]).length)return null;
+    let plate=null;
+    try{const n=await _nextCounter('box_plate');if(n)plate=plateFromCounter(n)}catch(e){/* fall through */}
+    if(!plate)plate='BX-'+Date.now().toString(36).toUpperCase().slice(-6);// counter RPC not deployed — unique (non-sequential) plate
+    const row=makeBoxRow({id:plate,contents,soId,ifId,createdBy:cu?.id||'warehouse'});
+    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between pull-click and label print
+  };
+  // Resolve a scanned BX code → freshest row, following merged_into redirects (max 5 hops).
+  const lookupBox=async(code)=>{
+    const id=String(code||'').trim().toUpperCase();
+    const fetchOne=async(bid)=>{
+      if(supabase&&!_boxesMissing.current){
+        try{
+          const{data,error}=await supabase.from('boxes').select('*').eq('id',bid).maybeSingle();
+          if(error){if(_boxTableGone(error))_boxesMissing.current=true}
+          else if(data)return data;
+        }catch(e){/* fall back to local rows */}
+      }
+      return boxRows.find(b=>b.id===bid)||null;
+    };
+    let cur=await fetchOne(id),hops=0;
+    while(cur&&cur.status==='combined'&&cur.merged_into&&hops++<5){
+      const nxt=await fetchOne(cur.merged_into);
+      if(!nxt)break;
+      cur=nxt;
+    }
+    return cur;
+  };
+  const openBoxByCode=async(code)=>{
+    const box=await lookupBox(code);
+    if(!box){nf('Box "'+code+'" not found'+(_boxesMissing.current?' — boxes table not deployed yet':''),'warn');return false}
+    if(box.id!==String(code).trim().toUpperCase())nf(String(code).trim().toUpperCase()+' was combined into '+box.id);
+    setBoxModal({box,combineWith:''});
+    return true;
+  };
+  // Reprint a box's 4×6 (plate QR + team/SO context) via the shared label renderer.
+  const printBoxLabel=(box)=>{
+    const _so=sos.find(s=>s.id===box.so_id);
+    const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
+    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',scanBase:window.location.origin+window.location.pathname}));
+  };
+  // Combine: absorb `srcBox` into the box with id `tgtId` — sum SKUs+sizes, mark the absorbed
+  // plate combined + merged_into (its label keeps resolving via the lookup redirect), reprint one label.
+  const combineBoxes=async(srcBox,tgtId)=>{
+    const tgt=boxRows.find(b=>b.id===tgtId&&b.id!==srcBox.id);
+    if(!tgt){nf('Pick a box to combine into','error');return}
+    const merged=sumBoxContents(tgt.contents||[],srcBox.contents||[]);
+    const survivorPatch={contents:merged,source_refs:mergeSourceRefs(tgt.source_refs,srcBox.source_refs)};
+    if(!(await _boxUpdate(tgt.id,survivorPatch)))return;
+    await _boxUpdate(srcBox.id,{status:'combined',merged_into:tgt.id});
+    const survivor={...tgt,...survivorPatch,updated_at:new Date().toISOString()};
+    printBoxLabel(survivor);
+    setBoxModal({box:survivor,combineWith:''});
+    nf(srcBox.id+' combined into '+tgt.id+' — one label reprinted');
+  };
 
   const isA=cu?.role==='admin'||cu?.role==='super_admin';
   const isSA=cu?.role==='super_admin';
@@ -16132,7 +16252,10 @@ export default function App(){
                       // Atomic per-line DB updates for cross-tab sync
                       pickItems.forEach(pi=>{if(!pi.activePick)return;const qtysForItem=pullQtys[pi.itemIdx]||{};const pq={};pi.szKeys.forEach(sz=>{pq[sz]=qtysForItem[sz]||0});_dbUpdatePickLineStatus(t.soId,pi.itemIdx,pi.activePick.pick_id,'pulled',pq)});
                       pickItems.forEach(pi=>{const qtysForItem=pullQtys[pi.itemIdx]||{};const pulledSizes=pi.szKeys.filter(sz=>(qtysForItem[sz]||0)>0).map(sz=>sz+':'+qtysForItem[sz]).join(' ');const qty=pi.szKeys.reduce((a,sz)=>a+(qtysForItem[sz]||0),0);if(qty>0)addWhAction({type:'pulled',pickId:pickIdToUse,soId:t.soId,customer:t.cName,sku:pi.sku,name:pi.name,color:pi.color,productId:pi.p?.id||pi.item.product_id,sizes:pulledSizes,qty,by:cu?.id||'warehouse'})});
-                      // Auto-print 4x6 label for the box that was just pulled (only the items+sizes pulled this round)
+                      // Auto-print 4x6 label for the box that was just pulled (only the items+sizes pulled this round).
+                      // Box tracking v1: this pull also mints a BX plate + persists a boxes row of exactly these
+                      // SKUs×sizes; when that persists, the label's QR encodes the plate (scan → Box Action modal).
+                      // If the boxes table / counter RPC isn't deployed, it prints today's IF-coded label unchanged.
                       try{
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
@@ -16140,7 +16263,11 @@ export default function App(){
                           const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
-                          printQrLabel({id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines});
+                          const legacyLabel={id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines};
+                          const boxContents=pulledItemsForLabel.map(({pi,qtys})=>({sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes:Object.fromEntries(pi.szKeys.filter(sz=>(qtys[sz]||0)>0).map(sz=>[sz,qtys[sz]]))}));
+                          createBoxForPull({ifId:pickIdToUse,soId:t.soId,contents:boxContents}).then(box=>{
+                            printQrLabel(box?{...buildBoxLabel(box,{program:t.cName||'',rep:t.rep&&t.rep!=='—'?t.rep:'',scanBase:window.location.origin+window.location.pathname}),shipBadge:labelShipBadge}:legacyLabel);
+                          }).catch(()=>printQrLabel(legacyLabel));
                         }
                       }catch(e){/* label print is best-effort */}
                       nf('✅ '+pickIdToUse+(isPartial?' partially':'')+' pulled — '+totPulling2+' units');notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));setWhPulling(false);setWhViewIF(null);
@@ -16221,6 +16348,25 @@ export default function App(){
               })()}
             </div>
           </div>
+
+          {/* Boxes (BX plates) holding this IF — answers "where is IF-xxxx" */}
+          {(()=>{
+            const ifBoxes=boxRows.filter(b=>b.if_id===pickId||(b.source_refs||[]).some(r=>r?.type==='IF'&&r.id===pickId));
+            if(!ifBoxes.length)return null;
+            return<div className="card" style={{marginBottom:12,borderLeft:'3px solid #0891b2'}}>
+              <div style={{padding:'12px 18px'}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:8}}>📦 Boxes ({ifBoxes.length})</div>
+                {ifBoxes.map(b=>{const meta=BOX_STATUS_META[b.status]||{label:b.status,color:'#475569',bg:'#f1f5f9'};
+                  return<div key={b.id} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',padding:'6px 10px',borderRadius:6,background:'#f8fafc',border:'1px solid #e2e8f0',marginBottom:6,cursor:'pointer'}} onClick={()=>setBoxModal({box:b,combineWith:''})}>
+                    <span style={{fontFamily:'monospace',fontWeight:800,color:'#0e7490'}}>{b.id}</span>
+                    <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,fontWeight:700,color:meta.color,background:meta.bg}}>{meta.label}</span>
+                    {b.bin&&<span style={{fontSize:11,fontWeight:800,padding:'2px 8px',borderRadius:6,background:'#cffafe',color:'#0e7490'}}>📍 {b.bin}</span>}
+                    {b.merged_into&&<span style={{fontSize:10,color:'#64748b'}}>→ {b.merged_into}</span>}
+                    <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{boxUnits(b.contents)} units</span>
+                  </div>})}
+              </div>
+            </div>;
+          })()}
 
           {/* Shipping Label Section — for ship_customer or ship_deco */}
           {showShipping&&<div className="card" style={{marginBottom:12,borderLeft:'3px solid #166534'}}>
@@ -30340,6 +30486,8 @@ export default function App(){
     // Also handle JSON-encoded QR data (legacy format)
     try{const j=JSON.parse(scanVal);if(j.id)scanVal=j.id}catch{}
     const upper=scanVal.toUpperCase();
+    // Box plate (BX-####) → Box Action modal (contents, linked IF/SO, move/status/combine)
+    if(isBoxCode(upper)){openBoxByCode(upper);return}
     // Check if it's an Item Fulfillment (IF-XXXX)
     if(upper.startsWith('IF-')){
       for(const so of sos){
@@ -31164,6 +31312,71 @@ export default function App(){
         </div>
       </div>
     </div></div>}
+
+    {/* BOX ACTION MODAL — scanning a BX plate lands here (BOX_TRACKING_PLAN.md v1) */}
+    {boxModal&&(()=>{
+      const bx=boxModal.box;
+      const meta=BOX_STATUS_META[bx.status]||{label:bx.status,color:'#475569',bg:'#f1f5f9'};
+      const combineTargets=boxRows.filter(b=>b.id!==bx.id&&b.status!=='combined'&&b.status!=='shipped');
+      const openLinkedSO=()=>{const so=sos.find(s=>s.id===bx.so_id);if(!so){nf('SO '+bx.so_id+' not found','warn');return}setBoxModal(null);setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('tracking');setPg('orders')};
+      const boxActive=bx.status!=='combined';
+      return<div className="modal-overlay" onClick={()=>setBoxModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
+        <div style={{padding:'14px 20px',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+          <span style={{fontSize:18,fontWeight:900,fontFamily:'monospace',color:'#0e7490'}}>📦 {bx.id}</span>
+          <span style={{fontSize:11,padding:'2px 10px',borderRadius:10,fontWeight:800,color:meta.color,background:meta.bg}}>{meta.label}</span>
+          {bx.merged_into&&<span style={{fontSize:11,color:'#64748b'}}>absorbed into <strong>{bx.merged_into}</strong></span>}
+          <button onClick={()=>setBoxModal(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',cursor:'pointer',fontSize:20}}>×</button>
+        </div>
+        <div className="modal-body" style={{maxHeight:'70vh',overflowY:'auto'}}>
+          {/* Linked refs + location */}
+          <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:10,fontSize:12}}>
+            {bx.if_id&&<span>IF: <strong style={{color:'#1e40af'}}>{bx.if_id}</strong></span>}
+            {bx.so_id&&<span>SO: <strong style={{color:'#1e40af',cursor:'pointer'}} onClick={openLinkedSO}>{bx.so_id}</strong></span>}
+            {(bx.source_refs||[]).filter(r=>r&&r.type==='IF'&&r.id!==bx.if_id).map(r=><span key={r.type+r.id} style={{color:'#64748b'}}>+{r.id}</span>)}
+            <span style={{marginLeft:'auto',color:'#64748b'}}>{boxUnits(bx.contents)} units</span>
+          </div>
+          <div style={{display:'flex',gap:6,alignItems:'flex-end',marginBottom:12}}>
+            <div style={{flex:1}}>
+              <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Location / Bin</label>
+              <input className="form-input" style={{fontSize:12,padding:'6px 8px'}} placeholder="e.g. A3, deco staging, dock" value={boxModal.binDraft??(bx.bin||'')} onChange={e=>setBoxModal(m=>({...m,binDraft:e.target.value}))} disabled={!boxActive}/>
+            </div>
+            <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={!boxActive||(boxModal.binDraft??(bx.bin||''))===(bx.bin||'')} onClick={async()=>{if(await _boxUpdate(bx.id,{bin:(boxModal.binDraft||'').trim()||null}))nf(bx.id+' location saved')}}>Save</button>
+          </div>
+          {/* Contents */}
+          <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:4}}>Contents</div>
+          {(bx.contents||[]).length===0&&<div style={{fontSize:12,color:'#94a3b8',marginBottom:8}}>No contents recorded</div>}
+          {(bx.contents||[]).map((e,i)=>{const sz=Object.entries(e.sizes||{}).filter(([,v])=>v>0);
+            return<div key={i} style={{padding:'6px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:6}}>
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',fontSize:12}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{e.sku}</span>
+                <span style={{fontWeight:600}}>{e.name}</span>
+                {e.color&&<span className="badge badge-gray">{e.color}</span>}
+                <span style={{marginLeft:'auto',color:'#64748b'}}>{sz.reduce((a,[,v])=>a+v,0)} units</span>
+              </div>
+              <div style={{fontFamily:'monospace',fontSize:11,color:'#475569',marginTop:2}}>{sz.map(([s,v])=>s+': '+v).join('  ')}</div>
+            </div>})}
+          {/* Actions */}
+          {boxActive&&<>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',margin:'12px 0 6px'}}>Actions</div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+              {[['staged','Staged'],['at_deco','➡️ At Deco'],['shipped','🚚 Shipped']].map(([st,lbl])=>
+                <button key={st} className={`btn btn-sm ${bx.status===st?'btn-primary':'btn-secondary'}`} style={{fontSize:11}} disabled={bx.status===st} onClick={async()=>{if(await _boxUpdate(bx.id,{status:st}))nf(bx.id+' marked '+(BOX_STATUS_META[st]?.label||st))}}>{lbl}</button>)}
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11,marginLeft:'auto'}} onClick={()=>printBoxLabel(bx)}>🖨️ Reprint Label</button>
+            </div>
+            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'flex-end'}}>
+              <div style={{flex:1}}>
+                <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>🔗 Combine this box into…</label>
+                <select className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={boxModal.combineWith||''} onChange={e=>setBoxModal(m=>({...m,combineWith:e.target.value}))}>
+                  <option value="">Select a box…</option>
+                  {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} units)</option>)}
+                </select>
+              </div>
+              <button className="btn btn-sm btn-secondary" style={{fontSize:11}} disabled={!boxModal.combineWith} onClick={()=>combineBoxes(bx,boxModal.combineWith)}>Combine</button>
+            </div>}
+          </>}
+        </div>
+      </div></div>;
+    })()}
 
     {/* GLOBAL SCAN MODAL */}
     {scanModalOpen&&<div className="modal-overlay" onClick={()=>setScanModalOpen(false)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500,background:'#0f172a',border:'2px solid #334155'}}>
