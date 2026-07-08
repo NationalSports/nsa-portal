@@ -8321,12 +8321,15 @@ function useVendorMap() {
   return vendorMap;
 }
 
-// Debounced live search across all vendor APIs. Returns { styles, errors, loading, ran }.
+// Debounced live search across all vendor APIs. Returns { styles, errors, loading, ran,
+// retry } — retry() re-fires the same query, for when a vendor proxy times out.
 function useVendorCatalogSearch(q, vendorMap, { enabled = true, delay = 550 } = {}) {
   const [loading, setLoading] = useState(false);
   const [styles, setStyles] = useState([]);
   const [errors, setErrors] = useState({});
   const [ran, setRan] = useState(false);
+  const [tick, setTick] = useState(0);
+  const retry = useCallback(() => setTick((t) => t + 1), []);
   useEffect(() => {
     const query = (q || '').trim();
     if (!enabled || query.length < 2 || vendorMap == null) { setStyles([]); setErrors({}); setRan(false); setLoading(false); return; }
@@ -8338,8 +8341,8 @@ function useVendorCatalogSearch(q, vendorMap, { enabled = true, delay = 550 } = 
       finally { if (!cancelled) { setLoading(false); setRan(true); } }
     }, delay);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [q, vendorMap, enabled, delay]);
-  return { styles, errors, loading, ran };
+  }, [q, vendorMap, enabled, delay, tick]);
+  return { styles, errors, loading, ran, retry };
 }
 
 // Import the picked colorways (Map key -> { style, color }) into `products`; returns the rows.
@@ -8422,17 +8425,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   // (Declared after the favorites state above — vendorEnabled reads favOnly.)
   const vendorMap = useVendorMap();
   const vendorEnabled = !favOnly && q.trim().length >= 2;
-  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
+  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan, retry: vendorRetry } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
   const [vendorSel, setVendorSel] = useState(() => new Map()); // key -> { style, color }
   const [vendorImporting, setVendorImporting] = useState(false);
   const toggleVendor = (s, c) => setVendorSel((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
-  const addVendorSel = async () => {
-    if (!vendorSel.size || vendorImporting) return;
-    setVendorImporting(true);
-    try { const rows = await importVendorSelections(vendorSel); if (onPickMany && rows.length) onPickMany(rows, [], {}); setVendorSel(new Map()); }
-    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
-    finally { setVendorImporting(false); }
-  };
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -8589,9 +8585,35 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
       .map((s) => ({ ...s, colors: (s.colors || []).filter((c) => productMatchesColors(c.colorName, colorWords)) }))
       .filter((s) => (s.colors || []).length > 0);
   }, [vendorDeduped, colorOnly, colorWords]);
-  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
+  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row. Rows are
+  // also remembered in a cache so a pick made under one search stays in the selection tray
+  // after the rep searches something else (the row falls out of `results` but not the tray).
+  const selCacheRef = useRef(new Map());
   const rowById = new Map(swatchPool.map((r) => [r.id, r]));
-  const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
+  for (const r of swatchPool) selCacheRef.current.set(r.id, r);
+  const selProducts = [...selected].map((id) => rowById.get(id) || selCacheRef.current.get(id)).filter(Boolean);
+  const selTotal = selProducts.length + vendorSel.size;
+  // One "Add to store" for everything: vendor picks import into `products` first, merge
+  // into the selection, then the shared setup/art modal opens over the whole set.
+  const openBulkAdd = async () => {
+    let ids = [...selected];
+    if (vendorSel.size) {
+      setVendorImporting(true);
+      try {
+        const rows = await importVendorSelections(vendorSel);
+        rows.forEach((r) => selCacheRef.current.set(r.id, r));
+        ids = [...new Set([...ids, ...rows.map((r) => r.id)])];
+        setSelected(new Set(ids));
+        setVendorSel(new Map());
+      } catch (e) { setVendorImporting(false); alert('Could not import from vendor: ' + (e?.message || e)); return; }
+      setVendorImporting(false);
+    }
+    if (!ids.length) return;
+    const first = ids.length === 1 ? (rowById.get(ids[0]) || selCacheRef.current.get(ids[0])) : null;
+    setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0);
+    setBPrice((p) => p || (first ? String(first.retail_price ?? '') : ''));
+    setBulkOpen(true);
+  };
 
   const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
     <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
@@ -8680,28 +8702,54 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                 <span style={{ fontWeight: 800, fontSize: 13.5 }}>Live vendor catalogs</span>
                 <span style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec — picked colors are imported, then added to the {destLabel}.</span>
               </div>
-              {Object.keys(vendorErrors || {}).length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {Object.keys(vendorErrors).join(', ')}.</div>}
+              {Object.keys(vendorErrors || {}).length > 0 && (
+                <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>
+                  Couldn't reach: {Object.keys(vendorErrors).join(', ')}.
+                  <button type="button" onClick={vendorRetry} disabled={vendorLoading} style={{ marginLeft: 8, fontSize: 11.5, fontWeight: 800, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 999, padding: '2px 10px', cursor: 'pointer' }}>↻ Retry</button>
+                </div>
+              )}
               {vendorLoading && vendorNew.length === 0
                 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching vendor catalogs…</div>
                 : vendorNew.length === 0 && vendorRan
                 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>{colorOnly && colorWords.length && vendorDeduped.length > 0 ? 'Vendor styles matched, but none in the school colors — turn off "School colors" to see them.' : 'No vendor styles matched either. Try the exact style number (e.g. DM130).'}</div>
                 : <VendorStyleCards styles={vendorNew} selected={vendorSel} onToggle={toggleVendor} />}
               {vendorSel.size > 0 && (
-                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <button className="btn btn-primary" disabled={vendorImporting} onClick={addVendorSel}>{vendorImporting ? 'Importing…' : `Add ${vendorSel.size} from vendor to ${destLabel}`}</button>
-                  <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Imported at ~50% margin — reprice after.</span>
-                </div>
+                <div style={{ fontSize: 11.5, color: '#3730a3', fontWeight: 700 }}>{vendorSel.size} vendor color{vendorSel.size === 1 ? '' : 's'} in your selection — add everything together from the tray below.</div>
               )}
             </div>
           )}
         </div>
       </KitScope>
-      {selProducts.length > 0 && (
-        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
-          <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to {destLabel} →</button>
-          <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
-          <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
+      {selTotal > 0 && (
+        // Selection tray — persists across searches/filters, holds catalog picks AND live
+        // vendor colorways, each removable, and adds everything to the store in one go.
+        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '12px 16px 10px', borderRadius: 16, maxWidth: 'min(92vw, 880px)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowX: 'auto', paddingBottom: 6, marginBottom: 8, paddingTop: 6 }}>
+            {selProducts.map((p) => (
+              <div key={p.id} title={`${p.name}${p.color ? ' — ' + p.color : ''}`} style={{ position: 'relative', flex: '0 0 auto', width: 54, textAlign: 'center' }}>
+                <div style={{ width: 54, height: 54, borderRadius: 9, border: '1px solid #e2e8f0', background: '#f8fafc', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {p.image_front_url ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#94a3b8', fontWeight: 700, padding: 2 }}>{(p.color || p.sku || '').slice(0, 10)}</span>}
+                </div>
+                <div style={{ fontSize: 8.5, color: '#64748b', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{p.color || p.sku}</div>
+                <button type="button" onClick={() => toggleSel(p.id)} aria-label={`Remove ${p.name}`} style={{ position: 'absolute', top: -6, right: -6, width: 17, height: 17, borderRadius: '50%', border: 'none', background: '#191919', color: '#fff', fontSize: 9.5, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', padding: 0 }}>✕</button>
+              </div>
+            ))}
+            {[...vendorSel.values()].map(({ style, color }) => (
+              <div key={vendorKeyOf(style, color)} title={`${style.name} — ${color.colorName || ''} (${VENDOR_SRC[style.source] || 'vendor'})`} style={{ position: 'relative', flex: '0 0 auto', width: 54, textAlign: 'center' }}>
+                <div style={{ width: 54, height: 54, borderRadius: 9, border: '1px solid #c7d2fe', background: '#f8fafc', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {(color.image || style.image) ? <img src={color.image || style.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#94a3b8', fontWeight: 700, padding: 2 }}>{(color.colorName || '').slice(0, 10)}</span>}
+                </div>
+                <div style={{ fontSize: 8.5, color: '#3730a3', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{color.colorName || style.sku}</div>
+                <button type="button" onClick={() => toggleVendor(style, color)} aria-label={`Remove ${style.name} ${color.colorName || ''}`} style={{ position: 'absolute', top: -6, right: -6, width: 17, height: 17, borderRadius: '50%', border: 'none', background: '#3730a3', color: '#fff', fontSize: 9.5, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', padding: 0 }}>✕</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 800, fontSize: 14 }}>{selTotal} selected</span>
+            <button className="btn btn-primary" disabled={vendorImporting} onClick={openBulkAdd}>{vendorImporting ? 'Importing…' : `Add ${selTotal} to ${destLabel} →`}</button>
+            <button className="btn btn-secondary" onClick={() => { setSelected(new Set()); setVendorSel(new Map()); }}>Clear</button>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at list price{vendorSel.size ? '; vendor picks import at ~50% margin' : ''}.</span>
+          </div>
         </div>
       )}
       {bulkOpen && (
@@ -8780,7 +8828,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to ${destLabel} →`}</button>
+                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); setSelected(new Set()); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to ${destLabel} →`}</button>
                 {destLabel !== 'template' && (bulkTab === 'setup'
                   ? <button className="btn btn-secondary" onClick={() => setBulkTab('art')}>Next: Art &amp; logo →</button>
                   : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>)}
