@@ -1,0 +1,15 @@
+[Unit]
+Description=NSA Portal embroidery machine bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/emb-bridge.env
+ExecStart=/usr/bin/python3 /opt/emb-bridge/emb_bridge.py
+Restart=always
+RestartSec=10
+User=nsa
+
+[Install]
+WantedBy=multi-user.target
