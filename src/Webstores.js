@@ -6307,6 +6307,15 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   };
   const makeMainPhoto = (i) => movePhoto(i, 0);
   const deletePhoto = (i) => applyGallery(galleryPhotos.filter((_, j) => j !== i));
+  // Move an extra angle out of the front gallery and into the BACK slot (the canvas the
+  // storefront uses for the number/name & back-logo preview). Only offered on non-main
+  // tiles, so `i` is always ≥ 1 and maps to extraImages[i - 1].
+  const makeBackPhoto = (i) => {
+    const url = galleryPhotos[i];
+    if (!url) return;
+    setBackImage(url);
+    setExtraImages((prev) => prev.filter((_, j) => j !== i - 1));
+  };
 
   // A store item needs a MAIN front photo: it's what the art placer draws logos on, what
   // saves to image_url, and what the storefront shows on the card. The "+ Add images"
@@ -6770,7 +6779,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 </div>
                 {isMain
                   ? <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
-                  : <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>}
+                  : <>
+                      <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>
+                      <button type="button" title="Use this as the BACK photo — the storefront draws the number/name & back-logo preview on it" onClick={(e) => { e.stopPropagation(); makeBackPhoto(i); }} style={{ position: 'absolute', bottom: 2, right: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>⤒ Back</button>
+                    </>}
                 <button type="button" title="Remove this photo" onClick={(e) => { e.stopPropagation(); deletePhoto(i); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
               </div>
             ); })}
@@ -6786,7 +6798,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
             <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Add images'}</button>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, × to remove one. Drop image files here to add extra angles.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, ⤒ Back to use one as the back photo, × to remove one. Drop image files here to add extra angles.</div>
         </ItemSection>
         </div>
       </div>
