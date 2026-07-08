@@ -730,7 +730,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
 
 // ─── PUBLIC QUOTE FORM — no auth required, accessed via ?quote=TOKEN ───
 
-function QuoteForm({token,supabaseClient}){
+function QuoteForm({token}){// supabaseClient prop no longer used — all I/O goes through quote-portal
   const[loading,setLoading]=useState(true);
   const[qr,setQr]=useState(null);// quote request record
   const[custName,setCustName]=useState('');
@@ -746,24 +746,28 @@ function QuoteForm({token,supabaseClient}){
   const BASIC_SZS=['S','M','L','XL','2XL'];
 
   useEffect(()=>{
-    if(!supabaseClient||!token)return;
+    if(!token)return;
     (async()=>{
-      const{data:qrData,error:qrErr}=await supabaseClient.from('quote_requests').select('*').eq('token',token).single();
-      if(qrErr||!qrData){setError('Quote form not found or has expired.');setLoading(false);return}
+      // The public token editor goes through the service-role quote-portal function
+      // (quote_requests/quote_request_items are staff-only under RLS as of 00182).
+      let data;
+      try{
+        const res=await fetch('/.netlify/functions/quote-portal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'get',token})});
+        data=await res.json();
+        if(!res.ok||!data?.quote)throw new Error(data?.error||'Not found');
+      }catch{setError('Quote form not found or has expired.');setLoading(false);return}
+      const qrData=data.quote;
       if(qrData.status==='submitted'||qrData.status==='reviewed'||qrData.status==='converted'){setSubmitted(true);setLoading(false);return}
       setQr(qrData);
-      // Get customer name
-      const{data:cData}=await supabaseClient.from('customers').select('name').eq('id',qrData.customer_id).single();
-      if(cData)setCustName(cData.name);
-      // Load existing items if any
-      const{data:itemData}=await supabaseClient.from('quote_request_items').select('*').eq('quote_request_id',qrData.id).order('sort_order');
+      if(qrData.customer_name)setCustName(qrData.customer_name);
+      const itemData=data.items;
       if(itemData?.length)setItems(itemData.map(i=>({item_type:i.item_type||'description',description:i.description||'',sku:i.sku||'',color:i.color||'',sizes:i.sizes||{},total_qty:i.total_qty||'',decoration_notes:i.decoration_notes||'',notes:i.notes||''})));
       if(qrData.contact_name)setContactName(qrData.contact_name);
       if(qrData.contact_email)setContactEmail(qrData.contact_email);
       if(qrData.notes)setGlobalNotes(qrData.notes);
       setLoading(false);
     })();
-  },[token,supabaseClient]);
+  },[token]);
 
   const addItem=()=>setItems(prev=>[...prev,{item_type:'description',description:'',sku:'',color:'',sizes:{},total_qty:'',decoration_notes:'',notes:''}]);
   const removeItem=(idx)=>setItems(prev=>prev.filter((_,i)=>i!==idx));
@@ -771,21 +775,20 @@ function QuoteForm({token,supabaseClient}){
   const updateSize=(idx,sz,val)=>setItems(prev=>prev.map((it,i)=>i===idx?{...it,sizes:{...it.sizes,[sz]:parseInt(val)||0}}:it));
 
   const handleSave=async(andSubmit=false)=>{
-    if(!supabaseClient||!qr)return;
+    if(!qr)return;
     setSaving(true);
     try{
-      // Delete existing items then re-insert
-      await supabaseClient.from('quote_request_items').delete().eq('quote_request_id',qr.id);
-      const itemRows=items.filter(it=>it.sku||it.description).map((it,i)=>({
-        quote_request_id:qr.id,sort_order:i,item_type:it.sku?'sku':'description',
+      // Server replaces items (delete+insert) and applies the whitelisted quote patch;
+      // the token is the credential — no ids are sent as selectors.
+      const itemRows=items.filter(it=>it.sku||it.description).map(it=>({
         sku:it.sku||null,description:it.description||null,color:it.color||null,
-        sizes:it.sizes||{},total_qty:it.total_qty?parseInt(it.total_qty):null,
+        sizes:it.sizes||{},total_qty:it.total_qty||null,
         decoration_notes:it.decoration_notes||null,notes:it.notes||null
       }));
-      if(itemRows.length)await supabaseClient.from('quote_request_items').insert(itemRows);
-      const updates={contact_name:contactName||null,contact_email:contactEmail||null,notes:globalNotes||null};
-      if(andSubmit){updates.status='submitted';updates.submitted_at=new Date().toISOString()}
-      await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
+      const res=await fetch('/.netlify/functions/quote-portal',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'save',token,submit:andSubmit,items:itemRows,
+          quote:{contact_name:contactName||null,contact_email:contactEmail||null,notes:globalNotes||null}})});
+      if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.error||'Save failed')}
       if(andSubmit){
         setSubmitted(true);
         // Notify the rep via the content-locked server endpoint — the public quote
