@@ -2526,6 +2526,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const omgTaxRev=safeNum(o._omg_tax||0);rev+=omgTaxRev;                  // collected tax = revenue
     const omgCostFees=safeNum(o._omg_omg_fees||0)+safeNum(o._omg_cc_fees||0);cost+=omgCostFees; // OMG + CC fees = cost
     const omgFee=omgCostFees; // back-compat alias used elsewhere in this component
+    // OMG store fundraising — collected cash the club is paid back in Fundraiser Dollars
+    // (a customer credit, see addFundraiseCredit in App.js), so it counts toward margin
+    // here and in calcGP (commissions). Kept out of `rev` so the grand total / billing
+    // displays don't change — the fundraise cash is never billed on an OMG SO.
+    // WEBSTORE fundraise must NOT be added here: the batcher already prices item unit_sell
+    // from collected = product + fundraise (Webstores.js collectedForLine), so it's inside
+    // `rev`/margin already — adding it again would double-count.
+    const fundraiseRev=safeNum(o._omg_fundraise||0);
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     // Prior shipping carried onto this order (a Manual Ship recorded against the customer when
     // they had no open order). Billed on top of the order's own shipping; not taxed.
@@ -2538,8 +2546,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // `cost` — mirrors calcGP (commissions) so margin treats shipping as a wash, leaving only an
     // over/under-quote to move it. `rev` stays product+deco (tax, grand, and the REV tile use it),
     // so shipping is applied to margin/pct only. priorShip is excluded (its cost isn't in `cost`).
-    const marginRev=rev+ship;
-    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
+    const marginRev=rev+ship+fundraiseRev;
+    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,fundraiseRev,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
@@ -3226,6 +3234,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
+            ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
             ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),

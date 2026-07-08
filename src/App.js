@@ -5570,14 +5570,37 @@ export default function App(){
   // Webstore → Sales Order batch. Builds an SO the same way the OMG flow does
   // (items array persisted to so_items by the normal SO save path) and tags it
   // source='webstore'. Returns the new SO id so the caller can link orders.
+  // Fundraiser Dollars — store fundraising (OMG + webstore) credited to the customer as a
+  // CASH credit line (customer_credits, is_fundraise:true), NOT promo funds: promo spends at
+  // retail repricing, fundraise spends dollar-for-dollar via Apply Credit. The collected cash
+  // counts as store-SO revenue for GP/commissions (calcGP in CommissionsPage.js, totals in
+  // OrderEditor.js) — the offsetting cost lands later on the order where the credit is redeemed.
+  // dedupKey makes the credit idempotent: the id derives from it, so re-running the same
+  // pull/batch (OMG "Redo SO", a re-batch after a failed save) finds the existing row and
+  // SKIPS instead of crediting the same money twice. OMG keys by store id (one fundraise
+  // pot per store, whatever the SO id ends up being); webstore keys by the batch's SO id.
+  const addFundraiseCredit=(customerId,amount,source,soId,dedupKey)=>{
+    const amt=Math.round((Number(amount)||0)*100)/100;
+    if(amt<=0||!customerId)return null;
+    const _key=String(dedupKey||soId||'').replace(/[^A-Za-z0-9_-]/g,'');
+    const id=_key?'cr_fund_'+_key:'cr_fund_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    const existing=(cust.find(cc=>cc.id===customerId)?.credits||[]).find(cr=>cr.id===id);
+    if(existing){nf('Fundraise already credited ($'+(existing.amount||0).toLocaleString()+' — '+(existing.source||'')+') — skipped duplicate');return existing}
+    const credit={id,customer_id:customerId,amount:amt,used:0,is_fundraise:true,source:(source||'Store fundraising')+(soId?' · '+soId:''),created_by:cu?.name||'System',created_at:new Date().toISOString()};
+    _dbSaveCredit(credit);
+    setCust(prev=>prev.map(cc=>cc.id===customerId?{...cc,credits:[...(cc.credits||[]),credit]}:cc));
+    return credit;
+  };
   const webstoreCreateSO=async({customer_id,memo,production_notes,items,webstore_id,art_files,fundraise_cost,settle,batch_label,batch_cutoff})=>{
     const id=nextSOId(sos);
     const newSO={id,customer_id:customer_id||null,memo:memo||'Webstore order',status:'need_order',
       created_by:cu?.id||null,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
       expected_date:'',production_notes:production_notes||'',shipping_type:'flat',shipping_value:0,
       ship_to_id:'default',tax_rate:0,tax_exempt:true,firm_dates:[],art_files:Array.isArray(art_files)?art_files:[],jobs:[],items:items||[],
-      // Club fundraising collected through the store is money owed to the team, not NSA margin.
-      // Booked as an SO-level cost so calcGP excludes it from the GP rep commission pays on.
+      // Club fundraising collected through the store. The club is paid in Fundraiser Dollars
+      // (a cash credit line — see addFundraiseCredit above), so the collected amount counts as
+      // REVENUE for GP/commissions (calcGP / OrderEditor totals); the cost lands when the
+      // credit is redeemed on a future order. (Pre-2026-07 this was booked as an SO cost.)
       _webstore_fundraise:Math.round((Number(fundraise_cost)||0)*100)/100,
       source:'webstore',webstore_id:webstore_id||null,
       // Batch identity: the label/cutoff the rep chose in the Create-SO modal. The
@@ -5611,6 +5634,11 @@ export default function App(){
       const{data:_bn}=await supabase.from('sales_orders').select('webstore_batch_no').eq('id',id).maybeSingle();
       if(_bn&&_bn.webstore_batch_no!=null){newSO.webstore_batch_no=_bn.webstore_batch_no;setSOs(prev=>prev.map(s=>s.id===id?{...s,webstore_batch_no:_bn.webstore_batch_no}:s));}
     }catch{}
+    // Club fundraising from this batch becomes Fundraiser Dollars on the customer —
+    // a cash credit line, spendable dollar-for-dollar via Apply Credit. Per-batch, and
+    // the batch's fundraise total is already net of coupon discounts, so multiple
+    // batches from one store never double-credit.
+    if(Number(fundraise_cost)>0&&customer_id)addFundraiseCredit(customer_id,fundraise_cost,'Webstore fundraising — '+(memo||'store'),id,'so_'+id);
     // Webstore money is already collected via Stripe by batch time, so invoice
     // + settle immediately — paid in full when the card funds cover it, else
     // partial with exactly the team-tab gross left as the club's open balance.
@@ -14886,7 +14914,7 @@ export default function App(){
                   +(s._omg_omg_fees?'\nOMG fees: $'+(s._omg_omg_fees||0).toFixed(2):'')
                   +(s._omg_cc_fees?'\nCredit card fees: $'+(s._omg_cc_fees||0).toFixed(2):'')
                   +((s._omg_omg_fees||s._omg_cc_fees)?'\nNet after fees: $'+(((s._omg_acct_collected||s._omg_grand_total||0))-(s._omg_omg_fees||0)-(s._omg_cc_fees||0)).toFixed(2):'')
-                  +(s._omg_fundraise?'\n— Fundraising added to customer as promo credit: $'+s._omg_fundraise.toFixed(2):''),
+                  +(s._omg_fundraise?'\n— Fundraising credited to customer as Fundraiser Dollars (cash credit): $'+s._omg_fundraise.toFixed(2):''),
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
                 tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
@@ -14909,25 +14937,12 @@ export default function App(){
                   await supabase.from('webstore_orders').update({so_id:generatedId}).eq('store_id',ws.id);
                 }
               }catch(e){console.warn('[OMG] SO link failed:',e.message)}})()}
-              // OMG store fundraising profit becomes a promo credit the school can
-              // spend on future NSA orders. Add to (or create) the customer's
-              // current promo period so the existing apply-promo flow can use it.
+              // OMG store fundraising becomes Fundraiser Dollars on the customer — a CASH
+              // credit line (spent dollar-for-dollar via Apply Credit), not promo funds.
+              // Also counted as revenue on this SO for GP/commissions.
               const _fund=s._omg_fundraise||0;
-              if(_fund>0&&c){
-                const promoOwnerId=c.parent_id||c.id;
-                const isFamily=cc=>cc.id===promoOwnerId||cc.parent_id===promoOwnerId;
-                const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();
-                const _pStart=_m<6?_y+'-01-01':_y+'-07-01';const _pEnd=_m<6?_y+'-06-30':_y+'-12-31';
-                const owner=cust.find(x=>x.id===promoOwnerId)||c;
-                const existing=(owner.promo_periods||[]).find(p=>p.period_start===_pStart);
-                const note='OMG fundraising: '+s.store_name;
-                const savedPeriod=existing
-                  ?{...existing,allocated:(existing.allocated||0)+_fund,notes:existing.notes?existing.notes+' · '+note:note}
-                  :{id:'pp_'+Date.now(),customer_id:promoOwnerId,program_id:null,period_start:_pStart,period_end:_pEnd,allocated:_fund,used:0,notes:note,created_at:new Date().toISOString()};
-                _dbSavePromoPeriod(savedPeriod);
-                setCust(prev=>prev.map(cc=>{if(!isFamily(cc))return cc;const has=(cc.promo_periods||[]).some(p=>p.id===savedPeriod.id);const periods=has?(cc.promo_periods||[]).map(p=>p.id===savedPeriod.id?savedPeriod:p):[...(cc.promo_periods||[]),savedPeriod];return{...cc,promo_periods:periods}}));
-              }
-              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising added as promo credit`:''));
+              if(_fund>0&&c)addFundraiseCredit(c.id,_fund,'OMG fundraising — '+s.store_name,generatedId,'omg_'+s.id);
+              nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising credited as Fundraiser Dollars`:''));
       };
       const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});
       const applyBulkArt=()=>{
@@ -15090,19 +15105,11 @@ export default function App(){
                 const upd={...s,_omg_shipping:shipping,_omg_processing:processing,_omg_tax:tax,_omg_fundraise:fundraise,_omg_grand_total:grandTotal};
                 setOmgStores(prev=>prev.map(st=>st.id===s.id?upd:st));setOmgSel(upd);
                 nf(`Dollar Report: Shipping $${shipping} | Processing $${processing} | Tax $${tax} | Fundraise $${fundraise} | Grand Total $${grandTotal}`);
-                // Auto-add fundraise to customer promo funds
-                if(fundraise>0&&s.customer_id){
-                  const custMatch=cust.find(cx=>cx.id===s.customer_id);
-                  if(custMatch){
-                    const progId='pp_omg_'+s._omg_sale_code+'_'+Date.now();
-                    const prog={id:progId,customer_id:s.customer_id,type:'fixed',fixed_amount:fundraise,spend_percentage:0,is_active:true,
-                      notes:'OMG Fundraise from '+s.store_name+' ('+s._omg_sale_code+')',created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
-                    await _dbSavePromoProgram(prog);
-                    const updCust={...custMatch,promo_programs:[...(custMatch.promo_programs||[]),prog]};
-                    setCust(prev=>prev.map(cx=>cx.id===s.customer_id?updCust:cx));
-                    nf(`Added $${fundraise.toFixed(2)} fundraise to ${custMatch.name} promo funds`);
-                  }
-                }
+                // Fundraise is credited to the customer as Fundraiser Dollars when the SO is
+                // pulled (createOmgSO → addFundraiseCredit). Crediting here TOO double-paid
+                // the club — the old code added a promo program on report drop AND bumped the
+                // promo period again on SO pull.
+                if(fundraise>0)nf(`$${fundraise.toFixed(2)} fundraise will be credited as Fundraiser Dollars when the SO is pulled`);
               }catch(err){console.error('[OMG Dollar]',err);nf('Could not read the file: '+err.message,'error')}
             }}
             onClick={()=>{

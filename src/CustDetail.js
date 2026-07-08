@@ -641,6 +641,35 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         }}>× Delete</button>
       </td>;
     };
+    // ── Fundraiser Dollars vs Account Credits ── both live in customer_credits and spend
+    // dollar-for-dollar via the order's Apply Credit. Fundraiser rows (is_fundraise —
+    // auto-credited from OMG/webstore store fundraising at SO pull/batch time) total
+    // separately from promo and from manually-added credits; they are CASH, not promo's
+    // retail-repriced spend.
+    const _allCredits=customer.credits||[];const _creditUsageAll=customer.credit_usage||[];
+    const fundCredits=_allCredits.filter(cr=>cr.is_fundraise);
+    const regCredits=_allCredits.filter(cr=>!cr.is_fundraise);
+    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);
+      return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+        <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
+        <div style={{flex:1}}>
+          <div style={{fontWeight:700,fontSize:14}}>${(cr.amount||0).toLocaleString()} {cr.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {cr.source}</span>}</div>
+          <div style={{fontSize:11,color:'#64748b'}}>Used: ${(cr.used||0).toLocaleString()} · Remaining: ${bal.toLocaleString()}</div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>Added {cr.created_at?new Date(cr.created_at).toLocaleDateString():'-'}{cr.created_by?' by '+cr.created_by:''}</div>
+          {usages.length>0&&<div style={{marginTop:6}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>USAGE</div>
+            {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+              <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
+                <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
+                <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</span>
+                <span>{u.description||'-'}</span>
+                <span style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</span>
+              </div>)}
+          </div>}
+        </div>
+        <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
+        {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
+      </div>;};
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
@@ -790,13 +819,34 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </tbody></table>
       </div></div>}
 
+      {/* ═══ FUNDRAISER DOLLARS ═══ store fundraising (OMG + webstore), auto-credited when
+          the store's SO is pulled/batched. Cash — spends dollar-for-dollar via Apply Credit. */}
+      <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
+        <div style={{fontSize:13,fontWeight:800,color:'#9a3412',marginBottom:8}}>FUNDRAISER DOLLARS</div>
+      </div>
+      {(()=>{const raised=fundCredits.reduce((a,cr)=>a+(cr.amount||0),0);
+        const fUsed=fundCredits.reduce((a,cr)=>a+(cr.used||0),0);
+        const avail=raised-fUsed;
+        return<div className="card"><div className="card-header"><h2>Fundraiser Balance</h2></div>
+          <div className="card-body">
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-label">Raised</div><div className="stat-value" style={{color:'#2563eb'}}>${raised.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Used</div><div className="stat-value" style={{color:'#dc2626'}}>${fUsed.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Available</div><div className="stat-value" style={{color:avail>0?'#166534':'#94a3b8'}}>${avail.toLocaleString()}</div></div>
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Credited automatically from OMG / webstore fundraising when the store's SO is created. Spends like cash — apply to an order with “Apply Credit” (not promo's retail-priced spend).</div>
+            {fundCredits.length===0?<div className="empty" style={{marginTop:8}}>No fundraiser dollars yet</div>
+              :<div style={{marginTop:10}}>{fundCredits.map(_creditRow)}</div>}
+          </div>
+        </div>;})()}
+
       {/* ═══ CREDITS SECTION ═══ */}
       <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
         <div style={{fontSize:13,fontWeight:800,color:'#065f46',marginBottom:8}}>ACCOUNT CREDITS</div>
       </div>
 
       {/* Credit Balance */}
-      {(()=>{const credits=customer.credits||[];const creditUsage=customer.credit_usage||[];
+      {(()=>{const credits=regCredits;
         const totalBalance=credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);
         const totalAllocated=credits.reduce((a,cr)=>a+(cr.amount||0),0);
         const totalUsed=credits.reduce((a,cr)=>a+(cr.used||0),0);
@@ -816,27 +866,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         <div className="card-body">
           {credits.length===0&&!creditAdd&&<div className="empty">No credits on this account</div>}
-          {credits.map(cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=creditUsage.filter(u=>u.credit_id===cr.id);
-            return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
-              <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:14}}>${(cr.amount||0).toLocaleString()} {cr.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {cr.source}</span>}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>Used: ${(cr.used||0).toLocaleString()} · Remaining: ${bal.toLocaleString()}</div>
-                <div style={{fontSize:10,color:'#94a3b8'}}>Added {cr.created_at?new Date(cr.created_at).toLocaleDateString():'-'}{cr.created_by?' by '+cr.created_by:''}</div>
-                {usages.length>0&&<div style={{marginTop:6}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>USAGE</div>
-                  {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
-                    <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
-                      <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
-                      <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</span>
-                      <span>{u.description||'-'}</span>
-                      <span style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</span>
-                    </div>)}
-                </div>}
-              </div>
-              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
-              {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
-            </div>})}
+          {credits.map(_creditRow)}
           {creditAdd&&<div style={{padding:14,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',marginTop:8}}>
             <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
               <div><label className="form-label">Amount ($)</label><input className="form-input" type="number" style={{width:120}} value={creditAdd.amount||''} onChange={e=>setCreditAdd({...creditAdd,amount:parseFloat(e.target.value)||0})}/></div>
