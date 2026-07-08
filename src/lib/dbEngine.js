@@ -2089,6 +2089,14 @@ const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{
 // (the queue is one JSON blob, written separately from the SO save that triggers
 // the reload). Reload sites keep the local queue while within this window.
 let _batchPosDirtyUntil=0;
+// Same protection for the OTHER whole-blob app_state keys a client mutates locally:
+// job_time_logs (payroll data!) and wh_recent_actions. Generalized to a small map
+// (app_state id → dirty-until epoch ms) instead of two more module vars; hydration
+// sites that set those keys keep the local copy while inside the window, exactly
+// like the batch_pos guard above.
+const _appStateDirtyUntil={};
+const _setAppStateDirtyUntil=(key,v)=>{_appStateDirtyUntil[key]=v};
+const _appStateDirty=(key)=>Date.now()<(_appStateDirtyUntil[key]||0);
 // Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
 const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
   if(!supabase)return;
@@ -2219,6 +2227,7 @@ export const _setOnFailedIdsChange=(fn)=>{_onFailedIdsChange=fn};
 export const _setOnCacheFullChange=(fn)=>{_onCacheFullChange=fn};
 export const _setSessionDead=(v)=>{_sessionDead=v};
 export const _setBatchPosDirtyUntil=(v)=>{_batchPosDirtyUntil=v};
+export {_setAppStateDirtyUntil,_appStateDirty};
 export const _setLsQuotaWarned=(v)=>{_lsQuotaWarned=v};
 export const _bgSyncInc=()=>{_bgSync++};
 export const _bgSyncDec=()=>{_bgSync--};

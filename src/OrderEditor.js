@@ -96,7 +96,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -137,11 +137,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false};
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
-  // redrawn — put them on hold along with the job being acted on.
+  // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
+  // held job is stopped through App's shared clock-out (audit L10) — the board's applyJobMove
+  // is otherwise the only thing that stops timers, and a job held from here would keep
+  // "running" for days in job_time_logs.
   const _holdArtSiblings=(jobsArr,artIds,exceptId)=>jobsArr.map(jj=>{
     if(jj.id===exceptId||!_activeProd(jj.prod_status))return jj;
     const ids=jj._art_ids||[jj.art_file_id].filter(Boolean);
-    return ids.some(id=>artIds.includes(id))?{...jj,prod_status:'hold'}:jj;
+    if(!ids.some(id=>artIds.includes(id)))return jj;
+    if(onStopJobClock)onStopJobClock(o.id,jj.id);
+    return{...jj,prod_status:'hold'};
   });
   const _artSiblingsInProd=(artIds,exceptId)=>safeJobs(o).filter(jj=>jj.id!==exceptId&&_activeProd(jj.prod_status)&&(jj._art_ids||[jj.art_file_id].filter(Boolean)).some(id=>artIds.includes(id))).length;
   // Recall = the design itself is wrong. The job resets to needs_art IN PLACE — released jobs too:
@@ -154,6 +159,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const wasInProd=_activeProd(j.prod_status);
     const sibs=_artSiblingsInProd(artIds,j.id);
     if(!window.confirm('⚠️ Recall this art?\n\n• The design is pulled back completely — use this when the logo/design itself is changing\n• Open artist requests are cancelled and the artist is unassigned\n• Approvals and confirmed production files are cleared — everything must be re-approved\n• The job resets to Needs Art — re-request it via 🎨 Set up job\n'+(wasInProd?'• Production will be put back ON HOLD\n':'')+(sibs?'• '+sibs+' other job(s) share this art and will also be put on hold\n':'')+'\nJust need a change to the current design? Use '+updateLabel+' instead — it messages the artist directly.'))return;
+    if(wasInProd&&onStopJobClock)onStopJobClock(o.id,j.id);// leaving staging/in_process — stop any running decorator clock
     let updJobs=safeJobs(o).map((jj,i2)=>i2!==ji?jj:{...jj,art_status:'needs_art',art_requests:(jj.art_requests||[]).map(r=>['requested','in_progress','completed','waiting_approval'].includes(r.status)?{...r,status:'recalled'}:r),assigned_artist:'',...ART_PULLBACK_CLEARS,...(wasInProd?{prod_status:'hold'}:{})});
     updJobs=_holdArtSiblings(updJobs,artIds,j.id);
     const updArt=safeArt(o).map(a=>artIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
@@ -9009,7 +9015,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {REPS.filter(r=>r.role==='art'||r.role==='artist').filter(r=>r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
               <div style={{fontSize:11,fontWeight:600,color:'#64748b',marginLeft:8}}>Production:</div>
               {j.prod_status==='hold'&&!canProduce&&!canOverride?<span style={{fontSize:11,color:'#94a3b8'}}>Waiting items/art</span>
-              :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>updJob(ji,'prod_status',e.target.value)}>
+              :<><select className="form-select" style={{width:150,fontSize:11}} value={j.prod_status} onChange={e=>{const v=e.target.value;
+                // Leaving staging/in_process for a non-running status bypasses the board's applyJobMove —
+                // stop any running decorator clock through App's shared clock-out (L10).
+                if(v!==j.prod_status&&v!=='in_process'&&_activeProd(j.prod_status)&&onStopJobClock)onStopJobClock(o.id,j.id);
+                updJob(ji,'prod_status',v)}}>
                 {prodStatuses.map(ps=><option key={ps} value={ps}>{prodLabels[ps]}</option>)}</select>
               {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto',display:'flex',gap:6}}>
@@ -9294,6 +9304,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // artist/status ("at most one active request per job").
           const _wasInProd2=_activeProd(j2job?.prod_status);
           const sibs2=_artSiblingsInProd(artIds2,j2job?.id);
+          if(_wasInProd2&&onStopJobClock&&j2job)onStopJobClock(o.id,j2job.id);// re-hold below — stop any running decorator clock (L10)
           let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd2?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds2,j2job?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.
@@ -10216,6 +10227,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           // artist/status ("at most one active request per job").
           const _wasInProd3=_activeProd(j?.prod_status);
           const sibs3=_artSiblingsInProd(artIds3,j?.id);
+          if(_wasInProd3&&onStopJobClock&&j)onStopJobClock(o.id,j.id);// re-hold below — stop any running decorator clock (L10)
           let updatedJobs=jobs.map((jj,i)=>i===artReqModal.jIdx?{...jj,art_requests:[...(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,status:'recalled'}:r),req],art_status:(jj.art_status==='needs_art'||jj.art_status==='waiting_approval'||jj.art_status==='art_complete'||PROD_FILES_STATUSES.includes(jj.art_status))?'art_requested':jj.art_status,assigned_artist:artReqModal.artist||jj.assigned_artist,...ART_PULLBACK_CLEARS,...(_wasInProd3?{prod_status:'hold'}:{})}:jj);
           updatedJobs=_holdArtSiblings(updatedJobs,artIds3,j?.id);
           // Store rep files as sample_art and reset art file status so it re-enters artist queue.

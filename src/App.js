@@ -25,7 +25,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket } from './lib/opsRecap';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -377,6 +377,8 @@ import {
   _setOnCacheFullChange,
   _setSessionDead,
   _setBatchPosDirtyUntil,
+  _setAppStateDirtyUntil,
+  _appStateDirty,
   _setLsQuotaWarned,
   _bgSyncInc,
   _bgSyncDec,
@@ -2285,6 +2287,12 @@ export default function App(){
   const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
   const _batchPosApplied=useRef(JSON.stringify(loadState('batch_pos',[])));// JSON of the last batch_pos value applied from a DB load/reload
+  // Same applied-markers for the other two-client-clobber-prone whole-blob keys (see
+  // _appStateDirty in dbEngine): the save effects only open a dirty window for LOCAL
+  // mutations, never for values just applied from a DB load.
+  const _jobTimeLogsApplied=useRef(JSON.stringify(loadState('job_time_logs',[])));
+  // Mirrors whRecentActions' own initializer so the mount-time save effect doesn't open a spurious dirty window.
+  const _whActionsApplied=useRef((()=>{try{return JSON.stringify(JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]'))}catch{return'[]'}})());
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
     let cancelled=false;
@@ -2343,8 +2351,11 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.est_history)setEstHistory(as.est_history);
-          if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
-          if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
+          // Whole-blob keys mutated by warehouse tabs: honor the dirty window (same guard as
+          // batch_pos at the reload sites) so a receive/clock-out landed during this load isn't
+          // replaced by the stale DB copy the load already read.
+          if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
+          if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
@@ -2409,7 +2420,8 @@ export default function App(){
               const as2=d2.appState||{};
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
-              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
+              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);
+              if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
@@ -5753,6 +5765,28 @@ export default function App(){
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
+    // AR gate (non-blocking): warn when the customer has an invoice >30 days past
+    // due with an open balance, naming the full past-due exposure. Skipped entirely
+    // when any of the customer's invoice payment rows failed to hydrate (a timed-out
+    // invoice_payments load makes balances look bigger than they are — never warn
+    // off half-loaded data).
+    {
+      const _arInvs=invs.filter(iv=>iv.customer_id===est.customer_id);
+      if(_arInvs.every(iv=>iv._paymentsHydrated!==false)){
+        const _arToday=new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+        let _arTotal=0,_arOldest=0,_arOver30=false;
+        _arInvs.forEach(iv=>{
+          if(!opsOpenInvoice(iv))return;
+          const dpd=opsInvoiceDaysPastDue(iv,_arToday);
+          if(dpd==null||dpd<1)return;
+          _arTotal+=opsInvoiceBalance(iv);if(dpd>_arOldest)_arOldest=dpd;if(dpd>30)_arOver30=true;
+        });
+        if(_arOver30){
+          const _arName=cust.find(x=>x.id===est.customer_id)?.name||'This customer';
+          if(!window.confirm(_arName+' has $'+Math.round(_arTotal).toLocaleString()+' past due (oldest '+_arOldest+'d). Convert anyway?'))return;
+        }
+      }
+    }
     const _convCust=cust.find(c=>c.id===est.customer_id);
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
@@ -6879,7 +6913,11 @@ export default function App(){
           if(_pdDeco==='embroidery')['sales','csr'].forEach(_role=>todos.push({type:'prod_files',priority:2,msg:'🧵 Upload production files: '+j.art_name,detail:tag+' · '+so.id+' · Embroidery — add DST + PDF for the printer',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Upload Files',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
           else if(_pdDeco==='dtf')['sales','csr'].forEach(_role=>todos.push({type:'order_dtf',priority:2,msg:'🎞️ Order DTF films: '+j.art_name,detail:tag+' · '+so.id+' · DTF — order transfer films, then mark Films Ordered',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Order Films',role:_role,date:j.coach_approved_at||j.updated_at||so.updated_at}));
         }
-        if(j.art_status==='art_requested'&&j.coach_rejected){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:lastRej?.rejected_at||j.updated_at||so.updated_at})}
+        // M6: a rejection stays visible until the art is actually RE-SENT (sent_to_coach_at set) —
+        // assigning an artist (art_requested → art_in_progress) must not hide it. coach_rejected is
+        // cleared by the re-send/approval paths; waiting_approval (revised proof already has its own
+        // "review & send" todo), art_complete and production-files states are excluded as superseded.
+        if(j.coach_rejected&&!j.sent_to_coach_at&&j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)){const lastRej=(j.rejections||[]).slice(-1)[0];todos.push({type:'art_rejected',priority:1,msg:'❌ Coach rejected art: '+j.art_name,detail:tag+' · '+so.id+(lastRej?' · "'+lastRej.reason.slice(0,60)+(lastRej.reason.length>60?'...':'')+'"':''),so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:lastRej?.rejected_at||j.updated_at||so.updated_at})}
         const ready=isJobReady(j,so);const onBoard=safeJobs(so).some(ej=>ej.id===j.id);
         // Notify rep when all items received for a job
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
@@ -7012,13 +7050,12 @@ export default function App(){
       // tiers below never look at follow_up_at, so without this a snoozed follow-up re-appears on the
       // next render — the Snooze button (and click-through clear) would do nothing.
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
-      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
-      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
-      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
-      const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      // Aging tiers shared with the emailed rep-ops-digest via opsRecap (3-6d / 7-13d / 14d+).
+      const sentDate=e.updated_at||e.created_at;
+      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
+      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
     invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
@@ -8212,7 +8249,7 @@ export default function App(){
 
   // SALES ORDERS LIST
   function rSO(){
-    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
+    if(eSO)return<ComponentErrorBoundary name="OrderEditor"><React.Suspense fallback={<LazyFallback/>}><OrderEditor key={eSO.id} supabase={supabase} order={eSO} mode="so" customer={eSOC} allCustomers={cust} products={prod} vendors={vend} artSourceOrders={_artSrcOrders} onSave={s=>{const locked=savSO(s);setESO(locked)}} onSaveArtFiles={async s=>{const ok=await savArtFiles(s);setESO(prev=>prev&&prev.id===s.id?{...prev,art_files:s.art_files,updated_at:s.updated_at||prev.updated_at}:prev);return ok}} onSaveNow={async s=>{setESO(prev=>prev&&prev.id===s.id?s:prev);return await savSONow(s)}} onBack={()=>{dirtyRef.current=false;setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);setReturnToPage(null);if(soBackPg){setPg(soBackPg);setSoBackPg(null)}}} onRevertToEst={revertSOToEst} onCopySalesOrder={copySalesOrder} onSetJobLinkGroup={setJobLinkGroup} onSetJobAutoGroupOff={setJobAutoGroupOff} onStopJobClock={_stopJobClock} onDownloadProdSheet={(job,soObj)=>downloadDoc(buildProdSheetOpts(job,soObj||eSO,{customers:cust,allOrders:sos,products:prod,reps:REPS}),(job.id||'job')+'-production')} onViewSO={soId=>{const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c2=>c2.id===so.customer_id));setESOTab('jobs');setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null)}else{nf('SO '+soId+' not found','error')}}} cu={cu} nf={nf} msgs={msgs} onMsg={setMsgs} dirtyRef={dirtyRef} onAdjustInv={savI} allOrders={sos} onInv={setInvs} onInvCommit={async inv=>{setInvs(prev=>[...prev,inv]);if(!supabase)return true;return(await _dbSaveInvoice(inv))===true}} allInvoices={invs} batchPOs={batchPOs} onBatchPO={setBatchPOs} onOrderBatch={orderVendorBatch} nextBatchPONumber={gk=>'NSA '+(batchVendorCounters[gk]??batchCounter)} initTab={eSOTab} scrollToItem={eSOScrollItem} scrollToJob={eSOScrollJob} scrollToJobRef={eSOScrollJobRef} onScrollJobConsumed={()=>setESOScrollJobRef(null)} openPOId={eSOOpenPO} onOpenPOConsumed={()=>setESOOpenPO(null)} onNavCustomer={c2=>{setESO(null);setSelC(c2);setPg('customers')}} reps={REPS} ssConnected={ssConnected} ssShipping={ssShipping} onShipSS={handleShipToShipStation} onCheckShipStatus={fetchSOShippingStatus} onDelete={canDelete?deleteSO:null} onReleasePendingShip={releasePendingShipFromSO} onNavInvoice={inv=>{setViewInvoice(inv);setPg('invoices')}} onNavBatch={()=>{setESO(null);setPg('batch_pos')}} onNavOmgStore={eSO.omg_store_id?()=>{const st=omgStores.find(x=>x.id===eSO.omg_store_id);if(st){setESO(null);setOmgSel(st);setPg('omg')}else{nf('OMG store not found','error')}}:null} onSaveProduct={p=>{setProd(prev=>{const ex=prev.find(x=>x.id===p.id);if(ex){return prev.map(x=>x.id===p.id?{...ex,...p}:x)}if(p.sku&&p.name)return[...prev,p];return prev});const ex2=prod.find(x=>x.id===p.id);if(ex2){_dbSaveProduct({...ex2,...p})}else if(p.sku&&p.name){_dbSaveProduct(p)}else if(supabase&&p.id){const flds={};if(p.nsa_cost!=null)flds.nsa_cost=p.nsa_cost;if(p.image_url)flds.image_front_url=p.image_url;if(Object.keys(flds).length)supabase.from('products').update(flds).eq('id',p.id)}}} onViewEstimate={estId=>{const est=ests.find(e=>e.id===estId);if(est){setESO(null);setEEst(est);setEEstC(cust.find(c2=>c2.id===est.customer_id));setPg('estimates')}else{nf('Estimate '+estId+' not found','error')}}} returnToPage={returnToPage} onReturnToJob={returnToPage?()=>{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setPg('production');setReturnToPage(null)}:null} onAssignTodo={t=>{const csrId=getPrimaryCsrForRep(eSO?.created_by||cu.id)||'';setTodoModal({open:true,title:t.title||'',description:t.description||'',assigned_to:t.assigned_to||(t.wh_only?'':csrId),so_id:t.so_id||eSO?.id||'',customer_id:t.customer_id||eSO?.customer_id||'',priority:t.priority||1,due_date:t.due_date||'',doc_label:t.doc_label||eSO?.id||'',wh_only:!!t.wh_only,bot_payload:t.bot_payload||null})}} assignedTodos={assignedTodos} onCompleteTodo={completeTodo} portalSettings={portalSettings} decoVendors={decoVendors} decoVendorPricing={decoVendorPricing} changeLog={changeLog} dbSavePromoPeriod={_dbSavePromoPeriod}
       onSavePromoPeriod={async(period)=>{await _dbSavePromoPeriod(period);const isFamily=c=>c.id===period.customer_id||c.parent_id===period.customer_id;const upd=c=>({...c,promo_periods:[...(c.promo_periods||[]).filter(p=>p.id!==period.id),period]});setCust(prev=>prev.map(c=>isFamily(c)?upd(c):c));setSelC(s=>s&&isFamily(s)?upd(s):s)}}
       onSavePromoUsage={async(usage)=>{await _dbSavePromoUsage(usage);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===usage.period_id);const upd=c=>({...c,promo_usage:[...(c.promo_usage||[]),usage]});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
       onDeletePromoUsage={async(periodId,soId,estimateId)=>{await _dbDeletePromoUsage(periodId,soId,estimateId);const hasPeriod=c=>(c.promo_periods||[]).some(p=>p.id===periodId);const upd=c=>({...c,promo_usage:(c.promo_usage||[]).filter(u=>!(u.period_id===periodId&&(soId?u.so_id===soId:estimateId?(u.estimate_id===estimateId&&!u.so_id):true)))});setCust(prev=>prev.map(c=>hasPeriod(c)?upd(c):c));setSelC(s=>s&&hasPeriod(s)?upd(s):s)}}
@@ -9825,7 +9862,8 @@ export default function App(){
   const[prodColsMenu,setProdColsMenu]=useState(false);
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
-  React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
+  // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
+  React.useEffect(()=>{const cur=JSON.stringify(jobTimeLogs);if(_jobTimeLogsApplied.current!==cur)_setAppStateDirtyUntil('job_time_logs',Date.now()+12000);_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   const[activeTimers,setActiveTimers]=useState(()=>loadState('active_timers',{}));// {jobId:{person,clockIn,soId}}
   React.useEffect(()=>{_saveAppState('active_timers',activeTimers)},[activeTimers]);
   // Art time tracking — separate logs for artist work
@@ -9848,7 +9886,8 @@ export default function App(){
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
-        if(j.art_status==='art_requested'&&j.coach_rejected){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
+        // M6 (same rule as the desktop dashboard generator): rejection visible until re-sent.
+        if(j.coach_rejected&&!j.sent_to_coach_at&&j.art_status!=='waiting_approval'&&j.art_status!=='art_complete'&&!PROD_FILES_STATUSES.includes(j.art_status)){todos.push({type:'art_rejected',priority:1,msg:'Coach rejected art: '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Review feedback',role:'sales',date:j.updated_at||so.updated_at})}
         if(j.item_status==='items_received'&&j.prod_status!=='completed'&&!j.split_from){
           const needsArt=j.art_status!=='art_complete';
           // Real receive moment from the fulfilling receipts (see jobReceivedAt), not updated_at.
@@ -9911,13 +9950,12 @@ export default function App(){
       }
       // Snoozed / rescheduled: a future follow_up_at means "don't nag me until then" (mirrors rDash).
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
-      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
-      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
-      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
-      const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      // Aging tiers shared with rDash and the emailed rep-ops-digest via opsRecap.
+      const sentDate=e.updated_at||e.created_at;
+      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
+      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
@@ -10013,6 +10051,22 @@ export default function App(){
     }
     applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
   };
+  // ── Single source of truth for stopping a job's decorator clock (audit L10) ──
+  // Logs the elapsed run and clears the active timer + idle accumulator. Used by
+  // applyJobMove (production board) AND passed into OrderEditor as onStopJobClock —
+  // Recall Art / hold-art-siblings / the Production select mutate prod_status
+  // directly and previously left the clock running for days, corrupting
+  // job_time_logs. No-op when the job has no running timer.
+  const _stopJobClock=(soId,jobId)=>{
+    const timerKey=soId+'|'+jobId;
+    const active=activeTimers[timerKey];
+    if(!active)return;
+    const mins=Math.round((Date.now()-active.clockIn)/60000);
+    const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
+    setJobTimeLogs(prev=>[...prev,{jobId,soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
+    setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
+    delete _idleAccum.current[timerKey];
+  };
   const applyJobMove=(j,newStatus,machine,person)=>{
     const so=sos.find(s=>s.id===j.soId);
     if(!so)return;
@@ -10062,14 +10116,7 @@ export default function App(){
           _idleAccum.current[timerKey]=0;
         }
       } else {
-        const active=activeTimers[timerKey];
-        if(active){
-          const mins=Math.round((Date.now()-active.clockIn)/60000);
-          const idleMins=Math.round((_idleAccum.current[timerKey]||0)/60000);
-          setJobTimeLogs(prev=>[...prev,{jobId:m.id,soId:m.soId,person:active.person,clockIn:new Date(active.clockIn).toLocaleString(),clockOut:new Date().toLocaleString(),minutes:mins,idleMinutes:idleMins}]);
-          setActiveTimers(prev=>{const n={...prev};delete n[timerKey];return n});
-          delete _idleAccum.current[timerKey];
-        }
+        _stopJobClock(m.soId,m.id);
       }
     });
     const labels={hold:'Ready for Prod',staging:'In Line',in_process:'In Process',completed:'Completed',shipped:'Shipped'};
@@ -15596,7 +15643,8 @@ export default function App(){
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
-  React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
+  // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
+  React.useEffect(()=>{const cur=JSON.stringify(whRecentActions);if(_whActionsApplied.current!==cur)_setAppStateDirtyUntil('wh_recent_actions',Date.now()+12000);_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
@@ -16433,8 +16481,11 @@ export default function App(){
                           {it.szKeys.map(sz=>{
                             const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled[sz]||0));
                             if(open<=0)return<td key={sz} style={{padding:'4px 6px',textAlign:'center',color:'#22c55e',fontSize:11}}>&#10003;</td>;
+                            // No max cap: vendors over-ship — an overage must be enterable (input flips
+                            // amber past the open qty; the confirm names it).
                             return<td key={sz} style={{padding:'4px 6px',textAlign:'center'}}>
-                              <input id={'wh-rcv-'+i+'-'+sz} type="number" style={{width:46,textAlign:'center',border:'2px solid #22c55e',borderRadius:6,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={open} min={0} max={it.ordered[sz]||0}/>
+                              <input id={'wh-rcv-'+i+'-'+sz} type="number" style={{width:46,textAlign:'center',border:'2px solid #22c55e',borderRadius:6,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={open} min={0}
+                                onChange={e=>{const v=parseInt(e.target.value)||0;const ov=v>open;e.target.style.borderColor=ov?'#f59e0b':'#22c55e';e.target.style.background=ov?'#fffbeb':'#f0fdf4';e.target.style.color=ov?'#b45309':''}}/>
                               <div style={{fontSize:8,color:'#64748b'}}>{open} open</div>
                             </td>})}
                           <td></td>
@@ -16472,13 +16523,19 @@ export default function App(){
                   if(whReceiving)return;
                   // Batch-read all receive input values upfront to avoid repeated DOM queries
                   const rcvInputs={};document.querySelectorAll('[id^="wh-rcv-"]').forEach(el=>{rcvInputs[el.id]=parseInt(el.value)||0});
-                  const getRcvQty=(idx,sz,maxOpen)=>{const v=rcvInputs['wh-rcv-'+idx+'-'+sz];return v!=null?Math.min(v,maxOpen):0};
-                  // Pre-check: sum up what will be received vs what's open
-                  let preTotal=0;poItems.forEach((it,i)=>{it.szKeys.forEach(sz=>{
+                  // Uncapped: an entry above the open qty is a vendor overage — booked as entered, named in the confirm.
+                  const getRcvQty=(idx,sz)=>{const v=rcvInputs['wh-rcv-'+idx+'-'+sz];return v!=null?v:0};
+                  // Pre-check: sum what will be received vs what's open, tracking any overage
+                  let preTotal=0,overTotal=0;poItems.forEach((it,i)=>{it.szKeys.forEach(sz=>{
                     const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled?.[sz]||0));
-                    if(open>0)preTotal+=getRcvQty(i,sz,open);
+                    if(open>0){const q=getRcvQty(i,sz);preTotal+=q;if(q>open)overTotal+=q-open}
                   })});
-                  if(preTotal>0&&preTotal<totalOpen&&!window.confirm('Partial receive: '+preTotal+' of '+totalOpen+' open units. Continue?')){return}
+                  // ALWAYS confirm — the boxes pre-fill to the full open qty, so a full receipt must be
+                  // an explicit, informed tap, never a silent default off a blind confirm.
+                  if(preTotal>0){
+                    const kind=overTotal>0?'OVERAGE — +'+overTotal+' over ordered':preTotal>=totalOpen?'full receipt':'partial';
+                    if(!window.confirm('Receiving '+preTotal+' of '+totalOpen+' open ordered units ('+kind+'). Continue?'))return;
+                  }
                   setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
                   let anyReceived=false;let totalQtyReceived=0;
@@ -16505,7 +16562,7 @@ export default function App(){
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
                           if(open<=0)return;
-                          const qty=getRcvQty(pl.displayIdx,sz,open);
+                          const qty=getRcvQty(pl.displayIdx,sz);
                           if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                         });
                         if(Object.keys(shipment).length<=1)return;
@@ -16538,7 +16595,7 @@ export default function App(){
                       Object.keys(it.sizes).forEach(sz=>{
                         const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
-                        const qty=getRcvQty(ii,sz,open);
+                        const qty=getRcvQty(ii,sz);
                         if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                       });
                       if(Object.keys(rcvSizes).length>0)justReceived.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes:rcvSizes,soId:'',customer:''});
@@ -28787,6 +28844,13 @@ export default function App(){
       return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
     }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
 
+    // Shipped but never invoiced — money leak. NOT windowed (like Past Due, a live
+    // view): a shipped order with no invoice needs chasing no matter how old it is.
+    const mdShipNoInv=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
+      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+    }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
+
     // Past-due invoices for my customers (live view — every currently-overdue open invoice).
     const _mdTodayYmd=new Date(_mdNow-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
     const mdPastDue=invs.filter(iv=>{
@@ -28821,6 +28885,7 @@ export default function App(){
       {stTab==='myday'&&(()=>{
         const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
         const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
+        const _mdShipNoInvTotal=mdShipNoInv.reduce((a,so)=>a+safeNum(calcOrderMargin(so,sos).rev),0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
@@ -28828,10 +28893,11 @@ export default function App(){
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
           {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
           {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
+          {id:'shipnoinv',label:'Shipped — Not Invoiced',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvTotal>0?_md$(_mdShipNoInvTotal)+' unbilled':''},
           {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
-        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdShipNoInv.length+mdPastDue.length+mdDeadlines.length;
         const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
           <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
@@ -28934,6 +29000,16 @@ export default function App(){
                 <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Not Invoiced" count={mdShipNoInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+              <tbody>{mdShipNoInv.map(so=><tr key={so.id} style={{background:'#fff7ed'}}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · never invoiced</div></td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#c2410c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
               </tr>)}</tbody></table></Section>}
 
