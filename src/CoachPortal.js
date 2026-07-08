@@ -374,12 +374,10 @@ const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outl
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
-  // Open dropdowns, keyed by order id. Default the first active order open — the
-  // coach's first job is scanning who ordered, so surface one immediately.
-  const [open, setOpen] = useState(() => {
-    const first = (d.orders || []).find((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
-    return first ? { [first.id]: true } : {};
-  });
+  // Open dropdowns, keyed by order id. All orders start collapsed so the ledger
+  // opens as a clean, scannable list (a full store can run to dozens of orders);
+  // the coach expands the ones they want, or hits Expand all.
+  const [open, setOpen] = useState({});
 
   const itemsByOrder = {};
   d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
