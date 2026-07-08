@@ -15,7 +15,7 @@ const { createClient } = require('@supabase/supabase-js');
 // payload setting arbitrary columns. Target rows are additionally verified to
 // belong to the requesting portal's alpha_tag customer family (see below).
 const JOB_COLS = new Set(['art_status', 'coach_approved_at', 'coach_approval_comment', 'coach_rejected', 'rejections', 'art_messages', 'art_requests', 'sent_to_coach_at']);
-const ART_COLS = new Set(['status', 'notes']);
+const ART_COLS = new Set(['status', 'notes', 'prod_files_attached']);
 const EST_COLS = new Set(['status', 'approved_by', 'approved_at', 'update_requests', 'updated_at', 'email_status', 'email_viewed_at']);
 
 const CORS = {
@@ -52,7 +52,16 @@ async function applyArtDecision(admin, d, touchTs) {
     p_seen_mocks: Array.isArray(d.seen_mocks) && d.seen_mocks.length ? d.seen_mocks : null,
     p_touch_updated_at: touchTs || null,
   });
-  if (!error) return { ok: true, job: data && data.job };
+  if (!error) {
+    // M4: a reject also clears the stale approval timestamp. The 00172 RPC predates
+    // this clear, so it runs as a follow-up write — guarded on the state the RPC
+    // just committed so it can never clobber a subsequent transition.
+    if (d.decision === 'reject') {
+      await admin.from('so_jobs').update({ coach_approved_at: null })
+        .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'art_requested');
+    }
+    return { ok: true, job: data && data.job };
+  }
   const msg = error.message || '';
   if (/NSA_STALE_STATE/.test(msg)) return { ok: false, status: 409, code: 'stale_state', error: STALE_MSG };
   if (/NSA_MOCKS_CHANGED/.test(msg)) return { ok: false, status: 409, code: 'mocks_changed', error: 'The artwork changed while you were reviewing it — please refresh to see the latest version.' };
@@ -80,7 +89,7 @@ async function applyArtDecision(admin, d, touchTs) {
     if (rErr) return { ok: false, status: 500, error: rErr.message };
     const prevRej = ((jrows || [])[0] || {}).rejections || [];
     const { data: rows, error: jErr } = await admin.from('so_jobs')
-      .update({ art_status: 'art_requested', coach_rejected: true, sent_to_coach_at: null, rejections: [...prevRej, { reason: comment, by: 'Coach', at: now, rejected_at: now }] })
+      .update({ art_status: 'art_requested', coach_rejected: true, sent_to_coach_at: null, coach_approved_at: null, rejections: [...prevRej, { reason: comment, by: 'Coach', at: now, rejected_at: now }] })
       .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'waiting_approval').select('id');
     if (jErr) return { ok: false, status: 500, error: jErr.message };
     if (!rows || !rows.length) return { ok: false, status: 409, code: 'stale_state', error: STALE_MSG };
@@ -184,6 +193,9 @@ exports.handler = async (event) => {
       if (!row?.so_id || !row?.id) continue;
       if (!allowedSO.has(row.so_id)) { errors.push('so_art_files ' + row.id + ': order not in this portal'); continue; }
       const patch = pick(row, ART_COLS);
+      // M2: the portal may only CLEAR the seps confirmation (a reject round-trip) —
+      // never set it. Confirming production files is a shop-side action.
+      if ('prod_files_attached' in patch && patch.prod_files_attached !== false) delete patch.prod_files_attached;
       if (!Object.keys(patch).length) continue;
       const { error } = await admin.from('so_art_files').update(patch).eq('so_id', row.so_id).eq('id', row.id);
       if (error) errors.push('so_art_files ' + row.id + ': ' + error.message);

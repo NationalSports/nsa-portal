@@ -49,7 +49,10 @@ if (typeof window !== 'undefined' && !new URLSearchParams(window.location.search
   if ('requestIdleCallback' in window) window.requestIdleCallback(_warmHeavyLibs, { timeout: 10000 });
   else setTimeout(_warmHeavyLibs, 4000);
 }
-const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
+// Date-only strings (YYYY-MM-DD) parse as LOCAL midnight, not UTC: `new Date('2026-07-01')`
+// is UTC midnight, which is the previous calendar day in US timezones — it shifted AR-aging
+// buckets, days-to-pay, and days-since by one day and displayed date-only values a day early.
+const parseDate=d=>{if(!d)return null;try{const m=typeof d==='string'?d.match(/^(\d{4})-(\d{2})-(\d{2})$/):null;if(m)return new Date(+m[1],+m[2]-1,+m[3]);return new Date(d)}catch{return null}};
 const _maxNum=(arr)=>{const nums=arr.map(e=>{const m=String(e.id).match(/(\d+)/);return m?parseInt(m[1]):0});return Math.max(0,...nums)};
 const _dbMaxIds={est:0,so:0,inv:0};// synced from DB on load to prevent cross-user collisions
 // PO-wide status for global search: a PO can span multiple line items (SKUs/colors). The per-line
@@ -377,6 +380,7 @@ import {
   _setLsQuotaWarned,
   _bgSyncInc,
   _bgSyncDec,
+  _truncatedTables,
 } from './lib/dbEngine';
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
@@ -2346,6 +2350,7 @@ export default function App(){
           if(as.inv_pos)setInvPOs(as.inv_pos);
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
+          if(as.comm_overrides)setCommOverrides(as.comm_overrides);// admin rate overrides must follow the DB, not this browser's localStorage
           if(as.company_info){const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
           if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
@@ -2406,7 +2411,7 @@ export default function App(){
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
-              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);
+              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
@@ -2510,6 +2515,7 @@ export default function App(){
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
         if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
+        if(as.comm_overrides)setCommOverrides(prev=>_jsonEq(prev,as.comm_overrides)?prev:as.comm_overrides);
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
         if(as.batch_pos)setBatchPOs(prev=>{const inc=as.batch_pos;if(_jsonEq(prev,inc)){_batchPosApplied.current=JSON.stringify(inc);return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=JSON.stringify(inc);return inc});
         if(as.company_info)setCompanyInfo(prev=>{const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;if(_jsonEq(prev,ci))return prev;Object.assign(NSA,ci);return ci});
@@ -11898,8 +11904,8 @@ export default function App(){
     (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
     return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
 
-    const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return(c?.primary_rep_id||s.created_by)===rptRep});
-    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return(c?.primary_rep_id||so?.created_by)===rptRep});
+    const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===rptRep});
+    const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===rptRep});
     const filtBookingInvPOs=(invPOs||[]).filter(p=>p.is_booking).filter(p=>rptRep==='all'?true:p.created_by_id===rptRep);
 
     // Pipeline data
@@ -11915,9 +11921,9 @@ export default function App(){
     const _parseDtLB=(d)=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return{m:parseInt(m2[1])-1,y:y2,d:parseInt(m2[2])}};
     const _now=new Date();const _curM=_now.getMonth();const _curY=_now.getFullYear();const _curD=_now.getDate();
     const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
-      const rSOs=sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return(c?.primary_rep_id||s.created_by)===r.id});const rEsts=ests.filter(e=>e.created_by===r.id);
+      const rSOs=sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===r.id});const rEsts=ests.filter(e=>e.created_by===r.id);
       const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
-      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return(c?.primary_rep_id||so?.created_by)===r.id});
+      const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===r.id});
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const uniqueCusts=[...new Set(rSOs.map(s=>s.customer_id))].length;
@@ -11934,7 +11940,7 @@ export default function App(){
       const cSOs=sos.filter(s=>s.customer_id===c.id);const cInvs=invs.filter(i=>i.customer_id===c.id);
       const rev=cSOs.reduce((a,s)=>a+soCalc(s).rev,0);
       const lastSO=cSOs.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at))[0];
-      const daysSince=lastSO?.created_at?Math.floor((new Date()-new Date(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
+      const daysSince=lastSO?.created_at?Math.floor((new Date()-parseDate(lastSO.created_at.replace(/(\d{2})\/(\d{2})\/(\d{2})/,'20$3-$1-$2')))/(86400000)):999;
       const openBal=cInvs.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
       const paidBal=cInvs.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const hasOpen=cSOs.some(s=>calcSOStatus(s)!=='complete');
@@ -12377,6 +12383,10 @@ export default function App(){
       <div className="nsa-rpt num">
         {/* striped brand rule */}
         <div style={{height:5,background:'repeating-linear-gradient(-45deg,var(--red) 0 16px,var(--navy) 16px 32px)'}}/>
+        {/* Partial-data guard: every number on this page is a client-side reduce over the loaded
+            arrays. If a source table hit the row cap in dbEngine, totals silently understate —
+            say so instead of showing confident wrong numbers. */}
+        {(()=>{const _rptSrc={sales_orders:'sales orders',invoices:'invoices',customer_invoices:'invoice history',estimates:'quotes',customers:'customers'};const _trunc=Object.keys(_rptSrc).filter(t=>_truncatedTables.has(t));return _trunc.length?<div style={{background:'#FEF3C7',borderBottom:'2px solid #F59E0B',color:'#92400E',padding:'10px 20px',fontSize:13,fontWeight:600}}>⚠️ Report totals are incomplete: {_trunc.map(t=>_rptSrc[t]).join(', ')} exceeded the row-load cap, so the oldest rows are missing from every number on this page.</div>:null})()}
         {/* app bar */}
         <div style={{background:'var(--navy)',position:'relative',overflow:'hidden'}}>
           <div style={{position:'absolute',inset:0,background:'repeating-linear-gradient(-55deg,transparent,transparent 30px,rgba(255,255,255,.02) 30px,rgba(255,255,255,.02) 60px)',pointerEvents:'none'}}/>
@@ -13893,7 +13903,6 @@ export default function App(){
       {(rptTab==='sales_tax')&&(()=>{
         // Build tax data from invoices (realized tax) and SOs (expected tax)
         const now=new Date();const curYear=now.getFullYear();const curMonth=now.getMonth();
-        const parseDate=d=>{if(!d)return null;try{return new Date(d)}catch{return null}};
         const monthName=m=>['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m];
         const qLabel=q=>'Q'+(q+1);
         const getQ=m=>Math.floor(m/3); // 0=Q1(Jan-Mar), 1=Q2(Apr-Jun), 2=Q3(Jul-Sep), 3=Q4(Oct-Dec)
@@ -13916,12 +13925,15 @@ export default function App(){
         const yearTax=thisYearInvs.reduce((a,i)=>a+(i.tax||0),0);
         const totalCollectedAll=taxInvs.reduce((a,i)=>a+(i.tax||0),0);
 
-        // Tax expected from open SOs (not yet invoiced)
-        const taxSOs=filtSOs.filter(so=>{const c=cust.find(x=>x.id===so.customer_id);return c&&!c.tax_exempt&&(c.tax_rate||0)>0&&so.source!=='webstore'}).map(so=>{
-          const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const state=c?.shipping_state||c?.billing_state||'Unknown';
-          const taxAmt=m.rev*(c.tax_rate||0);
-          return{id:so.id,memo:so.memo,_cname:c?.name||'Unknown',_state:state.toUpperCase().trim(),_rev:m.rev,_tax:taxAmt,_rate:c.tax_rate,status:so.status};
-        });
+        // Tax expected from open SOs (not yet invoiced) — via calcOrderTotals, the tax source of
+        // truth, so filing projections honor SO-level tax_exempt / tax_rate overrides and exclude
+        // free-promo lines, exactly like the invoice will. (Was rev*(c.tax_rate) — a drifted copy.)
+        const taxSOs=filtSOs.filter(so=>so.source!=='webstore').map(so=>{
+          const c=cust.find(x=>x.id===so.customer_id);if(!c||c.tax_exempt)return null;
+          const t=calcOrderTotals(so,c.tax_rate||0);if(!(t.tax>0))return null;
+          const state=c.shipping_state||c.billing_state||'Unknown';
+          return{id:so.id,memo:so.memo,_cname:c.name||'Unknown',_state:state.toUpperCase().trim(),_rev:t.rev,_tax:t.tax,_rate:t.rev>0?t.tax/t.rev:0,status:so.status};
+        }).filter(Boolean);
 
         // Tax-exempt customers
         const exemptCusts=cust.filter(c=>c.tax_exempt&&c.is_active!==false);
@@ -20975,6 +20987,22 @@ export default function App(){
     return ()=>{cancelled=true};
   },[pg,billView]);
   const[siExpand,setSiExpand]=useState(null);// expanded si_doc_number in the Sports Inc queue
+  // Durable si_documents status writeback. The queue is SHARED accounting state — a silently
+  // dropped update leaves an applied bill showing "pending" to every user (wrong completeness
+  // counts, an Approve button inviting a duplicate run) until the next pull self-heals it.
+  // Retries with backoff, mirrors the change into the local queue view, and on final failure
+  // says so out loud instead of the old empty .catch.
+  const _siMarkDoc=async(sdn,upd,retries=3)=>{
+    if(!supabase||!sdn)return false;
+    let lastErr=null;
+    for(let i=0;i<=retries;i++){
+      if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+      try{const{error}=await supabase.from('si_documents').update(upd).eq('si_doc_number',sdn);if(!error){setSiQueue(prev=>prev.map(r=>r.si_doc_number===sdn?{...r,...upd}:r));return true}lastErr=error}
+      catch(e){lastErr=e}
+    }
+    nf('Sports Inc queue row '+sdn+' didn\'t update ('+(lastErr?.message||lastErr)+') — it will show as still open for everyone until the next pull captures it','error');
+    return false;
+  };
   // ── Sports Inc Bills queue loader (hoisted to component scope) ──────────────────────
   // Lives here rather than inside rImport() so both the Bills page AND a global-search
   // supplier-invoice deep-link can trigger it. Builds PO-match candidates from the live orders
@@ -22702,7 +22730,7 @@ export default function App(){
           dups.push(parsed.doc_number||row.si_doc_number);
           const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
             match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
-          if(supabase)supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number).then(()=>{},()=>{/* retried on reload */});
+          _siMarkDoc(row.si_doc_number,upd);
           setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
           return;
         }
@@ -24238,11 +24266,8 @@ export default function App(){
       // applied; a failed flip just means the doc shows up next pull and gets dedup-skipped.
       const siPushed=bills.filter(b=>b.portalStatus==='success'&&b.parsed?.source==='sportsinc'&&b.parsed?.si_doc_number);
       if(siPushed.length){
-        if(supabase)siPushed.forEach(b=>{
-          supabase.from('si_documents')
-            .update({status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()})
-            .eq('si_doc_number',b.parsed.si_doc_number)
-            .then(()=>{},()=>{/* row may not be mirrored yet — cron upsert preserves nothing-to-update */});
+        siPushed.forEach(b=>{
+          _siMarkDoc(b.parsed.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()});
         });
         sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false)
           .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
