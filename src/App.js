@@ -359,6 +359,11 @@ import {
   _onCacheFullChange,
   _lsSet,
   _dbSaveFailedIds,
+  _outboxAdd,
+  _outboxRemove,
+  _outboxRemoveById,
+  _outboxList,
+  _outboxGate,
   _dbSaveFailedErrors,
   _clearSaveError,
   _onFailedIdsChange,
@@ -2084,6 +2089,9 @@ export default function App(){
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_setOnFailedIdsChange(setFailedSaveCount);
   const[failedSaveOpen,setFailedSaveOpen]=useState(false);
   const[failedSaveBusy,setFailedSaveBusy]=useState(false);
+  // Outbox entries whose base version the server moved past during boot — need a human decision
+  // (apply anyway / discard); never auto-applied. See _outboxGate in dbEngine.
+  const[outboxConflicts,setOutboxConflicts]=useState([]);
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_setOnCacheFullChange(setCacheFull);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});
@@ -2318,18 +2326,50 @@ export default function App(){
           if(d._decoTimedOut){console.error('[DB] Initial load had child-table timeouts — items/decorations/jobs/art may be incomplete');if(typeof nf==='function')nf('Some data took too long to load. Items, decorations, jobs, or art may be incomplete — please refresh if anything looks wrong.','error')}
           // Supabase has data — use it as source of truth
           _dbLoadSuccess.current=true;_syncDbMaxIds();
+          // ─── Durable-outbox rehydrate ───
+          // Failed edits persisted by dbEngine's outbox re-enter the loaded arrays HERE — before the
+          // snapshot and the setters below — but only when _outboxGate proves the server hasn't moved
+          // past the edit's base version. 'apply' splices the payload in (the ID stays failed, so the
+          // normal retry flow saves it within a cycle); 'drop' means the DB already has this content
+          // (committed-but-response-lost); 'conflict' keeps the DB copy and queues a decision card.
+          const _obApplied={};// id → outbox payload; must beat any stale localStorage `prev` copy in the merges below
+          try{
+            const _obEntries=_outboxList();
+            if(_obEntries.length){
+              const _obTables={estimates:d.estimates,sales_orders:d.sales_orders,invoices:d.invoices,customers:d.customers,products:d.products,messages:d.messages};
+              const _obConflicts=[];
+              _obEntries.forEach(en=>{
+                const arr=_obTables[en.table];
+                if(!arr||!en.payload){_outboxRemove(en.table,en.id);return}
+                const row=arr.find(r=>r.id===en.id);
+                const verdict=_outboxGate(en,row);
+                if(verdict==='drop'){_outboxRemove(en.table,en.id);_dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);console.log('[Outbox] '+en.id+' already in cloud — cleared');return}
+                if(verdict==='apply'){
+                  const idx=arr.findIndex(r=>r.id===en.id);
+                  if(idx>=0)arr[idx]=en.payload;else arr.push(en.payload);
+                  _obApplied[en.id]=en.payload;
+                  _dbSaveFailedIds.add(en.id);
+                  console.log('[Outbox] restored unsaved edit for',en.id,'(base v'+(en.baseVersion??'—')+')');
+                  return;
+                }
+                _obConflicts.push(en);
+              });
+              _persistFailedIds();
+              if(_obConflicts.length){setOutboxConflicts(_obConflicts);console.warn('[Outbox]',_obConflicts.length,'unsaved edit(s) conflict with newer server data — awaiting user decision')}
+            }
+          }catch(e){console.error('[Outbox] rehydrate failed:',e)}
           _dbSnap.current={ests:d.estimates,sos:d.sales_orders,invs:d.invoices,msgs:d.messages,cust:d.customers,prod:d.products,vend:d.vendors,team:d.team,omg:d.omg_stores,issues:d.issues,assignedTodos:d.assignedTodos||[]};
           setREPS(d.team.length?d.team:DEFAULT_REPS);
           // Preserve local versions of any entities whose save previously failed (persisted in localStorage)
           if(_dbSaveFailedIds.size){
-            setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(prev.find(p=>p.id===c.id)||c):c));
+            setCust(prev=>d.customers.map(c=>_dbSaveFailedIds.has(c.id)?(_obApplied[c.id]||prev.find(p=>p.id===c.id)||c):c));
           }else{setCust(d.customers)}
-          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
+          if(d.vendors.length)setVend(d.vendors);setProd(prev=>{if(!d.products.length)return prev;const base=_dbSaveFailedIds.size?d.products.map(dp=>_dbSaveFailedIds.has(dp.id)?(_obApplied[dp.id]||prev.find(p=>p.id===dp.id)||dp):dp):d.products;const merged=base.map(dp=>{const lp=prev.find(p=>p.id===dp.id);if(lp){if(!dp.image_url&&lp.image_url)dp={...dp,image_url:lp.image_url};if(!dp.back_image_url&&lp.back_image_url)dp={...dp,back_image_url:lp.back_image_url};if((!dp.images||!dp.images.length)&&lp.images&&lp.images.length)dp={...dp,images:lp.images}}return dp});const dbIds=new Set(merged.map(p=>p.id));const localOnly=prev.filter(p=>!dbIds.has(p.id));const all=localOnly.length?[...merged,...localOnly]:merged;return _dedupProducts(all,dbIds)});
           if(_dbSaveFailedIds.size){
-            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
-            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
-            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
-            setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(prev.find(p=>p.id===m.id)||m):m));
+            setEsts(prev=>d.estimates.map(e=>{if(_dbSaveFailedIds.has(e.id))return _obApplied[e.id]||prev.find(p=>p.id===e.id)||e;const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));
+            setSOs(prev=>d.sales_orders.map(s=>{if(_dbSaveFailedIds.has(s.id))return _obApplied[s.id]||prev.find(p=>p.id===s.id)||s;const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));
+            setInvs(prev=>d.invoices.map(i=>{if(_dbSaveFailedIds.has(i.id))return _obApplied[i.id]||prev.find(p=>p.id===i.id)||i;const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));
+            setMsgs(prev=>d.messages.map(m=>_dbSaveFailedIds.has(m.id)?(_obApplied[m.id]||prev.find(p=>p.id===m.id)||m):m));
           }else{setEsts(prev=>d.estimates.map(e=>{const local=prev.find(p=>p.id===e.id);if(local?.items?.length&&(!e.items||!e.items.length))return{...e,items:local.items,art_files:local.art_files||e.art_files};if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}}return e}));setSOs(prev=>d.sales_orders.map(s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;const merged={...s};if(local.jobs?.length&&(!s.jobs||!s.jobs.length))merged.jobs=local.jobs;if(local.items?.length&&(!s.items||!s.items.length))merged.items=local.items;if(local.art_files?.length&&(!s.art_files||!s.art_files.length))merged.art_files=local.art_files;if(local.items?.some(it=>it.decorations?.length)&&merged.items?.length&&!merged.items.some(it=>it.decorations?.length)){merged.items=merged.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}return merged.jobs!==s.jobs||merged.items!==s.items||merged.art_files!==s.art_files?merged:s}));setInvs(prev=>d.invoices.map(i=>{const local=prev.find(p=>p.id===i.id);if(local?.payments?.length&&(!i.payments||!i.payments.length))return{...i,payments:local.payments};return i}));setMsgs(d.messages)}
           if(d.omg_stores.length)setOmgStores(d.omg_stores);
           setHistInvs(d.hist_invoices||[]);
@@ -2451,7 +2491,7 @@ export default function App(){
           // Clean up failed IDs for entities that were deleted — prevents permanent error banner
           if(_dbSaveFailedIds.size){const d2=_visFlushRefs.current;const allIds2=new Set([...d2.ests,...d2.sos,...d2.invs,...d2.cust,...d2.prod,...d2.msgs].map(e=>e.id));
           const orphaned2=[..._dbSaveFailedIds].filter(id=>!allIds2.has(id));
-          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
+          if(orphaned2.length){orphaned2.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Startup cleanup — cleared orphaned failed ID:',id)});_persistFailedIds()}}
         },100);
       }}
     })();
@@ -3800,7 +3840,7 @@ export default function App(){
   // Warn user before closing/reloading if there are failed saves (data at risk of loss).
   // Cloud is source of truth — heavy tables reload from Supabase, no need to flush them to localStorage.
   React.useEffect(()=>{const h=e=>{
-    if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
+    if(window.location.search.includes('portal='))return;if(_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_outboxList().length>0){e.preventDefault();e.returnValue=''}};window.addEventListener('beforeunload',h);return()=>window.removeEventListener('beforeunload',h)},[]);
   // Retry failed saves immediately when tab regains visibility (don't wait 60s).
   // Heavy tables are no longer flushed to localStorage on hide — cloud is the source of truth.
   React.useEffect(()=>{
@@ -3846,7 +3886,7 @@ export default function App(){
       // Clean up failed IDs for entities that no longer exist in state (deleted by user)
       const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
-      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
+      if(orphaned.length){orphaned.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id);console.log('[DB] Cleared orphaned failed ID:',id)});_persistFailedIds();if(!_dbSaveFailedIds.size){_retryBackoff.current=60000;scheduleRetry();return}}
       // Skip IDs that were recently saved (prevents rapid re-conflict loops)
       const retryIds=[..._dbSaveFailedIds].filter(id=>!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000));
       if(!retryIds.length){scheduleRetry();return}
@@ -5165,6 +5205,21 @@ export default function App(){
   // (the queued saves auto-flush after the user signs back in). Same path as the mount-time stale-session guard.
     _setForceReauth(()=>{
     window.dispatchEvent(new Event('nsa:version-reload-pending'));// flush an open editor's dirty draft before we unmount it to the login screen
+    // Session-death capture: persist every known-dirty entity's payload to the durable outbox
+    // BEFORE unmounting (localStorage needs no live session). Committed state here cannot see the
+    // draft the flush event just handed to onSave — that setState is still batched — which is why
+    // the flushed draft is captured separately at the save entry point (dbEngine's _outboxWrap
+    // capture-on-attempt runs synchronously once _sessionDead is latched, which it is by the time
+    // this callback fires). This snapshot covers everything already failed/pending in committed state.
+    try{
+      const _dirty=new Set([..._dbSaveFailedIds,..._dbSavePendingIds]);
+      if(_dirty.size){
+        const dRefs=_visFlushRefs.current||{};
+        [['estimates',dRefs.ests],['sales_orders',dRefs.sos],['invoices',dRefs.invs],['customers',dRefs.cust],['products',dRefs.prod],['messages',dRefs.msgs]]
+          .forEach(([table,arr])=>{(arr||[]).forEach(e=>{if(e&&_dirty.has(e.id))_outboxAdd(table,e)})});
+        console.warn('[Outbox] session death — snapshotted',_dirty.size,'dirty entit(ies) to the outbox');
+      }
+    }catch(e){console.error('[Outbox] session-death capture failed:',e)}
     setCu(null);try{localStorage.removeItem('nsa_user')}catch{}
     try{_sbSignOut()}catch{}
     setTimeout(()=>{if(typeof nf==='function')nf('Your session expired. Please sign in again so your changes can save to the cloud.','error')},150);
@@ -30446,7 +30501,7 @@ export default function App(){
           }} style={{background:'#92400e',border:'none',color:'#fff',cursor:failedSaveBusy?'wait':'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap',opacity:failedSaveBusy?0.6:1}}>{failedSaveBusy?'Retrying…':'Retry now'}</button>
           <button onClick={()=>{
             if(!window.confirm('Clear '+_dbSaveFailedIds.size+' failed-save flag(s)?\n\nUse this if the data is actually fine in the cloud (verified by reloading the page) but the flag is stuck. This does not delete any data.'))return;
-            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});_persistFailedIds();
+            const ids=[..._dbSaveFailedIds];ids.forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id);_outboxRemoveById(id)});_persistFailedIds();
             nf('Cleared '+ids.length+' failed-save flag(s)','success');
           }} style={{background:'none',border:'1px solid #92400e',color:'#92400e',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Clear</button>
           <button onClick={()=>setFailedSaveOpen(o=>!o)} style={{background:'none',border:'none',color:'#92400e',cursor:'pointer',fontWeight:700,fontSize:11,padding:'2px 4px'}}>{failedSaveOpen?'Hide details ▲':'Details ▼'}</button>
@@ -30461,6 +30516,46 @@ export default function App(){
             }).concat(ids.length>50?[<div key="more" style={{fontSize:11,padding:'4px 0',color:'#78350f',fontStyle:'italic'}}>+ {ids.length-50} more not shown</div>]:[]);
           })()}
         </div>}
+      </div>}
+      {outboxConflicts.length>0&&<div style={{background:'#fef2f2',border:'1px solid #fecaca',color:'#991b1b',fontSize:12,fontWeight:600}}>
+        <div style={{padding:'8px 16px',display:'flex',alignItems:'center',gap:8}}>
+          <span style={{fontSize:14}}>&#9888;</span>
+          <span style={{flex:1}}>{outboxConflicts.length} unsaved edit{outboxConflicts.length>1?'s':''} from this browser conflict{outboxConflicts.length>1?'':'s'} with newer changes already saved to the cloud. Review each one below &mdash; nothing is overwritten until you choose.</span>
+        </div>
+        <div style={{padding:'0 16px 10px',fontWeight:400}}>
+          {outboxConflicts.map(en=>{
+            const label=en.id+(en.payload?.customer_name?' — '+en.payload.customer_name:(en.payload?.name?' — '+en.payload.name:''));
+            const key=en.table+':'+en.id;
+            return(<div key={key} style={{fontSize:11,padding:'6px 0',borderBottom:'1px dashed #fecaca',display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              <span style={{fontWeight:700,color:'#991b1b'}}>{label}</span>
+              <span style={{flex:1,color:'#7f1d1d',minWidth:200}}>your unsaved edit from {new Date(en.ts).toLocaleString()}; the cloud copy changed after that{en.baseVersion!=null?'':' (no version info — comparing was not possible)'}</span>
+              <button onClick={()=>{
+                const setters={estimates:setEsts,sales_orders:setSOs,invoices:setInvs,customers:setCust,products:setProd,messages:setMsgs};
+                const set=setters[en.table];if(!set)return;
+                set(prev=>{
+                  const i=prev.findIndex(r=>r.id===en.id);
+                  const cur=i>=0?prev[i]:null;
+                  // Rebase onto the CURRENT server version: "apply anyway" is an explicit, user-approved
+                  // overwrite, so the re-save must go out as a legitimate current-base write (the estimate
+                  // stale guard would otherwise reject the old base and silently drop the user's choice).
+                  const p={...en.payload,_retry:Date.now()};
+                  if(cur&&cur._version!=null)p._version=cur._version;
+                  if(i>=0){const n=[...prev];n[i]=p;return n}
+                  return[...prev,p];
+                });
+                _dbSaveFailedIds.add(en.id);_persistFailedIds();
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+                nf('Your edit for '+en.id+' was restored and is re-saving — it will replace the newer cloud copy.','success');
+              }} style={{background:'#991b1b',border:'none',color:'#fff',cursor:'pointer',fontWeight:600,fontSize:11,padding:'3px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Apply my edit anyway</button>
+              <button onClick={()=>{
+                if(!window.confirm('Discard your unsaved edit for '+en.id+'?\n\nThe newer cloud copy stays. This cannot be undone.'))return;
+                _outboxRemove(en.table,en.id);
+                _dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);_persistFailedIds();
+                setOutboxConflicts(prev=>prev.filter(x=>x.table+':'+x.id!==key));
+              }} style={{background:'none',border:'1px solid #991b1b',color:'#991b1b',cursor:'pointer',fontWeight:600,fontSize:11,padding:'2px 10px',borderRadius:4,whiteSpace:'nowrap'}}>Discard my edit</button>
+            </div>);
+          })}
+        </div>
       </div>}
       <div className="content">{!canAccess(pg)?<div className="card" style={{maxWidth:480,margin:'60px auto',textAlign:'center'}}><div className="card-body" style={{padding:32}}><div style={{fontSize:40,marginBottom:12}}>🔒</div><h2 style={{margin:'0 0 8px',color:'#1e293b'}}>Access Denied</h2><div style={{fontSize:13,color:'#64748b',marginBottom:16}}>You don't have permission to view this page. Contact an admin if you think this is a mistake.</div><button className="btn btn-primary" onClick={()=>{const first=effectiveAccess[0]||'dashboard';setPg(first)}}>Go to {titles[effectiveAccess[0]]||'Dashboard'}</button></div></div>:<>{pg==='dashboard'&&rDash()}{pg==='estimates'&&rEst()}{pg==='orders'&&rSO()}{pg==='jobs'&&rJobs()}{pg==='art'&&rArtist()}{pg==='production'&&rProd2()}{pg==='warehouse'&&rWarehouse()}{pg==='purchase_orders'&&rPOs()}{pg==='batch_pos'&&rBatchPOs()}{pg==='customers'&&rCust()}{pg==='vendors'&&rVend()}{pg==='team'&&rTeam()}{pg==='products'&&rProd()}{pg==='inventory'&&rInv()}{pg==='messages'&&rMsg()}{pg==='invoices'&&<ComponentErrorBoundary name="Invoices"><React.Suspense fallback={<LazyFallback/>}><InvoicesPage/></React.Suspense></ComponentErrorBoundary>}{pg==='commissions'&&<ComponentErrorBoundary name="Commissions"><React.Suspense fallback={<LazyFallback/>}><CommissionsPage/></React.Suspense></ComponentErrorBoundary>}{pg==='omg'&&rOMG()}{pg==='webstores'&&<ComponentErrorBoundary name="Webstores"><React.Suspense fallback={<LazyFallback/>}><Webstores cust={cust} REPS={REPS} repCsr={repCsrAssignments} sos={sos} ests={ests} cu={cu} onCreateSO={webstoreCreateSO} onOpenSO={(soId)=>{const so=sos.find(x=>x.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);setPg('orders')}else nf('Sales order '+soId+' not found — try reloading','warn')}}/></React.Suspense></ComponentErrorBoundary>}{pg==='reports'&&rReports()}{pg==='issues'&&rIssues()}{pg==='import'&&rImport()}{pg==='qb'&&<ComponentErrorBoundary name="QuickBooks"><React.Suspense fallback={<LazyFallback/>}><QBPage/></React.Suspense></ComponentErrorBoundary>}{pg==='backup'&&rBackup()}{pg==='settings'&&rSettings()}{pg==='sales_tools'&&rSalesTools()}{pg==='sales_history'&&<ComponentErrorBoundary name="SalesHistory"><React.Suspense fallback={<LazyFallback/>}><SalesHistory/></React.Suspense></ComponentErrorBoundary>}{pg==='search'&&rSearch()}</>}</div></div>
     {/* ═══ CREATE TODO MODAL (global) ═══ */}

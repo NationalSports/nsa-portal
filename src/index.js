@@ -130,7 +130,18 @@ class ErrorBoundary extends React.Component {
             </>
           )}
           <div style={{ marginTop: 20, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <button onClick={() => { localStorage.clear(); sessionStorage.clear(); window.location.href = window.location.pathname; }}
+            <button onClick={() => {
+              // Clearing the cache must never destroy unsaved work: the durable outbox holds the
+              // CONTENT of failed/unsaved edits and the failed-ID ledger drives their retry — carry
+              // those three keys across the wipe.
+              const keep = {};
+              ['nsa_outbox', 'nsa_save_failed_ids', 'nsa_save_failed_errors'].forEach(k => {
+                try { const v = localStorage.getItem(k); if (v != null) keep[k] = v; } catch (_) {}
+              });
+              localStorage.clear(); sessionStorage.clear();
+              Object.entries(keep).forEach(([k, v]) => { try { localStorage.setItem(k, v); } catch (_) {} });
+              window.location.href = window.location.pathname;
+            }}
               style={{ padding: '10px 24px', background: '#dc2626', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>
               Clear Cache & Hard Reload
             </button>
