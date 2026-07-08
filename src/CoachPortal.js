@@ -35,8 +35,37 @@ const cpShopHref = (slug) => CP_EMBEDDED ? `${CP_MARKETING}/shop/${slug}` : `/sh
 // summary up top, with the per-player order list as a searchable, collapsible
 // section below. No editing.
 const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const _cpMoney0 = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const _cpStages = { pending: 'Ordered', received: 'Received', in_production: 'In production', bagging: 'Bagging', shipped: 'Shipped', complete: 'Complete' };
-const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'bagging' ? '#86198f' : s === 'in_production' ? '#92400e' : s === 'received' ? '#3730a3' : '#64748b';
+// Production-stage order, least→most advanced. Mirrors the staff SRANK in
+// src/Webstores.js (enrich()) — keep the two in step if a stage is ever added.
+const _cpStageRank = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 5 };
+// Status tones from the NSA design system (Team Store Tracking "1A" handoff):
+// ordered=slate, received=indigo, in-production=red, bagging=amber, shipped=navy,
+// complete=green. A short/backordered line borrows the red accent.
+const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#192853' : s === 'bagging' ? '#B26A1C' : s === 'in_production' ? '#962C32' : s === 'received' ? '#4E63A6' : '#7A8194';
+// NSA design tokens used by the tracking card — the fixed brand palette (not the
+// per-team theme), matching the reviewed 1A mock.
+const _CPD = { navy: '#192853', navyDark: '#0F1A38', navyTint: '#2a3d5e', red: '#962C32', green: '#1F7A43', offWhite: '#F7F8FB', panel: '#FBFCFE', lightGray: '#EEF1F6', midGray: '#D1D5DE', text: '#2A2F3E', textLight: '#5A6075' };
+const _cpHash = 'repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,.02) 30px 60px)';
+// A short human order reference: the OMG order number for OMG-fed stores, else
+// the native customer-facing order_number (migration 00177), falling back to a
+// stable 6-char slice of the UUID for legacy orders with neither. Mirrors the
+// storefront order tracker (storefront/OrderTrack.js).
+const _cpOrderNo = (o) => o.omg_order_number ? String(o.omg_order_number) : (o.order_number ? '#' + o.order_number : (o.id ? '#' + String(o.id).replace(/-/g, '').slice(-6).toUpperCase() : '—'));
+const _cpDelivery = (o, store) => { const m = String(o.ship_method || store?.delivery_mode || ''); if (/pick/i.test(m)) return 'Pickup'; if (/club|team|deliver/i.test(m)) return 'Team delivery'; return 'Ship to home'; };
+const _cpShipTo = (o) => { const a = o.ship_address || {}; const city = [a.city, a.state].filter(Boolean).join(', '); return [city, a.zip].filter(Boolean).join(' ') || a.name || '—'; };
+const _cpFmtDate = (s) => { if (!s) return ''; const dt = new Date(s); return isNaN(dt) ? '' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+// Carrier tracking deep-links. carrier values seen: fedex, ups, usps, stamps_com.
+const _cpTrackHref = (carrier, tracking) => {
+  if (!tracking) return '';
+  const t = encodeURIComponent(String(tracking).trim());
+  const c = String(carrier || '').toLowerCase();
+  if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${t}`;
+  if (c.includes('fedex')) return `https://www.fedex.com/fedextrack/?trknbr=${t}`;
+  if (c.includes('usps') || c.includes('stamps')) return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${t}`;
+  return `https://www.google.com/search?q=${t}`;
+};
 
 // ── Team-colored portal header ───────────────────────────────────────
 // Wear the team's own colors in the portal header, the way each webstore
@@ -334,132 +363,274 @@ const cpRosTd = { padding: '6px 8px', verticalAlign: 'middle' };
 const cpRosInput = (w) => ({ width: w, border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 9px', fontSize: 13, boxSizing: 'border-box' });
 const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outline ? '1px solid #cbd5e1' : 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' });
 
+// Team Store Tracking card — the coach's read-only view of one live store,
+// rebuilt to the NSA "1A · Refined Ledger" design handoff: a navy header, a KPI
+// strip, fundraising-goal + roster-ordered progress bars, and a searchable /
+// filterable player-order ledger whose rows expand into a contact meta band, a
+// priced line-item table, and a fundraising + shipping footer. The roster
+// manager (a separate coach tool) renders below. All data is live; fields with
+// no backing value degrade quietly (no goal → no goal bar, no tracking → no
+// Track link).
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
-  // Player orders lead the store view and open expanded — the coach's main job
-  // here is seeing who ordered; batches & roster setup follow below.
-  const [showOrders, setShowOrders] = useState(true);
-  const [openOrder, setOpenOrder] = useState(null);
-  const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  const [filter, setFilter] = useState('all');
+  // Open dropdowns, keyed by order id. Default the first active order open — the
+  // coach's first job is scanning who ordered, so surface one immediately.
+  const [open, setOpen] = useState(() => {
+    const first = (d.orders || []).find((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
+    return first ? { [first.id]: true } : {};
+  });
+
+  const itemsByOrder = {};
+  d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   // Active orders exclude abandoned pre-payment carts and cancellations.
   const active = d.orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
-  const players = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean));
-  const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0);
+
+  // A line is "backordered" when staff have flagged it short (missing_qty > 0) —
+  // the real, staff-maintained shortfall signal. The unused `backordered` column
+  // is intentionally not read.
+  const isShort = (i) => (Number(i.missing_qty) || 0) > 0;
+
+  const buildRow = (o) => {
+    const lineItems = (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent);
+    const lines = lineItems.map((i) => {
+      const short = isShort(i);
+      const sk = i.line_status || 'pending';
+      return {
+        id: i.id,
+        name: i.name || i.sku || 'Item',
+        sku: (i.name && i.sku && i.name !== i.sku) ? i.sku : '',
+        size: i.size || '—', qty: Number(i.qty) || 0,
+        priceStr: _cpMoney(Number(i.unit_price) || 0),
+        statusLabel: short ? 'On order' : (_cpStages[sk] || sk),
+        statusTone: short ? _CPD.red : _cpTone(sk),
+        short, backEta: i.backorder_eta ? _cpFmtDate(i.backorder_eta) : '',
+      };
+    });
+    const items = lineItems.reduce((a, i) => a + (Number(i.qty) || 0), 0);
+    const sales = lineItems.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 0), 0);
+    // Overall status = least-advanced non-short line (fall back to all lines).
+    const pool = lineItems.filter((i) => !isShort(i));
+    const src = pool.length ? pool : lineItems;
+    const ranks = src.map((i) => (_cpStageRank[i.line_status || 'pending'] ?? 0));
+    const minRank = ranks.length ? Math.min(...ranks) : 0;
+    const statusKey = Object.keys(_cpStageRank).find((k) => _cpStageRank[k] === minRank) || 'pending';
+    const hasBack = lineItems.some(isShort);
+    const player = [...new Set(lineItems.map((i) => i.player_name).filter(Boolean))].join(', ');
+    const number = [...new Set(lineItems.map((i) => i.player_number).filter(Boolean))].join(', ');
+    const shipped = statusKey === 'shipped' || statusKey === 'complete' || !!o.shipped_at || !!o.tracking_number;
+    const trackHref = _cpTrackHref(o.carrier, o.tracking_number);
+    const shipDate = _cpFmtDate(o.shipped_at);
+    const carrier = o.carrier ? String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : '';
+    return {
+      id: o.id, no: _cpOrderNo(o), date: _cpFmtDate(o.created_at) || '—',
+      player: player || o.buyer_name || '—', number: number || '—',
+      items, fundStr: _cpMoney(Number(o.fundraise_amt) || 0), salesStr: _cpMoney(sales),
+      buyerName: o.buyer_name || '—', buyerEmail: o.buyer_email || '', buyerPhone: o.buyer_phone || '—',
+      paid: o.payment_mode === 'paid', paymentLabel: o.payment_mode === 'paid' ? 'Paid' : 'Team tab',
+      payColor: o.payment_mode === 'paid' ? _CPD.green : _CPD.textLight,
+      statusKey, statusLabel: _cpStages[statusKey] || statusKey, statusTone: _cpTone(statusKey),
+      hasBack, backCount: lineItems.filter(isShort).length, delivery: _cpDelivery(o, s),
+      shipped, tracked: shipped && !!trackHref, trackHref,
+      shipHeadline: shipped ? (shipDate ? `Shipped ${shipDate}` : 'Shipped') : 'Not yet shipped',
+      shipSub: shipped ? ([carrier, o.tracking_number].filter(Boolean).join(' · ') || 'In transit') : (o.so_id ? `Ships with ${o.so_id}` : 'Awaiting batch'),
+      shipTo: _cpShipTo(o), soId: o.so_id || '', lines,
+      _hay: `${player} ${o.buyer_name || ''} ${o.buyer_email || ''} ${_cpOrderNo(o)} ${number}`.toLowerCase(),
+    };
+  };
+
+  const allRows = active.map(buildRow);
+
+  // ── KPIs ──
+  const playersN = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
+  const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const fundraising = active.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const sales = active.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const paidCount = active.filter((o) => o.payment_mode === 'paid').length;
-  const notOrdered = (d.roster || []).filter((r) => !r.ordered);
+  const fundGoal = Number(s.fundraise_goal) || 0;
+  const fundPct = fundGoal > 0 ? Math.min(100, Math.round((fundraising / fundGoal) * 100)) : 0;
+  const roster = d.roster || [];
+  const rosterSize = roster.length;
+  const rosterOrdered = roster.filter((r) => r.ordered).length;
+  const rosterPct = rosterSize > 0 ? Math.min(100, Math.round((rosterOrdered / rosterSize) * 100)) : 0;
 
-  // Group batched orders by Sales Order; derive a representative status.
-  const batchMap = {}; active.forEach((o) => { if (o.so_id) (batchMap[o.so_id] = batchMap[o.so_id] || []).push(o); });
-  const batchStatus = (ords) => {
-    const its = ords.flatMap((o) => itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent);
-    const stages = its.map((i) => i.line_status || 'pending');
-    if (stages.length && stages.every((x) => x === 'complete')) return 'complete';
-    if (stages.some((x) => x === 'shipped' || x === 'complete')) return 'shipped';
-    if (stages.some((x) => x === 'in_production')) return 'in_production';
-    return 'pending';
-  };
-  const batches = Object.entries(batchMap).map(([soId, ords]) => ({ soId, count: ords.length, status: batchStatus(ords) }));
-  const unbatched = active.filter((o) => !o.so_id).length;
+  // ── Search + status filter ──
+  const searchRows = q.trim() ? allRows.filter((r) => r._hay.includes(q.trim().toLowerCase())) : allRows;
+  const chipDefs = [['all', 'All'], ['pending', 'Ordered'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped'], ['backordered', 'Backordered']];
+  const countFor = (k) => k === 'all' ? searchRows.length : k === 'backordered' ? searchRows.filter((r) => r.hasBack).length : searchRows.filter((r) => r.statusKey === k).length;
+  const visibleRows = searchRows.filter((r) => filter === 'all' ? true : filter === 'backordered' ? r.hasBack : r.statusKey === filter);
 
-  const orderRows = active.filter((o) => {
-    if (!q.trim()) return true;
-    const its = itemsByOrder[o.id] || [];
-    const hay = `${o.buyer_name || ''} ${o.buyer_email || ''} ${its.map((i) => i.player_name).filter(Boolean).join(' ')} ${its.map((i) => i.player_number).filter(Boolean).join(' ')}`.toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
+  const toggle = (id) => setOpen((m) => ({ ...m, [id]: !m[id] }));
+  const allOpen = visibleRows.length > 0 && visibleRows.every((r) => open[r.id]);
+  const toggleAll = () => { if (allOpen) { setOpen({}); } else { const m = {}; visibleRows.forEach((r) => { m[r.id] = true; }); setOpen(m); } };
 
-  const Kpi = ({ label, value, color }) => (
-    <div style={{ flex: '1 1 110px', minWidth: 110 }}>
-      <div style={{ fontSize: 22, fontWeight: 900, color: color || '#0b1220' }}>{value}</div>
-      <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>{label}</div>
+  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${_cpFmtDate(s.close_at)}` : `Closes ${_cpFmtDate(s.close_at)}`) : '';
+
+  // ── Reusable style atoms ──
+  const disp = { fontFamily: "'Barlow Condensed',sans-serif" };
+  const eyebrow = { ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', color: _CPD.textLight };
+  const tnum = { fontVariantNumeric: 'tabular-nums' };
+  const GRID = '24px minmax(150px,1.6fr) 46px 58px 96px minmax(150px,1.2fr)';
+  const LN = 'minmax(150px,2.2fr) 54px 40px 74px minmax(110px,1fr) minmax(104px,1fr)';
+  const bagIcon = <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>;
+  const truckIcon = <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>;
+  const fundIcon = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>;
+
+  const Kpi = ({ label, value, green }) => (
+    <div style={{ flex: '1 1 108px', minWidth: 100 }}>
+      <div style={{ ...disp, fontWeight: 800, fontSize: 27, lineHeight: 1, color: green ? _CPD.green : _CPD.navy, ...tnum }}>{value}</div>
+      <div style={{ ...eyebrow, marginTop: 5 }}>{label}</div>
+    </div>
+  );
+  const Bar = ({ label, right, pct, from, to }) => (
+    <div style={{ flex: '1 1 260px', minWidth: 220 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={eyebrow}>{label}</span>
+        <span style={{ fontSize: 12.5, color: _CPD.text, fontWeight: 600, ...tnum }}>{right}</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, background: _CPD.lightGray, overflow: 'hidden' }}>
+        <div style={{ height: '100%', borderRadius: 999, background: `linear-gradient(90deg, ${from}, ${to})`, width: `${pct}%` }} />
+      </div>
     </div>
   );
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
-        <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ fontSize: 12, color: '#bfdbfe', textDecoration: 'none' }}>Visit store ↗</a>
-      </div>
-      <div style={{ padding: 16 }}>
-        {/* Headline KPIs */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
+        {/* Navy header */}
+        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <span style={{ display: 'inline-flex', opacity: 0.92 }}>{bagIcon}</span>
+            <span style={{ ...disp, fontWeight: 800, fontSize: 20, letterSpacing: '.01em', textTransform: 'uppercase' }}>{s.name}</span>
+            {closeStr && <span style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap' }}>· {closeStr}</span>}
+          </div>
+          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 4, padding: '8px 15px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
+        </div>
+
+        {/* KPI strip */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 0', padding: '18px 20px 16px', borderBottom: `1px solid ${_CPD.lightGray}` }}>
           <Kpi label="Orders" value={active.length} />
-          <Kpi label="Players" value={players.size} />
+          <Kpi label="Players" value={playersN} />
           <Kpi label="Items" value={units} />
-          <Kpi label="Sales" value={_cpMoney(sales)} />
-          <Kpi label="Fundraising" value={_cpMoney(fundraising)} color="#166534" />
+          <Kpi label="Sales" value={_cpMoney0(sales)} />
+          <Kpi label="Fundraising" value={_cpMoney0(fundraising)} green />
           <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
         </div>
 
-        {/* Player orders — the primary view: who ordered, sizes, payment & status */}
-        <div style={{ marginTop: 14 }}>
-          <button onClick={() => setShowOrders((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ transform: showOrders ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
-            Player orders ({active.length})
-          </button>
-          {showOrders && (
-            <div style={{ marginTop: 10 }}>
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or number…" style={{ width: '100%', maxWidth: 360, padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13, marginBottom: 10, boxSizing: 'border-box' }} />
-              {active.length === 0 ? <div style={{ fontSize: 13, color: '#64748b' }}>No orders yet.</div> : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6, width: 18 }}></th><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
-                    <tbody>
-                      {orderRows.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); const open = openOrder === o.id; const lineItems = its.filter((i) => !i.is_bundle_parent); return (
-                        <React.Fragment key={o.id}>
-                        <tr onClick={() => setOpenOrder(open ? null : o.id)} style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: open ? '#f8fafc' : 'transparent' }}>
-                          <td style={{ padding: 6, color: '#94a3b8' }}>{open ? '▾' : '▸'}</td>
-                          <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
-                          <td style={{ padding: 6 }}>{num || '—'}</td>
-                          <td style={{ padding: 6 }}>{qty}</td>
-                          <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
-                          <td style={{ padding: 6, fontWeight: 700, color: _cpTone(ls) }}>{_cpStages[ls] || ls}</td>
-                        </tr>
-                        {open && <tr><td></td><td colSpan={5} style={{ padding: '4px 6px 12px', background: '#f8fafc' }}>
-                          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 0' }}>Ordered by {o.buyer_name || '—'}{o.buyer_email ? ` · ${o.buyer_email}` : ''}</div>
-                          {lineItems.map((i) => (
-                            <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderTop: '1px solid #eef1f5' }}>
-                              <span>{i.sku || 'Item'}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}{i.qty > 1 ? ` · ×${i.qty}` : ''}</span>
-                              <span style={{ color: _cpTone(i.line_status || 'pending'), fontWeight: 600 }}>{_cpStages[i.line_status || 'pending'] || i.line_status}</span>
-                            </div>
-                          ))}
-                        </td></tr>}
-                        </React.Fragment>
-                      ); })}
-                      {orderRows.length === 0 && <tr><td colSpan={6} style={{ padding: 10, color: '#94a3b8' }}>No orders match “{q}”.</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+        {/* Progress bars — shown only when there's a goal / a roster to measure */}
+        {(fundGoal > 0 || rosterSize > 0) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '15px 20px', borderBottom: `1px solid ${_CPD.lightGray}`, background: _CPD.panel }}>
+            {fundGoal > 0 && <Bar label="Fundraising goal" right={<>{_cpMoney0(fundraising)} <span style={{ color: _CPD.textLight, fontWeight: 400 }}>of {_cpMoney0(fundGoal)} · {fundPct}%</span></>} pct={fundPct} from="#1F7A43" to="#2E9455" />}
+            {rosterSize > 0 && <Bar label="Roster ordered" right={<>{rosterOrdered} of {rosterSize} <span style={{ color: _CPD.textLight, fontWeight: 400 }}>players · {rosterPct}%</span></>} pct={rosterPct} from={_CPD.navy} to={_CPD.navyTint} />}
+          </div>
+        )}
 
-        {/* Store batches */}
-        <div style={{ marginTop: 18, borderTop: '1px solid #f1f5f9', paddingTop: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 8 }}>Production batches</div>
-          {batches.length === 0 ? (
-            <div style={{ fontSize: 13, color: '#64748b' }}>No batches yet{unbatched ? ` — ${unbatched} order${unbatched === 1 ? '' : 's'} waiting to be batched.` : '.'}</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {batches.map((b) => (
-                <div key={b.soId} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', background: '#f8fafc', borderRadius: 8 }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{b.soId}</span>
-                  <span style={{ color: '#64748b' }}>{b.count} order{b.count === 1 ? '' : 's'}</span>
-                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: _cpTone(b.status) }}>{_cpStages[b.status]}</span>
+        {/* Player order ledger */}
+        <div style={{ padding: '16px 20px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div style={{ ...disp, fontWeight: 800, fontSize: 15, letterSpacing: '.04em', textTransform: 'uppercase', color: _CPD.navy }}>Player Orders <span style={{ color: _CPD.textLight }}>({active.length})</span></div>
+            {visibleRows.length > 0 && <button onClick={toggleAll} style={{ ...disp, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, padding: '4px 2px' }}>{allOpen ? 'Collapse all' : 'Expand all'}</button>}
+          </div>
+
+          {/* Search */}
+          <div style={{ position: 'relative', maxWidth: 360, marginBottom: 12 }}>
+            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: _CPD.textLight, display: 'inline-flex' }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 4, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
+          </div>
+
+          {/* Status filter chips */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            {chipDefs.map(([key, label]) => {
+              const on = filter === key; const isBack = key === 'backordered';
+              return (
+                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 11px', borderRadius: 4, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
+              );
+            })}
+          </div>
+
+          {active.length === 0 ? <div style={{ padding: '24px 4px', color: _CPD.textLight, fontSize: 14 }}>No orders yet.</div> : (
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{ minWidth: 640 }}>
+              {/* Table header */}
+              <div style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '0 10px 8px', borderBottom: `2px solid ${_CPD.lightGray}` }}>
+                <span />
+                {['Player', '#', 'Items', 'Paid?', 'Status'].map((h) => <span key={h} style={eyebrow}>{h}</span>)}
+              </div>
+
+              {visibleRows.map((row) => (
+                <div key={row.id} style={{ borderBottom: `1px solid ${_CPD.lightGray}` }}>
+                  <div onClick={() => toggle(row.id)} style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '11px 10px', cursor: 'pointer', background: open[row.id] ? _CPD.offWhite : 'transparent' }}>
+                    <span style={{ color: _CPD.textLight, fontSize: 12 }}>{open[row.id] ? '▾' : '▸'}</span>
+                    <span style={{ fontWeight: 700, color: _CPD.navy, fontSize: 14 }}>{row.player}</span>
+                    <span style={{ color: _CPD.text, fontSize: 14, ...tnum }}>{row.number}</span>
+                    <span style={{ color: _CPD.text, fontSize: 14, ...tnum }}>{row.items}</span>
+                    <span style={{ fontSize: 13, color: row.payColor, fontWeight: 600 }}>{row.paymentLabel}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: row.statusTone, flex: '0 0 auto' }} />
+                      <span style={{ ...disp, fontWeight: 700, fontSize: 13, letterSpacing: '.02em', textTransform: 'uppercase', color: row.statusTone }}>{row.statusLabel}</span>
+                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 6px', borderRadius: 3 }}>{row.backCount} backordered</span>}
+                    </span>
+                  </div>
+
+                  {open[row.id] && (
+                    <div style={{ padding: '4px 10px 18px' }}>
+                      {/* Contact / order meta band */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, marginBottom: 12 }}>
+                        {[['Order', row.no, tnum], ['Ordered', row.date], ['Ordered by', row.buyerName], ['Email', row.buyerEmail ? <a href={`mailto:${row.buyerEmail}`}>{row.buyerEmail}</a> : '—'], ['Phone', row.buyerPhone, tnum], ['Delivery', row.delivery]].map(([lbl, val, extra]) => (
+                          <div key={lbl}><div style={{ ...eyebrow, marginBottom: 3 }}>{lbl}</div><div style={{ fontSize: 14, color: _CPD.text, fontWeight: lbl === 'Order' || lbl === 'Ordered by' ? 700 : 400, ...(lbl === 'Order' ? { color: _CPD.navy } : {}), ...(extra || {}) }}>{val}</div></div>
+                        ))}
+                      </div>
+
+                      {/* Priced line items */}
+                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, padding: '9px 14px', background: _CPD.offWhite, borderBottom: `1px solid ${_CPD.lightGray}` }}>
+                          {['Item', 'Size', 'Qty', 'Price', 'Batch', 'Status'].map((h, idx) => <span key={h} style={{ ...eyebrow, ...(idx === 3 ? { textAlign: 'right' } : {}) }}>{h}</span>)}
+                        </div>
+                        {row.lines.map((ln) => (
+                          <div key={ln.id} style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, alignItems: 'center', padding: '10px 14px', borderTop: `1px solid ${_CPD.lightGray}` }}>
+                            <span>
+                              <span style={{ fontSize: 13.5, color: _CPD.text, fontWeight: 600 }}>{ln.name}</span>
+                              {ln.sku && <span style={{ fontSize: 11.5, color: _CPD.textLight, marginLeft: 6, ...tnum }}>{ln.sku}</span>}
+                              {ln.short && <div style={{ fontSize: 12, color: _CPD.red, fontWeight: 600, marginTop: 3 }}>Backordered{ln.backEta ? ` · ETA ${ln.backEta}` : ''}</div>}
+                            </span>
+                            <span style={{ fontSize: 13, color: _CPD.text, fontWeight: 600 }}>{ln.size}</span>
+                            <span style={{ fontSize: 13, color: _CPD.text, ...tnum }}>{ln.qty}</span>
+                            <span style={{ fontSize: 13, color: _CPD.text, textAlign: 'right', ...tnum }}>{ln.priceStr}</span>
+                            <span style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.soId || <span style={{ color: _CPD.midGray }}>Not batched</span>}</span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><span style={{ width: 7, height: 7, borderRadius: 999, background: ln.statusTone, flex: '0 0 auto' }} /><span style={{ fontSize: 12.5, fontWeight: 600, color: ln.statusTone }}>{ln.statusLabel}</span></span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Fundraising + shipping footer */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                          <span style={{ display: 'inline-flex', color: _CPD.green }}>{fundIcon}</span>
+                          <span style={{ fontSize: 13, color: _CPD.textLight }}>Fundraising from this order</span>
+                          <span style={{ fontSize: 15, color: _CPD.green, fontWeight: 800, ...tnum }}>{row.fundStr}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <span style={{ display: 'inline-flex', color: _CPD.navy }}>{truckIcon}</span>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: 13.5, color: _CPD.navy, fontWeight: 700 }}>{row.shipHeadline}</div>
+                            <div style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.shipSub} · Ships to {row.shipTo}</div>
+                          </div>
+                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 12px', borderRadius: 4, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
-              {unbatched > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>+ {unbatched} new order{unbatched === 1 ? '' : 's'} not yet batched.</div>}
+              {visibleRows.length === 0 && <div style={{ padding: '24px 10px', textAlign: 'center', color: _CPD.textLight, fontSize: 14 }}>No orders match your search or filter.</div>}
             </div>
+          </div>
           )}
         </div>
-
-        {/* Roster & player links — set up players, hand out links, track who's ordered */}
-        <CoachRosterManager store={s} initialRoster={d.roster || []} />
       </div>
+
+      {/* Roster & player links — set up players, hand out links, track who's ordered */}
+      <CoachRosterManager store={s} initialRoster={d.roster || []} />
     </div>
   );
 }

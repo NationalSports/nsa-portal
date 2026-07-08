@@ -4104,7 +4104,7 @@ const BLANK = {
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
-  fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
+  fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false, fundraise_goal: 0,
   processing_pct: 5,
   size_upcharge_enabled: true,
   public_listed: true,
@@ -4275,7 +4275,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
     payload.fundraise_pct = Number(payload.fundraise_pct) || 0;
     payload.fundraise_flat = Number(payload.fundraise_flat) || 0;
     payload.fundraise_round = !!payload.fundraise_round;
-    if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; }
+    // The goal drives the coach tracking page's "Fundraising goal" bar; 0/blank
+    // means no goal (the bar hides).
+    payload.fundraise_goal = Number(payload.fundraise_goal) || 0;
+    if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; payload.fundraise_goal = 0; }
     else if (fundMode === 'pct') payload.fundraise_flat = 0;
     else payload.fundraise_pct = 0;
     const r = await onSave(payload);
@@ -4394,6 +4397,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
             ? <Row label="Percent added to each item"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input className="form-input" type="number" step="1" min={0} style={{ maxWidth: 120 }} value={f.fundraise_pct} onChange={(e) => set('fundraise_pct', e.target.value)} placeholder="10" /><span style={{ color: '#6A7180', fontWeight: 700 }}>%</span></div></Row>
             : <Row label="Dollars added to each item"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#6A7180', fontWeight: 700 }}>$</span><input className="form-input" type="number" step="0.01" min={0} style={{ maxWidth: 120 }} value={f.fundraise_flat} onChange={(e) => set('fundraise_flat', e.target.value)} placeholder="5.00" /></div></Row>}
           <Toggle label="Round the fundraising amount up to the nearest $1" checked={f.fundraise_round} onChange={(v) => set('fundraise_round', v)} />
+          <Row label="Fundraising goal (optional)"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#6A7180', fontWeight: 700 }}>$</span><input className="form-input" type="number" step="1" min={0} style={{ maxWidth: 120 }} value={f.fundraise_goal} onChange={(e) => set('fundraise_goal', e.target.value)} placeholder="500" /><span style={{ fontSize: 12, color: '#94a3b8' }}>Shows a progress bar to the coach. Leave blank for none.</span></div></Row>
         </div>}
         <div style={{ borderTop: '1px solid #f3f4f7', margin: '6px 0 2px' }} />
         <Toggle label={'Show families the "$X supports the team" line on the storefront'} checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
@@ -10934,6 +10938,14 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     setTick((t) => t + 1);
     try { await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', item.id); } catch {}
   };
+  // Expected arrival for a line held short — surfaced on the coach tracking page's
+  // "Backordered · ETA …" badge. Blank clears it.
+  const setItemBackEta = async (item, v) => {
+    const d = v || null;
+    item.backorder_eta = d;
+    setTick((t) => t + 1);
+    try { await supabase.from('webstore_order_items').update({ backorder_eta: d }).eq('id', item.id); } catch {}
+  };
   // Reprint the order's last saved label (no re-buy).
   const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
   // Void the order's last label in ShipStation and reopen the shipped lines.
@@ -11081,7 +11093,10 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
                             <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
-                            <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
+                            <td style={td}>
+                              <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} />
+                              {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
