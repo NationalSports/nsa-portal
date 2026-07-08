@@ -6304,6 +6304,21 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const makeMainPhoto = (i) => movePhoto(i, 0);
   const deletePhoto = (i) => applyGallery(galleryPhotos.filter((_, j) => j !== i));
 
+  // A store item needs a MAIN front photo: it's what the art placer draws logos on, what
+  // saves to image_url, and what the storefront shows on the card. The "+ Add images"
+  // button always appends to `extraImages`, which is right when a front photo already
+  // exists (override or catalog stock). But when the item has NO front photo, those adds
+  // pile into `extraImages` while `image` stays null — so the gallery labels the first
+  // angle "MAIN" yet the placer, image_url, and storefront all stay blank. Promote the
+  // first angle into the real MAIN slot so what the gallery shows and what saves agree.
+  // Also self-heals items already saved in that broken state when they're reopened.
+  useEffect(() => {
+    if (image || stockImg || item.image_url) return;
+    if (!extraImages.length) return;
+    setImage(extraImages[0]);
+    setExtraImages((p) => p.slice(1));
+  }, [extraImages, image, stockImg, item.image_url]);
+
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
