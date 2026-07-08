@@ -9694,6 +9694,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             nf('Cannot submit to art — set both Pantone ink colors on reversible Numbers for: '+missing.join(', '));
             return;
           }
+          // Artist assignment is required on release — every path, including Skip Artist. A job
+          // released without an owner is invisible on the per-artist boards and silently stalls
+          // the moment it needs artist work (mockups, separations, production files).
+          const noArtist=groups.filter(g=>g.items.some(it=>!it._excluded)&&!g.artist).map(g=>g.name||g.deco_type);
+          if(noArtist.length>0){
+            nf('Cannot release — assign an artist to: '+noArtist.join(', '),'error');
+            return;
+          }
         }
         // Preserve already-submitted jobs (anything past needs_art) so re-running
         // the wizard doesn't wipe their art_requests, prod state, etc.
@@ -9981,7 +9989,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })}
               </div>
             </div>
-            {g.skipArtist&&<div style={{fontSize:10,color:'#166534',marginBottom:8,marginLeft:2}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>}
+            {g.skipArtist&&<div style={{marginBottom:8,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
+              <div style={{fontSize:10,color:'#166534',marginBottom:6}}>Art status will be set to complete. Upload sample art below if you have files to attach.</div>
+              {/* Every released job carries an artist — a skip-artist job that later needs production
+                  files (separations, DST) otherwise lands on NOBODY's art board and silently stalls. */}
+              <div style={{display:'flex',alignItems:'center',gap:8}}>
+                <div style={{fontSize:10,fontWeight:700,color:'#166534',whiteSpace:'nowrap'}}>Artist *</div>
+                <select className="form-select" style={{fontSize:11,minWidth:180,flex:1,maxWidth:260}} value={g.artist||''} onChange={e=>{const gs=[...jobWizard.groups];gs[gi]={...gs[gi],artist:e.target.value};setJobWizard({...jobWizard,groups:gs})}}>
+                  <option value="">Select artist...</option>
+                  {wizArtists.map(a=><option key={a.id} value={a.id}>{a.name}</option>)}
+                </select>
+                <span style={{fontSize:10,color:'#166534'}}>Owns production files if this art ever needs them.</span>
+              </div>
+            </div>}
             {g.quickMock&&<div style={{marginBottom:8,padding:10,background:'#f0fdf4',borderRadius:6,border:'1px solid #bbf7d0'}}>
               <div style={{fontSize:10,color:'#166534',marginBottom:6}}>Build a mockup per garment color and send it straight to the coach for approval. Your source art stays on each artwork — the artist still makes separation files after approval.</div>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}>
@@ -10025,14 +10045,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setJobWizard({...jobWizard,groups:gs});
           }}>+ Add Group</button>
         </div>
-        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const qmReady=g=>Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length>0;const allReady=activeGroups.length>0&&activeGroups.every(g=>g.skipArtist||(g.quickMock?(qmReady(g)&&g.artist):g.artist));const notReady=!allReady;const qmPending=activeGroups.some(g=>g.quickMock&&!qmReady(g));const qmNoArtist=activeGroups.some(g=>g.quickMock&&!g.artist);
+        {(()=>{const activeGroups=jobWizard.groups.filter(g=>g.items.some(it=>!it._excluded));const qmReady=g=>Object.values(g.qmMocks||{}).filter(a=>(a||[]).length>0).length>0;
+          // Artist assignment is REQUIRED on every path — including Skip Artist. An unassigned
+          // job is invisible on the per-artist boards, so releasing one strands its later work.
+          const allReady=activeGroups.length>0&&activeGroups.every(g=>g.artist&&(g.quickMock?qmReady(g):true));const notReady=!allReady;const qmPending=activeGroups.some(g=>g.quickMock&&!qmReady(g));const qmNoArtist=activeGroups.some(g=>g.quickMock&&!g.artist);
           return<div style={{display:'flex',gap:8,borderTop:'1px solid #e2e8f0',paddingTop:12,alignItems:'center'}}>
           <button className="btn btn-primary" style={{background:'#166534',borderColor:'#166534',fontWeight:800,opacity:notReady?0.5:1}} disabled={notReady}
             onClick={()=>wizActivate(jobWizard.groups,true)}>Release Jobs for Art</button>
           <button className="btn btn-secondary" style={{fontWeight:700}}
             onClick={()=>wizActivate(jobWizard.groups,false)}>Save as Drafts</button>
           <button className="btn btn-secondary" onClick={()=>setJobWizard(null)}>Cancel</button>
-          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>{qmPending?'Build at least one mockup for each Quick Mock job':qmNoArtist?'Assign the separations artist for each Quick Mock job':'Select an artist, "Skip Artist", or "Quick Mock" for each job'}</span>}
+          {notReady&&<span style={{fontSize:11,color:'#dc2626',fontWeight:600}}>{qmPending?'Build at least one mockup for each Quick Mock job':qmNoArtist?'Assign the separations artist for each Quick Mock job':'Assign an artist to each job — every job needs an owner'}</span>}
         </div>})()}
         {mockBuilder&&(()=>{
           const g=jobWizard.groups[mockBuilder.gi];if(!g)return null;

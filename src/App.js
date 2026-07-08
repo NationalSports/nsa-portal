@@ -19288,8 +19288,15 @@ export default function App(){
       // Artist sees a job when it's assigned to them OR the open art request names them —
       // assigned_artist can go stale (e.g. it held a deactivated duplicate team-member id
       // while the request pointed at the live one), and either link should surface the job.
+      // A job whose assignee resolves to NO live artist (never assigned — e.g. approved via
+      // quick-mock/skip-artist and now needing production files — or a stale/deactivated id)
+      // is the shared UNASSIGNED POOL: every artist sees it. Hiding it from all boards is how
+      // artist-actionable work silently vanished. Only a job owned by a DIFFERENT live artist
+      // is hidden from this artist.
       if(_isArtistUser){const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
-        if(j.assigned_artist!==cu.id&&_actReq?.artist!==cu.id)return false}
+        const _mine=j.assigned_artist===cu.id||_actReq?.artist===cu.id;
+        const _ownedByLiveArtist=artistMembers.some(r=>r.id===j.assigned_artist||r.id===_actReq?.artist);
+        if(!_mine&&_ownedByLiveArtist)return false}
       if(!_isArtistUser&&artFilter!=='all'&&(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter))return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
@@ -19476,8 +19483,11 @@ export default function App(){
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
             <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-              {_isArtistUser?(artist?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
-              :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>)
+              {_isArtistUser?(artistMembers.some(r=>r.id===j.assigned_artist)?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
+              // Unassigned-pool job on an artist's board: one click takes ownership, so it leaves
+              // the other artists' boards once someone picks it up.
+              :<><span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>
+                <button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#7c3aed',color:'white',border:'none',borderRadius:4,fontWeight:700}} onClick={e=>{e.stopPropagation();assignArtist(j,cu.id)}}>🎨 Claim</button></>)
               // Admin/rep: assign (or re-assign) the artist right from the card. The value only
               // reads as assigned when it resolves to an ACTIVE artist — a stale id (deactivated
               // duplicate team member) shows as unassigned so it gets fixed instead of hiding the
