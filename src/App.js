@@ -3708,39 +3708,55 @@ export default function App(){
   // into state and tell the user to re-apply, instead of clobbering. Falls back to _saveAppState
   // while the RPC isn't deployed (webstore-checkout missingFn pattern). Other keys keep the plain
   // save path.
+  // In-flight flag + latest-pending value per key (the _dbSaveInFlight/_dbSavePending idiom):
+  // the rates UI mutates state per keystroke, so saves MUST coalesce and run one-at-a-time per
+  // key — a second CAS racing the first's version bump would self-conflict (-1) and revert the
+  // user's own typing.
+  const _casState=useRef({inFlight:{},pending:{}}).current;
   const _saveAppStateCAS=(key,val)=>{
-    const str=JSON.stringify(val);
-    if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,str);
+    if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,JSON.stringify(val));
     if(!(_initialLoadDone.current&&_dbLoadSuccess.current)||!supabase)return;
-    const rec=_appStateVersions[key];
-    if(rec&&rec.s===str)return;// server already has exactly this value (e.g. the effect echo right after hydration) — no write, no version bump
-    const expected=rec?rec.v:0;
+    _casState.pending[key]=val;
+    if(_casState.inFlight[key])return;// the running drain loop picks this up with a fresh version
+    _casState.inFlight[key]=true;
     _dbSavingGuard(async()=>{
       try{
-        const{data,error}=await supabase.rpc('app_state_cas',{p_key:key,p_expected:expected,p_value:str});
-        if(error){
-          if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'')){
-            console.warn('[app_state_cas] RPC not deployed — falling back to last-write-wins save for '+key);
-            _dbSave('app_state',[{id:key,value:str,updated_at:new Date().toISOString()}]);
-          }else console.warn('[app_state_cas] '+key+' save failed:',error.message);
-          return;
-        }
-        if(data===-1){
-          const{data:row}=await supabase.from('app_state').select('value,version').eq('id',key).maybeSingle();
-          if(row&&row.value!=null){
-            _appStateVersions[key]={v:row.version||0,s:row.value};
-            try{
-              const serverVal=JSON.parse(row.value);
-              if(key==='labor_rates')setLaborRates(serverVal);
-              else if(key==='comm_overrides')setCommOverrides(serverVal);
-              if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,row.value);
-            }catch(_){}
+        while(key in _casState.pending){
+          const v=_casState.pending[key];delete _casState.pending[key];
+          const str=JSON.stringify(v);
+          const rec=_appStateVersions[key];
+          if(rec&&rec.s===str)continue;// server already has exactly this value (e.g. the effect echo right after hydration) — no write, no version bump
+          const expected=rec?rec.v:0;
+          const{data,error}=await supabase.rpc('app_state_cas',{p_key:key,p_expected:expected,p_value:str});
+          if(error){
+            if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'')){
+              console.warn('[app_state_cas] RPC not deployed — falling back to last-write-wins save for '+key);
+              _dbSave('app_state',[{id:key,value:str,updated_at:new Date().toISOString()}]);
+            }else console.warn('[app_state_cas] '+key+' save failed:',error.message);
+            continue;
           }
-          nf(key+' was updated by someone else — showing the latest; re-apply your change','error');
-        }else if(typeof data==='number'){
-          _appStateVersions[key]={v:data,s:str};
+          if(data===-1){
+            const{data:row}=await supabase.from('app_state').select('value,version').eq('id',key).maybeSingle();
+            if(row&&row.value!=null){
+              _appStateVersions[key]={v:row.version||0,s:row.value};
+              // Adopt the server copy only if the user hasn't ALREADY made a newer local edit —
+              // a pending edit retries next iteration with the fresh version and wins.
+              if(!(key in _casState.pending)){
+                try{
+                  const serverVal=JSON.parse(row.value);
+                  if(key==='labor_rates')setLaborRates(serverVal);
+                  else if(key==='comm_overrides')setCommOverrides(serverVal);
+                  if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,row.value);
+                }catch(_){}
+                nf(key+' was updated by someone else — showing the latest; re-apply your change','error');
+              }else nf(key+' was updated by someone else while you were editing — your newer edit is replacing it','error');
+            }else if(!row)delete _appStateVersions[key];// row vanished: next save re-inserts at version 1 (p_expected=0)
+          }else if(typeof data==='number'){
+            _appStateVersions[key]={v:data,s:str};
+          }
         }
       }catch(e){console.warn('[app_state_cas] '+key+' save threw:',e)}
+      finally{_casState.inFlight[key]=false}
     });
   };
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_setBatchPosDirtyUntil(Date.now()+12000);_saveAppState('batch_pos',batchPOs)},[batchPOs]);
