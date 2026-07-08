@@ -7495,11 +7495,13 @@ export default function App(){
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true)}</>;
       }else if(report==='kpis'){
-        let rev=0,cost=0,orders=0;const custSet=new Set();const perRep=new Map();
-        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0};pr.rev+=m.rev;pr.cost+=m.cost;perRep.set(id,pr)}});
-        const margin=rev-cost,pct=rev>0?Math.round(margin/rev*100):0,avg=orders>0?rev/orders:0;
+        let rev=0,cost=0,shipRev=0,orders=0;const custSet=new Set();const perRep=new Map();
+        // Shipping charged offsets shipping cost (mirrors calcOrderMargin/calcGP): margin runs on
+        // rev+shipRev. `rev` stays product+deco sales for the Revenue tile and Avg Order.
+        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;shipRev+=safeNum(m.shipRev);orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0,shipRev:0};pr.rev+=m.rev;pr.cost+=m.cost;pr.shipRev+=safeNum(m.shipRev);perRep.set(id,pr)}});
+        const marginBase=rev+shipRev,margin=marginBase-cost,pct=marginBase>0?Math.round(margin/marginBase*100):0,avg=orders>0?rev/orders:0;
         let topRep=null,topRevV=0;perRep.forEach((v,id)=>{if(v.rev>topRevV){topRevV=v.rev;topRep=id}});
-        const marginRows=[...perRep.entries()].map(([id,v])=>({label:repName(id),rev:v.rev,pct:v.rev>0?Math.round((v.rev-v.cost)/v.rev*100):0})).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
+        const marginRows=[...perRep.entries()].map(([id,v])=>{const mb=v.rev+v.shipRev;return{label:repName(id),rev:v.rev,pct:mb>0?Math.round((mb-v.cost)/mb*100):0}}).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
         const kpi=(label,value,sub,color)=><div style={{flex:'1 1 28%',minWidth:92,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'8px 10px'}}><div style={_lbl}>{label}</div><div style={{fontSize:18,fontWeight:800,color:color||NAVY,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{value}</div>{sub?<div style={{fontSize:10,color:'#94a3b8'}}>{sub}</div>:null}</div>;
         body=<>
           <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:14}}>

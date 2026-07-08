@@ -2495,7 +2495,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const actualShipCost=safeNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0));
     const inboundFreight=safeNum(o._inbound_freight||0);
     cost+=actualShipCost+inboundFreight;
-    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:rev-cost,pct:rev>0?((rev-cost)/rev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
+    // Shipping charged to the customer (`ship`) is revenue that offsets the shipping cost now in
+    // `cost` — mirrors calcGP (commissions) so margin treats shipping as a wash, leaving only an
+    // over/under-quote to move it. `rev` stays product+deco (tax, grand, and the REV tile use it),
+    // so shipping is applied to margin/pct only. priorShip is excluded (its cost isn't in `cost`).
+    const marginRev=rev+ship;
+    return{rev,cost,ship,priorShip,tax,taxRate,omgFee,omgRevFee,omgTaxRev,omgCostFees,actualShipCost,inboundFreight,grand:rev+ship+priorShip+tax,margin:marginRev-cost,pct:marginRev>0?((marginRev-cost)/marginRev*100):0}},[o,artQty,cust,costArtQty]); // eslint-disable-line
 
   // Promo totals — separate calc to not disturb existing totals
   const promoTotals=useMemo(()=>{
