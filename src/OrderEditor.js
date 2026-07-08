@@ -17,6 +17,7 @@ import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
+import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 
@@ -96,7 +97,7 @@ function DropShipToggle({isDropShip,onSelect,inTitle='🏭 In-House PO',inSub='S
   </div>;
 }
 
-function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase}){
+function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendorsProp,onSave,onSaveArtFiles,onSaveNow,onBack,onConvertSO,onCopyEstimate,onCopySalesOrder,onRevertToEst,onSetJobLinkGroup,onSetJobAutoGroupOff,onStopJobClock,cu,nf,msgs,onMsg,dirtyRef,onAdjustInv,allOrders,artSourceOrders,onInv,onInvCommit,allInvoices,batchPOs,onBatchPO,onOrderBatch,nextBatchPONumber,initTab,onNavCustomer,onNewEstimate,scrollToItem,scrollToJob,scrollToJobRef,onScrollJobConsumed,openPOId,onOpenPOConsumed,reps:REPS,ssConnected,ssShipping,onShipSS,onCheckShipStatus,onDelete,onReleasePendingShip,onNavInvoice,onNavBatch,onSaveProduct,onViewEstimate,onViewSO,onNavOmgStore,returnToPage,onReturnToJob,onAssignTodo,assignedTodos,onCompleteTodo,portalSettings,decoVendors:decoVendorsProp,decoVendorPricing:decoVendorPricingProp,changeLog:changeLogProp,dbSavePromoPeriod:_dbSavePromoPeriod,onSavePromoPeriod,onSavePromoUsage,onDeletePromoUsage,companyInfo:companyInfoProp,fetchAdidasInventory:fetchAdidasInventoryProp,searchProducts:searchProductsProp,onSaveCustomer,onScheduleEmail,onDownloadProdSheet,onChangeRep,supabase,soBoxes,onOpenBox}){
   const fetchAdidasInventory=fetchAdidasInventoryProp||(async()=>({sizes:{},lastSynced:null}));
   const _ci=companyInfoProp||NSA;// use company info from state (reacts to Supabase loads) with fallback to mutable NSA
   const vendorList=vendorsProp||D_V;// use DB-loaded vendors if available, fallback to defaults
@@ -5416,6 +5417,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const canEditCost=cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='accounting'||cu?.role==='rep';
 
       return<div style={{display:'grid',gap:16}}>
+        {/* ── WAREHOUSE BOXES (BX plates, boxes table) — where is this order physically ── */}
+        {(soBoxes||[]).length>0&&<div className="card" style={{borderLeft:'3px solid #0891b2'}}>
+          <div className="card-header" style={{background:'linear-gradient(135deg,#ecfeff,#cffafe)'}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <h2 style={{margin:0,color:'#0e7490'}}>Warehouse Boxes</h2>
+              <span className="badge" style={{fontSize:11,background:'#cffafe',color:'#0e7490'}}>{soBoxes.length} box{soBoxes.length!==1?'es':''}</span>
+            </div>
+          </div>
+          <div className="card-body">
+            <div style={{display:'grid',gap:8}}>
+              {soBoxes.map(b=>{const meta=BOX_STATUS_META[b.status]||{label:b.status,color:'#475569',bg:'#f1f5f9'};
+                return<div key={b.id} style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',padding:'8px 12px',background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0',cursor:onOpenBox?'pointer':'default'}} onClick={onOpenBox?()=>onOpenBox(b):undefined}>
+                  <span style={{fontFamily:'monospace',fontWeight:800,color:'#0e7490'}}>{b.id}</span>
+                  <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,fontWeight:700,color:meta.color,background:meta.bg}}>{meta.label}</span>
+                  {b.if_id&&<span style={{fontSize:11,color:'#64748b'}}>{b.if_id}</span>}
+                  {b.bin&&<span style={{fontSize:11,fontWeight:800,padding:'2px 8px',borderRadius:6,background:'#cffafe',color:'#0e7490'}}>📍 {b.bin}</span>}
+                  {b.merged_into&&<span style={{fontSize:10,color:'#64748b'}}>→ {b.merged_into}</span>}
+                  <span style={{fontSize:11,color:'#64748b',marginLeft:'auto'}}>{boxUnits(b.contents)} units</span>
+                </div>})}
+            </div>
+          </div>
+        </div>}
         {/* ── OUTBOUND SHIPMENTS ── */}
         <div className="card" style={{borderLeft:'3px solid #166534'}}>
           <div className="card-header" style={{background:'linear-gradient(135deg,#f0fdf4,#dcfce7)'}}>
