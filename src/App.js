@@ -5753,6 +5753,28 @@ export default function App(){
         if(promoAmount>_bal2){nf('Cannot convert — promo total $'+promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})+' exceeds available funds ($'+_bal2.toLocaleString(undefined,{maximumFractionDigits:2})+' remaining). Remove promo and re-apply to adjust.','error');return}
       }
     }
+    // AR gate (non-blocking): warn when the customer has an invoice >30 days past
+    // due with an open balance, naming the full past-due exposure. Skipped entirely
+    // when any of the customer's invoice payment rows failed to hydrate (a timed-out
+    // invoice_payments load makes balances look bigger than they are — never warn
+    // off half-loaded data).
+    {
+      const _arInvs=invs.filter(iv=>iv.customer_id===est.customer_id);
+      if(_arInvs.every(iv=>iv._paymentsHydrated!==false)){
+        const _arToday=new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+        let _arTotal=0,_arOldest=0,_arOver30=false;
+        _arInvs.forEach(iv=>{
+          if(!opsOpenInvoice(iv))return;
+          const dpd=opsInvoiceDaysPastDue(iv,_arToday);
+          if(dpd==null||dpd<1)return;
+          _arTotal+=opsInvoiceBalance(iv);if(dpd>_arOldest)_arOldest=dpd;if(dpd>30)_arOver30=true;
+        });
+        if(_arOver30){
+          const _arName=cust.find(x=>x.id===est.customer_id)?.name||'This customer';
+          if(!window.confirm(_arName+' has $'+Math.round(_arTotal).toLocaleString()+' past due (oldest '+_arOldest+'d). Convert anyway?'))return;
+        }
+      }
+    }
     const _convCust=cust.find(c=>c.id===est.customer_id);
     const so={id:nextSOId(sos),customer_id:est.customer_id,estimate_id:est.id,memo:est.memo,status:'need_order',created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),default_markup:est.default_markup,expected_date:defExp,production_notes:'',shipping_type:est.shipping_type,shipping_value:est.shipping_value,ship_to_id:est.ship_to_id,firm_dates:[],art_files:JSON.parse(JSON.stringify(est.art_files||[])),deco_pos:JSON.parse(JSON.stringify(est.deco_pos||[])),items:clonedItems,order_type:'at_once',expected_ship_date:null,booking_confirmed:false,booking_confirmed_at:null,booking_confirmed_by:null,booking_alert_days:100,promo_applied:est.promo_applied||false,promo_amount:promoAmount,credit_applied:est.credit_applied||false,credit_amount:safeNum(est.credit_amount),tax_rate:_convCust?.tax_rate||0,tax_exempt:_convCust?.tax_exempt||false};
     // Auto-attach any pending shipping charge the customer is carrying (mirror of the newSOFn path).
