@@ -149,6 +149,22 @@ const outsourcedDecoTypes = (o) => {
   const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
   safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
   safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
+  // A deco PO carries ONE deco_type but covers whole items, whose decorations may be of several
+  // types. When a covering PO's type matches NONE of an item's concretely-typed decorations, the PO
+  // is paying for that item's decoration(s) under a default/mislabeled type (SO-1199: an 'embroidery'
+  // PO covering DTF & screen-print garments) — so promote that item to the '*' wildcard and suppress
+  // its whole in-house set. When the PO's type DOES match a decoration on the item, per-type coverage
+  // stands, so a garment can keep one deco in-house while another is sent out. Art with no concrete
+  // type yet is ignored here (decoIsOutsourced already treats it as covered), so an unassigned design
+  // never forces the promotion.
+  Object.keys(map).forEach(ix => {
+    const set = map[ix];
+    if (set.has('*')) return;
+    const it = safeItems(o)[ix];
+    if (!it) return;
+    const concrete = safeDecos(it).map(d => decoConcreteType(o, d)).filter(Boolean);
+    if (concrete.length && !concrete.some(t => set.has(t))) set.add('*');
+  });
   return map;
 };
 // Is a decoration whose resolved type is `concreteDt` produced by an outside vendor (so it must NOT
