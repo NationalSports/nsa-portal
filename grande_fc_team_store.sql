@@ -3,7 +3,7 @@
 -- + 13 storefront products (incl. a "Player Kit" bundle of 4 components).
 --
 -- Club: Grande Football Club ("Somos Grandes"), Casa Grande, AZ youth academy.
--- Colors: Purple / Gold / Black / White  (primary deep purple #3B1E64, accent athletic gold #C8960C).
+-- Colors: Purple / Gold / Black / White  (primary deep purple #22103F, accent athletic gold #C8960C).
 -- Rep: Merc (rep id ...0022).
 --
 -- Idempotent: skips cleanly if a store with slug 'grande-fc' already exists.
@@ -43,7 +43,7 @@ BEGIN
     'A', 1.65, 'net30', 0.087,
     v_rep, true,
     '[]'::jsonb, '[]'::jsonb,
-    '[{"hex":"#3B1E64","code":"2685"},{"hex":"#C8960C","code":"1245"},{"hex":"#000000","code":"Black"},{"hex":"#FFFFFF","code":"White"}]'::jsonb,
+    '[{"hex":"#22103F","code":"2695"},{"hex":"#C8960C","code":"1245"},{"hex":"#000000","code":"Black"},{"hex":"#FFFFFF","code":"White"}]'::jsonb,
     '[{"name":"Purple"},{"name":"Gold"},{"name":"White"}]'::jsonb,
     false,
     'DEMO — Grande FC sales-meeting reference (grandefootballclub.com). Rep: Merc. Safe to delete after the meeting.',
@@ -70,7 +70,7 @@ BEGIN
     'open', now(), 'unpaid', false,
     true, false, 0, 99, 'manual',
     true, 10, 0, true, true,
-    '#3B1E64', '#C8960C',
+    '#22103F', '#C8960C',
     'Official Grande FC team store — Somos Grandes. Gear up in purple and gold.', 'classic',
     true, true, 'ship_home',
     'fedex', 1, 0,

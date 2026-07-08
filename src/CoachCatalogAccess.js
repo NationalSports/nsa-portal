@@ -60,13 +60,23 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     setAccts((prev) => (prev || []).map((x) => (x.id === a.id ? { ...x, status: ns } : x)));
   };
 
+  // update(...).eq('id', ...) alone can't tell a real write from an RLS-silent
+  // no-op — Postgrest returns error:null either way. Chaining .select('id') and
+  // checking the row count catches that case instead of reporting false success.
+  const _saveCust = async (patch) => {
+    const { data, error } = await supabase.from('customers').update(patch).eq('id', customer.id).select('id');
+    if (error) return { ok: false, message: error.message };
+    if (!data || !data.length) return { ok: false, message: "Save didn't take — please try again." };
+    return { ok: true };
+  };
+
   const toggleColor = async (fam) => {
     const cur = sc;
     const next = cur.includes(fam) ? cur.filter((x) => x !== fam) : (cur.length < 5 ? [...cur, fam] : cur);
     if (next === cur) return note('Up to 5 colors', 'error');
     if (onUpdateCustomer) onUpdateCustomer({ ...customer, school_colors: next });
-    const { error } = await supabase.from('customers').update({ school_colors: next.length ? next : null }).eq('id', customer.id);
-    if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, school_colors: cur }); }
+    const { ok, message } = await _saveCust({ school_colors: next.length ? next : null });
+    if (!ok) { note(message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, school_colors: cur }); }
   };
 
   // Brand access: none selected = all brands; otherwise the account's coaches
@@ -75,8 +85,8 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
     const cur = ab;
     const next = cur.includes(b) ? cur.filter((x) => x !== b) : [...cur, b];
     if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: next });
-    const { error } = await supabase.from('customers').update({ allowed_brands: next.length ? next : null }).eq('id', customer.id);
-    if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: cur }); }
+    const { ok, message } = await _saveCust({ allowed_brands: next.length ? next : null });
+    if (!ok) { note(message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, allowed_brands: cur }); }
   };
 
   // Coach-portal capability switches (coach_ai_builder / coach_livelook /
@@ -86,28 +96,37 @@ export default function CoachCatalogAccess({ customer, nf, onUpdateCustomer }) {
   const togglePortalCap = async (field) => {
     const next = !(customer && customer[field]);
     if (onUpdateCustomer) onUpdateCustomer({ ...customer, [field]: next });
-    const { error } = await supabase.from('customers').update({ [field]: next }).eq('id', customer.id);
-    if (error) { note(error.message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, [field]: !next }); }
+    const { ok, message } = await _saveCust({ [field]: next });
+    if (!ok) { note(message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, [field]: !next }); }
     else note(next ? 'Enabled' : 'Disabled', 'success');
   };
 
   // School logo — uploaded to Cloudinary, saved on the customer, shown in the coach-portal hero.
+  // The optimistic onUpdateCustomer below must be rolled back on a failed save — otherwise this
+  // screen keeps showing the new logo (and reports "saved") while the DB, and therefore the coach
+  // portal (which reads the customer fresh), never got it.
   const setLogo = async (file) => {
     if (!file) return;
     if (!/^image\//.test(file.type || '')) return note('Use an image file (PNG, JPG, SVG)', 'error');
+    const prevLogo = customer && customer.logo_url;
     note('Uploading logo…');
     try {
       const url = await cloudUpload(file, 'nsa-school-logos');
       if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: url });
-      const { error } = await supabase.from('customers').update({ logo_url: url }).eq('id', customer.id);
-      if (error) throw error;
+      const { ok, message } = await _saveCust({ logo_url: url });
+      if (!ok) throw new Error(message);
       note('School logo saved', 'success');
-    } catch (e) { note('Logo upload failed: ' + (e.message || e), 'error'); }
+    } catch (e) {
+      if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: prevLogo });
+      note('Logo upload failed: ' + (e.message || e), 'error');
+    }
   };
   const removeLogo = async () => {
+    const prevLogo = customer && customer.logo_url;
     if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: null });
-    const { error } = await supabase.from('customers').update({ logo_url: null }).eq('id', customer.id);
-    if (error) note(error.message, 'error'); else note('Logo removed', 'success');
+    const { ok, message } = await _saveCust({ logo_url: null });
+    if (!ok) { note(message, 'error'); if (onUpdateCustomer) onUpdateCustomer({ ...customer, logo_url: prevLogo }); }
+    else note('Logo removed', 'success');
   };
   const pickLogo = () => { const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*'; inp.onchange = () => { const f = inp.files && inp.files[0]; if (f) setLogo(f); }; inp.click(); };
 
