@@ -2469,10 +2469,16 @@ export default function App(){
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
+        // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): the realtime reload is
+        // a wholesale replace, so a read that landed BEFORE this client's save would clobber just-saved scalars.
+        // _version is DB-trigger-owned and read back into the local copy in place on every confirmed save, so a
+        // strictly-newer local _version means the incoming row is stale — keep the local copy wholesale.
+        // No-ops for entities without _version (messages, products).
+        const _newerLocalWins=(e,localArr)=>{const lp=localArr?localArr.find(p=>p.id===e.id):null;return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
         const _mergeProtected=(dbArr,snapKey,setter)=>{
-          if(!_hasProtected)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
-          return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
-            apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
+          if(!_hasProtected)return{snap:dbArr.map(e=>_newerLocalWins(e,_dbSnap.current[snapKey])),apply:prev=>{const merged=dbArr.map(e=>_newerLocalWins(e,prev));return _jsonEq(prev,merged)?prev:merged}};
+          return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):_newerLocalWins(e,_dbSnap.current[snapKey])),
+            apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):_newerLocalWins(e,prev));return _jsonEq(prev,merged)?prev:merged}};
         };
         // Realtime reload is a blunt wholesale-replace; for art-carrying entities (SOs, estimates, customers)
         // layer the art_files superset against current state so a stale ~10s-after-save reload (triggered by the
@@ -2652,6 +2658,14 @@ export default function App(){
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
+          // Scalar-clobber guard (EST-1227 lineage — the SO twin of _recentEstStatusChange): a 60s poll
+          // that read the DB BEFORE this client's save landed would otherwise overwrite just-saved scalars
+          // (status/tax_rate/deco_pos/...) via m={...s} below — the child-collection guards don't cover them,
+          // and SO updated_at is a locale string so a timestamp compare is unreliable. _version is bumped by
+          // the DB trigger and read back into the local copy in place on every confirmed save
+          // (_dbSaveSOInner), so a strictly-newer local _version means the incoming row is stale: keep local
+          // wholesale. An equal or higher DB _version is a legitimate later write and merges as usual.
+          if(local._version!=null&&s._version!=null&&Number(local._version)>Number(s._version))return local;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
           // Count pick_lines across all items for change detection
