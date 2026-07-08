@@ -263,14 +263,36 @@ exports.handler = async (event) => {
       if (!v.ok) {
         return { statusCode: v.status, headers: corsHeaders(), body: JSON.stringify({ error: v.error }) };
       }
-      const { payment_intent_id, amount_cents } = body;
+      const { payment_intent_id, amount_cents, attempt_id, invoice_id } = body;
       if (!payment_intent_id) {
         return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'payment_intent_id required' }) };
       }
-      const refund = await client.refunds.create({
-        payment_intent: payment_intent_id,
-        ...(amount_cents ? { amount: Math.round(amount_cents) } : {}),
-      });
+      // Idempotency (same pattern as refund_webstore_order above): without a key, a retried or
+      // double-clicked request double-refunds — Stripe treats each refunds.create as new money out.
+      if (!attempt_id) {
+        return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'attempt_id required' }) };
+      }
+      const refund = await client.refunds.create(
+        {
+          payment_intent: payment_intent_id,
+          ...(amount_cents ? { amount: Math.round(amount_cents) } : {}),
+        },
+        { idempotencyKey: 'adminrefund_' + attempt_id }, // same attempt retried → same Stripe refund
+      );
+      // Best-effort audit row so the refund shows on the invoice's payment history instead of
+      // being invisible ("unrecorded escape hatch"). Negative amount, deduped by ref — mirrors
+      // reconcileInvoiceFromIntent's invoice_payments insert in _shared.js.
+      if (invoice_id) {
+        try {
+          const admin = getSupabaseAdmin();
+          const ref = 'Refund ' + refund.id;
+          const payDate = new Date().toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' });
+          const { data: existing } = await admin.from('invoice_payments').select('id').eq('invoice_id', invoice_id).eq('ref', ref).limit(1);
+          if (!existing || !existing.length) {
+            await admin.from('invoice_payments').insert({ invoice_id, amount: -(refund.amount / 100), method: 'cc', ref, date: payDate });
+          }
+        } catch (e) { /* audit row is best-effort — the refund itself already succeeded */ }
+      }
       return { statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ id: refund.id, status: refund.status, amount: refund.amount }) };
     }
 

@@ -2481,10 +2481,16 @@ export default function App(){
         // Preserve local versions of estimates/SOs whose decoration saves failed — don't let DB data overwrite them
         const _shouldProtect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
         const _hasProtected=_dbSaveFailedIds.size>0||_dbSavePendingIds.size>0||_recentlyPulledSOs.size>0;
+        // Scalar-clobber guard (EST-1227 lineage, same rule as the poll-merge mergeSO): the realtime reload is
+        // a wholesale replace, so a read that landed BEFORE this client's save would clobber just-saved scalars.
+        // _version is DB-trigger-owned and read back into the local copy in place on every confirmed save, so a
+        // strictly-newer local _version means the incoming row is stale — keep the local copy wholesale.
+        // No-ops for entities without _version (messages, products).
+        const _newerLocalWins=(e,localArr)=>{const lp=localArr?localArr.find(p=>p.id===e.id):null;return(lp&&lp._version!=null&&e._version!=null&&Number(lp._version)>Number(e._version))?lp:e};
         const _mergeProtected=(dbArr,snapKey,setter)=>{
-          if(!_hasProtected)return{snap:dbArr,apply:prev=>{const r=_jsonEq(prev,dbArr)?prev:dbArr;return r}};
-          return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):e),
-            apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):e);return _jsonEq(prev,merged)?prev:merged}};
+          if(!_hasProtected)return{snap:dbArr.map(e=>_newerLocalWins(e,_dbSnap.current[snapKey])),apply:prev=>{const merged=dbArr.map(e=>_newerLocalWins(e,prev));return _jsonEq(prev,merged)?prev:merged}};
+          return{snap:dbArr.map(e=>_shouldProtect(e.id)?(_dbSnap.current[snapKey]?.find(s=>s.id===e.id)||e):_newerLocalWins(e,_dbSnap.current[snapKey])),
+            apply:prev=>{const merged=dbArr.map(e=>_shouldProtect(e.id)?(prev.find(p=>p.id===e.id)||e):_newerLocalWins(e,prev));return _jsonEq(prev,merged)?prev:merged}};
         };
         // Realtime reload is a blunt wholesale-replace; for art-carrying entities (SOs, estimates, customers)
         // layer the art_files superset against current state so a stale ~10s-after-save reload (triggered by the
@@ -2664,6 +2670,14 @@ export default function App(){
           assignedTodos:d._coreOnly?(_prevSnap.assignedTodos||[]):_mergeAssignedTodos(d.assignedTodos||[],_prevSnap.assignedTodos||[])};
         setEsts(prev=>{const mergeEst=e=>{const local=prev.find(p=>p.id===e.id);if(local&&local.updated_at&&e.updated_at&&local.updated_at>e.updated_at)return local;/* Approval-status protection: if this client just changed the status (approve/unapprove), keep the local status fields against rows that PREDATE the change (row _version <= the version the change was based on) — a poll that read before the write landed would otherwise snap it back (EST-1227). Rows whose _version advanced past the base are a legitimate later write (another user, convertSO) and always win. */if(local){const _rsc=_recentEstStatusChange(e.id);if(_rsc&&e.status!==_rsc.status&&_rsc.baseVersion!=null&&e._version!=null&&Number(e._version)<=_rsc.baseVersion){e={...e,status:_rsc.status,approved_by:_rsc.approved_by,approved_at:_rsc.approved_at}}}if(local?.items?.length&&(!e.items||!e.items.length)){e={...e,items:local.items,art_files:local.art_files||e.art_files}}/* Do NOT revert to the local copy when the DB legitimately has FEWER items: the poll already bails above on any timed-out child load (_decoTimedOut), so a lower DB item count here is a real deletion, not a hollowed/partial load. The removed "else if(...) keep local.items" clause silently resurrected deliberately-deleted estimate lines (the SO poll-merge below never had it). DB-empty is still protected by the clause just above. */if(local?.items?.some(it=>it.decorations?.length)&&e.items?.length&&!e.items.some(it=>it.decorations?.length)){e={...e,items:e.items.map((it,idx)=>{const li=local.items[idx];return li?.decorations?.length&&!it.decorations?.length?{...it,decorations:li.decorations}:it})}};if(local?.print_history?.length&&!e.print_history?.length)e={...e,print_history:local.print_history};if(local?.sent_history?.length&&!e.sent_history?.length)e={...e,sent_history:local.sent_history};if(local?.email_status&&!e.email_status)e={...e,email_status:local.email_status};if(local?.email_sent_at&&!e.email_sent_at)e={...e,email_sent_at:local.email_sent_at};if(local?.email_opened_at&&!e.email_opened_at)e={...e,email_opened_at:local.email_opened_at};if(local?.email_viewed_at&&!e.email_viewed_at)e={...e,email_viewed_at:local.email_viewed_at};if(local?.follow_up_at&&!e.follow_up_at)e={...e,follow_up_at:local.follow_up_at};/* Art files: DB-empty keeps local; otherwise superset-merge only within this client's own post-save window (_recentlySavedByMe) so a stale read can't drop a just-added file while another user's deletion still reconciles after the window. */if(local?.art_files?.length){if(!e.art_files||!e.art_files.length)e={...e,art_files:local.art_files};else if(_recentlySavedByMe(e.id))e={...e,art_files:mergeArtFileSuperset(e.art_files,local.art_files)}}return e};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.estimates.map(e=>(_dbSaveFailedIds.has(e.id)||_dbSavePendingIds.has(e.id))?(prev.find(p=>p.id===e.id)||e):mergeEst(e));const r1=changed(prev,merged)?merged:prev;_dbSnap.current.ests=r1;return r1}const merged2=d.estimates.map(mergeEst);const r2=changed(prev,merged2)?merged2:prev;_dbSnap.current.ests=r2;return r2});
         setSOs(prev=>{const mergeSO=s=>{const local=prev.find(p=>p.id===s.id);if(!local)return s;
+          // Scalar-clobber guard (EST-1227 lineage — the SO twin of _recentEstStatusChange): a 60s poll
+          // that read the DB BEFORE this client's save landed would otherwise overwrite just-saved scalars
+          // (status/tax_rate/deco_pos/...) via m={...s} below — the child-collection guards don't cover them,
+          // and SO updated_at is a locale string so a timestamp compare is unreliable. _version is bumped by
+          // the DB trigger and read back into the local copy in place on every confirmed save
+          // (_dbSaveSOInner), so a strictly-newer local _version means the incoming row is stale: keep local
+          // wholesale. An equal or higher DB _version is a legitimate later write and merges as usual.
+          if(local._version!=null&&s._version!=null&&Number(local._version)>Number(s._version))return local;
           // If DB has empty items/jobs (mid-save transient state), keep local entirely
           if(local.items?.length&&(!s.items||!s.items.length))return local;
           // Count pick_lines across all items for change detection
@@ -2699,7 +2713,7 @@ export default function App(){
           const _protect=id=>_dbSaveFailedIds.has(id)||_dbSavePendingIds.has(id)||_isRecentlyPulled(id);
           if(_dbSaveFailedIds.size||_dbSavePendingIds.size||_recentlyPulledSOs.size){const merged=d.sales_orders.map(s=>_protect(s.id)?(prev.find(p=>p.id===s.id)||s):mergeSO(s));_dbSnap.current.sos=merged;if(prev.length===merged.length&&merged.every((m,i)=>m===prev[i]))return prev;return merged}
           const merged2=d.sales_orders.map(mergeSO);_dbSnap.current.sos=merged2;if(prev.length===merged2.length&&merged2.every((m,i)=>m===prev[i]))return prev;return merged2});
-        setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
+        setInvs(prev=>{const mergeInv=i=>{const local=prev.find(p=>p.id===i.id);if(!local)return i;/* Scalar-clobber guard (EST-1227 lineage, same rule as mergeSO above): invoices carry _version since 00180 and _dbSaveInvoiceInner bumps the local copy in place on every confirmed save, so a poll row with a LOWER _version was read before this client's save landed — keep local wholesale instead of last-write-wins on total/paid/status. */if(local._version!=null&&i._version!=null&&Number(local._version)>Number(i._version))return local;const m={...i};if(local.payments?.length&&(!i.payments||!i.payments.length))m.payments=local.payments;if(local.print_history?.length&&!i.print_history?.length)m.print_history=local.print_history;if(local.sent_history?.length&&!i.sent_history?.length)m.sent_history=local.sent_history;if(local.email_status&&!i.email_status)m.email_status=local.email_status;if(local.email_opened_at&&!i.email_opened_at)m.email_opened_at=local.email_opened_at;return m};if(_dbSaveFailedIds.size||_dbSavePendingIds.size){const merged=d.invoices.map(i=>(_dbSaveFailedIds.has(i.id)||_dbSavePendingIds.has(i.id))?(prev.find(p=>p.id===i.id)||i):mergeInv(i));return changed(prev,merged)?merged:prev}const merged2=d.invoices.map(mergeInv);return changed(prev,merged2)?merged2:prev});
         // Customer reload is a wholesale replace (no per-field merge like SOs/estimates). Library art lives in
         // customer.art_files, so superset-merge it per customer or a stale reload silently reverts a just-uploaded
         // logo (CustDetail re-syncs custLocal from this prop on every change — utils mergeArtFileSuperset notes).
@@ -22886,6 +22900,12 @@ export default function App(){
       return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
     };
 
+    // Bill-push save gate (see _applyBillsToPortal): while a push is collecting confirmations,
+    // every SO save an apply helper dispatches is recorded under the bill's _applyKey so the
+    // applied-bills ledger is only written AFTER the save actually confirmed. Outside a push
+    // (_billApplyCollect null) saves pass through unchanged.
+    let _billApplyCollect=null;
+    const _billApplySave=(bill,so)=>{const p=_dbSaveSO(so);if(_billApplyCollect)_billApplyCollect.push({key:bill&&bill._applyKey,p});return p};
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
     // Helper: apply freight from a bill to one or more SOs by ID
     const _applyFreightToSOs=(bill,soIds)=>{
@@ -22961,7 +22981,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         });
         return changed?next:prev;
@@ -23333,7 +23353,7 @@ export default function App(){
         }else return s;
         const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
-        _dbSaveSO(updated);
+        _billApplySave(bill,updated);
         return updated;
       }));
     };
@@ -23364,7 +23384,7 @@ export default function App(){
         if(!hit)return s;
         const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
-        _dbSaveSO(updated);
+        _billApplySave(bill,updated);
         return updated;
       }));
     };
@@ -23446,7 +23466,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,items:updatedItems,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+safeNum(fBySO[s.id]||0))*100)/100,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         });
       });
@@ -23496,7 +23516,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         }));
         return true;
@@ -23991,11 +24011,11 @@ export default function App(){
 
     // Bulk: push every clean bill in the Ready bucket. Same per-bill path as the single 🚀
     // button (validation already passed for this bucket); failures stay parked and are counted.
-    const _pushParkedBills=(sbs,disposition)=>{
+    const _pushParkedBills=async(sbs,disposition)=>{
       if(!sbs||!sbs.length)return;
       if(!window.confirm('Push '+sbs.length+' bill'+(sbs.length===1?'':'s')+' to the Portal? They all validate cleanly.'))return;
       let ok=0,fail=0;
-      sbs.forEach(sb=>{_pushParkedBill(sb,disposition,'',{quiet:true})?ok++:fail++});
+      for(const sb of sbs){(await _pushParkedBill(sb,disposition,'',{quiet:true}))?ok++:fail++}
       nf(ok+' bill'+(ok===1?'':'s')+' pushed'+(fail?' · '+fail+' failed (still parked)':''),fail?'error':'success');
     };
 
@@ -24009,9 +24029,9 @@ export default function App(){
 
     // Push one parked bill straight from the Look at Later card, recording why. Failure is
     // loud (the card stays parked); success resolves the card with the given disposition.
-    const _pushParkedBill=(sb,disposition,note,opts)=>{
+    const _pushParkedBill=async(sb,disposition,note,opts)=>{
       const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
-      const applied=_applyBillsToPortal([billObj]);
+      const applied=await _applyBillsToPortal([billObj]);
       if(applied>0){
         const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
         setSavedBills(prev=>{
@@ -24284,11 +24304,17 @@ export default function App(){
 
     // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
     // direct push and the "push matched only" path from the problems modal. Returns # applied.
-    const _applyBillsToPortal=(bills)=>{
+    // ASYNC: the applied-bills ledger is only written after each bill's SO saves CONFIRM — the
+    // ledger's unique-doc# constraint refuses re-pushes forever, so recording "applied" while the
+    // SO save later failed would permanently strand the bill's costs off the SO.
+    const _applyBillsToPortal=async(bills)=>{
       let applied=0;
+      const _collect=[];_billApplyCollect=_collect;
+      try{
       bills.forEach(b=>{
         try{
           const p=b.parsed;
+          if(p)p._applyKey=b.id;// routes this bill's SO-save confirmations back to it (save gate below)
           // $0-freight so_po bills apply through explicit line mappings (the freight-carried
           // default path writes nothing at $0). Build them now; if they can't be built, fail
           // HONESTLY instead of recording a success that wrote nothing and dedups forever.
@@ -24304,6 +24330,26 @@ export default function App(){
           b.portalStatus='error';b.portalMsg='Failed: '+e.message;
         }
       });
+      // The apply helpers dispatch their SO saves inside setSOs updaters — wait one macrotask so
+      // React flushes them and _collect holds every save this push triggered.
+      await new Promise(r=>setTimeout(r,0));
+      }finally{_billApplyCollect=null}
+      // Save gate: a bill only counts as applied once every SO save it dispatched confirmed.
+      // `false` is _dbSaveSOInner's explicit failure signal; undefined means the save was queued
+      // behind an in-flight one, which the per-entity queue completes with the latest data —
+      // treated as dispatched-ok (same ok!==false convention as savSONow). Bills that collected
+      // no SO saves (batch-record / inventory-PO only) keep today's behavior — their state
+      // persists via its own save effects and can't be gated here.
+      for(const b of bills){
+        if(b.portalStatus!=='success')continue;
+        const _ps=_collect.filter(e=>e.key===b.id).map(e=>e.p);
+        if(!_ps.length)continue;
+        const _rs=await Promise.all(_ps.map(p=>Promise.resolve(p).catch(()=>false)));
+        if(_rs.some(r=>r===false)){
+          b.portalStatus='error';b.portalMsg='Applied locally but the SO save FAILED — not recorded as applied. Check your connection and push again.';
+          applied--;
+        }
+      }
       // Hard ledger: record every successful apply server-side (unique doc# constraint) so a
       // re-push of the same doc — this machine or any other — is refused/loudly flagged.
       _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
@@ -24369,14 +24415,13 @@ export default function App(){
         selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problemBills.push({bill:b,errs});else cleanBills.push(b)});
         if(problemBills.length){setBillPushModal({cleanBills,problemBills});return;}
       }
-      const applied=_applyBillsToPortal(selected);
-      nf(applied+' bill(s) pushed to portal');
+      _applyBillsToPortal(selected).then(applied=>nf(applied+' bill(s) pushed to portal'));
     };
 
     // Problems-modal action: push the exact-match bills and move the flagged ones to "Look at later".
-    const _pushCleanParkProblems=()=>{
+    const _pushCleanParkProblems=async()=>{
       const m=billPushModal;if(!m)return;
-      const applied=m.cleanBills.length?_applyBillsToPortal(m.cleanBills):0;
+      const applied=m.cleanBills.length?await _applyBillsToPortal(m.cleanBills):0;
       if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill));
       setBillPushModal(null);
       const parts=[];
@@ -24386,10 +24431,10 @@ export default function App(){
     };
 
     // Problems-modal action: override and push everything, problems included.
-    const _pushAllOverride=()=>{
+    const _pushAllOverride=async()=>{
       const m=billPushModal;if(!m)return;
       const all=[...m.cleanBills,...m.problemBills.map(p=>p.bill)];
-      const applied=_applyBillsToPortal(all);
+      const applied=await _applyBillsToPortal(all);
       setBillPushModal(null);
       nf(applied+' bill(s) pushed to portal (override)');
     };
@@ -26594,7 +26639,7 @@ export default function App(){
                 <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillOverrideModal(null)}>Cancel</button>
                   <button className="btn btn-primary" disabled={!note.trim()} style={{background:RED,borderColor:RED,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,opacity:note.trim()?1:0.5}}
-                    onClick={()=>{if(_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()))setBillOverrideModal(null)}}>Push with note</button>
+                    onClick={()=>{_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()).then(ok=>{if(ok)setBillOverrideModal(null)})}}>Push with note</button>
                 </div>
               </div>
             </div>;
