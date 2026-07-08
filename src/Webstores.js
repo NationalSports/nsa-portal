@@ -2949,7 +2949,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
             // in-house art now that the store exists with every setting the rep just configured.
             if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
-            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); }
+            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); return r; }
+            // A brand-new team store (not from OMG or a template): open it straight to the
+            // Art & Logos page so the rep keeps building — add artwork next — instead of
+            // bouncing back to the store list. Club stores stay on the list (product-first).
+            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('art'); setDetail(null); await loadDetail(r.data); return r; }
             return r;
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
@@ -5113,7 +5117,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           ? <input type="checkbox" checked={pkgSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => togglePkg(p)} title="Add to the package" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#4f46e5' }} />
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
         <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+          {(p.image_url || p.image_front_url || stock?.image_front_url) ? <img src={p.image_url || p.image_front_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
           {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup.
               Skip `baked` decorations — already rendered into the item image (a Quick Mock). */}
           {(p.decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
@@ -5666,7 +5670,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
         )}
         <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
           style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: 'radial-gradient(circle at 50% 36%, #ffffff 0%, #eceff3 100%)', borderRadius: 16, overflow: 'hidden', border: '1px solid #e2e8f0', touchAction: 'none' }}>
-          {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
+          {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
           {decos.map((d, i) => (sideOf(d) === side && !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName) ? (
@@ -5930,7 +5934,7 @@ function GarmentLogoPreview({ imageUrl, decorations = [], colorName, library = [
   const front = (decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
-      {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+      {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
       {front.map((d, i) => { const p = placementById(d.placement); const x = d.x != null ? d.x : p.x, y = d.y != null ? d.y : p.y, w = d.w != null ? d.w : p.w; return (
         <img key={i} src={decoUrlForColor(d, colorName, webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
       ); })}
@@ -6303,6 +6307,30 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   };
   const makeMainPhoto = (i) => movePhoto(i, 0);
   const deletePhoto = (i) => applyGallery(galleryPhotos.filter((_, j) => j !== i));
+  // Move an extra angle out of the front gallery and into the BACK slot (the canvas the
+  // storefront uses for the number/name & back-logo preview). Only offered on non-main
+  // tiles, so `i` is always ≥ 1 and maps to extraImages[i - 1].
+  const makeBackPhoto = (i) => {
+    const url = galleryPhotos[i];
+    if (!url) return;
+    setBackImage(url);
+    setExtraImages((prev) => prev.filter((_, j) => j !== i - 1));
+  };
+
+  // A store item needs a MAIN front photo: it's what the art placer draws logos on, what
+  // saves to image_url, and what the storefront shows on the card. The "+ Add images"
+  // button always appends to `extraImages`, which is right when a front photo already
+  // exists (override or catalog stock). But when the item has NO front photo, those adds
+  // pile into `extraImages` while `image` stays null — so the gallery labels the first
+  // angle "MAIN" yet the placer, image_url, and storefront all stay blank. Promote the
+  // first angle into the real MAIN slot so what the gallery shows and what saves agree.
+  // Also self-heals items already saved in that broken state when they're reopened.
+  useEffect(() => {
+    if (image || stockImg || item.image_url) return;
+    if (!extraImages.length) return;
+    setImage(extraImages[0]);
+    setExtraImages((p) => p.slice(1));
+  }, [extraImages, image, stockImg, item.image_url]);
 
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
@@ -6751,7 +6779,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                 </div>
                 {isMain
                   ? <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
-                  : <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>}
+                  : <>
+                      <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>
+                      <button type="button" title="Use this as the BACK photo — the storefront draws the number/name & back-logo preview on it" onClick={(e) => { e.stopPropagation(); makeBackPhoto(i); }} style={{ position: 'absolute', bottom: 2, right: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>⤒ Back</button>
+                    </>}
                 <button type="button" title="Remove this photo" onClick={(e) => { e.stopPropagation(); deletePhoto(i); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
               </div>
             ); })}
@@ -6767,7 +6798,7 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
             <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
             <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Add images'}</button>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, × to remove one. Drop image files here to add extra angles.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, ⤒ Back to use one as the back photo, × to remove one. Drop image files here to add extra angles.</div>
         </ItemSection>
         </div>
       </div>
