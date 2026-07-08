@@ -6,6 +6,7 @@
 
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
+  quoteAgeDays, quoteColdBucket,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -76,5 +77,30 @@ describe('soGoodsValue', () => {
       ],
     });
     expect(soGoodsValue(so)).toBe(100);
+  });
+});
+
+describe('quote aging (shared dashboard/digest tiers)', () => {
+  const now = new Date(2026, 6, 8, 12).getTime(); // Jul 8 2026 local noon
+
+  test('ages from updated_at (locale M/D/YYYY stamp) with created_at fallback', () => {
+    expect(quoteAgeDays({ updated_at: '6/28/2026, 9:15:00 AM' }, now)).toBe(10);
+    expect(quoteAgeDays({ created_at: '2026-07-01T08:00:00' }, now)).toBe(7);
+    expect(quoteAgeDays({}, now)).toBe(null);
+  });
+
+  test('parses two-digit-month locale stamps with their full year (no 20xx truncation)', () => {
+    // The old inline regex read "12/10/2025, …" as year 2020.
+    expect(quoteAgeDays({ updated_at: '12/10/2025, 3:45:12 PM' }, now)).toBe(210);
+  });
+
+  test('buckets match the dashboard todo tiers: 3-6 / 7-13 / 14+', () => {
+    expect(quoteColdBucket(2)).toBe(null);
+    expect(quoteColdBucket(3)).toBe('follow_up');
+    expect(quoteColdBucket(6)).toBe('follow_up');
+    expect(quoteColdBucket(7)).toBe('going_cold');
+    expect(quoteColdBucket(13)).toBe('going_cold');
+    expect(quoteColdBucket(14)).toBe('stale');
+    expect(quoteColdBucket(null)).toBe(null);
   });
 });

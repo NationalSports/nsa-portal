@@ -20,7 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
-const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd } = require('../../src/lib/opsRecap');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd, quoteAgeDays, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -141,6 +141,23 @@ exports.handler = async (event) => {
       (q) => q.eq('status', 'approved').gte('approved_at', start.toISOString()).lt('approved_at', end.toISOString())))
       .filter((e) => !e.deleted_at && inWin(e.approved_at));
 
+    // Quotes going cold — sent estimates ≥7 days old, same aging tiers as the
+    // dashboard todo builder (shared via opsRecap.quoteAgeDays). Snoozed quotes
+    // (follow_up_at in the future) stay out, mirroring the dashboard; approval or
+    // conversion flips status off 'sent', so status alone is the no-response test.
+    // Items are loaded only for the cold ones, for the quote-total callout.
+    const sentEsts = (await loadAll(admin, 'estimates', 'id,memo,customer_id,created_by,status,created_at,updated_at,deleted_at,follow_up_at',
+      (q) => q.eq('status', 'sent'))).filter((e) => !e.deleted_at);
+    const coldQuotes = sentEsts
+      .filter((e) => !(e.follow_up_at && parseDate(e.follow_up_at) > now))
+      .map((e) => ({ e, days: quoteAgeDays(e, now.getTime()) }))
+      .filter((c) => c.days != null && c.days >= QUOTE_COLD_DAYS);
+    const cqItemsByEst = {};
+    (await loadIn(admin, 'estimate_items', '*', 'estimate_id', coldQuotes.map((c) => c.e.id))).forEach((it) => {
+      (cqItemsByEst[it.estimate_id] || (cqItemsByEst[it.estimate_id] = [])).push(it);
+    });
+    coldQuotes.forEach((c) => { c.value = soGoodsValue({ items: cqItemsByEst[c.e.id] || [] }); });
+
     // Portal invoices (bounded — excludes the large NetSuite-imported history in
     // customer_invoices). Drives billed value on shipped rows, the "already
     // invoiced?" test for ready-to-invoice / shipped-not-invoiced, and the
@@ -194,12 +211,17 @@ exports.handler = async (event) => {
     });
 
     // ── Categorize into per-rep buckets ──
-    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, shipNoInv, pastDue, paid }
-    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], pastDue: [], paid: [] }));
+    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, shipNoInv, coldQuotes, pastDue, paid }
+    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], coldQuotes: [], pastDue: [], paid: [] }));
 
     approvedEsts.forEach((e) => {
       const rep = e.created_by || custById[e.customer_id]?.primary_rep_id;
       if (rep) cell(rep).approved.push(e);
+    });
+
+    coldQuotes.forEach((c) => {
+      const rep = c.e.created_by || custById[c.e.customer_id]?.primary_rep_id;
+      if (rep) cell(rep).coldQuotes.push(c);
     });
 
     orders.forEach((so) => {
@@ -266,10 +288,11 @@ exports.handler = async (event) => {
         || members.find((m) => lc(m.email).split('@')[0] === localPart)
         || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
       if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's digest to render for ${testTo}. Pass &rep=<name or id>.` };
-      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], pastDue: [], paid: [] };
+      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], coldQuotes: [], pastDue: [], paid: [] };
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.shipNoInv.length + b.pastDue.length + b.paid.length;
+      b.coldQuotes.sort((x, y) => y.days - x.days);
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.shipNoInv.length + b.coldQuotes.length + b.pastDue.length + b.paid.length;
       // live=1 sends a real (non-[TEST]) digest — used to roll the recap out on demand.
       const live = qs.live === '1' || qs.live === 'true';
       const isCc = String(testTo).toLowerCase() !== String(testRep.email || '').toLowerCase();
@@ -297,10 +320,11 @@ exports.handler = async (event) => {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
       if (rep.ops_digest_opt_out === true) { skippedOptOut++; continue; }
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.shipNoInv.length + b.pastDue.length + b.paid.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.shipNoInv.length + b.coldQuotes.length + b.pastDue.length + b.paid.length;
       if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
+      b.coldQuotes.sort((x, y) => y.days - x.days);
       const shortN = b.picked.filter((p) => p.short).length;
 
       if (dryRun) { dryList.push(`${rep.name} <${rep.email}> — ${activity} items`); }
@@ -354,6 +378,7 @@ function opsSubject(b, shortN, dayLabel) {
   if (b.paid.length) bits.push(`${b.paid.length} paid`);
   if (b.readyInv.length) bits.push(`${b.readyInv.length} ready to invoice`);
   if (b.shipNoInv.length) bits.push(`${b.shipNoInv.length} shipped uninvoiced`);
+  if (b.coldQuotes.length) bits.push(`${b.coldQuotes.length} quote${b.coldQuotes.length === 1 ? '' : 's'} going cold`);
   if (b.pastDue.length) bits.push(`${b.pastDue.length} newly past due`);
   if (!bits.length && b.deadlines.length) return `${b.deadlines.length} deadline${b.deadlines.length === 1 ? '' : 's'} coming up (${dayLabel})`;
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
@@ -421,6 +446,19 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
     row(`${esc(inv.id)} <span style="color:${SUB};font-weight:600">· ${money(balance)} due</span>`,
       `${esc(custName(inv.customer_id))} · due ${esc(String(inv.due_date).slice(0, 10))}`,
       `<span style="font-size:12px;font-weight:800;color:#B91C1C">${dpd}d past due</span> &nbsp;`, invLink(inv.id))).join('')) : '';
+  // Quotes going cold — bucketed on the shared dashboard tiers: 7-13d going cold,
+  // 14d+ stale. Dollar figures are goods value (units × sell; no deco).
+  const cqRow = ({ e, days, value }, color) => row(
+    `${esc(e.id)} <span style="color:${SUB};font-weight:600">· sent ${days}d ago</span>`,
+    esc(custName(e.customer_id)) + (e.memo ? ` · ${esc(e.memo)}` : ''),
+    value > 0 ? `<span style="font-size:13px;font-weight:800;color:${color}">${money(value)}</span> &nbsp;` : '',
+    estLink(e.id), 'Follow up →');
+  const cqCold = b.coldQuotes.filter((c) => c.days < QUOTE_STALE_DAYS);
+  const cqStale = b.coldQuotes.filter((c) => c.days >= QUOTE_STALE_DAYS);
+  const subHead = (t, c) => `<div style="font-size:11px;letter-spacing:.4px;text-transform:uppercase;color:${c};font-weight:800;margin:10px 0 2px">${t}</div>`;
+  const coldQuoteBlock = b.coldQuotes.length ? sectionHead('🥶 Quotes Going Cold')
+    + (cqCold.length ? subHead(`Going cold · ${QUOTE_COLD_DAYS}–${QUOTE_STALE_DAYS - 1} days`, '#B45309') + table(cqCold.map((c) => cqRow(c, '#B45309')).join('')) : '')
+    + (cqStale.length ? subHead(`Stale · ${QUOTE_STALE_DAYS}+ days`, '#B91C1C') + table(cqStale.map((c) => cqRow(c, '#B91C1C')).join('')) : '') : '';
   const deadlineBlock = b.deadlines.length ? sectionHead('⏰ Deadlines Approaching') + table(b.deadlines.map(({ so, due, daysOut }) => {
     const overdue = daysOut < 0;
     const badge = `<span style="font-size:12px;font-weight:800;color:${overdue ? '#B91C1C' : daysOut <= 3 ? '#B45309' : '#075985'}">${overdue ? `${Math.abs(daysOut)}d overdue` : daysOut === 0 ? 'due today' : `${daysOut}d out`}</span> &nbsp;`;
@@ -446,7 +484,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
-      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${paidBlock}${readyBlock}${shipNoInvBlock}${pastDueBlock}${deadlineBlock}
+      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${paidBlock}${readyBlock}${shipNoInvBlock}${coldQuoteBlock}${pastDueBlock}${deadlineBlock}
       <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}${14} days ahead. Turn this email off any time from Sales Tools → My Day.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>

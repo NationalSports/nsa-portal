@@ -25,7 +25,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket } from './lib/opsRecap';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -7034,13 +7034,12 @@ export default function App(){
       // tiers below never look at follow_up_at, so without this a snoozed follow-up re-appears on the
       // next render — the Snooze button (and click-through clear) would do nothing.
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
-      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
-      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
-      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
-      const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      // Aging tiers shared with the emailed rep-ops-digest via opsRecap (3-6d / 7-13d / 14d+).
+      const sentDate=e.updated_at||e.created_at;
+      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
+      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'📧 Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · Sent '+days+' days ago',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'⚠️ Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2+' · No response in '+days+' days',action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'🔴 Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2+' · '+days+' days with no response',action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     // Invoice follow-up alerts (uses follow_up_at when set; auto ones are handled by the server sweep)
     invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
@@ -9933,13 +9932,12 @@ export default function App(){
       }
       // Snoozed / rescheduled: a future follow_up_at means "don't nag me until then" (mirrors rDash).
       if(e.follow_up_at&&new Date()<new Date(e.follow_up_at))return;
-      const sentDate=e.updated_at||e.created_at;if(!sentDate)return;
-      const m=sentDate.match(/(\d{2})\/(\d{2})\/(\d{2})/);
-      const d=m?new Date('20'+m[3],m[1]-1,m[2]):new Date(sentDate);
-      const days=Math.floor((new Date()-d)/(1000*60*60*24));
-      if(days>=3&&days<7)todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=7&&days<14)todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
-      else if(days>=14)todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
+      // Aging tiers shared with rDash and the emailed rep-ops-digest via opsRecap.
+      const sentDate=e.updated_at||e.created_at;
+      const days=opsQuoteAgeDays(e);const bucket=opsQuoteColdBucket(days);
+      if(bucket==='follow_up')todos.push({type:'follow_up',priority:2,msg:'Follow up on estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='going_cold')todos.push({type:'follow_up',priority:1,msg:'Estimate going cold ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Follow Up',role:'sales',est:e,estC:c2,date:sentDate});
+      else if(bucket==='stale')todos.push({type:'follow_up',priority:0,msg:'Stale estimate ('+days+'d): '+(e.memo||e.id),detail:tag2,action:'Close or Re-send',role:'sales',est:e,estC:c2,date:sentDate});
     });
     invs.filter(i=>i.status!=='paid'&&!i.follow_up_auto&&i.follow_up_at&&new Date()>=new Date(i.follow_up_at)).forEach(inv2=>{
       const c2=cust.find(x=>x.id===inv2.customer_id);const tag2=c2?.name||c2?.alpha_tag||inv2.id;
