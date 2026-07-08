@@ -34,8 +34,12 @@ One row per SKU+size with:
 - `last_synced`, `source` ('api-materials')
 
 Supabase project: `hpslkvngulqirmbstlfx` · URL `https://hpslkvngulqirmbstlfx.supabase.co`
-Anon key (PostgREST, header `apikey` + `Authorization: Bearer <key>`):
-`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhwc2xrdm5ndWxxaXJtYnN0bGZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0NDEyNDAsImV4cCI6MjA4NzAxNzI0MH0.s5OKUjim-EfBmKpuWt8x7c1QxiSoOY7_sTzvThNaYLw`
+**SERVICE ROLE key** (PostgREST, header `apikey` + `Authorization: Bearer <key>`):
+read `SUPABASE_SERVICE_ROLE_KEY` from `~/nsa-portal/bot-worker/.env` at runtime — the
+same key the Mac Mini bot worker already holds. The anon key can NO LONGER write
+`adidas_inventory` / `adidas_size_maps` (vendor-cache RLS lockdown, migration 00183).
+**Never paste the service-role key into this file, the live skill, or any log/report** —
+load it fresh each run and keep it out of `window.*` dumps.
 
 Tables: `adidas_inventory` (id, sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced, source) on-conflict `sku,size` (id = `{sku}-{label}`); `adidas_size_maps` (conversion_id PK, code_labels JSONB, updated_at); `products` (id, vendor_id, sku, name, brand, color, category, retail_price, nsa_cost, is_active, is_archived, available_sizes, image_front_url, description, …).
 
@@ -132,7 +136,7 @@ window._sizeMaps = window._sizeMaps || {};
 //    in memory wins over the seed, and the table load below wins over both.
 window._sizeMaps["51"] = { ...{"210":"XS","230":"S","250":"M","270":"L","290":"XL","310":"2XL","320":"3XL","330":"4XL","340":"5XL","360":"ST","370":"MT","380":"LT","390":"XLT","400":"2XLT","410":"3XLT","420":"4XLT","430":"5XLT","450":"LT2","460":"XLT2","470":"2XT2"}, ...(window._sizeMaps["51"]||{}) };
 // 2) Table load — table entries OVERRIDE the in-memory/seed values.
-{ const SB='https://hpslkvngulqirmbstlfx.supabase.co'; const SK='<anon key>';
+{ const SB='https://hpslkvngulqirmbstlfx.supabase.co'; const SK='<service-role key — SUPABASE_SERVICE_ROLE_KEY from bot-worker/.env, injected at runtime, never hardcoded here>';
   const res = await fetch(SB+'/rest/v1/adidas_size_maps?select=conversion_id,code_labels',{headers:{'apikey':SK,'Authorization':'Bearer '+SK}});
   (res.ok?await res.json():[]).forEach(r=>{ window._sizeMaps[r.conversion_id]={...(window._sizeMaps[r.conversion_id]||{}),...(r.code_labels||{})}; }); }
 ```
@@ -254,4 +258,4 @@ signals verbatim.
 - `future_delivery_qty` is projected ATP for that date (can be < current stock); order screen labels it "available".
 - Adding items to a cart is a SEPARATE task (`add_to_cart.md`).
 - A version-controlled reference copy lives in `adidas-inventory-sync.SKILL.reference.md` — diff against it when changing the sync.
-- The live skill uses raw `fetch` + the anon key (no `supabase` JS client); PostgREST REST calls with `apikey`/`Authorization` headers are the data path.
+- The live skill uses raw `fetch` + the SERVICE ROLE key (no `supabase` JS client); PostgREST REST calls with `apikey`/`Authorization` headers are the data path. The key comes from `bot-worker/.env` (`SUPABASE_SERVICE_ROLE_KEY`) at runtime — anon writes to the vendor-cache tables are blocked since migration 00183.

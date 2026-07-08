@@ -6,13 +6,14 @@ sync writes live availability to `agron_inventory`. This pass writes per-colorwa
 gets a product card on the coach-facing `/adidas` page — not just the ones that
 already had a product row.
 
-You write staging with the **anon key** (you cannot write `products` directly —
-that's RLS-blocked). Claude Code promotes staging → `products` afterward with the
-service role.
+You write staging with the **SERVICE ROLE key** (the anon key is RLS-blocked on
+`agron_products_staging` since migration 00183; you still do not write `products`
+directly). Claude Code promotes staging → `products` afterward.
 
 Supabase project: `hpslkvngulqirmbstlfx` · URL `https://hpslkvngulqirmbstlfx.supabase.co`
-Anon key (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — same as the stock sync:
-`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhwc2xrdm5ndWxxaXJtYnN0bGZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0NDEyNDAsImV4cCI6MjA4NzAxNzI0MH0.s5OKUjim-EfBmKpuWt8x7c1QxiSoOY7_sTzvThNaYLw`
+Service-role key (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — same as the stock sync:
+read `SUPABASE_SERVICE_ROLE_KEY` from `~/nsa-portal/bot-worker/.env` at runtime — the key the
+Mac Mini bot worker already holds. **Never paste it into this file or any log/report.**
 
 ---
 
@@ -48,13 +49,13 @@ Header:  Range: items=0-49   (then 50-99, … until results is empty)
 | `description` | `product.description` (+ `features`) |
 | `sizes` | array of `stock_item.name` (optional; promote prefers the live `agron_inventory` size run) |
 
-## 3. Upsert each batch (anon key)
+## 3. Upsert each batch (service-role key)
 
 ```
 POST https://hpslkvngulqirmbstlfx.supabase.co/rest/v1/agron_products_staging?on_conflict=code
 Headers:
-  apikey: <anon key above>
-  Authorization: Bearer <anon key above>
+  apikey: <service-role key from bot-worker/.env>
+  Authorization: Bearer <service-role key from bot-worker/.env>
   Content-Type: application/json
   Prefer: resolution=merge-duplicates,return=minimal
 Body (array, one object per colorway):
