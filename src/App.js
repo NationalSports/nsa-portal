@@ -2293,6 +2293,13 @@ export default function App(){
   // _appStateDirty in dbEngine): the save effects only open a dirty window for LOCAL
   // mutations, never for values just applied from a DB load.
   const _jobTimeLogsApplied=useRef(JSON.stringify(loadState('job_time_logs',[])));
+  // Append-blob log keys (Tier-2 item C piece 3): same applied-marker + dirty-window treatment.
+  // These four are in _LS_SKIP_APPSTATE (cloud-only), so loadState returns the same value the
+  // state initializers got — the mount-time save effect can't open a spurious dirty window.
+  const _changeLogApplied=useRef(JSON.stringify(loadState('change_log',[])));
+  const _soHistoryApplied=useRef(JSON.stringify(loadState('so_history',{})));
+  const _estHistoryApplied=useRef(JSON.stringify(loadState('est_history',{})));
+  const _invAdjLogApplied=useRef(JSON.stringify(loadState('inv_adj_log',[])));
   // Mirrors whRecentActions' own initializer so the mount-time save effect doesn't open a spurious dirty window.
   const _whActionsApplied=useRef((()=>{try{return JSON.stringify(JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]'))}catch{return'[]'}})());
   React.useEffect(()=>{
@@ -2350,9 +2357,9 @@ export default function App(){
           if(as.submitted_batches)setSubmittedBatches(as.submitted_batches);
           if(as.batch_counter)setBatchCounter(as.batch_counter);
           if(as.batch_vendor_counters)setBatchVendorCounters(as.batch_vendor_counters);
-          if(as.change_log)setChangeLog(as.change_log);
-          if(as.so_history)setSOHistory(as.so_history);
-          if(as.est_history)setEstHistory(as.est_history);
+          if(as.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as.change_log});
+          if(as.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as.so_history});
+          if(as.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as.est_history});
           // Whole-blob keys mutated by warehouse tabs: honor the dirty window (same guard as
           // batch_pos at the reload sites) so a receive/clock-out landed during this load isn't
           // replaced by the stale DB copy the load already read.
@@ -2361,7 +2368,7 @@ export default function App(){
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
-          if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
+          if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
           if(as.comm_overrides)setCommOverrides(as.comm_overrides);// admin rate overrides must follow the DB, not this browser's localStorage
           if(as.labor_rates)setLaborRates(as.labor_rates);// same for payroll rates — the CAS save path (00181) assumes state tracks the DB copy
@@ -2422,11 +2429,13 @@ export default function App(){
               setIssues(d2.issues||[]);
               const as2=d2.appState||{};
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
-              if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
-              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);
+              if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);
+              if(as2.change_log)setChangeLog(prev=>{const incStr=JSON.stringify(as2.change_log);if(JSON.stringify(prev)===incStr){_changeLogApplied.current=incStr;return prev}if(_appStateDirty('change_log'))return prev;_changeLogApplied.current=incStr;return as2.change_log});
+              if(as2.so_history)setSOHistory(prev=>{const incStr=JSON.stringify(as2.so_history);if(JSON.stringify(prev)===incStr){_soHistoryApplied.current=incStr;return prev}if(_appStateDirty('so_history'))return prev;_soHistoryApplied.current=incStr;return as2.so_history});
+              if(as2.est_history)setEstHistory(prev=>{const incStr=JSON.stringify(as2.est_history);if(JSON.stringify(prev)===incStr){_estHistoryApplied.current=incStr;return prev}if(_appStateDirty('est_history'))return prev;_estHistoryApplied.current=incStr;return as2.est_history});
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
-              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
+              if(as2.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as2.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as2.inv_adj_log});if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
@@ -2534,7 +2543,7 @@ export default function App(){
         // When app_state wasn't part of this load, `as` stays empty so the guarded setters no-op.
         const as=(!groups||groups.has('products')||groups.has('app_state'))?(d.appState||{}):{};
         if(as.inv_pos)setInvPOs(prev=>_jsonEq(prev,as.inv_pos)?prev:as.inv_pos);
-        if(as.inv_adj_log)setInvAdjLog(prev=>_jsonEq(prev,as.inv_adj_log)?prev:as.inv_adj_log);
+        if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter===prev?prev:as.inv_po_counter);
         if(as.comm_overrides)setCommOverrides(prev=>_jsonEq(prev,as.comm_overrides)?prev:as.comm_overrides);
         if(as.submitted_batches)setSubmittedBatches(prev=>_jsonEq(prev,as.submitted_batches)?prev:as.submitted_batches);
@@ -2728,7 +2737,7 @@ export default function App(){
         // Refresh app_state keys (batch POs, inventory POs, etc.)
         const as=d.appState||{};
         if(as.inv_pos)setInvPOs(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_pos)?as.inv_pos:prev);
-        if(as.inv_adj_log)setInvAdjLog(prev=>JSON.stringify(prev)!==JSON.stringify(as.inv_adj_log)?as.inv_adj_log:prev);
+        if(as.inv_adj_log)setInvAdjLog(prev=>{const incStr=JSON.stringify(as.inv_adj_log);if(JSON.stringify(prev)===incStr){_invAdjLogApplied.current=incStr;return prev}if(_appStateDirty('inv_adj_log'))return prev;_invAdjLogApplied.current=incStr;return as.inv_adj_log});
         if(as.inv_po_counter)setInvPOCounter(prev=>as.inv_po_counter!==prev?as.inv_po_counter:prev);
         if(as.submitted_batches)setSubmittedBatches(prev=>JSON.stringify(prev)!==JSON.stringify(as.submitted_batches)?as.submitted_batches:prev);
         if(as.batch_pos)setBatchPOs(prev=>{const incStr=JSON.stringify(as.batch_pos);if(JSON.stringify(prev)===incStr){_batchPosApplied.current=incStr;return prev}if(Date.now()<_batchPosDirtyUntil)return prev;_batchPosApplied.current=incStr;return as.batch_pos});
@@ -3763,9 +3772,9 @@ export default function App(){
     const newCounter=Math.max(hi+1,n,...Object.values(next).map(v=>v+1));
     if(newCounter!==batchCounter)setBatchCounter(newCounter);
   },[batchPOs,batchVendorCounters,submittedBatches]);// eslint-disable-line react-hooks/exhaustive-deps
-  React.useEffect(()=>{_saveAppState('change_log',changeLog)},[changeLog]);
-  React.useEffect(()=>{_saveAppState('so_history',soHistory)},[soHistory]);
-  React.useEffect(()=>{_saveAppState('est_history',estHistory)},[estHistory]);
+  React.useEffect(()=>{const cur=JSON.stringify(changeLog);if(_changeLogApplied.current!==cur)_setAppStateDirtyUntil('change_log',Date.now()+12000);_saveAppState('change_log',changeLog)},[changeLog]);
+  React.useEffect(()=>{const cur=JSON.stringify(soHistory);if(_soHistoryApplied.current!==cur)_setAppStateDirtyUntil('so_history',Date.now()+12000);_saveAppState('so_history',soHistory)},[soHistory]);
+  React.useEffect(()=>{const cur=JSON.stringify(estHistory);if(_estHistoryApplied.current!==cur)_setAppStateDirtyUntil('est_history',Date.now()+12000);_saveAppState('est_history',estHistory)},[estHistory]);
   // Boot-time snapshot regression scan: walk each SO's snapshot history and flag any whose latest
   // snapshot has fewer items than the one before it. One-shot per session — useful for catching anything
   // that slipped through the live guards before they existed.
@@ -4132,7 +4141,7 @@ export default function App(){
     return()=>window.removeEventListener('popstate',onPop);
   },[pg]);
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
-  React.useEffect(()=>{_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
+  React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
   const[q,setQ]=useState('');const[vendQ,setVendQ]=useState('');const[selC,setSelC]=useState(null);const[selV,setSelV]=useState(null);const[selP,setSelP]=useState(null);
   // Keep selC/selV/selP in sync with their source arrays after saves/reloads
