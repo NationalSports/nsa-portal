@@ -68,12 +68,17 @@ export default function CommissionsPage(){
       const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
       // Inbound freight from supplier bills tied to SO (manual override field)
       const inboundFreight=safeNum(so._inbound_freight||0);
-      // Club fundraising passthrough (webstore SOs) — money owed to the team, not rep margin.
-      const fundraiseCost=safeNum(so._webstore_fundraise||0);
-      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
+      // Club fundraising (webstore/OMG stores) is REVENUE: the club is paid in Fundraiser
+      // Dollars (a customer credit, see addFundraiseCredit in App.js), so the collected cash
+      // stays with NSA now — the cost lands on the future order where the credit is redeemed
+      // (Apply Credit reduces that invoice's total). Added on top of invRev because the store
+      // auto-invoices bill item sells only; the fundraise cash never appears in inv.total.
+      // (Pre-2026-07 webstore fundraise was booked as a cost here.)
+      const fundraiseRev=safeNum(so._webstore_fundraise||0)+safeNum(so._omg_fundraise||0);
+      const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
-      return{rev:invRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
+      return{rev:invRev+fundraiseRev,cost:Math.round(totalCost*scale*100)/100,gp:Math.round((invRev+fundraiseRev-totalCost*scale)*100)/100,shipRev:Math.round(shipRev*scale*100)/100,shipCost:Math.round(shipCost*scale*100)/100,inboundFreight:Math.round(inboundFreight*scale*100)/100};
     };
 
     // Build commission line items from paid invoices
@@ -167,8 +172,8 @@ export default function CommissionsPage(){
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
-        const fundraiseCost=safeNum(so._webstore_fundraise||0);// club fundraising passthrough, not rep margin
-        const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight+fundraiseCost;
+        const fundraiseRev=safeNum(so._webstore_fundraise||0)+safeNum(so._omg_fundraise||0);// club fundraising = revenue (paid out as Fundraiser Dollars credit; mirrors calcGP above)
+        const totalRev=rev+shipRev+fundraiseRev;const totalCost=cost+shipCost+inboundFreight;
         const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
         const soStatus=calcSOStatus(so);
         const expRate=0.30;// assume on-time since not yet invoiced
