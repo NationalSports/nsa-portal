@@ -379,6 +379,7 @@ import {
   _setBatchPosDirtyUntil,
   _setAppStateDirtyUntil,
   _appStateDirty,
+  _appStateVersions,
   _setLsQuotaWarned,
   _bgSyncInc,
   _bgSyncDec,
@@ -2363,6 +2364,7 @@ export default function App(){
           if(as.inv_adj_log)setInvAdjLog(as.inv_adj_log);
           if(as.inv_po_counter)setInvPOCounter(as.inv_po_counter);
           if(as.comm_overrides)setCommOverrides(as.comm_overrides);// admin rate overrides must follow the DB, not this browser's localStorage
+          if(as.labor_rates)setLaborRates(as.labor_rates);// same for payroll rates — the CAS save path (00181) assumes state tracks the DB copy
           if(as.company_info){const ci={...NSA_DEFAULTS,...as.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
           if(_dbSaveFailedIds.size)console.warn('[DB] Loaded from Supabase — preserving local data for',_dbSaveFailedIds.size,'failed saves:',[ ..._dbSaveFailedIds]);
           console.log('[DB] Loaded from Supabase (normalized)');
@@ -2424,7 +2426,7 @@ export default function App(){
               if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);
               if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
-              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);
+              if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);if(as2.labor_rates)setLaborRates(as2.labor_rates);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
               console.log('[DB] Loaded from Supabase after seed by other browser');
             }else{
@@ -3688,6 +3690,49 @@ export default function App(){
       const n=typeof data==='number'?data:parseInt(data,10);
       return Number.isFinite(n)?n:null;
     }catch(e){console.warn('[next_counter] '+key+' threw — using local counter:',e);return null;}
+  };
+  // Compare-and-swap save for the two money-bearing app_state keys ONLY (labor_rates,
+  // comm_overrides) — migration 00181. Plain _saveAppState is whole-blob last-write-wins, so two
+  // admins editing rates in overlapping sessions silently revert each other. app_state_cas writes
+  // only when the row version still matches what this client last hydrated/acked
+  // (_appStateVersions, filled by every _dbLoad app_state parse); on -1 we adopt the server copy
+  // into state and tell the user to re-apply, instead of clobbering. Falls back to _saveAppState
+  // while the RPC isn't deployed (webstore-checkout missingFn pattern). Other keys keep the plain
+  // save path.
+  const _saveAppStateCAS=(key,val)=>{
+    const str=JSON.stringify(val);
+    if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,str);
+    if(!(_initialLoadDone.current&&_dbLoadSuccess.current)||!supabase)return;
+    const rec=_appStateVersions[key];
+    if(rec&&rec.s===str)return;// server already has exactly this value (e.g. the effect echo right after hydration) — no write, no version bump
+    const expected=rec?rec.v:0;
+    _dbSavingGuard(async()=>{
+      try{
+        const{data,error}=await supabase.rpc('app_state_cas',{p_key:key,p_expected:expected,p_value:str});
+        if(error){
+          if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'')){
+            console.warn('[app_state_cas] RPC not deployed — falling back to last-write-wins save for '+key);
+            _dbSave('app_state',[{id:key,value:str,updated_at:new Date().toISOString()}]);
+          }else console.warn('[app_state_cas] '+key+' save failed:',error.message);
+          return;
+        }
+        if(data===-1){
+          const{data:row}=await supabase.from('app_state').select('value,version').eq('id',key).maybeSingle();
+          if(row&&row.value!=null){
+            _appStateVersions[key]={v:row.version||0,s:row.value};
+            try{
+              const serverVal=JSON.parse(row.value);
+              if(key==='labor_rates')setLaborRates(serverVal);
+              else if(key==='comm_overrides')setCommOverrides(serverVal);
+              if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,row.value);
+            }catch(_){}
+          }
+          nf(key+' was updated by someone else — showing the latest; re-apply your change','error');
+        }else if(typeof data==='number'){
+          _appStateVersions[key]={v:data,s:str};
+        }
+      }catch(e){console.warn('[app_state_cas] '+key+' save threw:',e)}
+    });
   };
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_setBatchPosDirtyUntil(Date.now()+12000);_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
@@ -11951,7 +11996,7 @@ export default function App(){
   const[ssFilter,setSsFilter]=useState('all');// all | reordered | pending
   const[newCustPeriod,setNewCustPeriod]=useState('ytd');
   const[commOverrides,setCommOverrides]=useState(()=>loadState('comm_overrides',{}));// {invoiceId: true} = admin approved full commission on late invoice
-  React.useEffect(()=>{_saveAppState('comm_overrides',commOverrides)},[commOverrides]);
+  React.useEffect(()=>{_saveAppStateCAS('comm_overrides',commOverrides)},[commOverrides]);// money key — CAS, not last-write-wins (00181)
   const[commMonth,setCommMonth]=useState(()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')});
   const[commTab,setCommTab]=useState('statement');// statement, pipeline, ytd, byCustomer
   const[commRep,setCommRep]=useState(()=>cu?.id||'all');// default to logged-in rep
@@ -27783,7 +27828,7 @@ export default function App(){
 
   // SETTINGS PAGE
   const[laborRates,setLaborRates]=useState(()=>loadState('labor_rates',{}));// {personName: hourlyRate}
-  React.useEffect(()=>{_saveAppState('labor_rates',laborRates)},[laborRates]);
+  React.useEffect(()=>{_saveAppStateCAS('labor_rates',laborRates)},[laborRates]);// money key — CAS, not last-write-wins (00181)
   const[settingsTab,setSettingsTab]=useState('pricing');
   const[dvEdit,setDvEdit]=useState(null);// deco vendor id being edited for pricing
   const[dvTab,setDvTab]=useState('embroidery');

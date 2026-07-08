@@ -80,3 +80,47 @@ end $$;
 revoke all on function public.next_counter(text) from public;
 revoke all on function public.next_counter(text) from anon;
 grant execute on function public.next_counter(text) to authenticated;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- Piece 2 — compare-and-swap for the money-bearing app_state keys
+-- (labor_rates, comm_overrides). Both are whole-blob last-write-wins saves:
+-- two admins editing rates in overlapping sessions silently revert each other.
+-- app_state_cas writes only when the caller's hydrated row version still
+-- matches (bumping it); -1 tells the caller to refetch + re-apply instead of
+-- clobbering. Other app_state keys keep the plain upsert path and never touch
+-- version.
+
+alter table public.app_state add column if not exists version int not null default 0;
+
+create or replace function public.app_state_cas(p_key text, p_expected int, p_value text)
+returns int
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_new int;
+begin
+  if not public.is_team_member() then
+    raise exception 'app_state_cas: staff only';
+  end if;
+  update app_state
+     set value = p_value, version = version + 1, updated_at = now()
+   where id = p_key and version = p_expected
+   returning version into v_new;
+  if v_new is not null then
+    return v_new;
+  end if;
+  if p_expected = 0 then
+    -- No row yet (first save of this key): create it at version 1. on conflict do nothing
+    -- keeps a concurrent creator's row; FOUND is false then and we fall through to -1.
+    insert into app_state(id, value, version, updated_at)
+    values (p_key, p_value, 1, now())
+    on conflict (id) do nothing;
+    if found then return 1; end if;
+  end if;
+  return -1; -- version mismatch: caller refetches the row and re-applies
+end $$;
+
+revoke all on function public.app_state_cas(text, int, text) from public;
+revoke all on function public.app_state_cas(text, int, text) from anon;
+grant execute on function public.app_state_cas(text, int, text) to authenticated;
