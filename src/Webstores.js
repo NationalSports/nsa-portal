@@ -8434,22 +8434,6 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [vendorOpen, setVendorOpen] = useState(false);
-  // Live vendor-catalog results inline under the main search — the same SanMar/S&S/
-  // Richardson/Momentec engines as the popup, so a typed style (e.g. ST358) that isn't in
-  // the local catalog still shows up. Slightly longer debounce: these are external APIs.
-  const vendorMap = useVendorMap();
-  const vendorEnabled = !favOnly && q.trim().length >= 2;
-  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
-  const [vendorSel, setVendorSel] = useState(() => new Map()); // key -> { style, color }
-  const [vendorImporting, setVendorImporting] = useState(false);
-  const toggleVendor = (s, c) => setVendorSel((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
-  const addVendorSel = async () => {
-    if (!vendorSel.size || vendorImporting) return;
-    setVendorImporting(true);
-    try { const rows = await importVendorSelections(vendorSel); if (onPickMany && rows.length) onPickMany(rows, [], {}); setVendorSel(new Map()); }
-    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
-    finally { setVendorImporting(false); }
-  };
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -8475,6 +8459,23 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const favUnion = useMemo(() => new Set([...favMine.keys(), ...favTeam.keys()]), [favMine, favTeam]); // lower style keys
   const favNames = useMemo(() => [...new Set([...favMine.values(), ...favTeam.values()])], [favMine, favTeam]); // original names, for fetch
   const favStyleKey = (p) => String(p?.name || p?.sku || '').trim().toLowerCase();
+  // Live vendor-catalog results inline under the main search — the same SanMar/S&S/
+  // Richardson/Momentec engines as the popup, so a typed style (e.g. ST358) that isn't in
+  // the local catalog still shows up. Slightly longer debounce: these are external APIs.
+  // (Declared after the favorites state above — vendorEnabled reads favOnly.)
+  const vendorMap = useVendorMap();
+  const vendorEnabled = !favOnly && q.trim().length >= 2;
+  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
+  const [vendorSel, setVendorSel] = useState(() => new Map()); // key -> { style, color }
+  const [vendorImporting, setVendorImporting] = useState(false);
+  const toggleVendor = (s, c) => setVendorSel((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  const addVendorSel = async () => {
+    if (!vendorSel.size || vendorImporting) return;
+    setVendorImporting(true);
+    try { const rows = await importVendorSelections(vendorSel); if (onPickMany && rows.length) onPickMany(rows, [], {}); setVendorSel(new Map()); }
+    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
+    finally { setVendorImporting(false); }
+  };
   useEffect(() => {
     let cancelled = false;
     (async () => {
