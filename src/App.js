@@ -5575,10 +5575,18 @@ export default function App(){
   // retail repricing, fundraise spends dollar-for-dollar via Apply Credit. The collected cash
   // counts as store-SO revenue for GP/commissions (calcGP in CommissionsPage.js, totals in
   // OrderEditor.js) — the offsetting cost lands later on the order where the credit is redeemed.
-  const addFundraiseCredit=(customerId,amount,source,soId)=>{
+  // dedupKey makes the credit idempotent: the id derives from it, so re-running the same
+  // pull/batch (OMG "Redo SO", a re-batch after a failed save) finds the existing row and
+  // SKIPS instead of crediting the same money twice. OMG keys by store id (one fundraise
+  // pot per store, whatever the SO id ends up being); webstore keys by the batch's SO id.
+  const addFundraiseCredit=(customerId,amount,source,soId,dedupKey)=>{
     const amt=Math.round((Number(amount)||0)*100)/100;
     if(amt<=0||!customerId)return null;
-    const credit={id:'cr_fund_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6),customer_id:customerId,amount:amt,used:0,is_fundraise:true,source:(source||'Store fundraising')+(soId?' · '+soId:''),created_by:cu?.name||'System',created_at:new Date().toISOString()};
+    const _key=String(dedupKey||soId||'').replace(/[^A-Za-z0-9_-]/g,'');
+    const id=_key?'cr_fund_'+_key:'cr_fund_'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+    const existing=(cust.find(cc=>cc.id===customerId)?.credits||[]).find(cr=>cr.id===id);
+    if(existing){nf('Fundraise already credited ($'+(existing.amount||0).toLocaleString()+' — '+(existing.source||'')+') — skipped duplicate');return existing}
+    const credit={id,customer_id:customerId,amount:amt,used:0,is_fundraise:true,source:(source||'Store fundraising')+(soId?' · '+soId:''),created_by:cu?.name||'System',created_at:new Date().toISOString()};
     _dbSaveCredit(credit);
     setCust(prev=>prev.map(cc=>cc.id===customerId?{...cc,credits:[...(cc.credits||[]),credit]}:cc));
     return credit;
@@ -5630,7 +5638,7 @@ export default function App(){
     // a cash credit line, spendable dollar-for-dollar via Apply Credit. Per-batch, and
     // the batch's fundraise total is already net of coupon discounts, so multiple
     // batches from one store never double-credit.
-    if(Number(fundraise_cost)>0&&customer_id)addFundraiseCredit(customer_id,fundraise_cost,'Webstore fundraising — '+(memo||'store'),id);
+    if(Number(fundraise_cost)>0&&customer_id)addFundraiseCredit(customer_id,fundraise_cost,'Webstore fundraising — '+(memo||'store'),id,'so_'+id);
     // Webstore money is already collected via Stripe by batch time, so invoice
     // + settle immediately — paid in full when the card funds cover it, else
     // partial with exactly the team-tab gross left as the club's open balance.
@@ -14933,7 +14941,7 @@ export default function App(){
               // credit line (spent dollar-for-dollar via Apply Credit), not promo funds.
               // Also counted as revenue on this SO for GP/commissions.
               const _fund=s._omg_fundraise||0;
-              if(_fund>0&&c)addFundraiseCredit(c.id,_fund,'OMG fundraising — '+s.store_name,generatedId);
+              if(_fund>0&&c)addFundraiseCredit(c.id,_fund,'OMG fundraising — '+s.store_name,generatedId,'omg_'+s.id);
               nf(`Created SO with ${soItems.length} items from ${s.store_name}`+(_fund>0?` · $${_fund.toFixed(2)} fundraising credited as Fundraiser Dollars`:''));
       };
       const _decoFields=decos=>({decorations:decos,deco_type:decos.length>0?decos.map(d=>d.type).join('|'):'',art_group:decos.map(d=>d.art_group).join('|')});

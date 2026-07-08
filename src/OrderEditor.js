@@ -2526,11 +2526,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const omgTaxRev=safeNum(o._omg_tax||0);rev+=omgTaxRev;                  // collected tax = revenue
     const omgCostFees=safeNum(o._omg_omg_fees||0)+safeNum(o._omg_cc_fees||0);cost+=omgCostFees; // OMG + CC fees = cost
     const omgFee=omgCostFees; // back-compat alias used elsewhere in this component
-    // Store fundraising (OMG/webstore) — collected cash the club is paid back in Fundraiser
-    // Dollars (a customer credit, see addFundraiseCredit in App.js), so it counts toward
-    // margin here and in calcGP (commissions). Kept out of `rev` so the grand total /
-    // billing displays don't change — the fundraise cash is never billed on this SO.
-    const fundraiseRev=safeNum(o._omg_fundraise||0)+safeNum(o._webstore_fundraise||0);
+    // OMG store fundraising — collected cash the club is paid back in Fundraiser Dollars
+    // (a customer credit, see addFundraiseCredit in App.js), so it counts toward margin
+    // here and in calcGP (commissions). Kept out of `rev` so the grand total / billing
+    // displays don't change — the fundraise cash is never billed on an OMG SO.
+    // WEBSTORE fundraise must NOT be added here: the batcher already prices item unit_sell
+    // from collected = product + fundraise (Webstores.js collectedForLine), so it's inside
+    // `rev`/margin already — adding it again would double-count.
+    const fundraiseRev=safeNum(o._omg_fundraise||0);
     const ship=o.shipping_type==='pct'?rev*(o.shipping_value||0)/100:(o.shipping_value||0);const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);const tax=rev*taxRate;
     // Prior shipping carried onto this order (a Manual Ship recorded against the customer when
     // they had no open order). Billed on top of the order's own shipping; not taxed.

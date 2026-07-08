@@ -71,10 +71,14 @@ export default function CommissionsPage(){
       // Club fundraising (webstore/OMG stores) is REVENUE: the club is paid in Fundraiser
       // Dollars (a customer credit, see addFundraiseCredit in App.js), so the collected cash
       // stays with NSA now — the cost lands on the future order where the credit is redeemed
-      // (Apply Credit reduces that invoice's total). Added on top of invRev because the store
-      // auto-invoices bill item sells only; the fundraise cash never appears in inv.total.
+      // (Apply Credit reduces that invoice's total).
+      // WEBSTORE fundraise is already INSIDE item unit_sell (the batcher prices lines from
+      // collected = product + fundraise, Webstores.js collectedForLine) and therefore inside
+      // invRev — dropping the old fundraiseCost is the whole flip; adding it again here
+      // double-counts. OMG is the opposite: items are priced at retail and the auto-invoice
+      // never bills the fundraise, so it's added on top of invRev.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
-      const fundraiseRev=safeNum(so._webstore_fundraise||0)+safeNum(so._omg_fundraise||0);
+      const fundraiseRev=safeNum(so._omg_fundraise||0);
       const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
@@ -172,7 +176,7 @@ export default function CommissionsPage(){
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
         const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
         const inboundFreight=safeNum(so._inbound_freight||0);
-        const fundraiseRev=safeNum(so._webstore_fundraise||0)+safeNum(so._omg_fundraise||0);// club fundraising = revenue (paid out as Fundraiser Dollars credit; mirrors calcGP above)
+        const fundraiseRev=safeNum(so._omg_fundraise||0);// OMG fundraising = revenue on top (webstore's is already inside unit_sell; mirrors calcGP above)
         const totalRev=rev+shipRev+fundraiseRev;const totalCost=cost+shipCost+inboundFreight;
         const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
         const soStatus=calcSOStatus(so);
