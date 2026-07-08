@@ -358,7 +358,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     clone.item_mockups=im;
     sv('art_files',[...af,clone]);
     const _pf=(clone.prod_files||[]).length;
-    nf('Added "'+(art.name||'Untitled')+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+(_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':''));
+    const _pfNote=_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':'';
+    const _nm=art.name||'Untitled';
+    // M14/REUSE-2: the clone used to land unwired — the rep then opened EVERY garment and swapped
+    // art_file_id by hand. Offer ONE confirm that points the matching decorations at the reused
+    // design via changeArtFileId (same recall/orphan handling as a manual swap). Conservative match:
+    //   • unwired art decos (no art_file_id) — the empty slot this reuse is filling;
+    //   • ART TBD decos whose art_tbd_type equals the reused deco_type;
+    //   • decos pointing at an EMPTY same-design placeholder (design_id, or name+deco_type match,
+    //     status absent/waiting_for_art) — never a design that already has live/approved art.
+    // Decline keeps today's manual behavior.
+    const _cd=clone.deco_type||'';const _nmKey=(clone.name||'').trim().toLowerCase();
+    const targets=[];
+    safeItems(o).forEach((it,ii)=>{safeDecos(it).forEach((d,di)=>{
+      if(d.kind!=='art')return;
+      let match=false;
+      if(!d.art_file_id)match=true;
+      else if(d.art_file_id==='__tbd')match=(d.art_tbd_type||'')===_cd;
+      else{const cur=af.find(a=>a.id===d.art_file_id);
+        match=!!cur&&(cur.deco_type||'')===_cd
+          &&((clone.design_id&&cur.design_id===clone.design_id)||(!!_nmKey&&(cur.name||'').trim().toLowerCase()===_nmKey))
+          &&(!cur.status||cur.status==='waiting_for_art');}
+      if(match)targets.push({ii,di,item:it});
+    })});
+    if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
+    // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
+    // but the rep is told to confirm the color-way for them.
+    const _lbl=t=>((t.item.color?t.item.color+' ':'')+(t.item.sku||t.item.name||('Item '+(t.ii+1))));
+    const garments=[...new Set(targets.map(_lbl))];
+    const cwFlag=[...new Set(targets.filter(t=>{const m=_cwMatchForItem(clone,t.item,t.item.color);return m&&!m.exact}).map(_lbl))];
+    const ok=window.confirm('♻️ Point '+targets.length+' decoration'+(targets.length>1?'s':'')+' on '+garments.length+' garment'+(garments.length>1?'s':'')+' at "'+_nm+'"?\n\n'+garments.join(', ')
+      +(cwFlag.length?'\n\n⚠️ Confirm color-way for: '+cwFlag.join(', ')+' — the approved shade differs or is unknown.':'')
+      +'\n\nCancel adds the art without pointing anything — wire each garment manually.');
+    if(!ok){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — not applied to any garment'+_pfNote);return}
+    targets.forEach(t=>changeArtFileId(t.ii,t.di,clone.id));
+    nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' and pointed '+targets.length+' decoration'+(targets.length>1?'s':'')+' on '+garments.length+' garment'+(garments.length>1?'s':'')+' at it'+_pfNote
+      +(cwFlag.length?' — ⚠️ confirm color-way for '+cwFlag.join(', '):''));
   };
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
@@ -5076,7 +5111,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
-                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files. Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
+                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files and offers to point matching garments' decorations at it (one confirm). Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
                     {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
                   </div>
