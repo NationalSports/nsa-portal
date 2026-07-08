@@ -16458,8 +16458,11 @@ export default function App(){
                           {it.szKeys.map(sz=>{
                             const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled[sz]||0));
                             if(open<=0)return<td key={sz} style={{padding:'4px 6px',textAlign:'center',color:'#22c55e',fontSize:11}}>&#10003;</td>;
+                            // No max cap: vendors over-ship — an overage must be enterable (input flips
+                            // amber past the open qty; the confirm names it).
                             return<td key={sz} style={{padding:'4px 6px',textAlign:'center'}}>
-                              <input id={'wh-rcv-'+i+'-'+sz} type="number" style={{width:46,textAlign:'center',border:'2px solid #22c55e',borderRadius:6,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={open} min={0} max={it.ordered[sz]||0}/>
+                              <input id={'wh-rcv-'+i+'-'+sz} type="number" style={{width:46,textAlign:'center',border:'2px solid #22c55e',borderRadius:6,padding:'4px 2px',fontSize:14,fontWeight:700,background:'#f0fdf4'}} defaultValue={open} min={0}
+                                onChange={e=>{const v=parseInt(e.target.value)||0;const ov=v>open;e.target.style.borderColor=ov?'#f59e0b':'#22c55e';e.target.style.background=ov?'#fffbeb':'#f0fdf4';e.target.style.color=ov?'#b45309':''}}/>
                               <div style={{fontSize:8,color:'#64748b'}}>{open} open</div>
                             </td>})}
                           <td></td>
@@ -16497,13 +16500,19 @@ export default function App(){
                   if(whReceiving)return;
                   // Batch-read all receive input values upfront to avoid repeated DOM queries
                   const rcvInputs={};document.querySelectorAll('[id^="wh-rcv-"]').forEach(el=>{rcvInputs[el.id]=parseInt(el.value)||0});
-                  const getRcvQty=(idx,sz,maxOpen)=>{const v=rcvInputs['wh-rcv-'+idx+'-'+sz];return v!=null?Math.min(v,maxOpen):0};
-                  // Pre-check: sum up what will be received vs what's open
-                  let preTotal=0;poItems.forEach((it,i)=>{it.szKeys.forEach(sz=>{
+                  // Uncapped: an entry above the open qty is a vendor overage — booked as entered, named in the confirm.
+                  const getRcvQty=(idx,sz)=>{const v=rcvInputs['wh-rcv-'+idx+'-'+sz];return v!=null?v:0};
+                  // Pre-check: sum what will be received vs what's open, tracking any overage
+                  let preTotal=0,overTotal=0;poItems.forEach((it,i)=>{it.szKeys.forEach(sz=>{
                     const open=Math.max(0,(it.ordered[sz]||0)-(it.received[sz]||0)-(it.cancelled?.[sz]||0));
-                    if(open>0)preTotal+=getRcvQty(i,sz,open);
+                    if(open>0){const q=getRcvQty(i,sz);preTotal+=q;if(q>open)overTotal+=q-open}
                   })});
-                  if(preTotal>0&&preTotal<totalOpen&&!window.confirm('Partial receive: '+preTotal+' of '+totalOpen+' open units. Continue?')){return}
+                  // ALWAYS confirm — the boxes pre-fill to the full open qty, so a full receipt must be
+                  // an explicit, informed tap, never a silent default off a blind confirm.
+                  if(preTotal>0){
+                    const kind=overTotal>0?'OVERAGE — +'+overTotal+' over ordered':preTotal>=totalOpen?'full receipt':'partial';
+                    if(!window.confirm('Receiving '+preTotal+' of '+totalOpen+' open ordered units ('+kind+'). Continue?'))return;
+                  }
                   setWhReceiving(true);
                   const date=document.getElementById('wh-recv-date')?.value||new Date().toISOString().split('T')[0];
                   let anyReceived=false;let totalQtyReceived=0;
@@ -16530,7 +16539,7 @@ export default function App(){
                         szKeys.forEach(sz=>{
                           const open=Math.max(0,(po[sz]||0)-((po.received||{})[sz]||0)-((po.cancelled||{})[sz]||0));
                           if(open<=0)return;
-                          const qty=getRcvQty(pl.displayIdx,sz,open);
+                          const qty=getRcvQty(pl.displayIdx,sz);
                           if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                         });
                         if(Object.keys(shipment).length<=1)return;
@@ -16563,7 +16572,7 @@ export default function App(){
                       Object.keys(it.sizes).forEach(sz=>{
                         const open=Math.max(0,(it.sizes[sz]||0)-((it.received||{})[sz]||0));
                         if(open<=0)return;
-                        const qty=getRcvQty(ii,sz,open);
+                        const qty=getRcvQty(ii,sz);
                         if(qty>0){newRcvd[sz]=(newRcvd[sz]||0)+qty;rcvSizes[sz]=qty;anyReceived=true;totalQtyReceived+=qty}
                       });
                       if(Object.keys(rcvSizes).length>0)justReceived.push({sku:it.sku||'',name:it.name||'',color:it.color||'',sizes:rcvSizes,soId:'',customer:''});
