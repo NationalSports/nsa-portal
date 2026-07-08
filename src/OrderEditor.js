@@ -2902,7 +2902,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // art_status is part of the signature so a status heal (e.g. a stale 'art_complete' downgraded
     // because the job's art went back to Art TBD) actually lands — syncJobs is a fixed point over
     // its own output, so this can't ping-pong.
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')).sort().join(',');
+    // Per-item units/fulfilled are part of the signature too: a heal that only fixes a stale
+    // gi.units (e.g. a split parent's item still carrying the full line quantity while the
+    // job totals were already correct) must still land, or the item rows keep showing "56/90".
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
     }
