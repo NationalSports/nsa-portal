@@ -2127,6 +2127,7 @@ export default function App(){
   React.useEffect(()=>{try{if(localStorage.getItem('nsa_stock_pos')!==null)localStorage.removeItem('nsa_stock_pos');if(localStorage.getItem('nsa_stock_po_counter')!==null)localStorage.removeItem('nsa_stock_po_counter')}catch(e){}},[]);
   const[invTab,setInvTab]=useState('stock');// stock | log | pos
   const[invPOModal,setInvPOModal]=useState({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});// create/edit PO modal
+  const _invPOMintingRef=useRef(false);// re-entry guard: PO-number mint awaits an RPC, widening the double-click window
   const[invPOApiResults,setInvPOApiResults]=useState([]);
   const[invPOApiLoading,setInvPOApiLoading]=useState(false);
   const[invPOServerResults,setInvPOServerResults]=useState([]);
@@ -3665,6 +3666,29 @@ export default function App(){
   // Other keys still cache locally for fast cold-start.
   const _LS_SKIP_APPSTATE=new Set(['change_log','so_history','est_history','inv_adj_log']);
   const _saveAppState=(key,val)=>{if(!_LS_SKIP_APPSTATE.has(key))_lsSet('nsa_'+key,JSON.stringify(val));if(_initialLoadDone.current&&_dbLoadSuccess.current)_dbSavingGuard(()=>_dbSave('app_state',[{id:key,value:JSON.stringify(val),updated_at:new Date().toISOString()}]))};
+  // Atomic document-number mint (migration 00181): next_counter bumps app_counters.<key> in one
+  // DB statement and returns the new value, so two machines can never mint the same number.
+  // Returns null when the RPC isn't deployed yet / errors / times out — callers fall back to the
+  // legacy read-increment-write local counter (status-quo duplicate risk, console-warned), same
+  // missing-function degrade as webstore-checkout's place_webstore_order fallback.
+  // 5s cap mirrors claim_batch_po_number's: a hung RPC must degrade to local numbering, not hang
+  // the Create button.
+  const _nextCounter=async(key)=>{
+    if(!supabase)return null;
+    try{
+      const{data,error}=await Promise.race([
+        supabase.rpc('next_counter',{p_key:key}),
+        new Promise(res=>setTimeout(()=>res({data:null,error:{message:'next_counter timed out',code:'TIMEOUT'}}),5000))
+      ]);
+      if(error){
+        if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||''))console.warn('[next_counter] '+key+': RPC not deployed — using local counter');
+        else console.warn('[next_counter] '+key+' failed — using local counter:',error.message);
+        return null;
+      }
+      const n=typeof data==='number'?data:parseInt(data,10);
+      return Number.isFinite(n)?n:null;
+    }catch(e){console.warn('[next_counter] '+key+' threw — using local counter:',e);return null;}
+  };
   React.useEffect(()=>{const cur=JSON.stringify(batchPOs);if(_batchPosApplied.current!==cur)_setBatchPosDirtyUntil(Date.now()+12000);_saveAppState('batch_pos',batchPOs)},[batchPOs]);
   React.useEffect(()=>{_saveAppState('submitted_batches',submittedBatches)},[submittedBatches]);
   React.useEffect(()=>{_saveAppState('batch_counter',batchCounter)},[batchCounter]);
@@ -9173,9 +9197,12 @@ export default function App(){
   };
 
   // INVENTORY POs
-  const saveInvPO=()=>{
+  const saveInvPO=async()=>{
     const vendorId=invPOModal.vendor_id;const vendor=vend.find(v=>v.id===vendorId);
     if(!vendorId||!vendor){nf('Select a vendor','warn');return}
+    if(_invPOMintingRef.current)return;// double-click while the create branch awaits next_counter
+    _invPOMintingRef.current=true;
+    try{
     // Allow custom/API items (no product_id) as long as they have a SKU.
     // Also keep items with received units even if ordered qty was zeroed out —
     // dropping them would orphan the receiving history (stock already moved).
@@ -9209,17 +9236,26 @@ export default function App(){
       logChange('updated','Inventory PO',existingPO?.po_number||'',vendor.name+' — '+newItems.length+' items');
       nf('PO '+(existingPO?.po_number||'')+' updated'+(clamped?' (some sizes kept at received qty)':''));
     } else {
-      // Create new PO
-      const poNum='PO '+invPOCounter+' NSA';
+      // Create new PO — claim the number atomically in the DB (next_counter, migration 00181) so
+      // two machines can't mint the same 'PO <n> NSA'. Falls back to the legacy local counter when
+      // the RPC is unavailable OR returns a number below this client's counter (a behind/fresh
+      // sequence must never re-mint an already-used number).
+      const _rpcN=await _nextCounter('inv_po_counter');
+      if(_rpcN!=null&&_rpcN<invPOCounter)console.warn('[next_counter] inv_po_counter behind local ('+_rpcN+' < '+invPOCounter+') — using local counter');
+      const _n=(_rpcN!=null&&_rpcN>=invPOCounter)?_rpcN:invPOCounter;
+      const poNum='PO '+_n+' NSA';
       const po={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:vendorId,vendor_name:vendor.name,
         items:validItems.map(it=>({product_id:it.product_id,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||[],sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
         status:'ordered',created_at:new Date().toLocaleString(),expected_date:invPOModal.expected_date||'',memo:invPOModal.memo||'',
         created_by:cu?.name||'Unknown',created_by_id:cu?.id||null,is_booking:!!invPOModal.is_booking,received_at:null,received_by:null,_qb_synced:false};
-      setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>c2+1);
+      // Keep the legacy app_state counter advancing past the DB sequence too (max(rpc+1, local+1))
+      // so a later RPC-unavailable fallback can never regress below numbers the sequence issued.
+      setInvPOs(prev=>[po,...prev]);setInvPOCounter(c2=>Math.max(_n+1,c2+1));
       logChange('created','Inventory PO',poNum,vendor.name+' — '+validItems.length+' items');
       nf('Inventory PO '+poNum+' created');
     }
     setInvPOModal({open:false,vendor_id:'',items:[],memo:'',expected_date:'',productSearch:'',editId:null,is_booking:false});
+    }finally{_invPOMintingRef.current=false}
   };
   const editInvPO=(po)=>{
     setInvPOModal({open:true,vendor_id:po.vendor_id,items:po.items.map(it=>({...it})),memo:po.memo||'',expected_date:po.expected_date||'',productSearch:'',editId:po.id,is_booking:!!po.is_booking});
@@ -18642,18 +18678,26 @@ export default function App(){
               </div>})}
             <button className="btn btn-sm btn-secondary" style={{marginTop:4}} onClick={()=>setShowStockPO(x=>({...x,items:[...x.items,{product_id:null,sku:'',name:'',color:'',sizes:{S:0,M:0,L:0,XL:0,'2XL':0}}]}))}>+ Add Item</button>
             <div style={{marginTop:12,display:'flex',gap:8}}>
-              <button className="btn btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={()=>{
+              <button className="btn btn-primary" style={{background:'#6366f1',borderColor:'#6366f1'}} onClick={async()=>{
                 if(!showStockPO.vendor_id){nf('Select a vendor','error');return}
                 const validItems=showStockPO.items.filter(it=>it.sku&&Object.values(it.sizes||{}).some(v=>v>0));
                 if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-                const poNum='PO '+invPOCounter+' NSA';
+                if(_invPOMintingRef.current)return;// double-click while awaiting next_counter
+                _invPOMintingRef.current=true;
+                try{
+                // Same atomic mint + legacy fallback as saveInvPO (migration 00181).
+                const _rpcN=await _nextCounter('inv_po_counter');
+                if(_rpcN!=null&&_rpcN<invPOCounter)console.warn('[next_counter] inv_po_counter behind local ('+_rpcN+' < '+invPOCounter+') — using local counter');
+                const _n=(_rpcN!=null&&_rpcN>=invPOCounter)?_rpcN:invPOCounter;
+                const poNum='PO '+_n+' NSA';
                 const newPO={id:'ipo-'+Date.now(),po_number:poNum,vendor_id:showStockPO.vendor_id,vendor_name:showStockPO.vendor_name||D_V.find(v=>v.id===showStockPO.vendor_id)?.name||'',
                   items:validItems.map(it=>({product_id:it.product_id||null,sku:it.sku,name:it.name,color:it.color||'',available_sizes:it.available_sizes||Object.keys(it.sizes||{}),sizes:{...it.sizes},received:{},nsa_cost:it.nsa_cost||0})),
                   status:'ordered',created_at:new Date().toLocaleString(),expected_date:'',memo:showStockPO.memo||'',
                   created_by:cu?.name||'Warehouse',received_at:null,received_by:null,_qb_synced:false};
-                setInvPOs(prev=>[newPO,...prev]);setInvPOCounter(c=>c+1);setShowStockPO(null);
+                setInvPOs(prev=>[newPO,...prev]);setInvPOCounter(c=>Math.max(_n+1,c+1));setShowStockPO(null);
                 logChange('created','Inventory PO',poNum,newPO.vendor_name+' — '+validItems.length+' items');
                 nf('📋 Created '+poNum+' — '+validItems.length+' item'+(validItems.length>1?'s':''));
+                }finally{_invPOMintingRef.current=false}
               }}>Create PO</button>
               <button className="btn btn-secondary" onClick={()=>setShowStockPO(null)}>Cancel</button>
             </div>
