@@ -8389,7 +8389,15 @@ export default function App(){
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
     // onSubmitted) would run the whole promotion twice before state settles — duplicate
     // submitted-batch entry and duplicate waiting po_lines, i.e. double-ordered inventory.
-    if(_batchOrderingRef.current.has(_gk))return null;
+    // When the vendor already ACCEPTED the order (apiResult set), bailing here leaves a real
+    // order with no portal record — that must be loud, never a silent null (see NSA 4536).
+    if(_batchOrderingRef.current.has(_gk)){
+      if(apiResult){
+        nf('⚠️ The vendor accepted this order but it was NOT recorded — another submission for this batch was already in flight. Check Ordered Batch POs; if it\'s missing, record the PO on the sales order manually. Do NOT re-order.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId:_gk,reason:'Vendor API order accepted but orderVendorBatch hit the in-flight guard for group '+_gk+' — nothing recorded'});
+      }
+      return null;
+    }
     _batchOrderingRef.current.add(_gk);
     try{
     // Read the live queue + SOs from the flush ref, not this closure. This runs from a deferred
@@ -8398,7 +8406,16 @@ export default function App(){
     const _batchPOsNow=_visFlushRefs.current.batchPOs||batchPOs;
     const _sosNow=_visFlushRefs.current.sos||sos;
     const pos=(_batchPOsNow||[]).filter(bp=>(bp.vendor_key+(bp.ship_to_deco_id?':'+bp.ship_to_deco_id:''))===_gk);
-    if(pos.length===0)return null;
+    if(pos.length===0){
+      // Same rule as the guard above: with a vendor-accepted order in hand, an empty queue
+      // means we can't record it — never swallow that.
+      if(apiResult){
+        const _oid=apiResult.orderId||apiResult.orderNumber||apiResult.transactionId||'';
+        nf('⚠️ The vendor accepted order '+(_oid||'(no id)')+' but no queued batch entries were found to record it against — nothing was recorded. Record the PO on the sales order manually. Do NOT re-order.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'batch_promotion_failed',soId:_gk,reason:'Vendor API order '+_oid+' accepted but the batch queue had no entries for group '+_gk+' — nothing recorded'});
+      }
+      return null;
+    }
     const vgName=BATCH_VENDORS[vk]?.name||pos[0].vendor_name||vk;
     const total=pos.reduce((a,bp)=>a+(bp.total_cost||0),0);
     const totalUnits=pos.reduce((a,bp)=>a+(bp.items||[]).reduce((sm,it)=>sm+(it.qty||0),0),0);
