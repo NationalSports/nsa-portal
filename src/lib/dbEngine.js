@@ -956,7 +956,7 @@ const _dbSaveEstimateInner = async (est) => {
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
-const _dbSaveEstimate = (est) => _queuedEntitySave(est.id, est, _dbSaveEstimateInner);
+const _dbSaveEstimate = (est) => _outboxWrap('estimates', est, _queuedEntitySave(est.id, est, _dbSaveEstimateInner));
 // Resolve which current item a preserved child row (PO/pick line) should re-attach to after the
 // order's structure changed. The row's original position wins when its SKU still matches; otherwise
 // fall back to SKU matching across all items — removing/reordering a line shifts every item_index
@@ -1545,7 +1545,7 @@ const _captureSoSave = (so, savePromise) => {
     } catch (_) { /* never let capture affect the save */ }
   }).catch(() => {});
 };
-const _dbSaveSO = (so) => { const _p = _queuedEntitySave(so.id, so, _dbSaveSOInner); _captureSoSave(so, _p); return _p; };
+const _dbSaveSO = (so) => { const _p = _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveSOInner)); _captureSoSave(so, _p); return _p; };
 // Lightweight save for art-file-only edits (add/remove/tag a mockup or production file). Syncs ONLY so_art_files —
 // never deletes/reinserts items, decorations, or PO lines — so a simple file change can't trip the order-save
 // data-loss guards or partially re-persist line items. Mirrors the art_files sync in _dbSaveSOInner.
@@ -1593,7 +1593,7 @@ const _dbSaveArtFilesInner = async (so) => {
     return true;
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
-const _dbSaveArtFiles = (so) => _queuedEntitySave(so.id, so, _dbSaveArtFilesInner);
+const _dbSaveArtFiles = (so) => _outboxWrap('sales_orders', so, _queuedEntitySave(so.id, so, _dbSaveArtFilesInner), true/*addOnly: art-only success must not clear a failed full-SO payload*/);
 const _invCols=['id','customer_id','so_id','date','due_date','total','paid','memo','status','type','inv_type','deposit_pct','tax','tax_rate','tax_exempt','shipping','cc_fee','email_status','email_sent_at','email_opened_at','follow_up_at','sent_history','print_history','line_items','qb_invoice_id','tc_reported','tc_tax','created_at','updated_at','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_name','billing_address','shipping_name','shipping_address','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 const _dbSaveInvoiceInner = async (inv) => {
@@ -1692,7 +1692,7 @@ const _dbSaveInvoiceInner = async (inv) => {
 };
 // Queued per invoice id (same as SOs/estimates) so a direct awaited save — e.g. the final-invoice
 // commit that gates closing the SO — can't race the _diffSave effect saving the same invoice.
-const _dbSaveInvoice = (inv) => _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner);
+const _dbSaveInvoice = (inv) => _outboxWrap('invoices', inv, _queuedEntitySave(inv.id, inv, _dbSaveInvoiceInner));
 let _dbNotify=null; // set by App component for visible error toasts
 let _dataLossAlert=null; // set by App component — logs + emails on item-wipe attempts/events
 let _restoredLinesSync=null; // set by App component — merges PO/pick lines the save guard restored back into live state so a restore sticks instead of repeating on every save
@@ -1789,7 +1789,8 @@ const _ensureFreshSession=async()=>{
     if(session?.expires_at&&session.expires_at-Math.floor(Date.now()/1000)<60)await _recoverSession();
   }catch{}
 };
-const _dbSaveCustomer = async (c) => {
+const _dbSaveCustomer = (c) => _outboxWrap('customers', c, _dbSaveCustomerInner(c));
+const _dbSaveCustomerInner = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   await _ensureFreshSession();
   // Optimistic locking: check version before saving
@@ -1957,7 +1958,8 @@ const _dbDeletePendingShipUsage = async (soId) => {
 };
 const _dbDuplicateSkuIds=new Set(JSON.parse(localStorage.getItem('nsa_duplicate_sku_ids')||'[]'));// product IDs with duplicate SKU — skip saves entirely
 const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify([..._dbDuplicateSkuIds]))};
-const _dbSaveProduct = async (p) => {
+const _dbSaveProduct = (p) => _outboxWrap('products', p, _dbSaveProductInner(p));
+const _dbSaveProductInner = async (p) => {
   if(!supabase)return;
   if(_dbDuplicateSkuIds.has(p.id))return true;// skip — this ID has a duplicate SKU in DB
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner)
@@ -2031,7 +2033,8 @@ const _dbPropagateVendorToOpenItems = async (productId, oldVendorId, newVendorId
     return[...new Set(cand.filter(c=>targetIds.includes(c.id)).map(c=>c.so_id))];
   }catch(e){console.error('[DB] vendor propagate:',e);return[]}
 };
-const _dbSaveMessage = async (m) => {
+const _dbSaveMessage = (m) => _outboxWrap('messages', m, _dbSaveMessageInner(m));
+const _dbSaveMessageInner = async (m) => {
   if(!supabase)return;
   try{
     const row=_pick(m,_msgCols);
@@ -2056,6 +2059,7 @@ const _dbSaveMessage = async (m) => {
 // ─── Delete Helpers ───
 const _dbDeleteEstimate = async (id) => {
   if(!supabase)return;
+  _outboxRemove('estimates',id);// a deliberate local delete supersedes any stashed unsaved edit
   return _dbSavingGuard(async()=>{try{
     await supabase.from('estimate_item_decorations').delete().in('estimate_item_id',(await supabase.from('estimate_items').select('id').eq('estimate_id',id)).data?.map(i=>i.id)||[]);
     await supabase.from('estimate_items').delete().eq('estimate_id',id);
@@ -2065,6 +2069,7 @@ const _dbDeleteEstimate = async (id) => {
 };
 const _dbDeleteSO = async (id) => {
   if(!supabase)return;
+  _outboxRemove('sales_orders',id);// a deliberate local delete supersedes any stashed unsaved edit
   return _dbSavingGuard(async()=>{try{
     const itemIds=(await supabase.from('so_items').select('id').eq('so_id',id)).data?.map(i=>i.id)||[];
     await supabase.from('so_item_decorations').delete().in('so_item_id',itemIds);
@@ -2079,6 +2084,7 @@ const _dbDeleteSO = async (id) => {
 };
 const _dbDeleteInvoice = async (id) => {
   if(!supabase)return;
+  _outboxRemove('invoices',id);// a deliberate local delete supersedes any stashed unsaved edit
   return _dbSavingGuard(async()=>{try{
     await supabase.from('invoice_payments').delete().eq('invoice_id',id);
     await supabase.from('invoice_items').delete().eq('invoice_id',id);
@@ -2165,7 +2171,7 @@ let _onCacheFullChange=null;// set by App component to show persistent banner
 const _LS_MAX_KEY_SIZE=1024*1024;// 1MB per key — skip caching datasets larger than this
 const _LS_TOTAL_BUDGET=4*1024*1024;// 4MB total budget — stop caching when localStorage exceeds this
 // Small essential keys that should always be written (settings, user prefs, tiny state)
-const _LS_ESSENTIAL=new Set(['nsa_user','nsa_settings','nsa_mobile_mode','nsa_role_view','nsa_prod_cols','nsa_save_failed_ids','nsa_duplicate_sku_ids','nsa_fav_skus','nsa_dismissed_notifs','nsa_dismissed_todos','nsa_recent','nsa_ups_pickup_check','nsa_auto_backup_ts']);
+const _LS_ESSENTIAL=new Set(['nsa_user','nsa_settings','nsa_mobile_mode','nsa_role_view','nsa_prod_cols','nsa_save_failed_ids','nsa_save_failed_errors','nsa_outbox','nsa_duplicate_sku_ids','nsa_fav_skus','nsa_dismissed_notifs','nsa_dismissed_todos','nsa_recent','nsa_ups_pickup_check','nsa_auto_backup_ts']);
 const _lsTotalSize=()=>{let t=0;try{for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k)t+=k.length+(localStorage.getItem(k)||'').length}}catch{}return t*2};// ×2 for UTF-16
 let _lsBudgetWarned=false;// prevent spamming budget skip logs
 const _lsSet=(key,value)=>{try{
@@ -2193,6 +2199,86 @@ const _persistFailedIds=()=>{_lsSet('nsa_save_failed_ids',JSON.stringify([..._db
 _dbDuplicateSkuIds.forEach(id=>{_dbSaveFailedIds.delete(id)});if(_dbDuplicateSkuIds.size)_persistFailedIds();
 // Track IDs with unsaved local changes (diffSave skipped because DB not ready) — protects from reload overwrite
 const _dbSavePendingIds=new Set();
+// ─── Durable edit outbox ───
+// The failed-ID ledger above records only IDs — the CONTENT of a failed edit lives solely in React
+// memory and dies on reload or forced logout, leaving a banner about data that no longer exists.
+// The outbox persists the full entity payload to localStorage keyed `table:id`, carrying the
+// _version the edit was based on, so boot can rehydrate it behind a version gate (_outboxGate).
+// The gate, not this store, decides whether a payload may re-enter state: a stale outbox entry
+// silently overwriting a newer server row would be worse than the loss it prevents.
+const _OUTBOX_KEY='nsa_outbox';
+const _OUTBOX_MAX_CHARS=768*1024;// ~1.5MB in UTF-16 — self-capped, because essential keys bypass the budget checks above
+const _outboxRead=()=>{try{const raw=localStorage.getItem(_OUTBOX_KEY);const box=raw?JSON.parse(raw):{};return box&&typeof box==='object'&&!Array.isArray(box)?box:{}}catch{return{}}};
+// Read-modify-write on every mutation (never a cached in-memory blob) so two tabs failing saves
+// concurrently merge per-key instead of clobbering each other's whole outbox.
+const _outboxWrite=(box)=>{
+  let s=JSON.stringify(box);
+  const evicted=[];
+  const evictOldest=()=>{const ks=Object.keys(box);if(!ks.length)return false;let oldest=ks[0];for(const k of ks)if((box[k].ts||0)<(box[oldest].ts||0))oldest=k;evicted.push(oldest);delete box[oldest];s=JSON.stringify(box);return true};
+  while(s.length>_OUTBOX_MAX_CHARS&&evictOldest());
+  for(;;){try{localStorage.setItem(_OUTBOX_KEY,s);break}catch(e){if(!evictOldest()){console.error('[Outbox] could not persist outbox:',e?.message||e);return}}}
+  // Eviction is data loss — it must never be silent.
+  if(evicted.length){console.error('[Outbox] DROPPED unsaved edit(s) to stay within the size cap:',evicted.join(', '));if(_dbNotify)_dbNotify('Storage full — '+evicted.length+' older unsaved edit(s) had to be dropped from the offline backup ('+evicted.join(', ')+'). Check the failed-save list.','error')}
+};
+const _outboxAdd=(table,entity)=>{try{
+  if(!entity||!entity.id)return;
+  const box=_outboxRead();const key=table+':'+entity.id;
+  const payload={...entity};delete payload._retry;// transient retry-poke marker, not part of the edit
+  const prev=box[key];
+  box[key]={table,id:entity.id,payload,baseVersion:(payload._version!=null&&isFinite(Number(payload._version))?Number(payload._version):null),ts:Date.now(),attempts:(prev?.attempts||0)+1};
+  _outboxWrite(box);
+}catch(e){console.error('[Outbox] add failed:',e)}};
+const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
+const _outboxRemoveById=(id)=>{try{const box=_outboxRead();let hit=false;for(const k of Object.keys(box)){if(box[k]&&box[k].id===id){delete box[k];hit=true}}if(hit)_outboxWrite(box)}catch{}};
+const _outboxList=()=>{try{return Object.values(_outboxRead())}catch{return[]}};
+// Failure/success hook wrapping the exported save entry points. Keys off _dbSaveFailedIds so it
+// inherits the interior failure sites' judgment exactly — a false return that deliberately did NOT
+// flag the ID (e.g. a permanently-skipped duplicate SKU, or a version-conflict precheck that wants
+// a refetch, not a retry) is not outboxed. 'stale' (estimate superseded server-side) clears the
+// entry: existing semantics treat that edit as superseded, and the server-side version guard would
+// reject a re-apply anyway.
+const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
+  // Capture-on-attempt: once the session is latched dead this save is doomed (the write goes out
+  // with a stale JWT and RLS rejects it). Persist the payload NOW, synchronously — the async
+  // failure path may never run if the app unmounts to the login screen first. This is what makes
+  // the forced-logout flush (`nsa:version-reload-pending` → editor onSave → save entry point)
+  // durable without depending on React commit timing.
+  try{if(_sessionDead&&entity&&entity.id)_outboxAdd(table,entity)}catch{}
+  return Promise.resolve(resultPromise).then(r=>{
+    try{
+      if(r===false){if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}
+      // addOnly: an art-files-only save success must not clear an outbox entry holding a failed
+      // FULL entity payload — only the full save (or 'stale') may clear.
+      else if((r===true||r==='stale')&&!addOnly){if(entity&&entity.id)_outboxRemove(table,entity.id)}
+    }catch(e){console.error('[Outbox] hook failed:',e)}
+    return r;
+  },err=>{try{if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}catch{}throw err});
+};
+// Boot-time gate: outbox entry vs the freshly-loaded DB row. Pure — unit-tested in the
+// characterization suite. Returns:
+//  'apply'    → re-apply payload into state ahead of the DB copy; the normal retry flow saves it.
+//  'drop'     → the DB already contains this edit (committed-but-response-lost) — discard silently.
+//  'conflict' → the server moved past the edit's base, or there's no version proof of safety, or
+//               the row was deleted server-side — surface the conflict card; NEVER silently apply.
+const _OUTBOX_IGNORE_KEYS=new Set(['updated_at','created_at']);
+const _outboxValEq=(a,b)=>{if(a===b)return true;if(a==null&&b==null)return true;if(a==null||b==null)return false;if(typeof a==='object'&&typeof b==='object'){try{return JSON.stringify(a)===JSON.stringify(b)}catch{return false}}return false};
+// "The DB already reflects this edit": every persisted field the payload carries matches the row.
+// Client-only keys (_-prefixed) and volatile stamps are ignored. Subset match is the right rule —
+// if everything the client tried to write is already there, there is nothing left to save,
+// whoever wrote it. A false negative here is safe: it just falls through to the version gate.
+const _outboxMatchesRow=(payload,row)=>{if(!payload||!row)return false;
+  for(const k of Object.keys(payload)){if(k.startsWith('_'))continue;if(_OUTBOX_IGNORE_KEYS.has(k))continue;if(!_outboxValEq(payload[k],row[k]))return false}
+  return true};
+const _outboxGate=(entry,dbRow)=>{
+  // Row absent: a never-saved new entity (no base version) is safe to apply; a row that HAD a
+  // version existed on the server and was deleted there — silently resurrecting it would undo a
+  // deliberate delete, so that's a conflict card.
+  if(!dbRow)return entry.baseVersion==null?'apply':'conflict';
+  if(_outboxMatchesRow(entry.payload,dbRow))return 'drop';
+  const v=dbRow._version;const dbV=(v!=null&&isFinite(Number(v)))?Number(v):null;
+  if(entry.baseVersion==null||dbV==null)return 'conflict';// no version info on either side → card, never silent overwrite
+  return dbV<=entry.baseVersion?'apply':'conflict';
+};
 // Merge freshly-loaded assigned_todos with the local copy. Keeps the local version of any todo whose
 // save is still in-flight or failed (and any local-only todo not yet persisted), so a background
 // realtime/poll reload never drops a task the user just created or completed before it round-trips.
@@ -2317,6 +2403,12 @@ export {
   _dbSaveFailedIds,
   _dbSaveFailedErrors,
   _clearSaveError,
+  _outboxAdd,
+  _outboxRemove,
+  _outboxRemoveById,
+  _outboxList,
+  _outboxGate,
+  _outboxMatchesRow,
   _onFailedIdsChange,
   _persistFailedIds,
   _dbSavePendingIds,

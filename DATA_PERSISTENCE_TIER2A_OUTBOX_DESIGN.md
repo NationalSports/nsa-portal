@@ -76,8 +76,11 @@ succeeded). Only then apply the version gate.
 
 On boot, after `_dbLoad` delivers `d`, per outbox entry keyed `table:id`:
 
-1. **DB row absent** → re-apply payload to state, keep ID in `_dbSaveFailedIds`,
-   let the normal retry save it (covers never-inserted entities).
+1. **DB row absent** → if the entry has no `baseVersion` (a never-inserted new entity),
+   re-apply payload to state, keep ID in `_dbSaveFailedIds`, let the normal retry save
+   it. If the entry HAS a base version, the row existed on the server and was deleted
+   there — silently resurrecting it would undo a deliberate delete, so that's a
+   conflict card, not an auto-apply.
 2. **Content-equal** (ignoring `_version`, `updated_at`, transient fields) → drop the
    entry silently; the save actually landed.
 3. **DB `_version` ≤ `baseVersion`** → re-apply payload into state ahead of the DB
