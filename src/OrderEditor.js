@@ -4111,19 +4111,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           return<div style={{display:'flex',flexDirection:'column',gap:4}}>
                             <div style={{display:'flex',alignItems:'center',gap:6}}>
                               <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side A</span>
-                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:deco.color_way_id?'#67e8f9':'#f59e0b',borderWidth:deco.color_way_id?1:2}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
+                              {!deco.color_way_id&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>CW Needed</span>}
                             </div>
                             <div style={{display:'flex',alignItems:'center',gap:6}}>
                               <span style={{fontSize:9,color:'#0891b2',fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,minWidth:46}}>Side B</span>
-                              <select className="form-select" style={{width:160,fontSize:11,borderColor:'#67e8f9'}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
+                              <select className="form-select" style={{width:160,fontSize:11,borderColor:deco.color_way_id_b?'#67e8f9':'#f59e0b',borderWidth:deco.color_way_id_b?1:2}} value={deco.color_way_id_b||''} onChange={e=>uD(idx,di,'color_way_id_b',e.target.value||null)}>
                                 <option value="">Select CW...</option>{cwOpts}</select>
+                              {!deco.color_way_id_b&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>CW Needed</span>}
                             </div>
                             {deco.color_way_id&&deco.color_way_id_b&&deco.color_way_id===deco.color_way_id_b&&<div style={{fontSize:9,color:'#dc2626',fontWeight:700}}>⚠ Side A and Side B should be different color ways</div>}
                           </div>;
                         }
-                        return<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||(artF.color_ways.length===1?artF.color_ways[0].id:'')} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
-                        {artF.color_ways.length>1&&<option value="">Select CW...</option>}{cwOpts}</select>}
+                        return<>{artF.color_ways.length>1&&<select className="form-select" style={{width:160,fontSize:11,border:deco.color_way_id?'1px solid #e2e8f0':'2px solid #f59e0b'}} value={deco.color_way_id||''} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>
+                        <option value="">Select CW...</option>{cwOpts}</select>}
+                        {artF.color_ways.length===1&&<select className="form-select" style={{width:160,fontSize:11}} value={deco.color_way_id||artF.color_ways[0].id} onChange={e=>uD(idx,di,'color_way_id',e.target.value||null)}>{cwOpts}</select>}
+                        {artF.color_ways.length>1&&!deco.color_way_id&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>CW Needed</span>}</>}
                       if(artF.ink_colors)return<span style={{fontSize:11,color:'#64748b'}}>{artF.ink_colors.split('\n').filter(l=>l.trim()).length} color(s)</span>;
                       if(artF.thread_colors)return<span style={{fontSize:11,color:'#64748b'}}>Thread: {artF.thread_colors}</span>;
                       return null})()}
