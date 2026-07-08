@@ -7,7 +7,7 @@ import { supabase as _sbAuthClient } from './lib/supabase';
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
 // refunds, create-quote-request), which verify the caller server-side.
-export const authFetch=async(url,opts={})=>{
+const _getAuthHeader=async()=>{
   let auth={};
   try{
     let{data:{session}}=await _sbAuthClient.auth.getSession();
@@ -19,7 +19,22 @@ export const authFetch=async(url,opts={})=>{
     }
     if(session?.access_token)auth={Authorization:'Bearer '+session.access_token};
   }catch{}
-  return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  return auth;
+};
+export const authFetch=async(url,opts={})=>{
+  const auth=await _getAuthHeader();
+  const res=await fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  // The proactive expiry check above still misses cases (silent refresh failed,
+  // clock skew, session refreshed by another tab). If the server rejects the token,
+  // force a hard refresh and retry once before giving up.
+  if(res.status===401){
+    try{
+      const{data}=await _sbAuthClient.auth.refreshSession();
+      const retryAuth=data?.session?.access_token?{Authorization:'Bearer '+data.session.access_token}:{};
+      if(retryAuth.Authorization)return fetch(url,{...opts,headers:{...(opts.headers||{}),...retryAuth}});
+    }catch{}
+  }
+  return res;
 };
 
 // ── Brevo Email ──
@@ -100,7 +115,15 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};return{ok:true,messageId:d.messageId}}
+    const d=await r.json();
+    if(!r.ok){
+      // authFetch already retried once with a hard session refresh; a 401 that
+      // survives that means the user's session is genuinely gone (signed out
+      // elsewhere, revoked, etc.) rather than just a stale-token blip.
+      if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+      return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
+    }
+    return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
 
@@ -112,7 +135,7 @@ export const _portalAction=async(payload)=>{
   try{
     const r=await fetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status)};
+    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status),code:d.code};
     return{ok:true,...d};
   }catch(e){return{ok:false,error:e.message}}
 };
@@ -791,7 +814,9 @@ const _inlineLogoUrl=async(logoUrl)=>{
 };
 
 const _serverPdf=async(html,fname,extra)=>{
-  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
+  // authFetch attaches the staff bearer token — the pdf-generator function is
+  // gated to authenticated team members (it renders arbitrary HTML server-side).
+  const r=await authFetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
   if(!r.ok)throw new Error('PDF generation failed: '+r.status);
   return r.json();
 };
@@ -846,7 +871,11 @@ export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id)
 export const pdfDecoLabel = (d, artF) => {
   if (!d) return '';
   if (d.kind === 'numbers') {
-    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"')) + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
+    // Sublimated numbers have no size (the editor hides the size picker), so
+    // don't apply the 4" fallback — printing a size would be wrong.
+    const _sub = d.num_method === 'sublimated';
+    const _szPart = _sub ? '' : ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"'));
+    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + _szPart + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
   }
   if (d.kind === 'names') {
     return ('Names' + (d.print_color ? ' ('+d.print_color+')' : '')).replace(/_/g,' ');

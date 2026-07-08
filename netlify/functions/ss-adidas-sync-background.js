@@ -26,10 +26,11 @@ const CATEGORY_RULES = [
   ['Crew', /CREW/i],
   ['Hoods', /HOOD|FLEECE|SWEATSHIRT|PULLOVER/i],
   ['Shorts', /SHORT/i],
-  ['Pants', /PANT|LEGGING|BOTTOM|JOGGER/i],
+  ['Pants', /PANT|LEGGING|BOTTOM|JOGGER|TIGHT/i],
   ['Tees', /T-SHIRT|\bTEE\b|ACTIVEWEAR/i],
-  ['Bags', /\bBAG\b|BACKPACK|DUFFEL/i],
-  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL/i],
+  ['Bags', /\bBAG\b|BACKPACK|DUFFEL|SACKPACK/i],
+  ['Socks', /\bSOCK\b/i],
+  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL|SLEEVE/i],
 ];
 function mapCategory(title, baseCategory) {
   for (const hay of [String(title || ''), String(baseCategory || '')]) {

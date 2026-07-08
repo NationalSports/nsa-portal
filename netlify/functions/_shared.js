@@ -24,13 +24,47 @@ function getSiteUrl(event) {
   return host ? `https://${host}` : '';
 }
 
-// Verify caller is signed in and has an admin (or super_admin) team_members row.
-async function verifyAdmin(event) {
+// ── Token-verification cache ────────────────────────────────────────────────
+// Verifying a caller costs a GoTrue network round-trip (admin.auth.getUser) plus a
+// team_members query — PER function invocation. Portal pollers (e.g. the email-open
+// checker) hit these endpoints many times a minute from every open tab, so the auth
+// server absorbs the multiplied traffic: the same unbounded-repeat shape that caused
+// the save_estimate DB storms. Caching a token only AFTER it fully verifies makes
+// repeats free while this Netlify container stays warm, keeping GoTrue and the DB out
+// of the blast radius of any client loop. TTL is far under the ~1h JWT lifetime the
+// rest of the stack already honors (PostgREST accepts a JWT until exp regardless of
+// session state), so this adds no new exposure; a deactivation/role change is picked
+// up within the TTL. Failures are never cached. Size-capped, oldest-first eviction.
+const VERIFY_TTL_MS = 2 * 60 * 1000;
+const VERIFY_CACHE_MAX = 500;
+const _verifyCache = new Map(); // token -> { at, id: {userId, teamMemberId, role} }
+
+function _verifyCacheGet(token) {
+  const hit = _verifyCache.get(token);
+  if (!hit) return null;
+  if (Date.now() - hit.at > VERIFY_TTL_MS) { _verifyCache.delete(token); return null; }
+  return hit.id;
+}
+
+function _verifyCachePut(token, id) {
+  if (_verifyCache.size >= VERIFY_CACHE_MAX) {
+    let drop = _verifyCache.size - VERIFY_CACHE_MAX + 1;
+    for (const k of _verifyCache.keys()) { _verifyCache.delete(k); if (--drop <= 0) break; }
+  }
+  _verifyCache.set(token, { at: Date.now(), id });
+}
+
+// Shared core: resolve the bearer token to an ACTIVE team member (cached), or an error.
+// `inactiveMsg` preserves the historical per-endpoint wording.
+async function _verifyTeamMember(event, inactiveMsg) {
   const auth = event.headers?.authorization || event.headers?.Authorization;
   if (!auth || !auth.startsWith('Bearer ')) return { ok: false, status: 401, error: 'Missing bearer token' };
   const token = auth.substring(7);
 
   const admin = getSupabaseAdmin();
+  const cached = _verifyCacheGet(token);
+  if (cached) return { ok: true, ...cached, admin };
+
   const { data: userData, error } = await admin.auth.getUser(token);
   if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
 
@@ -40,32 +74,25 @@ async function verifyAdmin(event) {
     .eq('auth_id', userData.user.id)
     .maybeSingle();
   if (tmErr) return { ok: false, status: 500, error: tmErr.message };
-  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: 'Inactive account' };
-  if (tm.role !== 'admin' && tm.role !== 'super_admin') return { ok: false, status: 403, error: 'Admin role required' };
+  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: inactiveMsg };
 
-  return { ok: true, userId: userData.user.id, teamMemberId: tm.id, admin };
+  const id = { userId: userData.user.id, teamMemberId: tm.id, role: tm.role };
+  _verifyCachePut(token, id);
+  return { ok: true, ...id, admin };
+}
+
+// Verify caller is signed in and has an admin (or super_admin) team_members row.
+async function verifyAdmin(event) {
+  const res = await _verifyTeamMember(event, 'Inactive account');
+  if (!res.ok) return res;
+  if (res.role !== 'admin' && res.role !== 'super_admin') return { ok: false, status: 403, error: 'Admin role required' };
+  return { ok: true, userId: res.userId, teamMemberId: res.teamMemberId, admin: res.admin };
 }
 
 // Verify caller is any signed-in, active team member (no role requirement).
 // Used to gate staff-only endpoints that previously accepted unauthenticated calls.
 async function verifyUser(event) {
-  const auth = event.headers?.authorization || event.headers?.Authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return { ok: false, status: 401, error: 'Missing bearer token' };
-  const token = auth.substring(7);
-
-  const admin = getSupabaseAdmin();
-  const { data: userData, error } = await admin.auth.getUser(token);
-  if (error || !userData?.user) return { ok: false, status: 401, error: 'Invalid token' };
-
-  const { data: tm, error: tmErr } = await admin
-    .from('team_members')
-    .select('id, role, is_active')
-    .eq('auth_id', userData.user.id)
-    .maybeSingle();
-  if (tmErr) return { ok: false, status: 500, error: tmErr.message };
-  if (!tm || tm.is_active === false) return { ok: false, status: 403, error: 'Inactive or unknown account' };
-
-  return { ok: true, userId: userData.user.id, teamMemberId: tm.id, role: tm.role, admin };
+  return _verifyTeamMember(event, 'Inactive or unknown account');
 }
 
 // Verify the caller is EITHER an active team member (a staff browser session) OR a
@@ -81,6 +108,73 @@ async function verifyUserOrInternal(event) {
   const expected = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (provided && expected && provided === expected) return { ok: true, internal: true };
   return verifyUser(event);
+}
+
+// Copy only allow-listed keys — the standard defense for service-role write endpoints
+// (a crafted payload must not reach arbitrary columns). Shared so the allow-list callers
+// (roster-write; portal-action's local copy can migrate here too) stay one implementation.
+function pickCols(obj, allowed) {
+  const out = {};
+  Object.keys(obj || {}).forEach((k) => { if (allowed.has(k)) out[k] = obj[k]; });
+  return out;
+}
+
+// ── Coach-portal customer-family resolution (alpha_tag → Set of customer ids) ──────
+// The portal link's alpha_tag is its only credential; every anon-portal endpoint must
+// scope reads/writes to the family it resolves to (parent + one level of sub-customers).
+// This is the canonical implementation — portal-action.js and coach-invite.js carry
+// older inline copies (coach-invite's has already drifted: parents only) and should
+// migrate here rather than fork again.
+// Matching tolerates tag-hygiene reality: stored tags may carry stray whitespace/case
+// (the staff modal historically saved them raw), and the App portal gate matches
+// trim+lowercase on BOTH sides — a resolver stricter than the gate yields a portal that
+// renders fine while every action 403s. Exact-insensitive match first (ilike with
+// escaped wildcards), then a normalized in-JS pass only if that found nothing.
+// Cached per warm container: the mapping is effectively static per portal and this runs
+// on every coach write (same shape as the token-verification cache above). A family
+// change (new sub-customer) is picked up within the TTL.
+const FAMILY_TTL_MS = 60 * 1000;
+const FAMILY_CACHE_MAX = 200;
+const _familyCache = new Map(); // normalized tag -> { at, fam: Set<customer id> }
+
+async function resolveCustomerFamily(admin, alphaTag) {
+  const tag = String(alphaTag || '').trim();
+  if (!tag) return { error: 'Unknown portal tag', notFound: true };
+  const norm = tag.toLowerCase();
+  const hit = _familyCache.get(norm);
+  if (hit && Date.now() - hit.at < FAMILY_TTL_MS) return { fam: hit.fam };
+
+  const esc = tag.replace(/([%_\\])/g, '\\$1'); // ilike without wildcards = case-insensitive exact
+  let { data: parents, error } = await admin.from('customers').select('id').ilike('alpha_tag', esc);
+  if (error) return { error: error.message };
+  if (!parents || !parents.length) {
+    const { data: all, error: e2 } = await admin.from('customers').select('id,alpha_tag').not('alpha_tag', 'is', null);
+    if (e2) return { error: e2.message };
+    parents = (all || []).filter((c) => String(c.alpha_tag || '').trim().toLowerCase() === norm);
+  }
+  if (!parents.length) return { error: 'Unknown portal tag', notFound: true };
+  const parentIds = parents.map((p) => p.id);
+  const { data: kids, error: e3 } = await admin.from('customers').select('id').in('parent_id', parentIds);
+  if (e3) return { error: e3.message }; // a failed kids lookup must be a retryable 500, not a shrunken family
+  const fam = new Set([...parentIds, ...(kids || []).map((k) => k.id)]);
+  if (_familyCache.size >= FAMILY_CACHE_MAX) { const oldest = _familyCache.keys().next().value; _familyCache.delete(oldest); }
+  _familyCache.set(norm, { at: Date.now(), fam });
+  return { fam };
+}
+
+// Resolve a roster team to the customer_id that owns it (team → session.customer_id).
+// Used to scope coach-portal writes/invites that target a team by id: the team's owning
+// customer must be in the caller's family, or the caller is reaching outside its portal.
+// Returns { customerId } (null if the team doesn't exist) or { error } on a query failure
+// (which callers must treat as a retryable 500, NOT as "not owned").
+async function rosterTeamCustomerId(admin, teamId) {
+  const id = String(teamId || '').trim();
+  if (!id) return { customerId: null };
+  const { data, error } = await admin.from('roster_teams')
+    .select('roster_order_sessions!inner(customer_id)')
+    .eq('id', id).maybeSingle();
+  if (error) return { error: error.message };
+  return { customerId: data?.roster_order_sessions?.customer_id || null };
 }
 
 // Mark the invoice(s) referenced by a succeeded Stripe PaymentIntent's metadata as paid, using the
@@ -211,4 +305,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily, rosterTeamCustomerId };

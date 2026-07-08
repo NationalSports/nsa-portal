@@ -142,14 +142,23 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     if (!canSubmit) return;
     setSubmitState('submitting');
     setErrorMsg('');
+    let r;
     try {
-      const r = await sanmarSubmitPO(payload, env);
-      setResult(r);
-      setSubmitState('success');
-      onSubmitted && onSubmitted(r);
+      r = await sanmarSubmitPO(payload, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or place the order manually on sanmar.com.');
       setSubmitState('error');
+      return;
+    }
+    // SanMar accepted the order — this is a success no matter what the local bookkeeping does.
+    setResult(r);
+    setSubmitState('success');
+    // Promote/clear the batch OUTSIDE the submit try: a bookkeeping error must never make a
+    // genuinely-placed order look like it failed (or leave it stuck in the queue silently).
+    try {
+      onSubmitted && onSubmitted(r, lines);
+    } catch (e) {
+      console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
     }
   };
 

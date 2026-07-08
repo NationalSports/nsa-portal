@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -166,14 +166,16 @@ describe('Pricing Functions', () => {
   });
 
   describe('Embroidery Pricing (emP)', () => {
-    test('8000 stitches, 6 qty: $8 cost → sell = cost × 1.6', () => {
-      expect(emP(8000, 6, false)).toBe(8);
-      expect(emP(8000, 6, true)).toBe(rT(8 * EM.mk));
+    test('8000 stitches, 6 qty: $4.80 cost → sell floors at EM.fl', () => {
+      expect(emP(8000, 6, false)).toBe(4.8);
+      // rT(4.8 × 1.6) = 7.7 sits below the $8 minimum, so the floor wins
+      expect(emP(8000, 6, true)).toBe(Math.max(rT(4.8 * EM.mk), EM.fl));
+      expect(emP(8000, 6, true)).toBe(8);
     });
 
-    test('15000 stitches, 24 qty: $8.5 cost → sell = cost × 1.6', () => {
-      expect(emP(15000, 24, false)).toBe(8.5);
-      expect(emP(15000, 24, true)).toBe(rT(8.5 * EM.mk));
+    test('15000 stitches, 24 qty: $5.10 cost → sell = cost × 1.6', () => {
+      expect(emP(15000, 24, false)).toBe(5.1);
+      expect(emP(15000, 24, true)).toBe(rT(5.1 * EM.mk)); // 8.2, above the floor
     });
 
     test('cost × markup (1.6) = sell', () => {
@@ -213,6 +215,35 @@ describe('Pricing Functions', () => {
       expect(result.sell).toBeGreaterThan(0);
       expect(result.cost).toBeGreaterThan(0);
       expect(result.sell).toBeGreaterThan(result.cost);
+    });
+
+    // Under 12 pieces, screen print bills an ALL-IN flat charge ($50/$60/$80 for 1/2/3 colors) —
+    // dP returns unrounded per-piece shares so qty × value reconstructs the exact flat total.
+    test('under-12 screen print: qty × sell equals the flat all-in charge', () => {
+      expect(dP({ type: 'screen_print', colors: 3 }, 10, null).sell * 10).toBeCloseTo(80, 6);
+      expect(dP({ type: 'screen_print', colors: 1 }, 5, null).sell * 5).toBeCloseTo(50, 6);
+      expect(dP({ type: 'screen_print', colors: 2 }, 11, null).sell * 11).toBeCloseTo(60, 6);
+    });
+
+    test('under-12 screen print: qty × cost equals the flat cost (quarter-rounded at the total)', () => {
+      const dp = dP({ type: 'screen_print', colors: 3 }, 10, null);
+      expect(dp.cost * 10).toBeCloseTo(rQ(80 / SP.mk), 6);
+    });
+
+    test('under-12 flat applies to art-linked screen print at the combined qty', () => {
+      const artFiles = [makeArtFile({ ink_colors: 'PMS 123\nPMS 456\nPMS 789' })];
+      const d = { kind: 'art', art_file_id: 'af1' };
+      // 8-unit line, 8-unit combined run → the line carries its full $80 flat share
+      expect(dP(d, 8, artFiles, 8).sell * 8).toBeCloseTo(80, 6);
+    });
+
+    test('12+ pieces price per piece at the tier rate, never the flat', () => {
+      const dp = dP({ type: 'screen_print', colors: 3 }, 20, null);
+      expect(dp.cost).toBe(rQ(SP.pr[1][2])); // 12–23 tier, 3-color cost/pc (caller quarter-rounds)
+    });
+
+    test('under-12 sell_override still wins', () => {
+      expect(dP({ type: 'screen_print', colors: 3, sell_override: 4 }, 5, null).sell).toBe(4);
     });
 
     test('art-based embroidery', () => {
@@ -1589,6 +1620,56 @@ describe('Ready-for-decoration transition (jobsNowReadyForDeco)', () => {
 });
 
 // ═══════════════════════════════════════════════
+// Items-received timestamp (jobReceivedAt)
+// ═══════════════════════════════════════════════
+describe('Items-received timestamp (jobReceivedAt)', () => {
+  const job = { id: 'JOB-1', items: [{ item_idx: 0 }] };
+
+  test('uses the pulled pick timestamp, not updated_at', () => {
+    const items = [{ pick_lines: [{ status: 'pulled', pulled_at: '3/2/2026, 8:10:00 AM', S: 5 }] }];
+    expect(jobReceivedAt(job, items)).toBe('3/2/2026, 8:10:00 AM');
+  });
+
+  test('ignores picks that are still open (not pulled)', () => {
+    const items = [{ pick_lines: [{ status: 'pick', pulled_at: '3/2/2026, 8:10:00 AM' }] }];
+    expect(jobReceivedAt(job, items)).toBeNull();
+  });
+
+  test('uses a received PO shipment date', () => {
+    const items = [{ po_lines: [{ status: 'received', received: { S: 10 }, shipments: [{ date: '3/5/2026', S: 10 }] }] }];
+    expect(jobReceivedAt(job, items)).toBe('3/5/2026');
+  });
+
+  test('ignores shipment dates on a PO with nothing received yet', () => {
+    const items = [{ po_lines: [{ status: 'ordered', received: {}, shipments: [{ date: '3/5/2026' }] }] }];
+    expect(jobReceivedAt(job, items)).toBeNull();
+  });
+
+  test('picks the latest across picks and PO receipts', () => {
+    const items = [{
+      pick_lines: [{ status: 'pulled', pulled_at: '3/1/2026, 9:00:00 AM', S: 3 }],
+      po_lines: [{ status: 'received', received: { M: 4 }, shipments: [{ date: '3/9/2026', M: 4 }] }],
+    }];
+    expect(jobReceivedAt(job, items)).toBe('3/9/2026');
+  });
+
+  test('only counts the job\'s own items', () => {
+    const twoItemJob = { id: 'JOB-1', items: [{ item_idx: 1 }] };
+    const items = [
+      { pick_lines: [{ status: 'pulled', pulled_at: '3/1/2026, 9:00:00 AM' }] }, // idx 0 — not this job's
+      { pick_lines: [{ status: 'pulled', pulled_at: '3/8/2026, 2:00:00 PM' }] }, // idx 1 — this job's
+    ];
+    expect(jobReceivedAt(twoItemJob, items)).toBe('3/8/2026, 2:00:00 PM');
+  });
+
+  test('returns null for legacy data with no timestamps', () => {
+    expect(jobReceivedAt(job, [{ pick_lines: [{ status: 'pulled', S: 5 }] }])).toBeNull();
+    expect(jobReceivedAt(job, [])).toBeNull();
+    expect(jobReceivedAt(null, [])).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════
 // 9. QB SYNC BUILDERS
 // ═══════════════════════════════════════════════
 describe('QB Sync Builders', () => {
@@ -2502,6 +2583,35 @@ describe('Item-edit reconciliation (itemEditReconciles)', () => {
     expect(itemEditReconciles([{ sku: '   ' }], db)).toBe(false);  // blank sku is not an identity
     expect(itemEditReconciles(null, db)).toBe(false);
     expect(itemEditReconciles(undefined, db)).toBe(false);
+  });
+
+  // ── Custom-line fallback: catalog rows (product_id) prove the client held the estimate ──
+  const dbMixed = [{ sku: 'A', product_id: 'p1' }, { sku: 'B', product_id: 'p2' }, { sku: 'CUSTOM', name: 'Custom Jersey', product_id: null }];
+
+  test('renamed custom line + count change reconciles via the catalog rows (allow)', () => {
+    // User renamed the custom line (identity key changed) and deleted B — the full multiset no
+    // longer matches either way, but the catalog rows verify the client held the real estimate.
+    expect(itemEditReconciles([{ sku: 'A', product_id: 'p1' }, { sku: 'CUSTOM', name: 'Custom Jersey v2', product_id: null }], dbMixed)).toBe(true);
+  });
+
+  test('added custom line with a colliding generic sku reconciles via catalog rows (allow)', () => {
+    expect(itemEditReconciles([{ sku: 'A', product_id: 'p1' }, { sku: 'B', product_id: 'p2' }, { sku: 'CUSTOM', product_id: null }, { sku: 'CUSTOM', product_id: null }], dbMixed)).toBe(true);
+  });
+
+  test('custom churn with NON-matching catalog rows stays blocked', () => {
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }, { sku: 'CUSTOM', product_id: null }], dbMixed)).toBe(false);
+  });
+
+  test('all-custom client (no catalog rows) cannot verify through the fallback (block)', () => {
+    expect(itemEditReconciles([{ name: 'Fresh custom row', product_id: null }], dbMixed)).toBe(false);
+  });
+
+  test('fallback is NOT vacuously true when the DB side has no product_id rows (block)', () => {
+    // Callers whose DB read omits product_id (or a DB estimate of only custom lines) must not let a
+    // phantom-empty client that typed one catalog row pass verification — subset(dCat, cCat) over an
+    // empty dCat would otherwise be vacuously true and re-open the SO-1001/EST-1119 data-loss mode.
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }], [{ sku: 'A' }, { sku: 'B' }, { sku: 'C' }])).toBe(false);
+    expect(itemEditReconciles([{ sku: 'X', product_id: 'p9' }, { name: 'custom' }], [{ name: 'Old Custom' }])).toBe(false);
   });
 });
 

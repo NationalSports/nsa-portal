@@ -45,6 +45,18 @@ exports.handler = async () => {
       .gte('created_at', start.toISOString()).lt('created_at', end.toISOString());
     const live = (orders || []).filter((o) => !LIVE_EXCLUDE.has(o.status));
 
+    // Per-order item counts (units) — sum qty of non-bundle-parent lines, mirroring
+    // the store-close breakdown so both surfaces count items the same way. Chunked
+    // so the IN list stays bounded. Attached to each order as _units.
+    const liveIds = live.map((o) => o.id);
+    const unitsByOrder = {};
+    for (let i = 0; i < liveIds.length; i += 200) {
+      const chunk = liveIds.slice(i, i + 200);
+      const { data: its } = await admin.from('webstore_order_items').select('order_id,qty,is_bundle_parent').in('order_id', chunk);
+      (its || []).forEach((it) => { if (!it.is_bundle_parent) unitsByOrder[it.order_id] = (unitsByOrder[it.order_id] || 0) + (Number(it.qty) || 0); });
+    }
+    live.forEach((o) => { o._units = unitsByOrder[o.id] || 0; });
+
     // Stores referenced by those orders + any of a rep's stores that closed in the window.
     const storeIds = [...new Set(live.map((o) => o.store_id).filter(Boolean))];
     let stores = [];
@@ -113,26 +125,30 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
   const allOrders = storesArr.flatMap((s) => s.orders);
   const totOrders = allOrders.length;
+  const totItems = allOrders.reduce((a, o) => a + (Number(o._units) || 0), 0);
   const totSales = allOrders.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const totFund = allOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
 
-  const tile = (label, value) => `<td align="center" style="padding:14px 10px;background:#fff;border:1px solid ${LINE};border-radius:8px">
+  const tile = (label, value) => `<td align="center" style="padding:14px 8px;background:#fff;border:1px solid ${LINE};border-radius:8px">
       <div style="font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:26px;color:${NAVY};line-height:1">${esc(value)}</div>
       <div style="font-size:11px;letter-spacing:.6px;text-transform:uppercase;color:${SUB};margin-top:4px;font-weight:700">${esc(label)}</div></td>`;
-  const summary = totOrders ? `<table width="100%" style="border-collapse:separate;border-spacing:8px 0;margin:0 0 8px"><tr>
-      ${tile('Orders', String(totOrders))}${tile('Sales', money(totSales))}${totFund > 0 ? tile('Fundraising', money(totFund)) : ''}</tr></table>` : '';
+  const fundLine = totFund > 0 ? `<div style="background:#fff;border:1px solid ${LINE};border-radius:8px;padding:10px 14px;margin:0 0 14px;text-align:center;font-size:13px;font-weight:700;color:${INK}">💛 ${money(totFund)} raised for teams</div>` : '';
+  const summary = totOrders ? `<table width="100%" style="border-collapse:separate;border-spacing:8px 0;margin:0 0 ${totFund > 0 ? '8px' : '14px'}"><tr>
+      ${tile('Orders', String(totOrders))}${tile('Items', String(totItems))}${tile('Sales', money(totSales))}</tr></table>${fundLine}` : '';
 
   const storeBlocks = storesArr.map(({ store, orders, sales }) => {
     const link = `${portal}/shop/${esc(store.slug)}`;
     const rows = orders.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map((o) => {
       const oLink = `${portal}/shop/${esc(store.slug)}/order/${esc(o.id)}`;
       const fund = Number(o.fundraise_amt) || 0;
+      const units = Number(o._units) || 0;
+      const meta = [ptTime(o.created_at), `${units} item${units === 1 ? '' : 's'}`, fund > 0 ? `${money(fund)} to team` : ''].filter(Boolean).join(' · ');
       return `<tr>
-        <td style="padding:9px 0;border-bottom:1px solid #f1ece1;vertical-align:top">
+        <td style="padding:9px 6px 9px 16px;border-bottom:1px solid #f1ece1;vertical-align:top">
           <div style="font-weight:700;color:${INK};font-size:14px">${esc(o.buyer_name || o.buyer_email || 'Customer')}</div>
-          <div style="font-size:12px;color:${SUB}">${esc(ptTime(o.created_at))}${fund > 0 ? ` · ${money(fund)} to team` : ''}</div>
+          <div style="font-size:12px;color:${SUB};margin-top:1px">${esc(meta)}</div>
         </td>
-        <td align="right" style="padding:9px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
+        <td align="right" style="padding:9px 16px 9px 6px;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
           <div style="font-weight:800;color:${NAVY};font-size:14px">${money(o.total)}</div>
           <a href="${oLink}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">View →</a>
         </td></tr>`;
@@ -142,11 +158,11 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
         <a href="${link}" style="color:#fff;text-decoration:none;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</a>
         <span style="color:rgba(255,255,255,.78);font-size:12px;font-weight:700"> &nbsp;·&nbsp; ${orders.length} order${orders.length === 1 ? '' : 's'} · ${money(sales)}</span>
       </div>
-      <table width="100%" style="border-collapse:collapse;padding:0 16px"><tbody>
-        <tr><td colspan="2" style="height:4px"></td></tr>
+      <table width="100%" style="border-collapse:collapse"><tbody>
+        <tr><td colspan="2" style="height:6px"></td></tr>
         ${rows}
       </tbody></table>
-      <div style="padding:2px 16px 12px"></div>
+      <div style="height:8px"></div>
     </div>`;
   }).join('');
 

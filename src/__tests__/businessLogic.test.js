@@ -177,11 +177,12 @@ describe('Screen Print Pricing — spP()', () => {
 // ═══════════════════════════════════════════════
 describe('Embroidery Pricing — emP()', () => {
   test('returns sell price for valid stitch/qty combos', () => {
-    // EM.pr stores cost; sell = rT(cost * markup)
-    // ≤10000 stitches, ≤6 qty: cost 8 → sell = rT(8 * 1.6)
-    expect(BL.emP(8000, 6)).toBe(BL.rT(8 * BL.EM.mk));
-    // ≤15000 stitches, ≤24 qty: cost 8.5 → sell = rT(8.5 * 1.6)
-    expect(BL.emP(12000, 20)).toBe(BL.rT(8.5 * BL.EM.mk));
+    // EM.pr stores cost; sell = max(rT(cost * markup), EM.fl)
+    // ≤10000 stitches, ≤6 qty: cost 4.8 → rT(4.8 * 1.6) = 7.7 floors up to EM.fl ($8)
+    expect(BL.emP(8000, 6)).toBe(Math.max(BL.rT(4.8 * BL.EM.mk), BL.EM.fl));
+    expect(BL.emP(8000, 6)).toBe(8);
+    // ≤15000 stitches, ≤24 qty: cost 5.1 → sell = rT(5.1 * 1.6) = 8.2
+    expect(BL.emP(12000, 20)).toBe(BL.rT(5.1 * BL.EM.mk));
   });
 
   test('returns cost price when sell=false', () => {
@@ -329,9 +330,9 @@ describe('Decoration Pricing — dP()', () => {
     // per-piece rate. Passing the combined cq (e.g. 14 across all line items)
     // prices it per-piece in bracket 1 (~$6.40), matching the screen.
     const d = { kind: 'art', art_file_id: '__tbd', art_tbd_type: 'screen_print', tbd_colors: 2, underbase: false };
-    const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 flat total
+    const perLine = BL.dP(d, 4, [], undefined); // no aggregation → bracket 0 ALL-IN flat, prorated per piece
     const aggregated = BL.dP(d, 4, [], 14);      // combined qty → bracket 1 per-piece
-    expect(perLine.sell).toBeCloseTo(60, 2);
+    expect(perLine.sell * 4).toBeCloseTo(60, 2); // $60 all-in for the under-12 run (qty × share = flat)
     expect(aggregated.sell).toBeCloseTo(6.4, 2);
     expect(aggregated.cost).toBeCloseTo(4.25, 2);
   });
@@ -1378,5 +1379,41 @@ describe('Job Readiness — isJobReady() regression guards', () => {
       ]
     };
     expect(BL.isJobReady(j, o)).toBe(false);
+  });
+});
+
+describe('Commission attribution — commissionRepId() must always credit the account owner', () => {
+  const MIKE = '00000000-0000-0000-0000-000000000022';   // account owner (customer.primary_rep_id)
+  const STEVE = '00000000-0000-0000-0000-000000000001';  // SO creator (so.created_by)
+
+  test('account owner wins over the SO creator (Rancho Buena Vista regression)', () => {
+    // RBV is Mike's account; Steve created the order. Commission must credit Mike, not Steve.
+    // A reversed `created_by || primary_rep_id` returns STEVE here — that is the bug this locks out.
+    const customer = { id: 'c-inv-rbv-girls-volleyball', primary_rep_id: MIKE };
+    const so = { id: 'SO-1057', created_by: STEVE };
+    expect(BL.commissionRepId(customer, so)).toBe(MIKE);
+  });
+
+  test('falls back to the SO creator only when the account has no assigned rep', () => {
+    expect(BL.commissionRepId({ id: 'c1', primary_rep_id: null }, { created_by: STEVE })).toBe(STEVE);
+    expect(BL.commissionRepId({ id: 'c1' }, { created_by: STEVE })).toBe(STEVE);
+  });
+
+  test('account owner still wins even when it equals or differs from the creator', () => {
+    // Same rep on both — result is that rep regardless of order.
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, { created_by: MIKE })).toBe(MIKE);
+    // Owner present, no creator — owner.
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, {})).toBe(MIKE);
+  });
+
+  test('returns null when neither an account owner nor a creator is known', () => {
+    expect(BL.commissionRepId({ id: 'c1' }, { id: 'SO-1' })).toBeNull();
+    expect(BL.commissionRepId(null, null)).toBeNull();
+    expect(BL.commissionRepId(undefined, undefined)).toBeNull();
+  });
+
+  test('tolerates a missing customer or missing SO (open invoice with no linked order, etc.)', () => {
+    expect(BL.commissionRepId(undefined, { created_by: STEVE })).toBe(STEVE);
+    expect(BL.commissionRepId({ primary_rep_id: MIKE }, undefined)).toBe(MIKE);
   });
 });

@@ -9,7 +9,8 @@
  *   1. npm install puppeteer @supabase/supabase-js (in this scripts folder or globally)
  *   2. Set environment variables (or create scripts/.env):
  *        SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co
- *        SUPABASE_ANON_KEY=your-anon-key
+ *        SUPABASE_SERVICE_ROLE_KEY=your-service-role-key   # same var as bot-worker/.env;
+ *                                                          # the anon key can no longer write adidas_inventory
  *        COWORK_EMAIL=your-adidas-cowork-email
  *        COWORK_PASSWORD=your-adidas-cowork-password
  *   3. Test: node scripts/adidas-cowork-sync.js
@@ -30,12 +31,15 @@ const TIMEOUT = 60000; // page navigation timeout
 
 // Supabase
 const supabaseUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY || '';
+// Service-role key REQUIRED: adidas_inventory writes are RLS-locked to the
+// service role (migration 00183). Same env var convention as bot-worker/worker.js.
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const coworkEmail = process.env.COWORK_EMAIL || '';
 const coworkPassword = process.env.COWORK_PASSWORD || '';
 
 if (!supabaseUrl || !supabaseKey) {
-  console.error('[SYNC] Missing SUPABASE_URL or SUPABASE_ANON_KEY');
+  console.error('[SYNC] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.');
+  console.error('[SYNC] Set SUPABASE_SERVICE_ROLE_KEY (the same service-role key bot-worker/.env holds) — the anon key can no longer write adidas_inventory.');
   process.exit(1);
 }
 if (!coworkEmail || !coworkPassword) {
@@ -350,43 +354,43 @@ main().catch(err => {
   process.exit(1);
 });
 
-/**
- * ─── CRON SETUP (Mac Mini) ───
- *
- * To run this automatically, add a cron job on your Mac Mini:
- *
- *   crontab -e
- *
- * Then add one of these lines:
- *
- *   # Every 6 hours (recommended):
- *   0 */6 * * * cd /path/to/nsa-portal && SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co SUPABASE_ANON_KEY=your-key COWORK_EMAIL=your-email COWORK_PASSWORD=your-pass node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
- *
- *   # Every morning at 7am:
- *   0 7 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
- *
- *   # Twice daily (7am and 1pm):
- *   0 7,13 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
- *
- * Or use a .env file instead of inline vars:
- *   0 */6 * * * cd /path/to/nsa-portal/scripts && source .env && node adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
- *
- * ─── FIRST-TIME SETUP ───
- *
- * 1. Install dependencies on Mac Mini:
- *      cd /path/to/nsa-portal
- *      npm install puppeteer @supabase/supabase-js
- *
- * 2. Create scripts/.env with your credentials:
- *      SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co
- *      SUPABASE_ANON_KEY=your-anon-key
- *      COWORK_EMAIL=your-adidas-login
- *      COWORK_PASSWORD=your-adidas-password
- *
- * 3. Test with browser visible first:
- *      COWORK_HEADLESS=false node scripts/adidas-cowork-sync.js
- *    This lets you see the browser, verify login works, and check if
- *    the scraping selectors need adjustment for the actual page layout.
- *
- * 4. Once working, run headless (default) and set up cron.
- */
+// ─── CRON SETUP (Mac Mini) ───
+// (Line comments on purpose: the cron pattern `*/6` inside a /* block comment
+//  terminates the comment early and makes the whole file a syntax error.)
+//
+// To run this automatically, add a cron job on your Mac Mini:
+//
+//   crontab -e
+//
+// Then add one of these lines:
+//
+//   # Every 6 hours (recommended):
+//   0 */6 * * * cd /path/to/nsa-portal && SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co SUPABASE_SERVICE_ROLE_KEY=your-service-role-key COWORK_EMAIL=your-email COWORK_PASSWORD=your-pass node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+//
+//   # Every morning at 7am:
+//   0 7 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+//
+//   # Twice daily (7am and 1pm):
+//   0 7,13 * * * cd /path/to/nsa-portal && ... node scripts/adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+//
+// Or use a .env file instead of inline vars:
+//   0 */6 * * * cd /path/to/nsa-portal/scripts && source .env && node adidas-cowork-sync.js >> /tmp/adidas-sync.log 2>&1
+//
+// ─── FIRST-TIME SETUP ───
+//
+// 1. Install dependencies on Mac Mini:
+//      cd /path/to/nsa-portal
+//      npm install puppeteer @supabase/supabase-js
+//
+// 2. Create scripts/.env with your credentials:
+//      SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co
+//      SUPABASE_SERVICE_ROLE_KEY=your-service-role-key   # keep scripts/.env chmod 600 — this key bypasses RLS
+//      COWORK_EMAIL=your-adidas-login
+//      COWORK_PASSWORD=your-adidas-password
+//
+// 3. Test with browser visible first:
+//      COWORK_HEADLESS=false node scripts/adidas-cowork-sync.js
+//    This lets you see the browser, verify login works, and check if
+//    the scraping selectors need adjustment for the actual page layout.
+//
+// 4. Once working, run headless (default) and set up cron.

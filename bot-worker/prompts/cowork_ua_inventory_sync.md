@@ -42,7 +42,9 @@ adidas sync). The skill will:
 1. Re-query `products` for active `brand='Under Armour'` SKUs (never a cached list).
 2. Per SKU: pull per-size stock + next date (+ projected ATP if available), and
    **write zero-stock rows too** so out-of-stock styles still show "inbound".
-3. Upsert `ua_inventory` (anon key) on conflict `sku,size`; **verify by row count**.
+3. Upsert `ua_inventory` (service-role key — `SUPABASE_SERVICE_ROLE_KEY` from
+   `~/nsa-portal/bot-worker/.env`; the anon key is RLS-blocked since migration
+   00183) on conflict `sku,size`; **verify by row count**.
 4. On new/!-in-`products` colorways: write `ua_products_staging` (incl. image),
    then have Claude Code run `select * from promote_ua_products_from_staging();`
    (service role — creates the product rows at `nsa_cost = retail × 0.5 × 0.85`).
@@ -67,5 +69,7 @@ confirm the green **UA B2B** per-size stock row + the "B2B INV" hover appear.
 - **Never type the password** — self-login via the autofilled Sign In button only.
 - Token expiry → **stop and pause**: preserve the queue, ask the user to re-auth,
   resume. Do NOT drain the queue as errors (mirrors the adidas 401 handling).
-- `ua_inventory` + `ua_products_staging` use the anon key; `products` is written
-  only by the service-role promote (Claude Code), never the bot.
+- `ua_inventory` + `ua_products_staging` use the SERVICE ROLE key (read
+  `SUPABASE_SERVICE_ROLE_KEY` from `bot-worker/.env` at runtime; never paste it
+  into a skill file or report); `products` is written only by the promote
+  function run by Claude Code, never the bot.

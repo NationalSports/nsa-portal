@@ -20,7 +20,7 @@
  *   npm install puppeteer @supabase/supabase-js
  *   Env (or scripts/.env):
  *     SUPABASE_URL=https://hpslkvngulqirmbstlfx.supabase.co
- *     SUPABASE_ANON_KEY=<anon key>
+ *     SUPABASE_SERVICE_ROLE_KEY=<service-role key>   # same var as bot-worker/.env; anon can no longer write ua_inventory
  *     UA_EMAIL=<armour house login>          # never commit real creds
  *     UA_PASSWORD=<armour house password>
  *   Test:  UA_HEADLESS=false node scripts/ua-armourhouse-sync.js
@@ -39,11 +39,17 @@ const DELAY_BETWEEN_SKUS = 2000;
 const TIMEOUT = 60000;
 
 const supabaseUrl = process.env.SUPABASE_URL || process.env.REACT_APP_SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.REACT_APP_SUPABASE_ANON_KEY || '';
+// Service-role key REQUIRED: ua_inventory writes are RLS-locked to the service
+// role (migration 00183). Same env var convention as bot-worker/worker.js.
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const uaEmail = process.env.UA_EMAIL || '';
 const uaPassword = process.env.UA_PASSWORD || '';
 
-if (!supabaseUrl || !supabaseKey) { console.error('[UA SYNC] Missing SUPABASE_URL or SUPABASE_ANON_KEY'); process.exit(1); }
+if (!supabaseUrl || !supabaseKey) {
+  console.error('[UA SYNC] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.');
+  console.error('[UA SYNC] Set SUPABASE_SERVICE_ROLE_KEY (the same service-role key bot-worker/.env holds) — the anon key can no longer write ua_inventory.');
+  process.exit(1);
+}
 if (!uaEmail || !uaPassword) { console.error('[UA SYNC] Missing UA_EMAIL or UA_PASSWORD'); process.exit(1); }
 
 const supabase = createClient(supabaseUrl, supabaseKey);

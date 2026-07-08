@@ -1,5 +1,10 @@
 const chromium = require('@sparticuz/chromium');
 const puppeteer = require('puppeteer-core');
+const { verifyUser } = require('./_shared');
+
+// Cap the HTML payload — this renders arbitrary HTML in a headless browser, so
+// bound the work an authenticated caller can trigger per request (~8MB of markup).
+const MAX_HTML_BYTES = 8 * 1024 * 1024;
 
 // Reuse the browser across warm Lambda invocations — cold-starting Chromium is
 // the dominant cost (~7s). On warm containers this drops to ~1-2s total.
@@ -26,6 +31,15 @@ const getBrowser = async () => {
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') {
     return { statusCode: 405, body: 'Method Not Allowed' };
+  }
+
+  // Staff-only: the function renders caller-supplied HTML in a headless browser
+  // (an SSRF/DoS/brand-forgery surface if left public). Require a valid team member.
+  const v = await verifyUser(event);
+  if (!v.ok) return { statusCode: v.status, body: v.error };
+
+  if (event.body && Buffer.byteLength(event.body, 'utf8') > MAX_HTML_BYTES) {
+    return { statusCode: 413, body: 'Payload too large' };
   }
 
   let html, filename, margin, displayHeaderFooter, headerTemplate, footerTemplate;

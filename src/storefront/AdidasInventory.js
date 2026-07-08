@@ -329,7 +329,9 @@ async function fetchAllPages(buildQuery) {
 
 // Columns LiveLook needs for a product row — shared by the catalog load and the
 // on-demand search effect. No cost columns: this renders on a public storefront.
-const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured';
+// vendor_id is required by buildStyles' product-group merge key — without it
+// every memberKey was "undefined::…" and confirmed links never merged.
+const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_price,catalog_sell_price,pricing_group,image_front_url,image_back_url,description,inventory_source,is_featured,vendor_id';
 
 // Live per-size availability for a set of product SKUs (inventory_unified) and a
 // set of product ids (product_inventory = NSA in-house stock). Both feeds are
@@ -339,26 +341,41 @@ const PROD_SELECT = 'id,sku,name,brand,color,color_category,category,retail_pric
 // featured set grew large. Splitting into batches of 400 (fetched in waves of 6)
 // keeps every request well under the URL limit no matter how big the catalog or
 // the featured/teaser set gets. Shared by both load phases and on-demand search.
+//
+// Each batch is then PAGED to completion: the gateway hard-caps every response
+// at 1,000 rows no matter what .limit() asks for, and a 400-SKU batch of adidas
+// apparel needs several thousand — trusting one big limit silently dropped most
+// of each batch, showing in-stock sizes as sold out and hiding whole styles.
+// .order('id') (unique in both feeds) keeps the pages stable.
 const INV_SELECT = 'sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced';
 const chunkArr = (arr, n) =>
   Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, (i + 1) * n));
 async function fetchInventory(skus, ids, isAlive = () => true) {
+  const drain = async (buildReq) => {
+    const rows = [];
+    for (let from = 0; ; from += 1000) {
+      const r = await buildReq().order('id').range(from, from + 999);
+      if (r.error) throw r.error;
+      rows.push(...(r.data || []));
+      if (!r.data || r.data.length < 1000 || !isAlive()) return rows;
+    }
+  };
   const waves = async (batches, buildReq) => {
     const rows = [];
     for (let w = 0; w < batches.length; w += 6) {
       if (!isAlive()) return rows;
-      const res = await Promise.all(batches.slice(w, w + 6).map(buildReq));
-      for (const r of res) { if (r.error) throw r.error; rows.push(...(r.data || [])); }
+      const res = await Promise.all(batches.slice(w, w + 6).map((b) => drain(() => buildReq(b))));
+      for (const r of res) rows.push(...r);
     }
     return rows;
   };
   const [inv, ih] = await Promise.all([
     waves(chunkArr(skus, 400), (batch) =>
       supabase.from('inventory_unified').select(INV_SELECT)
-        .in('sku', batch).or('stock_qty.gt.0,future_delivery_qty.gt.0').limit(5000)),
+        .in('sku', batch).or('stock_qty.gt.0,future_delivery_qty.gt.0')),
     waves(chunkArr(ids, 400), (batch) =>
       supabase.from('product_inventory').select('product_id,size,quantity')
-        .in('product_id', batch).gt('quantity', 0).limit(2000)),
+        .in('product_id', batch).gt('quantity', 0)),
   ]);
   return { inv, ih };
 }
@@ -400,7 +417,9 @@ function buildStyles(prods, inv, inHouseRows, opts = {}) {
     }
     const inHouse = inHouseByPid[p.id] || null;
     const sizes = bySku[p.sku] || [];
-    if (p.inventory_source === 'agron' && !sizes.length) continue;
+    // No vendor rows AND no in-house stock = nothing to sell. (Agron items used
+    // to be dropped on vendor rows alone, which hid colorways NSA physically
+    // has in the warehouse.)
     if (!sizes.length && !inHouse) continue;
     seen.add(p.sku);
     if (inHouse) {

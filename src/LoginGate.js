@@ -17,6 +17,10 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   const[mode,setMode]=useState('login');// 'login', 'setup', 'admin', 'confirm', 'forgot', 'sent', or 'expired'
   const[adminFilter,setAdminFilter]=useState('');
   const[sessionChecked,setSessionChecked]=useState(false);
+  // Synchronous reentrancy guard: `loading` is React state (async/batched), so two fast clicks or a
+  // held Enter key can both enter a handler before the button re-renders disabled, firing duplicate
+  // auth requests that trip Supabase's rate limit and lock the user out. A ref flips synchronously.
+  const submitting=React.useRef(false);
 
   // Check for expired-link hash or existing Supabase session on mount
   useEffect(()=>{
@@ -41,70 +45,85 @@ function LoginGate({onLogin,reps,supabase,sbSignIn:_sbSignIn,sbSignUp:_sbSignUp,
   },[]);// eslint-disable-line
 
   const handleLogin=async(e)=>{
-    e.preventDefault();setError('');setLoading(true);
-    if(!email.trim()){setError('Please enter your email');setLoading(false);return}
-    if(!password){setError('Please enter your password');setLoading(false);return}
+    e.preventDefault();
+    if(submitting.current)return;submitting.current=true;
+    setError('');setLoading(true);
+    try{
+      if(!email.trim()){setError('Please enter your email');return}
+      if(!password){setError('Please enter your password');return}
 
-    // Admin override: if password hash matches, show user picker
-    if(ADMIN_PW_HASH){
-      const h=await hashPassword(password);
-      if(h===ADMIN_PW_HASH){setMode('admin');setError('');setLoading(false);return}
-    }
+      // Admin override: if password hash matches, show user picker
+      if(ADMIN_PW_HASH){
+        const h=await hashPassword(password);
+        if(h===ADMIN_PW_HASH){setMode('admin');setError('');return}
+      }
 
-    if(mode==='setup'){
-      // First-time password setup
-      if(password.length<8){setError('Password must be at least 8 characters');setLoading(false);return}
-      if(password!==password2){setError('Passwords do not match');setLoading(false);return}
-      // Check that this email belongs to a team member
-      const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
-      if(!member){setError('No team member found with this email. Contact your admin.');setLoading(false);return}
-      const res=await _sbSignUp(email.trim(),password);
-      if(res.error){setError(res.error);setLoading(false);return}
-      // Link auth account to team member
-      if(res.user&&member)await _sbLinkTeamAuth(member.id,res.user.id);
-      // Try auto sign-in; if email confirmation required, show confirm screen
-      const signIn=await _sbSignIn(email.trim(),password);
-      if(signIn.error){setMode('confirm');setLoading(false);return}
-      onLogin({...member,_authSession:true});
-    }else{
-      // Normal sign-in
-      const res=await _sbSignIn(email.trim(),password);
-      if(res.error){setError(res.error.includes('Email not confirmed')?'Please check your email to confirm your account before signing in.':res.error);setLoading(false);return}
-      // Look up team member profile
-      const profile=await _sbGetMyProfile();
-      if(profile){onLogin({...profile,_authSession:true})}
-      else{
-        // Try to find and link by email
+      if(mode==='setup'){
+        // First-time password setup
+        if(password.length<8){setError('Password must be at least 8 characters');return}
+        if(password!==password2){setError('Passwords do not match');return}
+        // Check that this email belongs to a team member
         const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
-        if(member&&res.user){
-          await _sbLinkTeamAuth(member.id,res.user.id);
-          onLogin({...member,_authSession:true});
-        }else{
-          setError('No team member profile found for this account');setLoading(false);return;
+        if(!member){setError('No team member found with this email. Contact your admin.');return}
+        const res=await _sbSignUp(email.trim(),password);
+        if(res.error){setError(res.error);return}
+        // Link auth account to team member
+        if(res.user&&member)await _sbLinkTeamAuth(member.id,res.user.id);
+        // Try auto sign-in; if email confirmation required, show confirm screen
+        const signIn=await _sbSignIn(email.trim(),password);
+        if(signIn.error){setMode('confirm');return}
+        onLogin({...member,_authSession:true});
+      }else{
+        // Normal sign-in
+        const res=await _sbSignIn(email.trim(),password);
+        if(res.error){setError(res.error.includes('Email not confirmed')?'Please check your email to confirm your account before signing in.':res.error);return}
+        // Look up team member profile
+        const profile=await _sbGetMyProfile();
+        if(profile){onLogin({...profile,_authSession:true})}
+        else{
+          // Try to find and link by email
+          const member=REPS.find(r=>r.email&&r.email.toLowerCase()===email.trim().toLowerCase());
+          if(member&&res.user){
+            await _sbLinkTeamAuth(member.id,res.user.id);
+            onLogin({...member,_authSession:true});
+          }else{
+            setError('No team member profile found for this account');return;
+          }
         }
       }
-    }
-    setLoading(false);
+    }catch(err){
+      // A THROWN/rejected auth promise (offline, DNS/CORS, unexpected error shape) used to escape the
+      // handler, so setLoading(false) never ran — a permanent "Signing in..." spinner with no message.
+      setError((err&&err.message)||'Sign-in failed. Please check your connection and try again.');
+    }finally{setLoading(false);submitting.current=false}
   };
 
   const handleResend=async(e)=>{
-    e.preventDefault();setError('');
-    if(!email.trim()){setError('Please enter your email');return}
+    e.preventDefault();
+    if(submitting.current)return;submitting.current=true;
+    setError('');
+    if(!email.trim()){setError('Please enter your email');setLoading(false);submitting.current=false;return}
     setLoading(true);
-    const res=await _sbResendSignup(email.trim());
-    setLoading(false);
-    if(res.error){setError(res.error);return}
-    setMode('confirm');
+    try{
+      const res=await _sbResendSignup(email.trim());
+      if(res.error){setError(res.error);return}
+      setMode('confirm');
+    }catch(err){setError((err&&err.message)||'Could not resend the email. Please try again.')}
+    finally{setLoading(false);submitting.current=false}
   };
 
   const handleForgot=async(e)=>{
-    e.preventDefault();setError('');
-    if(!email.trim()){setError('Please enter your email');return}
+    e.preventDefault();
+    if(submitting.current)return;submitting.current=true;
+    setError('');
+    if(!email.trim()){setError('Please enter your email');setLoading(false);submitting.current=false;return}
     setLoading(true);
-    const res=await _sbResetPassword(email.trim());
-    setLoading(false);
-    if(res.error){setError(res.error);return}
-    setMode('sent');
+    try{
+      const res=await _sbResetPassword(email.trim());
+      if(res.error){setError(res.error);return}
+      setMode('sent');
+    }catch(err){setError((err&&err.message)||'Could not send the reset email. Please try again.')}
+    finally{setLoading(false);submitting.current=false}
   };
 
   if(!sessionChecked)return(

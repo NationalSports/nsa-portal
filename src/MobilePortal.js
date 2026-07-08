@@ -1,7 +1,9 @@
 /* eslint-disable */
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import BarcodeScanner from './BarcodeScanner';
 import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady } from './businessLogic';
+import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
 
 // ─── Inline Icon (same SVG paths as main app) ───
@@ -45,8 +47,9 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
+  const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
   const[botCompose,setBotCompose]=useState(null);// {title,so_id} when the quick "Assign to Claude" form is open
   const[q,setQ]=useState('');
@@ -113,6 +116,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[msgFilter,setMsgFilter]=useState('for_me');
   // ─── Warehouse state ───
   const[whTab,setWhTab]=useState('if'); // if | pos
+  const[mpScanOpen,setMpScanOpen]=useState(false); // camera/QR scanner modal
+  const[mpBox,setMpBox]=useState(null); // {box,binDraft,combineWith} — Box Action sheet (BX plate scans)
   const[whDetail,setWhDetail]=useState(null); // null | {kind:'if',soId,pickId} | {kind:'po',key}
   const[whPullQty,setWhPullQty]=useState({}); // {itemIdx:{size:qty}}
   const[whRcvQty,setWhRcvQty]=useState({}); // {lineIdx:{size:qty}}
@@ -1036,7 +1041,10 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
       <div className="mp-greeting"><div className="mp-greeting-text">Welcome, {cu.name?.split(' ')[0]}</div>
         <div className="mp-greeting-sub">{new Date().toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'})}</div></div>
       {stats.urgentOrders>0&&_ca('orders')&&<div className="mp-alert-banner" onClick={()=>setTab('orders')} style={{cursor:'pointer'}}><MIcon name="alert" size={16}/><span>{stats.urgentOrders} order{stats.urgentOrders>1?'s':''} due within 3 days</span></div>}
-      {_ca('warehouse')&&<button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'1px solid #fcd34d',background:'#fffbeb',color:'#b45309',fontWeight:700,fontSize:15,cursor:'pointer',margin:'4px 0 12px',minHeight:52}}>
+      {_ca('warehouse')&&<button onClick={()=>setMpScanOpen(true)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'none',background:'#0f172a',color:'#22c55e',fontWeight:800,fontSize:15,cursor:'pointer',margin:'4px 0 8px',minHeight:52}}>
+        <MIcon name="scan" size={20}/> Scan a Label
+      </button>}
+      {_ca('warehouse')&&<button onClick={()=>go('warehouse')} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'15px',borderRadius:12,border:'1px solid #fcd34d',background:'#fffbeb',color:'#b45309',fontWeight:700,fontSize:15,cursor:'pointer',margin:'0 0 12px',minHeight:52}}>
         <MIcon name="box" size={20}/> Warehouse — Check In / Pull
       </button>}
       <div className="mp-more-grid">
@@ -1346,6 +1354,56 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
     setShowSearch(false);setQ('');
   };
+  // ─── SCAN ROUTER — camera scans and ?scan= QR deep links (printed 4×6 labels) land here.
+  // Mirrors the id-resolution order of App.js handleScanResult/handleReceiveScan, but drives
+  // the mobile screens: IF → pull detail, PO → receive detail, batch # → batch check-in, SO → order.
+  const handleMobileScan=(raw)=>{
+    if(!raw)return;
+    let v=String(raw).trim();
+    try{const u=new URL(v);const sp=u.searchParams.get('scan');if(sp)v=sp}catch{}
+    try{const j=JSON.parse(v);if(j.id)v=j.id}catch{}
+    const upper=v.toUpperCase();
+    setMpScanOpen(false);setShowSearch(false);setQ('');
+    // Box plate (BX-####) → Box Action sheet (same view/actions as desktop's Box Action modal).
+    // Lookup lives in App.js (follows merged_into redirects; degrades when the boxes table is absent).
+    if(isBoxCode(upper)){
+      (async()=>{
+        const b=onBoxLookup?await onBoxLookup(upper):null;
+        if(!b){if(nf)nf('Box "'+v+'" not found','error');return}
+        if(b.id!==upper&&nf)nf(upper+' was combined into '+b.id);
+        setMpBox({box:b,combineWith:''});
+      })();
+      return;
+    }
+    // Open IF → pull screen
+    const ifHit=buildOpenIFs().find(g=>(g.pickId||'').toUpperCase()===upper);
+    if(ifHit){setDetail(null);setTab('more');setMoreSubPage('warehouse');setWhTab('if');openIF(ifHit);if(nf)nf('Scanned: '+ifHit.pickId);return}
+    const pos=buildPOs();
+    // Batch PO number → multi-PO batch check-in
+    const batchHits=pos.filter(p=>(p.batchPoNumber||'').toUpperCase()===upper);
+    if(batchHits.length>0){openBatchByNumber(batchHits[0].batchPoNumber,batchHits.map(p=>p.key));return}
+    // Single PO → receive screen (works for received POs too — opens in view mode)
+    const poHit=pos.find(p=>(p.poId||'').toUpperCase()===upper);
+    if(poHit){
+      if(poHit.dropShip){if(nf)nf(poHit.poId+' is a drop-ship PO — nothing arrives at the warehouse','error');return}
+      setDetail(null);setTab('more');setMoreSubPage('warehouse');setWhTab('pos');openPO(poHit);if(nf)nf('Scanned: '+poHit.poId);return
+    }
+    // Already-pulled IF label → open the owning SO
+    for(const s of sos){for(const it of safeItems(s)){if((it.pick_lines||[]).some(pk=>(pk.pick_id||'').toUpperCase()===upper)){setMoreSubPage(null);setTab('orders');setDetail({type:'order',data:s});if(nf)nf(upper+' already pulled — opening '+s.id);return}}}
+    // SO → order detail
+    const soHit=sos.find(s=>(s.id||'').toUpperCase()===upper);
+    if(soHit){setMoreSubPage(null);setTab('orders');setDetail({type:'order',data:soHit});if(nf)nf('Scanned: '+soHit.id);return}
+    if(nf)nf('No match for "'+v+'"','error');
+  };
+  // ?scan= deep link from a printed QR label opened on a phone (handed down by App.js).
+  const _scanReqSeen=useRef(null);
+  useEffect(()=>{
+    if(!scanRequest||_scanReqSeen.current===scanRequest)return;
+    _scanReqSeen.current=scanRequest;
+    handleMobileScan(scanRequest);
+    if(onScanRequestDone)onScanRequestDone();
+  },[scanRequest]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Per-PO shortcuts on the review screen.
   const batchPoSetAll=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:fullOpenMap(po)}));
   const batchPoClear=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:{}}));
@@ -1399,6 +1457,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:8}}>
                   <div style={{minWidth:0}}><div style={{fontWeight:700,fontSize:14}}>{l.item.name||l.item.sku}</div>
                   <div style={{fontSize:12,color:'#64748b'}}>{l.item.sku}{l.item.color?' · '+l.item.color:''}</div></div>
+                  {p?.bin&&<span style={{flexShrink:0,marginLeft:8,fontSize:12,fontWeight:800,color:'#0369a1',background:'#e0f2fe',padding:'3px 10px',borderRadius:8,whiteSpace:'nowrap'}}>📍 {p.bin}</span>}
                 </div>
                 <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                   {szs.map(sz=>{const planned=l.pick[sz]||0;const stock=p?._inv?.[sz]||0;const v=(whPullQty[l.itemIdx]||{})[sz]??planned;
@@ -1547,7 +1606,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     return<div className="mp-page">
       <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}>
         <button className="mp-back-btn" onClick={()=>setSubPage(null)}><MIcon name="back" size={20}/></button>
-        <div className="mp-page-title" style={{margin:0}}>Warehouse</div>
+        <div className="mp-page-title" style={{margin:0,flex:1}}>Warehouse</div>
+        <button onClick={()=>setMpScanOpen(true)} style={{display:'flex',alignItems:'center',gap:6,padding:'8px 14px',borderRadius:10,border:'none',background:'#0f172a',color:'#22c55e',fontWeight:700,fontSize:13,cursor:'pointer',minHeight:40}}><MIcon name="scan" size={16}/> Scan</button>
       </div>
       {/* Segmented tabs */}
       <div style={{display:'flex',gap:6,background:'#f1f5f9',borderRadius:10,padding:4,marginBottom:12}}>
@@ -1567,6 +1627,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               </div>
               <div style={{fontSize:13,color:'#334155',marginTop:2}}>{g.cust?.name||g.cust?.alpha_tag||'—'}</div>
               <div style={{fontSize:11,color:'#94a3b8',marginTop:1}}>{g.lines.length} item{g.lines.length!==1?'s':''} · {g.lines.map(l=>l.item.sku).slice(0,2).join(', ')}{g.lines.length>2?'…':''}</div>
+              {(()=>{const bins=[...new Set(g.lines.map(l=>whProd(l.item)?.bin).filter(Boolean))];return bins.length?<div style={{fontSize:11,color:'#0369a1',fontWeight:700,marginTop:2}}>📍 {bins.slice(0,4).join(' · ')}{bins.length>4?' …':''}</div>:null})()}
             </div>
             <div style={{textAlign:'right',flexShrink:0,marginLeft:8}}>
               <div style={{fontSize:18,fontWeight:800,color:'#d97706'}}>{g.totalQty}</div>
@@ -2244,12 +2305,77 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     {renderSendEstModal()}
     {renderSendInvModal()}
     {renderComposeSheet()}
+    {/* Box Action sheet — scanning a BX plate (camera or ?scan= deep link) lands here */}
+    {mpBox&&(()=>{
+      const bx=mpBox.box;
+      const meta=BOX_STATUS_META[bx.status]||{label:bx.status,color:'#475569',bg:'#f1f5f9'};
+      const boxActive=bx.status!=='combined';
+      const combineTargets=(boxes||[]).filter(b=>b.id!==bx.id&&b.status!=='combined'&&b.status!=='shipped');
+      const setStatus=async(st)=>{if(!onBoxUpdate)return;if(await onBoxUpdate(bx.id,{status:st}))setMpBox(m=>m?{...m,box:{...m.box,status:st}}:m)};
+      const saveBin=async()=>{if(!onBoxUpdate)return;const bin=(mpBox.binDraft||'').trim()||null;if(await onBoxUpdate(bx.id,{bin}))setMpBox(m=>m?{...m,box:{...m.box,bin},binDraft:undefined}:m)};
+      const doCombine=async()=>{if(!onBoxCombine||!mpBox.combineWith)return;await onBoxCombine(bx,mpBox.combineWith);const fresh=onBoxLookup?await onBoxLookup(bx.id):null;setMpBox(fresh?{box:fresh,combineWith:''}:null)};
+      return<div style={{position:'fixed',inset:0,zIndex:3000,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={()=>setMpBox(null)}>
+        <div style={{width:'100%',maxWidth:560,maxHeight:'85vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'14px 16px calc(14px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
+          <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:8}}>
+            <span style={{fontSize:17,fontWeight:900,fontFamily:'monospace',color:'#0e7490'}}>📦 {bx.id}</span>
+            <span style={{fontSize:11,padding:'2px 10px',borderRadius:10,fontWeight:800,color:meta.color,background:meta.bg}}>{meta.label}</span>
+            {bx.merged_into&&<span style={{fontSize:11,color:'#64748b'}}>→ {bx.merged_into}</span>}
+            <button onClick={()=>setMpBox(null)} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:22,padding:'0 4px'}}>×</button>
+          </div>
+          <div style={{display:'flex',gap:8,flexWrap:'wrap',fontSize:12,marginBottom:10,color:'#475569'}}>
+            {bx.if_id&&<span>IF: <strong style={{color:'#1e40af'}}>{bx.if_id}</strong></span>}
+            {bx.so_id&&<span>SO: <strong style={{color:'#1e40af'}}>{bx.so_id}</strong></span>}
+            {bx.bin&&<span style={{fontWeight:800,color:'#0e7490'}}>📍 {bx.bin}</span>}
+            <span style={{marginLeft:'auto'}}>{boxUnits(bx.contents)} units</span>
+          </div>
+          {(bx.contents||[]).map((e,i)=>{const sz=Object.entries(e.sizes||{}).filter(([,val])=>val>0);
+            return<div key={i} style={{padding:'6px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
+              <div style={{display:'flex',gap:6,flexWrap:'wrap',fontSize:12,alignItems:'center'}}>
+                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{e.sku}</span>
+                <span style={{fontWeight:600}}>{e.name}</span>
+                {e.color&&<span style={{fontSize:10,color:'#64748b'}}>{e.color}</span>}
+                <span style={{marginLeft:'auto',color:'#64748b'}}>{sz.reduce((a,[,val])=>a+val,0)} units</span>
+              </div>
+              <div style={{fontFamily:'monospace',fontSize:11,color:'#475569',marginTop:2}}>{sz.map(([s,val])=>s+': '+val).join('  ')}</div>
+            </div>})}
+          {boxActive&&<>
+            <div style={{display:'flex',gap:6,alignItems:'center',margin:'10px 0'}}>
+              <input placeholder="Location / bin (e.g. A3, dock)" value={mpBox.binDraft??(bx.bin||'')} onChange={e=>setMpBox(m=>({...m,binDraft:e.target.value}))}
+                style={{flex:1,fontSize:13,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8}}/>
+              <button onClick={saveBin} disabled={(mpBox.binDraft??(bx.bin||''))===(bx.bin||'')} style={{fontSize:12,fontWeight:700,padding:'8px 14px',borderRadius:8,border:'1px solid #cbd5e1',background:'#f8fafc',color:'#0f172a',opacity:(mpBox.binDraft??(bx.bin||''))===(bx.bin||'')?0.5:1}}>Save</button>
+            </div>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:10}}>
+              {[['staged','Staged'],['at_deco','➡️ At Deco'],['shipped','🚚 Shipped']].map(([st,lbl])=>
+                <button key={st} disabled={bx.status===st} onClick={()=>setStatus(st)}
+                  style={{fontSize:12,fontWeight:700,padding:'8px 12px',borderRadius:8,border:'1px solid '+(bx.status===st?'#0e7490':'#cbd5e1'),background:bx.status===st?'#cffafe':'white',color:'#0f172a'}}>{lbl}</button>)}
+              {onBoxLabel&&<button onClick={()=>onBoxLabel(bx)} style={{fontSize:12,fontWeight:700,padding:'8px 12px',borderRadius:8,border:'1px solid #cbd5e1',background:'white',marginLeft:'auto'}}>🖨️ Label</button>}
+            </div>
+            {combineTargets.length>0&&<div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <select value={mpBox.combineWith||''} onChange={e=>setMpBox(m=>({...m,combineWith:e.target.value}))}
+                style={{flex:1,fontSize:12,padding:'8px 10px',border:'1px solid #cbd5e1',borderRadius:8,background:'white'}}>
+                <option value="">🔗 Combine into…</option>
+                {combineTargets.map(b=><option key={b.id} value={b.id}>{b.id} — {[b.if_id,b.so_id].filter(Boolean).join(' · ')} ({boxUnits(b.contents)} u)</option>)}
+              </select>
+              <button onClick={doCombine} disabled={!mpBox.combineWith} style={{fontSize:12,fontWeight:700,padding:'8px 14px',borderRadius:8,border:'1px solid #cbd5e1',background:'#f8fafc',opacity:mpBox.combineWith?1:0.5}}>Combine</button>
+            </div>}
+          </>}
+        </div>
+      </div>;
+    })()}
+    {/* Camera / QR scanner — opens from the header, warehouse page, and ops home */}
+    {mpScanOpen&&<div style={{position:'fixed',inset:0,zIndex:3000,background:'rgba(15,23,42,0.85)',display:'flex',alignItems:'flex-start',justifyContent:'center',padding:'max(16px, env(safe-area-inset-top)) 12px 12px',overflowY:'auto'}} onClick={()=>setMpScanOpen(false)}>
+      <div style={{width:'100%',maxWidth:520}} onClick={e=>e.stopPropagation()}>
+        <div style={{color:'white',fontWeight:800,fontSize:16,display:'flex',alignItems:'center',gap:8,marginBottom:8}}><MIcon name="scan" size={20}/> Scan PO / IF / Label</div>
+        <BarcodeScanner placeholder="Scan or type PO#, IF#, SO#..." onScan={handleMobileScan} onClose={()=>setMpScanOpen(false)}/>
+      </div>
+    </div>}
     {/* Header */}
     <div className="mp-header">
       <button className="mp-header-btn" onClick={()=>setDrawerOpen(true)} style={{marginRight:8}}><MIcon name="menu" size={22}/></button>
       <div style={{flex:1,fontWeight:700,fontSize:16}}>{tab==='home'?'Home':tab==='orders'?'Orders':tab==='messages'?'Messages':tab==='customers'?'Customers':moreSubPage||'More'}</div>
       <div style={{display:'flex',gap:4,alignItems:'center'}}>
         {unreadForMeCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,fontWeight:800,minWidth:18,textAlign:'center'}}>{unreadForMeCount}</span>}
+        {_caTop('warehouse')&&<button className="mp-header-btn" onClick={()=>setMpScanOpen(true)} title="Scan barcode / QR" style={{color:'#16a34a'}}><MIcon name="scan" size={20}/></button>}
         <button className="mp-header-btn" onClick={()=>setShowSearch(true)}><MIcon name="search" size={20}/></button>
       </div>
     </div>

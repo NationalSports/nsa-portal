@@ -12,6 +12,46 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── Job-item decoration ownership ──
+// A job item records which decoration indexes of its SO line the job produces (deco_idxs).
+// Returns null for legacy items without the array — the legacy single deco_idx was written as
+// decoIdxs[0] and is NOT exhaustive for multi-deco jobs, so it must not be treated as a scope.
+// Null means "unknown coverage": callers fall back to every decoration on the line.
+export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : null;
+// Decorations of one kind on a SO line that THIS job actually produces. Keeps a job's
+// display (number rosters, spec rows) from bleeding onto sibling jobs that share the
+// line — e.g. an art job showing the numbers job's roster.
+export const jobItemDecosOfKind = (gi, it, kind) => {
+  const dis = jobItemDecoIdxs(gi);
+  return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+// Does this job's artwork fail to resolve to a real art file? True only when the job's declared
+// art (art_file_id/_art_ids — a '__tbd' placeholder counts as declaring) includes NO live design
+// AND an art decoration the job owns has no live art file behind it. Numbers/names-only jobs and
+// jobs with a live declared design are never "unresolved" — a sibling job's TBD deco on a shared
+// line must not taint them, and a frozen job whose stale indexes drift onto a foreign deco is
+// protected by the declared-art check. archivedIsUnresolved: action guards (marking a job
+// complete) treat archived-only art as unresolved because jobLiveArtIds excludes archived files
+// and the production-files check would otherwise pass vacuously; passive heals leave archived
+// art alone so long-finished jobs aren't resurrected by library cleanup.
+export const jobHasUnresolvedArt = (j, o, { archivedIsUnresolved = false } = {}) => {
+  const art = safeArt(o);
+  const live = (id) => { if (!id || id === '__tbd') return false; const a = art.find(f => f.id === id); return !!a && !(archivedIsUnresolved && a.archived); };
+  const declared = ((j?._art_ids && j._art_ids.length ? j._art_ids : [j?.art_file_id]) || []).filter(Boolean);
+  if (declared.some(live)) return false;
+  return (j?.items || []).some(gi => {
+    const it = safeItems(o)[gi.item_idx]; if (!it) return false;
+    const dis = jobItemDecoIdxs(gi);
+    // Legacy item with unknown coverage on a job that declares no art at all: a TBD deco here
+    // belongs to some other job — don't attribute it.
+    if (!dis && declared.length === 0) return false;
+    return safeDecos(it).some((d, di) => {
+      if (dis && !dis.includes(di)) return false;
+      return d?.kind === 'art' && !live(d.art_file_id);
+    });
+  });
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
@@ -142,6 +182,47 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
   return [];
 };
 
+// SINGLE SOURCE OF TRUTH for per-garment mockup slot keys. A garment gets one mockup
+// slot per decoration; reversible decorations get TWO (Side A / Side B — a reversible
+// garment prints on both color ways). Slot keys extend the garment's `sku|color` base:
+//   • first art deco, Side A → bare base key (backward-compatible, drives the approval gate)
+//   • other art slots        → base|<color_way_id>  (falling back to base|d<i> / base|d<i>_1)
+//   • numbers / names        → base|numbers, base|numbers_b, base|names_1, …
+// Accepts raw SO decorations (color_way_id) or the enriched view models the mockup
+// screens build (colorWayId). Returns [{key, primary, kind, idx, di, side, reversible}]
+// where idx counts within the deco's kind and di is the index in the ORIGINAL decos
+// array (so callers can scope slots to a job via deco_idxs). The renderers in App.js
+// (rep art-detail grid + artist modal) and the approval gate below must all agree on
+// these keys — that's why this lives here.
+export const mockSlotKeys = (base, decos) => {
+  const slots = [];
+  let ai = 0, ni = 0, mi = 0;
+  safeArr(decos).forEach((d, di) => {
+    if (!d || typeof d !== 'object') return;
+    const rev = !!d.reversible;
+    if (d.kind === 'art') {
+      const cwA = d.color_way_id !== undefined ? d.color_way_id : d.colorWayId;
+      const cwB = d.color_way_id_b !== undefined ? d.color_way_id_b : d.colorWayIdB;
+      const sides = rev ? [{ cw: cwA, side: 'A' }, { cw: cwB, side: 'B' }] : [{ cw: cwA, side: rev ? 'A' : '' }];
+      sides.forEach((s, si) => {
+        const first = ai === 0 && si === 0;
+        const disc = first ? '' : (s.cw || ('d' + ai + (si ? ('_' + si) : '')));
+        slots.push({ key: base + (disc ? ('|' + disc) : ''), primary: first, kind: 'art', idx: ai, di, side: s.side, reversible: rev });
+      });
+      ai++;
+    } else if (d.kind === 'numbers') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|numbers' + (ni ? ('_' + ni) : '') + sfx, primary: false, kind: 'numbers', idx: ni, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      ni++;
+    } else if (d.kind === 'names') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|names' + (mi ? ('_' + mi) : '') + sfx, primary: false, kind: 'names', idx: mi, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      mi++;
+    }
+  });
+  return slots;
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
@@ -212,7 +293,23 @@ export const skusMissingMockups = (job, so) => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
       return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
     });
-    if (perSku.length > 0) return;
+    if (perSku.length > 0) {
+      // Primary mock present — additionally require every slot a REVERSIBLE decoration
+      // creates (Side B art, both numbers/names sides). A reversible garment approved
+      // with only one color way mocked is exactly the SO-1116 rejection. Scoped to
+      // reversible decos this job owns (deco_idxs), and only for garments already on
+      // the per-item workflow — legacy jobs whose mocks live in the general
+      // mockup_files bucket (handled below) are left alone.
+      const _idxs = jobItemDecoIdxs(gi);
+      const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const missSlots = mockSlotKeys(mockKey, safeDecos(it))
+        .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
+        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
+      if (missSlots.length > 0 && mSku) {
+        missing.push(mSku + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
+      }
+      return;
+    }
     // Only fall back to the shared mockup_files/files bucket for art that carries NO
     // per-garment mockups at all (legacy single-design art). Once an art file has
     // per-garment mockups for OTHER garments, this garment needs its own — otherwise a

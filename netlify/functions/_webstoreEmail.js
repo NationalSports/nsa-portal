@@ -61,6 +61,7 @@ async function sendOrderConfirmation(sb, order) {
     <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
       <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
       <div style="font-size:22px;font-weight:800;margin-top:4px">${paid ? 'Order confirmed &amp; paid' : 'Order confirmed'}</div>
+      ${order.order_number ? `<div style="font-size:13px;opacity:.85;margin-top:6px">Order #${order.order_number}</div>` : ''}
     </div>
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
       <p style="margin:0 0 14px">Thanks, ${order.buyer_name || ''}! ${paid ? "We've received your payment." : 'Your order is in — the team will be invoiced for it.'}</p>
@@ -81,7 +82,7 @@ async function sendOrderConfirmation(sb, order) {
     body: JSON.stringify({
       sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
       to: [{ email: order.buyer_email, name: order.buyer_name || '' }],
-      subject: `Your ${store.name} order is confirmed`,
+      subject: order.order_number ? `Your ${store.name} order #${order.order_number} is confirmed` : `Your ${store.name} order is confirmed`,
       htmlContent: html,
     }),
   });

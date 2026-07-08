@@ -7,6 +7,7 @@ import { calcSOStatus, resolveOrderShipTo } from './components';
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { authFetch } from './utils';
 import { buildSportsLinkDocsQuery } from './sportsLink';
+import { buildSsOrdersQuery } from './ssOrders';
 import { normSzName } from './pricing';
 
 // ─── ShipStation API Integration (via Netlify proxy to avoid CORS) ───
@@ -995,6 +996,41 @@ const ssGetStyles = async () => await ssApiCall('/Styles');
 const ssGetBrands = async () => await ssApiCall('/Brands');
 const ssGetCategories = async () => await ssApiCall('/Categories');
 
+// Fetch S&S orders (the bill source for S&S — see ssOrders.js). Defaults to the last 3
+// months (?All=True); pass {startDate,endDate} or an identifier to narrow. Always requests
+// lines. S&S returns an array for a listing, or a single object for an identifier lookup —
+// normalize to an array so callers can always map over it.
+const ssGetOrders = async (filter = {}) => {
+  const data = await ssApiCall(buildSsOrdersQuery(filter));
+  return Array.isArray(data) ? data : (data ? [data] : []);
+};
+
+// ─── S&S CrossRef (our SKU ↔ S&S SKU) ───
+// `yourSku` on order/product lines is populated from these cross-references. Mapping our
+// style to the S&S sku promotes S&S bill lines from a color+size guess to an exact SKU match.
+// GET /CrossRef/{yourSku,list} → records; PUT /CrossRef/{yourSku}?identifier={S&S sku value}
+// assigns a yourSku to one S&S product (200 = updated, 201 = created).
+const ssGetCrossRefs = async (yourSkus) => {
+  const list = (Array.isArray(yourSkus) ? yourSkus : [yourSkus]).map(s => String(s || '').trim()).filter(Boolean);
+  if (!list.length) return [];
+  const data = await ssApiCall('/CrossRef/' + list.map(encodeURIComponent).join(','));
+  return Array.isArray(data) ? data : (data ? [data] : []);
+};
+// Assign `yourSku` to one S&S product. `identifier` = the S&S sku VALUE (Sku / SkuID / Gtin).
+// Custom response handling: a PUT can come back with an empty body (json() would throw).
+// Returns { ok, status, created, updated }.
+const ssPutCrossRef = async (yourSku, identifier) => {
+  const path = '/CrossRef/' + encodeURIComponent(String(yourSku || '').trim()) + '?identifier=' + encodeURIComponent(String(identifier || '').trim());
+  const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(path)}`;
+  const response = await authFetch(proxyUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
+  if (!response.ok) {
+    const errText = await response.text().catch(() => '');
+    let msg; try { msg = JSON.parse(errText)?.error; } catch {}
+    throw new Error(msg || `S&S CrossRef PUT error: ${response.status}`);
+  }
+  return { ok: true, status: response.status, created: response.status === 201, updated: response.status === 200 };
+};
+
 // ─── S&S Activewear SKU resolution + order submit ───
 // S&S orders key each line by its `identifier` (the size-specific S&S Sku). Portal
 // order lines carry style/color/size, so resolve the Sku live from the Products API.
@@ -1213,6 +1249,18 @@ const momentecSubmitOrder = async (order, env = 'stage') => {
   return data;
 };
 
+// Read back what Momentec actually registered for an order (GET /v2/Order + /v2/OrderLines
+// via the proxy). Verifies an API submission landed AND that the registered line SKUs match
+// what we sent — their intake has silently dropped orders and swapped garments before.
+// Resolves to { found, order:{orderStatus,poNum,invoiceOrderId,trackingNumber,…}|null,
+// lines:[{itemNumber,orderedQuantity,status,trackingNumber,…}] }; throws on transport failure.
+const momentecOrderDetails = async (ecomOrderId, env = 'prod') => {
+  const response = await authFetch(`/.netlify/functions/momentec-proxy?service=order-details&env=${encodeURIComponent(env)}&ecomOrderId=${encodeURIComponent(ecomOrderId)}`);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.error) throw new Error(data.error || `Momentec order lookup failed (HTTP ${response.status})`);
+  return data;
+};
+
 // ─── Momentec /v2/Style — normalized colors/sizes/images/price/stock ───
 // Fetches real catalog data from the /v2 API (via the proxy's public Basic route)
 // and shapes it to match the vendor-search result the Order Editor consumes:
@@ -1273,10 +1321,15 @@ const momentecStyleV2 = async (design, env = 'prod') => {
 };
 
 // Collapse Momentec's one-size tokens (OS, OSFA, OSFM, "One Size"…) so an order line's
-// "OSFA" matches a catalog "OS". Real sizes pass through (uppercased, separators stripped).
+// "OSFA" matches a catalog "OS", and collapse plus-size spellings — Momentec's feed uses
+// 2X/3X/4X while portal items (esp. from the local catalog) use 2XL/XXL — so those resolve
+// instead of blocking the order. Other sizes pass through (uppercased, separators stripped).
 const _mtNormSize = (s) => {
   const u = String(s || '').toUpperCase().replace(/[\s._/-]/g, '');
-  return ['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u) ? 'OS' : u;
+  if (['OS', 'OSFA', 'OSFM', 'ONESIZE', 'OSZ', '1SZ', 'UNI', 'UNIVERSAL'].includes(u)) return 'OS';
+  const nx = u.match(/^([2-6])XL?$/); if (nx) return nx[1] + 'X';           // 2XL / 2X → 2X
+  if (/^X{2,6}L$/.test(u)) return (u.length - 1) + 'X';                     // XXL → 2X, XXXL → 3X
+  return u;
 };
 
 // Resolve missing Momentec order SKUs (design.colorCode.size) live from /v2/Style,
@@ -1553,4 +1606,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

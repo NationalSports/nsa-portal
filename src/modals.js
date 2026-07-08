@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
-import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES } from './constants';
+import { _pick, SZ_ORD, SC, pantoneHex, threadHex, CATEGORIES, COLOR_CATEGORIES, APPAREL_SIZES, FOOTWEAR_SIZES, NUMERIC_SIZES, BALL_SIZES } from './constants';
 import { safeNum, safeItems, safeSizes, safeArr, safeStr, safeDecos } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, SortHeader, PantoneAdder, SearchSelect } from './components';
 import { CONTACT_ROLES } from './pricing';
@@ -418,7 +418,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     <div style={{display:'flex',gap:8,marginBottom:16}}>{['parent','sub'].map(t=><button key={t} className={`btn btn-sm ${ct===t?'btn-primary':'btn-secondary'}`} onClick={()=>{setCt(t);if(t==='parent')sv('parent_id',null)}}>{t==='parent'?'Parent':'Sub'}</button>)}</div>
     {ct==='sub'&&<div style={{marginBottom:12}}><label className="form-label">Parent *</label><SearchSelect options={parents.map(p=>({value:p.id,label:`${p.name} (${p.alpha_tag})`}))} value={f.parent_id} onChange={v=>sv('parent_id',v)} placeholder="Search parent..."/></div>}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr 1.4fr',gap:12}}><div><label className="form-label">Name *</label><input className="form-input" value={f.name} onChange={e=>sv('name',e.target.value)} style={err.n?{borderColor:'#dc2626'}:{}}/></div>
-      <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
+      <div><label className="form-label">Alpha Tag *</label><input className="form-input" value={f.alpha_tag||''} onChange={e=>sv('alpha_tag',e.target.value)} onBlur={e=>{const t=e.target.value.trim();if(t!==e.target.value)sv('alpha_tag',t)}} style={err.a?{borderColor:'#dc2626'}:{}}/></div>
       <div><label className="form-label">Terms</label><select className="form-select" value={f.payment_terms||'net30'} onChange={e=>sv('payment_terms',e.target.value)}><option value="prepay">Prepay</option><option value="net15">Net 15</option><option value="net30">Net 30</option><option value="net60">Net 60</option></select></div>
       <div><label className="form-label">Rep</label><select className="form-select" value={f.primary_rep_id||''} onChange={e=>sv('primary_rep_id',e.target.value||null)}><option value="">— None —</option>{(reps||[]).filter(r=>['Steve Peterson','Mike Mercuriali','Jered Hunt','Chase Koissian','Gayle Peterson','Kevin McCormack','Jeff Bianchini','Sharon Day-Monroe','Kelly Bean'].includes(r.name)&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select></div>
       <div><label className="form-label">Search Tags</label><SearchTagsInput tags={f.search_tags||[]} onChange={v=>sv('search_tags',v)}/></div></div>
@@ -526,12 +526,14 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     onSave(dat);onClose()}}>{tcLook.loading?'Saving...':'Save'}</button></div></div></div>);
 }
 
-function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');const[avail,setAvail]=useState([]);const[showSzPicker,setShowSzPicker]=useState(false);
-  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false)}},[product,isOpen]);if(!isOpen||!product)return null;
+function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});const[d,setD]=useState({});const[reason,setReason]=useState('');const[adjType,setAdjType]=useState('manual');const[avail,setAvail]=useState([]);const[showSzPicker,setShowSzPicker]=useState(false);const[rawInput,setRawInput]=useState({});
+  React.useEffect(()=>{if(product){setA({...product._inv});setD({});setReason('');setAdjType('manual');setAvail([...(product.available_sizes||[])]);setShowSzPicker(false);setRawInput({})}},[product,isOpen]);if(!isOpen||!product)return null;
   const applyDelta=(sz,val)=>{const cur=product._inv?.[sz]||0;const delta=parseInt(val)||0;setD(x=>({...x,[sz]:delta}));setA(x=>({...x,[sz]:Math.max(0,cur+delta)}))};
   const isFw=product.is_footwear||(product.category||'').toLowerCase()==='footwear';
-  const isNumeric=!isFw&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
-  const sizePool=isFw?FOOTWEAR_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES);
+  // Ball run (3/4/5, …) checked before numeric — ball sizes are all-digits like the waist run.
+  const isBall=!isFw&&avail.length>0&&avail.every(s=>BALL_SIZES.includes(s));
+  const isNumeric=!isFw&&!isBall&&avail.length>0&&avail.every(s=>/^\d+$/.test(s));
+  const sizePool=isFw?FOOTWEAR_SIZES:(isBall?BALL_SIZES:(isNumeric?NUMERIC_SIZES:APPAREL_SIZES));
   const sortSz=(arr)=>[...arr].sort((x,y)=>{const xi=SZ_ORD.indexOf(x),yi=SZ_ORD.indexOf(y);if(xi<0&&yi<0)return(parseFloat(x)||0)-(parseFloat(y)||0);if(xi<0)return 1;if(yi<0)return -1;return xi-yi});
   const dispSizes=sortSz(avail);
   const addable=sizePool.filter(s=>!avail.includes(s));
@@ -549,8 +551,8 @@ function AdjModal({isOpen,onClose,product,onSave}){const[a,setA]=useState({});co
           <div style={{fontSize:18,fontWeight:800,color:'#0f172a',marginBottom:2}}>{cur}</div>
           <div style={{fontSize:9,color:'#94a3b8',marginBottom:4}}>current</div>
           <input style={{width:52,textAlign:'center',border:'2px solid '+(delta>0?'#22c55e':delta<0?'#ef4444':'#d1d5db'),borderRadius:4,padding:'4px 2px',fontSize:14,fontWeight:700,color:delta>0?'#166534':delta<0?'#dc2626':'#0f172a',background:delta>0?'#f0fdf4':delta<0?'#fef2f2':'white'}}
-            value={delta===0?'':((delta>0?'+':'')+delta)} placeholder="±0"
-            onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw)}}/>
+            value={rawInput[sz]!==undefined?rawInput[sz]:(delta===0?'':((delta>0?'+':'')+delta))} placeholder="±0"
+            onChange={e=>{const raw=e.target.value.replace(/[^0-9\-+]/g,'');setRawInput(x=>({...x,[sz]:raw}));if(raw===''||raw==='-'||raw==='+'){setD(x=>({...x,[sz]:0}));setA(x=>({...x,[sz]:cur}));return}applyDelta(sz,raw);setRawInput(x=>{const n={...x};delete n[sz];return n})}}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>= <strong style={{color:delta!==0?'#1e40af':'#94a3b8'}}>{newVal}</strong></div>
         </div>})}
         <div style={{position:'relative',alignSelf:'center'}}>
@@ -728,7 +730,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
 
 // ─── PUBLIC QUOTE FORM — no auth required, accessed via ?quote=TOKEN ───
 
-function QuoteForm({token,supabaseClient}){
+function QuoteForm({token}){// supabaseClient prop no longer used — all I/O goes through quote-portal
   const[loading,setLoading]=useState(true);
   const[qr,setQr]=useState(null);// quote request record
   const[custName,setCustName]=useState('');
@@ -744,24 +746,28 @@ function QuoteForm({token,supabaseClient}){
   const BASIC_SZS=['S','M','L','XL','2XL'];
 
   useEffect(()=>{
-    if(!supabaseClient||!token)return;
+    if(!token)return;
     (async()=>{
-      const{data:qrData,error:qrErr}=await supabaseClient.from('quote_requests').select('*').eq('token',token).single();
-      if(qrErr||!qrData){setError('Quote form not found or has expired.');setLoading(false);return}
+      // The public token editor goes through the service-role quote-portal function
+      // (quote_requests/quote_request_items are staff-only under RLS as of 00182).
+      let data;
+      try{
+        const res=await fetch('/.netlify/functions/quote-portal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'get',token})});
+        data=await res.json();
+        if(!res.ok||!data?.quote)throw new Error(data?.error||'Not found');
+      }catch{setError('Quote form not found or has expired.');setLoading(false);return}
+      const qrData=data.quote;
       if(qrData.status==='submitted'||qrData.status==='reviewed'||qrData.status==='converted'){setSubmitted(true);setLoading(false);return}
       setQr(qrData);
-      // Get customer name
-      const{data:cData}=await supabaseClient.from('customers').select('name').eq('id',qrData.customer_id).single();
-      if(cData)setCustName(cData.name);
-      // Load existing items if any
-      const{data:itemData}=await supabaseClient.from('quote_request_items').select('*').eq('quote_request_id',qrData.id).order('sort_order');
+      if(qrData.customer_name)setCustName(qrData.customer_name);
+      const itemData=data.items;
       if(itemData?.length)setItems(itemData.map(i=>({item_type:i.item_type||'description',description:i.description||'',sku:i.sku||'',color:i.color||'',sizes:i.sizes||{},total_qty:i.total_qty||'',decoration_notes:i.decoration_notes||'',notes:i.notes||''})));
       if(qrData.contact_name)setContactName(qrData.contact_name);
       if(qrData.contact_email)setContactEmail(qrData.contact_email);
       if(qrData.notes)setGlobalNotes(qrData.notes);
       setLoading(false);
     })();
-  },[token,supabaseClient]);
+  },[token]);
 
   const addItem=()=>setItems(prev=>[...prev,{item_type:'description',description:'',sku:'',color:'',sizes:{},total_qty:'',decoration_notes:'',notes:''}]);
   const removeItem=(idx)=>setItems(prev=>prev.filter((_,i)=>i!==idx));
@@ -769,21 +775,20 @@ function QuoteForm({token,supabaseClient}){
   const updateSize=(idx,sz,val)=>setItems(prev=>prev.map((it,i)=>i===idx?{...it,sizes:{...it.sizes,[sz]:parseInt(val)||0}}:it));
 
   const handleSave=async(andSubmit=false)=>{
-    if(!supabaseClient||!qr)return;
+    if(!qr)return;
     setSaving(true);
     try{
-      // Delete existing items then re-insert
-      await supabaseClient.from('quote_request_items').delete().eq('quote_request_id',qr.id);
-      const itemRows=items.filter(it=>it.sku||it.description).map((it,i)=>({
-        quote_request_id:qr.id,sort_order:i,item_type:it.sku?'sku':'description',
+      // Server replaces items (delete+insert) and applies the whitelisted quote patch;
+      // the token is the credential — no ids are sent as selectors.
+      const itemRows=items.filter(it=>it.sku||it.description).map(it=>({
         sku:it.sku||null,description:it.description||null,color:it.color||null,
-        sizes:it.sizes||{},total_qty:it.total_qty?parseInt(it.total_qty):null,
+        sizes:it.sizes||{},total_qty:it.total_qty||null,
         decoration_notes:it.decoration_notes||null,notes:it.notes||null
       }));
-      if(itemRows.length)await supabaseClient.from('quote_request_items').insert(itemRows);
-      const updates={contact_name:contactName||null,contact_email:contactEmail||null,notes:globalNotes||null};
-      if(andSubmit){updates.status='submitted';updates.submitted_at=new Date().toISOString()}
-      await supabaseClient.from('quote_requests').update(updates).eq('id',qr.id);
+      const res=await fetch('/.netlify/functions/quote-portal',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({action:'save',token,submit:andSubmit,items:itemRows,
+          quote:{contact_name:contactName||null,contact_email:contactEmail||null,notes:globalNotes||null}})});
+      if(!res.ok){const data=await res.json().catch(()=>({}));throw new Error(data.error||'Save failed')}
       if(andSubmit){
         setSubmitted(true);
         // Notify the rep via the content-locked server endpoint — the public quote

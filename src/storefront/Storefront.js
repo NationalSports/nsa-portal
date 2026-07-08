@@ -1,10 +1,11 @@
 /* eslint-disable */
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Elements, PaymentElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
 import { placementById } from '../lib/artPlacements';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
+import { normSzName } from '../pricing';
 
 // Stripe publishable key is fetched at runtime from the server so changing
 // it in Netlify env vars takes effect without a rebuild.
@@ -25,6 +26,14 @@ if (typeof window !== 'undefined') _getStripePromise();
 const cartKey = (slug) => 'nsa_cart_' + slug;
 const loadCart = (slug) => { try { return JSON.parse(localStorage.getItem(cartKey(slug)) || '[]'); } catch { return []; } };
 const saveCart = (slug, items) => { try { localStorage.setItem(cartKey(slug), JSON.stringify(items)); } catch {} };
+
+// ── Player roster link (per-store) ───────────────────────────────────
+// A player arrives via /shop/<slug>?player=<token>. We stash the token so it
+// survives in-store navigation (navTo builds clean paths without the query),
+// then resolve it to the player's name/number for greeting + prefill.
+const playerKey = (slug) => 'nsa_player_' + slug;
+const loadPlayerToken = (slug) => { try { return localStorage.getItem(playerKey(slug)) || ''; } catch { return ''; } };
+const savePlayerToken = (slug, tok) => { try { if (tok) localStorage.setItem(playerKey(slug), tok); else localStorage.removeItem(playerKey(slug)); } catch {} };
 const lineUnit = (l) => (Number(l.unit_price) || 0) + (Number(l.fundraise) || 0) + (Number(l.name_extra) || 0) + (Number(l.size_extra) || 0);
 const cartCount = (items) => items.reduce((a, l) => a + (l.qty || 1), 0);
 const cartTotal = (items) => items.reduce((a, l) => a + lineUnit(l) * (l.qty || 1), 0);
@@ -224,8 +233,19 @@ function useTheme(store) {
 function useScrolled(px = 56) {
   const [scrolled, setScrolled] = useState(false);
   useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > px);
-    onScroll();
+    // Hysteresis stops the header from jiggling. Collapsing removes ~60px from the
+    // sticky region, and the browser's scroll-anchoring nudges scrollY by about that
+    // much — with a single threshold that nudge flips `scrolled` straight back and the
+    // two states fight forever. A collapse/expand gap wider than the shift absorbs it,
+    // so the state settles instead of oscillating.
+    const enter = Math.max(px, 72), exit = 8;
+    let on = window.scrollY > enter;
+    setScrolled(on);
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (!on && y > enter) { on = true; setScrolled(true); }
+      else if (on && y <= exit) { on = false; setScrolled(false); }
+    };
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, [px]);
@@ -270,6 +290,29 @@ export default function Storefront() {
   useEffect(() => { if (route.slug) setCart(loadCart(route.slug)); }, [route.slug]);
   const updateCart = useCallback((items) => { setCart(items); saveCart(route.slug, items); }, [route.slug]);
   const addToCart = useCallback((line) => { const next = [...loadCart(route.slug), { ...line, key: Math.random().toString(36).slice(2) }]; updateCart(next); }, [route.slug, updateCart]);
+
+  // Roster player context, resolved from ?player=<token> (or a previously
+  // stashed token for this store). null = shopping as a normal guest.
+  const [playerCtx, setPlayerCtx] = useState(null);
+  useEffect(() => {
+    if (!route.slug) { setPlayerCtx(null); return; }
+    const qsTok = (new URLSearchParams(window.location.search).get('player') || '').trim();
+    if (qsTok) savePlayerToken(route.slug, qsTok);
+    const tok = qsTok || loadPlayerToken(route.slug);
+    if (!tok) { setPlayerCtx(null); return; }
+    let cancelled = false;
+    (async () => {
+      const r = await checkoutCall({ action: 'roster_lookup', storeSlug: route.slug, token: tok });
+      if (cancelled) return;
+      if (r && r.player) setPlayerCtx({ token: tok, ...r.player });
+      // Only forget the token when the server says it's genuinely invalid — a
+      // transient network error shouldn't wipe a real player's link.
+      else if (r && r.code === 'roster_not_found') { savePlayerToken(route.slug, ''); setPlayerCtx(null); }
+      else setPlayerCtx(null);
+    })();
+    return () => { cancelled = true; };
+  }, [route.slug]);
+  const clearPlayer = useCallback(() => { savePlayerToken(route.slug, ''); setPlayerCtx(null); }, [route.slug]);
 
   const [store, setStore] = useState(null);
   const [products, setProducts] = useState([]);
@@ -345,10 +388,18 @@ export default function Storefront() {
   if (status === 'error') return <Splash>Something went wrong.<div style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>{errMsg}</div></Splash>;
 
   const isOpen = store.status === 'open';
+  // Bifurcate by roster position: a positioned player (e.g. goalkeeper) sees only
+  // items tagged for everyone ('all') or their position; guests and unassigned
+  // players see the full catalog and self-select. Everything downstream — the
+  // category nav, browse grid, hero, and direct product/package links — reads
+  // from this filtered list so the store is consistently scoped to the player.
+  const shownProducts = (playerCtx && playerCtx.position)
+    ? products.filter((p) => { const a = (p.roster_audience || 'all'); return a === 'all' || a === playerCtx.position; })
+    : products;
   // Category list for the sub-nav: ordered by the builder's sort order, "All Gear" first.
   const categories = (() => {
     const seen = new Map();
-    for (const p of groupProducts(products)) {
+    for (const p of groupProducts(shownProducts)) {
       const c = (p.rep.store_category || '').trim();
       if (!c) continue;
       if (!seen.has(c)) seen.set(c, p.rep.sort_order || 0);
@@ -366,16 +417,17 @@ export default function Storefront() {
         <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
+      {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
-        {route.view === 'home' && <Home store={store} theme={theme} products={products} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
+        {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
         {route.view === 'p' && (() => {
-          const grp = groupProducts(products).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
-          const rep = grp ? grp.rep : products.find((p) => p.webstore_product_id === route.id);
-          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} /></Wrap>;
+          const grp = groupProducts(shownProducts).find((g) => g.rows.some((r) => r.webstore_product_id === route.id));
+          const rep = grp ? grp.rep : shownProducts.find((p) => p.webstore_product_id === route.id);
+          return <Wrap><ProductPage store={store} theme={theme} product={rep} colorRows={grp ? grp.rows : (rep ? [rep] : [])} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>;
         })()}
-        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={products.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} /></Wrap>}
+        {route.view === 'b' && <Wrap><BundlePage store={store} theme={theme} product={shownProducts.find((p) => p.webstore_product_id === route.id)} components={bundleItems.filter((b) => b.bundle_id === route.id)} compInfo={compInfo} products={[...products, ...compExtras]} isOpen={isOpen} onAdd={addToCart} player={playerCtx} /></Wrap>}
         {route.view === 'cart' && <Wrap><CartPage store={store} theme={theme} cart={cart} onUpdate={updateCart} /></Wrap>}
-        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onClear={() => updateCart([])} /></Wrap>}
+        {route.view === 'checkout' && <Wrap><CheckoutPage store={store} theme={theme} cart={cart} onUpdate={updateCart} onClear={() => updateCart([])} player={playerCtx} /></Wrap>}
         {route.view === 'order' && <Wrap><OrderStatusPage store={store} theme={theme} orderId={route.id} /></Wrap>}
       </main>
       <Footer store={store} theme={theme} />
@@ -475,6 +527,27 @@ function PreviewBanner({ status }) {
   return <div style={{ background: '#fde68a', color: '#92400e', textAlign: 'center', fontSize: 13, fontWeight: 700, padding: '8px 16px', letterSpacing: 0.3 }}>
     PREVIEW · This store is {(status || 'draft').toUpperCase()} and not open to shoppers yet.
   </div>;
+}
+
+// Shown when a player follows their personal roster link. Greets them by name,
+// tells them personalization is prefilled, and offers an escape hatch if the
+// wrong person is at the keyboard (a parent ordering for a different kid).
+function PlayerBanner({ player, theme, onClear }) {
+  const posLabel = player.position === 'gk' ? 'Goalkeeper' : player.position === 'field' ? 'Field player' : '';
+  const label = [player.player_name, player.player_number ? '#' + player.player_number : ''].filter(Boolean).join(' ');
+  return (
+    <div style={{ background: theme.ink, color: '#fff', padding: '9px 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, flexWrap: 'wrap', fontSize: 14 }}>
+      <span style={{ fontWeight: 700 }}>
+        {player.ordered ? '✓ ' : '👟 '}
+        You’re shopping for <span style={{ color: theme.accent }}>{label || 'your player'}</span>
+        {posLabel ? <span style={{ opacity: 0.85, fontWeight: 600 }}> · {posLabel} kit</span> : null}
+        {player.ordered ? ' — already ordered (you can order again).' : '. Name & number are filled in for you.'}
+      </span>
+      <button onClick={onClear} style={{ background: 'transparent', border: '1px solid rgba(255,255,255,0.5)', color: '#fff', borderRadius: 4, padding: '3px 10px', fontSize: 12, fontWeight: 700, cursor: 'pointer', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Not you?
+      </button>
+    </div>
+  );
 }
 
 // Diagonal hash texture for team-color heroes.
@@ -596,8 +669,10 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
               return (
                 <div key={i} style={{ gridColumn: full ? '1 / span 2' : tall ? '1' : '2', gridRow: spanRows ? '1 / span 2' : 'auto', aspectRatio: full ? '4 / 3' : spanRows ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
-                    <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-                    <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                    <div style={{ position: 'absolute', inset: '8%' }}>
+                      <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                      <DecoOverlay decorations={p.decorations} colorName={p.color} />
+                    </div>
                   </div>
                 </div>
               );
@@ -754,14 +829,18 @@ function bundleBadge(count, theme) {
 // black tee); falls back to the placed art_url.
 const decoUrlForColor = (d, colorName) => {
   const k = String(colorName || '').trim().toLowerCase();
-  return (d && d.cw_by_color && k && d.cw_by_color[k]) || (d && d.art_url) || '';
+  const v = d && d.cw_by_color && k && d.cw_by_color[k]; // bare url (legacy) or { url, color_way_id }
+  return (typeof v === 'string' ? v : (v && v.url) || '') || (d && d.art_url) || '';
 };
 // Applied logo art (from webstore_products.decorations) composited on the
 // garment image at its placement — the on-screen mock shoppers see. colorName picks the
 // per-color web logo so the right color way shows for the active variant.
 function DecoOverlay({ decorations, side = 'front', colorName }) {
   if (!Array.isArray(decorations)) return null;
-  return <>{decorations.filter((d) => d && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
+  // Skip `baked` decorations — their logo is already rendered into the garment image (a
+  // Quick Mock), so overlaying it again would double-stamp. They're retained on the record
+  // only so the store→SO conversion still knows what art to print.
+  return <>{decorations.filter((d) => d && !d.baked && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
     const pl = placementById(d.placement);
     // A decoration may carry its own x/y/w (editable placement) overriding the preset.
     const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
@@ -790,25 +869,28 @@ function PersoMock({ takesNumber, takesName, decorations = [], sampleName = 'PLA
 }
 
 function BundleCollage({ comps, theme }) {
-  const imgs = comps.map((c) => c.img).filter(Boolean).slice(0, 4);
-  if (!imgs.length) return <Placeholder theme={theme} label="Package" />;
-  const n = imgs.length;
-  const Tile = ({ src, style }) => (
-    <div style={{ overflow: 'hidden', background: '#EEF1F6', ...style }}>
-      <img className="sf-img" src={src} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+  // Each tile shows the component WITH its inherited decoration (the kit garments are
+  // decorated in production — the preview must say so, not show blank garments).
+  const tiles = comps.filter((c) => c.img).slice(0, 4);
+  if (!tiles.length) return <Placeholder theme={theme} label="Package" />;
+  const n = tiles.length;
+  const Tile = ({ c, style }) => (
+    <div style={{ position: 'relative', overflow: 'hidden', background: '#EEF1F6', ...style }}>
+      <img className="sf-img" src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      <DecoOverlay decorations={c.decorations} colorName={c.color} />
     </div>
   );
   const grid = (cols, rows, children) => (
     <div style={{ width: '100%', height: '100%', display: 'grid', gridTemplateColumns: cols, gridTemplateRows: rows, gap: 3, background: '#fff' }}>{children}</div>
   );
-  if (n === 1) return grid('1fr', '1fr', [<Tile key={0} src={imgs[0]} />]);
-  if (n === 2) return grid('1fr 1fr', '1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+  if (n === 1) return grid('1fr', '1fr', [<Tile key={0} c={tiles[0]} />]);
+  if (n === 2) return grid('1fr 1fr', '1fr', tiles.map((c, i) => <Tile key={i} c={c} />));
   if (n === 3) return grid('1.5fr 1fr', '1fr 1fr', [
-    <Tile key={0} src={imgs[0]} style={{ gridRow: '1 / span 2' }} />,
-    <Tile key={1} src={imgs[1]} />,
-    <Tile key={2} src={imgs[2]} />,
+    <Tile key={0} c={tiles[0]} style={{ gridRow: '1 / span 2' }} />,
+    <Tile key={1} c={tiles[1]} />,
+    <Tile key={2} c={tiles[2]} />,
   ]);
-  return grid('1fr 1fr', '1fr 1fr', imgs.map((s, i) => <Tile key={i} src={s} />));
+  return grid('1fr 1fr', '1fr 1fr', tiles.map((c, i) => <Tile key={i} c={c} />));
 }
 
 // Map a category name to a garment silhouette kind for the placeholder tile.
@@ -839,6 +921,10 @@ function ColorDots({ rows, theme, max = 4 }) {
 function compMeta(c, wpById, compInfo) {
   const wp = c && c.webstore_product_id && wpById ? wpById[c.webstore_product_id] : null;
   if (wp) return { name: wp.name, image: wp.image_front_url, sizes: wp.available_sizes, color: wp.color, decorations: wp.decorations };
+  // Not linked to an in-store item — if the store carries a single of the SAME base
+  // product, inherit its photo/decorations so the component still shows its decorated look.
+  const twin = c && c.product_id && wpById ? Object.values(wpById).find((w) => w && w.product_id === c.product_id && w.kind !== 'bundle') : null;
+  if (twin) return { name: twin.name, image: twin.image_front_url, sizes: twin.available_sizes, color: twin.color, decorations: twin.decorations };
   const base = (compInfo || {})[c.product_id] || {};
   return { name: base.name || c.sku, image: base.image_front_url, sizes: base.available_sizes, color: null, decorations: null };
 }
@@ -849,7 +935,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
   // For a package, preview the actual pieces instead of one image.
   const comps = isBundle
     ? bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; })
+        .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; })
     : [];
   const hasCollage = isBundle && comps.some((c) => c.img);
   const b = isBundle ? bundleBadge(comps.length, theme) : stockBadge(p, theme);
@@ -861,10 +947,10 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <>
-                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+            ? <div style={{ position: 'absolute', inset: '10%', width: '80%', height: '80%' }}>
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
-              </>
+              </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
         {/* Stock / package badge — skewed −6°, top-right */}
         <span style={{ position: 'absolute', top: 12, right: 12, fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', padding: '4px 10px', background: b.bg, color: b.color, transform: 'skewX(-6deg)', borderRadius: 2, zIndex: 2 }}><span style={{ display: 'inline-block', transform: 'skewX(6deg)' }}>{b.text}</span></span>
@@ -924,7 +1010,7 @@ function BannerCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById =
 // component item with its image and name. Shoppers see exactly what's in the kit.
 function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById = null }) {
   const comps = bundleItems.filter((b) => b.bundle_id === p.webstore_product_id)
-    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name }; });
+    .map((c) => { const m = compMeta(c, wpById, compInfo); return { img: m.image, name: m.name, decorations: m.decorations, color: m.color }; });
   const go = () => navTo(`/shop/${store.slug}/b/${p.webstore_product_id}`);
   return (
     <div className="sf-card" onClick={go} style={{ gridColumn: '1 / -1', cursor: 'pointer', background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 16px rgba(0,0,0,0.07)' }}>
@@ -945,7 +1031,9 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
         {comps.map((c, i) => (
           <div key={i} style={{ flex: '1 1 0', minWidth: 120, padding: '14px 12px 16px', borderRight: i < comps.length - 1 ? `1px solid ${theme.line}` : 'none', textAlign: 'center' }}>
             <div style={{ width: '100%', aspectRatio: '1 / 1', background: theme.warm, borderRadius: 4, overflow: 'hidden', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {c.img ? <img src={c.img} alt="" style={{ width: '80%', height: '80%', objectFit: 'contain', display: 'block' }} /> : <GarmentTile theme={theme} store={store} kind="top" />}
+              {/* Inner 4:5 cover frame = the exact frame placements are authored against,
+                  so the inherited decoration overlay lands where it does on the live card. */}
+              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}><img src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /><DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
             </div>
             <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, lineHeight: 1.2 }}>{c.name}</div>
           </div>
@@ -969,7 +1057,7 @@ function swatchColor(name) {
 }
 
 // ── Single product ───────────────────────────────────────────────────
-function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd }) {
+function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd, player = null }) {
   const [colorId, setColorId] = useState(rep ? rep.webstore_product_id : null);
   const [size, setSize] = useState(null);
   const [img, setImg] = useState('front');
@@ -979,6 +1067,14 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const [added, setAdded] = useState(false);
   // Reset the picked color / size when navigating to a different product.
   useEffect(() => { setColorId(rep ? rep.webstore_product_id : null); setSize(null); setImg('front'); }, [rep ? rep.webstore_product_id : null]);
+  // Prefill personalization from the player's roster link — jersey number is the
+  // high-value bit; name is prefilled too but stays editable.
+  useEffect(() => {
+    if (!player || !rep) return;
+    if (rep.takes_number && player.player_number) setNum(String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3));
+    if (rep.takes_name && player.player_name) setPname(String(player.player_name).slice(0, 20));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, rep ? rep.webstore_product_id : null]);
   if (!rep) return <Splash>Product not found.</Splash>;
   // The active color variant drives the image, sizes, stock, price and cart line —
   // each color is its own row, so everything downstream stays per-SKU and correct.
@@ -994,15 +1090,21 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   // can actually get (in stock now, warehouse or vendor, OR restocking within
   // ~2 weeks); if nothing qualifies yet but the item is on the way, fall back to
   // the full scale so backorderable items stay orderable.
+  // Map an offered label to the catalog's size code before matching. OMG imports store the
+  // report's verbose labels ("Men's Small", "Men's 3X-Large"), which never equal the product's
+  // "S"/"3XL" scale — so every offered size filtered out and an in-stock item read "Sold out"
+  // while the badge (which sums raw stock) still said "In stock". normSzName strips the
+  // gender/age qualifier and normalizes the size; regularSize folds a tall to its regular twin.
+  const _offeredKey = (o) => String(regularSize(normSzName(o))).toUpperCase();
   const sizesFor = (c) => {
-    const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(regularSize) : null;
-    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.some((o) => String(o).toUpperCase() === String(s).toUpperCase()));
+    const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
+    const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
     if (!isTracked(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
       // made-to-order item these always sell — checkout's stock guard skips them too.
-      const prodScale = foldScale(c.available_sizes);
-      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.some((s) => String(s).toUpperCase() === String(regularSize(o)).toUpperCase()));
+      const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
+      const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
       return [...scale, ...extras]; // not inventory-tracked → every offered size sells
     }
     const avail = scale.filter((s) => sizeSellable(c, s));
@@ -1020,9 +1122,16 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const upNow = sizeUp(p, size);
   const total = priceOf(p) + upNow + (p.takes_name && pname.trim() ? nameUp : 0);
   const needSize = isFitGroup ? true : sizesArr.length > 0;
+  // A product that inherently has sizes (a real size scale, or a rep-added
+  // sizes_offered list) but yields ZERO sellable sizes is sold out in every size and
+  // not restocking. Its size list is empty, so needSize is false — without this guard
+  // the button would enable and add it with size=null (unfulfillable). Block it; the
+  // server rejects the same case (checkSizesRequired) as defense in depth.
+  const inherentlySized = !isFitGroup && (foldScale(p.available_sizes).length > 0 || (Array.isArray(p.sizes_offered) && p.sizes_offered.length > 0));
+  const soldOutNoSize = inherentlySized && sizesArr.length === 0;
   const needNumber = !!p.takes_number;
   const isPersonalized = needNumber || !!p.takes_name;
-  const canAdd = isOpen && (!needSize || size) && (!needNumber || num.trim());
+  const canAdd = isOpen && !soldOutNoSize && (!needSize || size) && (!needNumber || num.trim());
   const addToCart = () => {
     onAdd({
       kind: 'single', webstore_product_id: p.webstore_product_id, product_id: p.product_id, sku: p.sku,
@@ -1131,7 +1240,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
               </div>
             )}
             <button className="sf-btn sf-skew" onClick={addToCart} disabled={!canAdd} style={{ ...cta(theme), flex: 1, minWidth: 220, opacity: canAdd ? 1 : 0.55, cursor: canAdd ? 'pointer' : 'not-allowed' }}>
-              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
+              <span style={{ display: 'inline-block', transform: 'skewX(3deg)' }}>{!isOpen ? 'Store not open yet' : soldOutNoSize ? 'Sold out' : added ? '✓ Added to Cart' : needSize && !size ? 'Select a size' : needNumber && !num.trim() ? 'Enter a number' : `Add to Cart · ${money(total * (isPersonalized ? 1 : qty))}`}</span>
             </button>
           </div>
           {added && <div style={{ marginTop: 14, background: '#EAF3EC', border: '1px solid #BFE0C8', color: STOCK.in, borderRadius: 6, padding: '11px 14px', fontWeight: 700, fontSize: 14, display: 'flex', alignItems: 'center', gap: 8 }}>✓ Added to cart — <span onClick={() => navTo('/shop/' + store.slug + '/cart')} style={{ textDecoration: 'underline', cursor: 'pointer' }}>view cart</span></div>}
@@ -1146,11 +1255,18 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
 }
 
 // ── Package ──────────────────────────────────────────────────────────
-function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd }) {
+function BundlePage({ store, theme, product: p, components, compInfo = {}, products = [], isOpen, onAdd, player = null }) {
   const [picks, setPicks] = useState({}); // component id -> selected size
   const [nums, setNums] = useState({});   // component id -> jersey number
   const [names, setNames] = useState({}); // component id -> custom name
   const [added, setAdded] = useState(false);
+  // Prefill every numbered/named component from the player's roster link.
+  useEffect(() => {
+    if (!player || !components) return;
+    if (player.player_number) { const n = String(player.player_number).replace(/[^0-9]/g, '').slice(0, 3); setNums((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_number && !next[c.id]) next[c.id] = n; }); return next; }); }
+    if (player.player_name) { const nm = String(player.player_name).slice(0, 20); setNames((prev) => { const next = { ...prev }; components.forEach((c) => { if (c.takes_name && !next[c.id]) next[c.id] = nm; }); return next; }); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [player, p ? p.webstore_product_id : null]);
   const wpById = buildWpById(products);
   const meta = (c) => compMeta(c, wpById, compInfo);
   if (!p) return <Splash>Package not found.</Splash>;
@@ -1228,7 +1344,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
               <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
                 {/* Full-width item image */}
                 <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
-                  {compImg(c) ? <img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {compImg(c) ? <><img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
                   {/* Step badge — top-left */}
                   <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
                   {/* Required badge — top-right */}
@@ -1393,6 +1509,46 @@ async function checkoutCall(payload) {
   } catch (e) { return { error: { message: e.message } }; }
 }
 
+// After a `totals_changed` rejection the cart's snapshot prices are stale — a rep changed
+// a price, the store's fundraising, or a size upcharge while items sat in the cart. Re-read
+// the live prices for every product in the cart from the same public view the storefront
+// prices from, and rebuild each line's price fields so the next submit computes the exact
+// total the server will accept. Turns a permanent dead-end (retrying the stale total 409s
+// forever) into a "prices updated — review and place again" flow. Returns a NEW cart array;
+// on any lookup failure returns the original cart unchanged (never worse than before).
+async function repriceCart(store, cart) {
+  try {
+    const ids = [...new Set(cart.map((l) => l.webstore_product_id).filter(Boolean))];
+    if (!ids.length) return cart;
+    const [{ data: prods }, { data: bitems }] = await Promise.all([
+      supabase.from('webstore_storefront_products')
+        .select('webstore_product_id,retail_price,fundraise_amount,size_upcharges,name_upcharge')
+        .eq('store_id', store.id).in('webstore_product_id', ids),
+      supabase.from('webstore_bundle_items').select('id,bundle_id,name_upcharge,takes_name').in('bundle_id', ids),
+    ]);
+    const byId = {}; (prods || []).forEach((p) => { byId[p.webstore_product_id] = p; });
+    const biById = {}; (bitems || []).forEach((b) => { biById[b.id] = b; });
+    return cart.map((l) => {
+      const p = byId[l.webstore_product_id];
+      if (!p) return l; // product gone/deactivated — leave as-is; the server surfaces its own error
+      const unit_price = Number(p.retail_price) || 0;
+      const fundraise = Number(p.fundraise_amount) || 0;
+      if (l.kind === 'bundle') {
+        // Bundle name upcharge = sum over selected components that take a name and have one.
+        const name_extra = (l.components || []).reduce((a, c) => {
+          const bi = c.bundle_item_id ? biById[c.bundle_item_id] : null;
+          const hasName = c.player_name && String(c.player_name).trim();
+          return a + ((bi && bi.takes_name && hasName) ? (Number(bi.name_upcharge) || 0) : 0);
+        }, 0);
+        return { ...l, unit_price, fundraise, name_extra };
+      }
+      const size_extra = l.size ? (Number((p.size_upcharges || {})[l.size]) || 0) : 0;
+      const name_extra = (l.player_name && String(l.player_name).trim()) ? (Number(p.name_upcharge) || 0) : 0;
+      return { ...l, unit_price, fundraise, size_extra, name_extra };
+    });
+  } catch (e) { return cart; }
+}
+
 // Percent coupons discount the order; whether shipping is included is per-coupon
 // (cover_shipping, default on). Free shipping is handled by zeroing the fee.
 function couponDiscount(coupon, cart, shipping = 0) {
@@ -1401,12 +1557,59 @@ function couponDiscount(coupon, cart, shipping = 0) {
   return Math.round(base * (Number(coupon.value) || 0) / 100 * 100) / 100;
 }
 
-function CheckoutPage({ store, theme, cart, onClear }) {
+// Billing-ZIP collector for club-delivery (pickup) stores. Instead of a bare manual
+// "Billing ZIP" text box, we source the tax ZIP from a Stripe billing AddressElement —
+// which Link autofills for returning shoppers, so most buyers don't type it at all.
+// IMPORTANT: this Elements instance ONLY hosts the address widget; the real charge still
+// runs through the separate PaymentIntent-backed Elements below, unchanged. The amount
+// here is nominal (never charged) and the options object is module-level constant so the
+// Elements never re-initializes and wipes the buyer's input as the tax total updates.
+const STRIPE_ADDR_OPTS = { mode: 'payment', amount: 100, currency: 'usd', appearance: { theme: 'stripe' } };
+
+// If the Stripe address widget ever fails to render/init, fall back to the plain ZIP
+// input so club-delivery checkout can never be *blocked* by this enhancement.
+class StripeFieldBoundary extends React.Component {
+  constructor(p) { super(p); this.state = { failed: false }; }
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(err) { try { console.warn('[storefront] billing address widget failed; using plain ZIP:', err && err.message); } catch (e) {} }
+  render() { return this.state.failed ? this.props.fallback : this.props.children; }
+}
+
+function BillingAddressInner({ onZip }) {
+  return (
+    <AddressElement
+      options={{ mode: 'billing', fields: { phone: 'never' } }}
+      onChange={(e) => {
+        const pc = e && e.value && e.value.address && e.value.address.postal_code;
+        if (pc) onZip(String(pc).replace(/\D/g, '').slice(0, 5));
+      }}
+    />
+  );
+}
+
+// Renders the Stripe billing address (its postal drives the sales-tax quote), or the
+// plain ZIP `fallback` when locked (PaymentIntent created — inputs frozen), when Stripe
+// isn't available, or if the widget errors.
+function BillingZip({ stripePromise, disabled, onZip, fallback }) {
+  if (disabled || !stripePromise) return fallback;
+  return (
+    <StripeFieldBoundary fallback={fallback}>
+      <Elements stripe={stripePromise} options={STRIPE_ADDR_OPTS}>
+        <BillingAddressInner onZip={onZip} />
+      </Elements>
+    </StripeFieldBoundary>
+  );
+}
+
+function CheckoutPage({ store, theme, cart, onUpdate, onClear, player = null }) {
   const allowUnpaid = store.payment_mode === 'unpaid' || store.payment_mode === 'either';
   const allowPaid = store.payment_mode === 'paid' || store.payment_mode === 'either';
   const [stripePromise, setStripePromise] = useState(null);
   useEffect(() => { if (allowPaid) _getStripePromise().then((p) => setStripePromise(p || null)); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '' });
+  // player_name = who the gear is for (often a parent buys for their kid). On
+  // club/team stores it's required so every order tags to a player for the
+  // player report + bagging; pre-filled from the roster link when present.
+  const [buyer, setBuyer] = useState({ name: '', email: '', phone: '', zip: '', player_name: (player && player.player_name) ? String(player.player_name) : '' });
   const [ship, setShip] = useState({ name: '', street1: '', street2: '', city: '', state: '', zip: '' });
   const [method, setMethod] = useState(allowPaid ? 'paid' : 'unpaid');
   const [busy, setBusy] = useState(false);
@@ -1416,6 +1619,13 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const [couponInput, setCouponInput] = useState('');
   const [coupon, setCoupon] = useState(null);
   const [couponErr, setCouponErr] = useState('');
+  // Shown after a `totals_changed` rejection once we've refreshed the cart to live prices.
+  const [priceNotice, setPriceNotice] = useState(false);
+  // Once the PaymentIntent exists (card form is mounted), the order + charge amount are
+  // fixed server-side. Freeze the inputs that would change the price/method so the buyer
+  // can't (e.g.) apply a coupon that lowers the displayed total while the card still
+  // charges the original amount, or switch to team-tab and mint a duplicate order.
+  const locked = !!clientSecret;
   const [checkoutMsg, setCheckoutMsg] = useState('');
   useEffect(() => { supabase.from('webstore_settings').select('checkout_message').eq('id', 1).maybeSingle().then(({ data }) => setCheckoutMsg((data && data.checkout_message) || '')).catch(() => {}); }, []);
   const needAddr = store.delivery_mode === 'ship_home';
@@ -1436,10 +1646,28 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [_shipKey, _cartKey, coupon && coupon.code, store.slug]);
 
+  // place_order idempotency: one clientRef per distinct checkout payload. An identical
+  // resubmit (double-click, retry after a lost response) reuses the ref, so the server
+  // returns the SAME order instead of creating a duplicate (migration 00170); any change
+  // to the cart, buyer, coupon, or pay mode mints a fresh ref. Cleared on completion.
+  const _orderRefState = useRef({ key: '', ref: '' });
+  const orderRefFor = (payMode) => {
+    const key = JSON.stringify([store.slug, payMode, buyer.email, coupon ? coupon.code : null,
+      cart.map((l) => [l.webstore_product_id, l.size, l.qty, l.player_name || null, l.player_number || null, l.components || null])]);
+    if (_orderRefState.current.key !== key) {
+      const uuid = (window.crypto && window.crypto.randomUUID)
+        ? window.crypto.randomUUID()
+        : 'ref' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+      _orderRefState.current = { key, ref: uuid };
+    }
+    return _orderRefState.current.ref;
+  };
+  const clearOrderRef = () => { _orderRefState.current = { key: '', ref: '' }; };
+
   if (!cart.length) return <div style={{ paddingTop: 26 }}><BackLink store={store} theme={theme} /><Splash>Your cart is empty.</Splash></div>;
 
   const validBuyer = buyer.name.trim() && /.+@.+\..+/.test(buyer.email)
-    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : ((buyer.zip || '').length === 5));
+    && (needAddr ? (ship.street1 && ship.city && ship.state && ship.zip) : (((buyer.zip || '').length === 5) && (buyer.player_name || '').trim()));
   const ship_ = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cart, ship_);
   const processing = procFeeAmt(store, cart);
@@ -1447,18 +1675,29 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   const comped = payable <= 0; // fully covered by a code → no card, invoice the program
 
   const applyCoupon = async () => {
-    setCouponErr(''); const code = couponInput.trim(); if (!code) return;
+    setCouponErr(''); setPriceNotice(false); const code = couponInput.trim(); if (!code) return;
     const r = await checkoutCall({ action: 'check_coupon', storeSlug: store.slug, code });
     if (r.error) { setCoupon(null); setCouponErr(r.error.message); return; }
     setCoupon(r.coupon); setCouponErr('');
   };
 
+  // A `totals_changed` 409 means the cart's snapshot prices went stale (a price/fundraise
+  // change while items sat in the cart). Refresh the cart to live prices — so the next
+  // attempt computes the total the server accepts — and show a notice, instead of the
+  // dead-end error the shopper could never clear by retrying.
+  const onTotalsChanged = async () => {
+    const repriced = await repriceCart(store, cart);
+    onUpdate(repriced);
+    setPriceNotice(true); setErr('');
+  };
+
   const submitUnpaid = async () => {
-    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'unpaid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('unpaid'), rosterToken: player ? player.token : null });
     setBusy(false);
-    if (r.error) { setErr(r.error.message); return; }
+    if (r.error) { if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
+    clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
   };
 
@@ -1467,10 +1706,18 @@ function CheckoutPage({ store, theme, cart, onClear }) {
   // the PaymentIntent with the SERVER total, then we show the card form. The
   // Stripe webhook flips it to paid even if the buyer closes the tab.
   const startCard = async () => {
-    setErr(''); if (!validBuyer) { setErr('Please complete your contact and shipping info.'); return; }
+    setErr(''); setPriceNotice(false); if (!validBuyer) { setErr(needAddr ? 'Please complete your contact and shipping info.' : 'Please complete your name, email, player name and billing ZIP.'); return; }
     setBusy(true);
-    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100) });
-    if (r.error) { setErr(r.error.message); setBusy(false); return; }
+    const r = await checkoutCall({ action: 'place_order', storeSlug: store.slug, cart, buyer, ship: { ...ship, name: ship.name || buyer.name }, payMode: 'paid', couponCode: coupon ? coupon.code : null, expectedTotalCents: Math.round(payable * 100), clientRef: orderRefFor('paid'), rosterToken: player ? player.token : null });
+    if (r.error) { setBusy(false); if (r.code === 'totals_changed') return onTotalsChanged(); setErr(r.error.message); return; }
+    if (r.alreadyPaid) {
+      // Replay of an order whose payment already went through — finalize and land
+      // on the confirmation instead of showing a card form for a settled intent.
+      await checkoutCall({ action: 'finalize', orderId: r.order.id, stripePiId: r.order.stripe_pi_id || r.intentId });
+      clearOrderRef();
+      onClear(); navTo(`/shop/${store.slug}/order/${r.order.id}`);
+      return;
+    }
     if (!r.clientSecret) { setErr('Could not start payment.'); setBusy(false); return; }
     setPendingOrder(r.order);
     setClientSecret(r.clientSecret);
@@ -1484,6 +1731,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
     // closed, network drop), the Stripe webhook does the same — the atomic
     // confirmation_sent claim means exactly one of them sends the email.
     await checkoutCall({ action: 'finalize', orderId: pendingOrder.id, stripePiId: paymentIntentId || pendingOrder.stripe_pi_id });
+    clearOrderRef();
     onClear(); navTo(`/shop/${store.slug}/order/${pendingOrder.id}`);
   };
 
@@ -1493,25 +1741,27 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       <h1 style={{ position: 'relative', fontFamily: DISPLAY, fontSize: 'clamp(32px,5vw,46px)', textTransform: 'uppercase', letterSpacing: 0.3, margin: '0 0 26px', lineHeight: 0.95, color: theme.ink, paddingBottom: 14 }}>Checkout<span aria-hidden style={{ position: 'absolute', left: 0, bottom: 0, width: 58, height: 4, background: theme.accent, transform: 'skewX(-12deg)' }} /></h1>
       {checkoutMsg && <div style={{ background: '#eff6ff', color: '#1e3a5f', border: '1px solid #bfdbfe', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14, whiteSpace: 'pre-wrap' }}>{checkoutMsg}</div>}
       {err && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>{err}</div>}
+      {priceNotice && <div style={{ background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', padding: '10px 14px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>Prices changed while you were shopping, so we refreshed your cart to the current prices. Please review your new total below and place your order again.</div>}
 
-      <Field label="Your name"><input style={inp} value={buyer.name} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
+      <Field label="Your name"><input style={inp} value={buyer.name} disabled={locked} onChange={(e) => setBuyer({ ...buyer, name: e.target.value })} /></Field>
       <div style={{ display: 'flex', gap: 12 }}>
-        <Field label="Email"><input style={inp} value={buyer.email} onChange={(e) => setBuyer({ ...buyer, email: e.target.value })} /></Field>
-        <Field label="Phone (optional)"><input style={inp} value={buyer.phone} onChange={(e) => setBuyer({ ...buyer, phone: e.target.value })} /></Field>
+        <Field label="Email"><input style={inp} value={buyer.email} disabled={locked} onChange={(e) => setBuyer({ ...buyer, email: e.target.value })} /></Field>
+        <Field label="Phone (optional)"><input style={inp} value={buyer.phone} disabled={locked} onChange={(e) => setBuyer({ ...buyer, phone: e.target.value })} /></Field>
       </div>
 
       {needAddr ? (
         <><div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', margin: '12px 0 6px' }}>Ship to home</div>
-        <Field label="Street"><input style={inp} value={ship.street1} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
-        <Field label="Apt / unit (optional)"><input style={inp} value={ship.street2} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
+        <Field label="Street"><input style={inp} value={ship.street1} disabled={locked} onChange={(e) => setShip({ ...ship, street1: e.target.value })} /></Field>
+        <Field label="Apt / unit (optional)"><input style={inp} value={ship.street2} disabled={locked} onChange={(e) => setShip({ ...ship, street2: e.target.value })} /></Field>
         <div style={{ display: 'flex', gap: 12 }}>
-          <Field label="City"><input style={inp} value={ship.city} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
-          <Field label="State"><input style={inp} value={ship.state} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
-          <Field label="ZIP"><input style={inp} value={ship.zip} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
+          <Field label="City"><input style={inp} value={ship.city} disabled={locked} onChange={(e) => setShip({ ...ship, city: e.target.value })} /></Field>
+          <Field label="State"><input style={inp} value={ship.state} disabled={locked} onChange={(e) => setShip({ ...ship, state: e.target.value })} /></Field>
+          <Field label="ZIP"><input style={inp} value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
         </div></>
       ) : (
         <><div style={{ background: '#eff6ff', color: '#1e40af', padding: '10px 14px', borderRadius: 8, fontSize: 13, margin: '12px 0' }}>Orders for this store are <b>delivered to the club</b> — no shipping address needed.</div>
-        <Field label="Billing ZIP code"><input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Used to apply the correct sales tax for your area.</div></Field></>
+        <Field label="Player's name"><input style={inp} value={buyer.player_name || ''} disabled={locked} maxLength={60} placeholder="First &amp; last name" onChange={(e) => setBuyer({ ...buyer, player_name: e.target.value })} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Required — the team sorts each order by player. Add yours even if you're the buyer.</div></Field>
+        <Field label="Billing address"><BillingZip stripePromise={stripePromise} disabled={locked} onZip={(z) => setBuyer((b) => ({ ...b, zip: z }))} fallback={<input style={{ ...inp, maxWidth: 160 }} value={buyer.zip || ''} disabled={locked} inputMode="numeric" maxLength={5} placeholder="e.g. 93703" onChange={(e) => setBuyer({ ...buyer, zip: e.target.value.replace(/\D/g, '').slice(0, 5) })} />} /><div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>Your billing address is used only to apply the correct sales tax for your area — Link fills it in automatically for returning shoppers.</div></Field></>
       )}
 
       {/* Coupon / scholarship code */}
@@ -1519,9 +1769,9 @@ function CheckoutPage({ store, theme, cart, onClear }) {
         {coupon ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '10px 12px', fontSize: 13 }}>
             <span style={{ color: '#166534', fontWeight: 700 }}>Code {coupon.code} applied{coupon.kind === 'free_shipping' ? ' — free shipping' : ` — ${coupon.value}% off`}</span>
-            <button onClick={() => { setCoupon(null); setCouponInput(''); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>
+            {!locked && <button onClick={() => { setCoupon(null); setCouponInput(''); }} style={{ marginLeft: 'auto', background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>Remove</button>}
           </div>
-        ) : (
+        ) : locked ? null : (
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <input style={{ ...inp, maxWidth: 220 }} placeholder="Discount / scholarship code" value={couponInput} onChange={(e) => setCouponInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') applyCoupon(); }} />
             <button onClick={applyCoupon} style={{ background: '#fff', border: '2px solid #e2e8f0', borderRadius: 8, padding: '10px 18px', fontWeight: 800, fontSize: 13, cursor: 'pointer' }}>Apply</button>
@@ -1543,7 +1793,7 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {comped ? (
         <button className="sf-btn" onClick={submitUnpaid} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1 }}>{busy ? 'Placing…' : 'Place order — covered by code'}</button>
       ) : (<>
-      {store.payment_mode === 'either' && (
+      {store.payment_mode === 'either' && !locked && (
         <div style={{ display: 'flex', gap: 8, marginBottom: 14, marginTop: 14 }}>
           {allowPaid && stripePromise && <button onClick={() => { setMethod('paid'); setClientSecret(null); }} style={methodBtn(theme, method === 'paid')}>Pay by card</button>}
           {allowUnpaid && <button onClick={() => { setMethod('unpaid'); setClientSecret(null); }} style={methodBtn(theme, method === 'unpaid')}>Put on team tab</button>}
@@ -1553,9 +1803,14 @@ function CheckoutPage({ store, theme, cart, onClear }) {
       {method === 'paid' && allowPaid ? (
         stripePromise ? (
           clientSecret ? (
-            <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-              <CardForm theme={theme} onPaid={confirmPaid} />
-            </Elements>
+            <>
+              <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
+                <CardForm theme={theme} onPaid={confirmPaid} />
+              </Elements>
+              {/* Escape hatch: go back to change the cart/coupon/details. Resuming with the
+                  same order reuses its PaymentIntent (idempotent clientRef) — no duplicate. */}
+              <button onClick={() => { setClientSecret(null); setPendingOrder(null); }} style={{ marginTop: 12, background: 'none', border: 'none', color: theme.subText || '#64748b', textDecoration: 'underline', cursor: 'pointer', fontSize: 13 }}>← Edit order details</button>
+            </>
           ) : <button className="sf-btn" onClick={startCard} disabled={busy || !validBuyer} style={{ ...cta(theme), opacity: busy || !validBuyer ? 0.5 : 1, marginTop: store.payment_mode === 'either' ? 0 : 14 }}>{busy ? 'Starting…' : 'Continue to payment'}</button>
         ) : <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 14 }}>Card payment isn’t set up for this store yet — please contact us.</div>
       ) : allowUnpaid ? (
@@ -1655,11 +1910,16 @@ function OrderStatusPage({ store, theme, orderId }) {
   const totalPieces = items.reduce((s, i) => s + (Number(i.qty) || 1), 0);
 
   // Labels
-  const shortId = '#' + (order.id || '').slice(0, 8).toUpperCase();
+  // Friendly running order number (migration 00177) once present; older orders
+  // fall back to a short slice of the UUID so they still show *something*.
+  const shortId = order.order_number ? ('#' + order.order_number) : ('#' + (order.id || '').slice(0, 8).toUpperCase());
   const placedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
   const updatedAt = order.updated_at || order.created_at;
   const updatedLabel = updatedAt ? new Date(updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + ', ' + new Date(updatedAt).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : '';
-  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 14 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
+  // Team delivery is ~4–5 weeks after the store CLOSES (production runs once the
+  // store closes), not from the order date. Show the later (5-week) edge so we
+  // don't over-promise — matches the "~4–5 weeks after the store closes" copy.
+  const estDelivery = store.close_at ? 'Wk of ' + new Date(new Date(store.close_at).getTime() + 35 * 86400000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'TBD';
   const orderedDate = order.created_at ? new Date(order.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
 
   // Inline helpers
