@@ -1599,6 +1599,11 @@ const _invExtraCols=new Set(['qb_invoice_id','tc_reported','tc_tax','billing_nam
 const _dbSaveInvoiceInner = async (inv) => {
   if(!supabase)return;
   return _dbSavingGuard(async()=>{try{
+    // Optimistic concurrency (00180) — same _checkVersion auto-heal the SO/estimate/customer saves
+    // use: a numeric return means another session saved after our copy loaded; adopt the server
+    // version so the counter doesn't fall behind (the poll/realtime merge guards key off it).
+    // _version itself is never written — the DB trigger owns it (not in _invCols).
+    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){inv._version=vc}}
     const{payments,items,...rest}=inv;
     let invRow=_pick(rest,_invCols);
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
@@ -1677,7 +1682,12 @@ const _dbSaveInvoiceInner = async (inv) => {
         }
       }
     }
-    _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();return true;
+    _dbSaveFailedIds.delete(inv.id);_clearSaveError(inv.id);_persistFailedIds();_dbRecentSaves[inv.id]=Date.now();
+    // Advance the local base _version in place (the caller passed the state object) — the DB
+    // trigger bumped the row on upsert-update, and the merge guards treat a strictly-newer local
+    // _version as "poll row is stale". Mirrors _dbSaveSOInner.
+    if(inv._version)inv._version=inv._version+1;
+    return true;
   }catch(e){console.error('[DB] save invoice:',e);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,e.message||String(e));_persistFailedIds();return false}});
 };
 // Queued per invoice id (same as SOs/estimates) so a direct awaited save — e.g. the final-invoice
