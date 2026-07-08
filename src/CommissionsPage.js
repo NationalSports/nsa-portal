@@ -8,6 +8,9 @@ import { commissionRepId } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
+import { useEffect, useRef, useState } from 'react';
+import { supabase } from './lib/dbEngine';
+import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch } from './commissionSnapshots';
 
 export default function CommissionsPage(){
   const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos}=useAppData();
@@ -16,6 +19,22 @@ export default function CommissionsPage(){
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
+
+    // ── Commission snapshots: frozen money for paid invoices ──
+    // A paid invoice's GP/rate/amount/paid-date freeze the first time this page sees the
+    // line fully hydrated; later SO edits can't move the rep's statement. null = snapshots
+    // not loaded yet (lines render live and NOTHING is written — never freeze blind).
+    const[snaps,setSnaps]=useState(null);
+    const _snapWriting=useRef(false);
+    useEffect(()=>{let cancelled=false;
+      if(!supabase)return;
+      supabase.from('commission_snapshots').select('*').limit(20000).then(({data,error})=>{
+        if(cancelled)return;
+        if(error){console.warn('[Comm] snapshot load failed — statement renders live:',error.message);return}
+        const m={};(data||[]).forEach(r=>{m[r.invoice_id]=r});setSnaps(m);
+      });
+      return()=>{cancelled=true};
+    },[]);
 
     // Gross profit calculator for an invoice
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
@@ -89,7 +108,11 @@ export default function CommissionsPage(){
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        return{inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so)};
+        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so)};
+        // Frozen line: money fields come from the snapshot; _live keeps today's computation
+        // around for the admin Re-freeze action (deliberate corrections only).
+        const snap=snaps&&snaps[inv.id];
+        return snap?{...applySnapshotToLine(line,snap,parseDate),_live:line}:line;
       });
     };
 
@@ -191,6 +214,54 @@ export default function CommissionsPage(){
     const allPipeline=buildPipeline(viewRepId);
     const allPromoLines=buildPromoLines(viewRepId);
 
+    // Freeze every fully-hydrated paid line that doesn't have a snapshot yet. Insert-only
+    // (ignoreDuplicates) so two open tabs can't overwrite each other's freeze; afterwards
+    // the ids are re-read so a row another tab inserted first lands in this map too.
+    // Runs against ALL lines (not the rep filter) so an admin viewing one rep still
+    // freezes everyone consistently only when viewing All — per-rep views freeze what
+    // they can see; the rest freezes on the next All/own-rep visit.
+    useEffect(()=>{
+      if(!supabase||!snaps||_snapWriting.current)return;
+      const missing=allLines.filter(l=>!l.snapped&&!snaps[l.inv.id]&&canSnapshotLine(l));
+      if(!missing.length)return;
+      _snapWriting.current=true;
+      (async()=>{
+        try{
+          const rows=missing.map(l=>snapshotRowFromLine(l,cu?.name||cu?.email||''));
+          for(let i=0;i<rows.length;i+=200){
+            const{error}=await supabase.from('commission_snapshots').upsert(rows.slice(i,i+200),{onConflict:'invoice_id',ignoreDuplicates:true});
+            if(error)throw error;
+          }
+          const ids=rows.map(r=>r.invoice_id);const got=[];
+          for(let i=0;i<ids.length;i+=200){
+            const{data,error}=await supabase.from('commission_snapshots').select('*').in('invoice_id',ids.slice(i,i+200));
+            if(error)throw error;got.push(...(data||[]));
+          }
+          setSnaps(prev=>{const n={...prev};got.forEach(r=>{n[r.invoice_id]=r});return n});
+        }catch(e){console.warn('[Comm] snapshot write failed — lines stay live until the next visit:',e?.message||e)}
+        finally{_snapWriting.current=false}
+      })();
+    });
+
+    // An admin override on a frozen line must land in the snapshot (the money of record),
+    // not just app_state — otherwise the frozen statement and the override disagree.
+    const _applyOvrToSnap=async(invId,ovr)=>{
+      const snap=snaps&&snaps[invId];if(!snap||!supabase)return;
+      const patch=overrideSnapshotPatch(snap,ovr);
+      const{data,error}=await supabase.from('commission_snapshots').update({...patch,updated_at:new Date().toISOString()}).eq('invoice_id',invId).select();
+      if(error){alert('Override saved for display, but the frozen statement row failed to update — try again.\n\n'+error.message);return}
+      if(data&&data[0])setSnaps(prev=>({...prev,[invId]:data[0]}));
+    };
+    // Deliberate correction path: recompute from today's live data and overwrite the freeze.
+    const _resnap=async(l)=>{
+      if(!supabase||!l._live)return;
+      if(!window.confirm('Re-freeze '+l.inv.id+' at today\'s live numbers?\n\nOnly do this after deliberately correcting the order (costs, freight, payments) — it changes the rep\'s frozen statement.'))return;
+      const row=snapshotRowFromLine(l._live,cu?.name||cu?.email||'');
+      const{data,error}=await supabase.from('commission_snapshots').upsert([row],{onConflict:'invoice_id'}).select();
+      if(error){alert('Re-freeze failed: '+error.message);return}
+      if(data&&data[0])setSnaps(prev=>({...prev,[l.inv.id]:data[0]}));
+    };
+
     // Filter promo lines by selected month
     const monthPromoLines=allPromoLines.filter(l=>l.soMonth===commMonth);
     const monthPromoCost=monthPromoLines.reduce((a,l)=>a+l.totalCost,0);
@@ -286,21 +357,22 @@ export default function CommissionsPage(){
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#dcfce7':'#fef3c7',color:l.gp.rev>0&&l.gp.gp/l.gp.rev>=0.3?'#166534':'#92400e'}}>{l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0}%</span></td>
               <td style={{textAlign:'center'}}><span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:l.isLate?'#fee2e2':'#dcfce7',color:l.isLate?'#dc2626':'#166534'}}>{l.daysToPay??'\u2014'}d</span></td>
               <td style={{textAlign:'center',fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>{Math.round(l.commRate*100)}%</td>
-              <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}</td>
+              <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}{l.snapped&&<span title={'Frozen at payment'+(l.snappedAt?' ('+String(l.snappedAt).substring(0,10)+')':'')+' — later order edits no longer change this line'} style={{marginLeft:4,fontSize:10,cursor:'default'}}>🔒</span>}</td>
               {isAdmin&&<td style={{textAlign:'center'}}>
                 <div style={{display:'flex',gap:4,justifyContent:'center',alignItems:'center',flexWrap:'wrap'}}>
-                  {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>setCommOverrides(p=>({...p,[l.inv.id]:true}))}>Full 30%</button>}
+                  {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>Full 30%</button>}
                   <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 6px'}} title="Set a custom commission % for this invoice" onClick={()=>{
                     const cur=Math.round(l.commRate*100);
                     const v=window.prompt(`Set commission % for ${l.inv.id}\n(default: ${l.isLate?'15% late / 30% on-time':'30%'})`,String(cur));
                     if(v===null)return;
                     const t=v.trim();
-                    if(t===''){setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});return}
+                    if(t===''){setCommOverrides(p=>{const n={...p};delete n[l.inv.id];return n});_applyOvrToSnap(l.inv.id,null);return}
                     const n=parseFloat(t);
-                    if(!isNaN(n)&&n>=0&&n<=100)setCommOverrides(p=>({...p,[l.inv.id]:n/100}));
+                    if(!isNaN(n)&&n>=0&&n<=100){setCommOverrides(p=>({...p,[l.inv.id]:n/100}));_applyOvrToSnap(l.inv.id,n/100)}
                     else alert('Enter a number 0–100, or leave blank to clear the override.');
                   }}>Edit %</button>
-                  {l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>{typeof commOverrides[l.inv.id]==='number'?'Custom':'Approved'}</span>}
+                  {l.snapped&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute this frozen line from today's live order data — use after a deliberate cost/payment correction" onClick={()=>_resnap(l)}>Re-freeze</button>}
+                  {l.overridden&&<span style={{fontSize:9,color:'#166534',fontWeight:700}}>{typeof l.ovrRaw==='number'?'Custom':'Approved'}</span>}
                 </div>
               </td>}
             </tr>)}
