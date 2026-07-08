@@ -22,6 +22,7 @@ import * as fabric from 'fabric';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
+import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -21177,6 +21178,10 @@ export default function App(){
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
+  // Server bill ledger rows (applied_bills) — the system of record for pushed bills. Bill History
+  // renders the union of these + savedBills, so pushed history survives cleared localStorage and
+  // the local cache cap. Loaded by loadAppliedLedger alongside the dedup key Set.
+  const[serverBills,setServerBills]=useState([]);
   const[billHistFilter,setBillHistFilter]=useState('all');// Bill History view: all | review | notpushed | pushed
   const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
@@ -21332,12 +21337,17 @@ export default function App(){
     if(!supabase||_appliedLedgerLoaded.current)return;
     _appliedLedgerLoaded.current=true;
     try{
-      const{data,error}=await supabase.from('applied_bills').select('doc_norm,si_doc_number').limit(20000);
+      // select('*') works both pre- and post-00184 (it just returns whatever columns exist), so
+      // there is no missing-column failure mode here; a missing TABLE lands in the catch below and
+      // leaves today's behavior intact (SO-scan + localStorage dedup, local-only history).
+      const{data,error}=await supabase.from('applied_bills').select('*').order('applied_at',{ascending:false}).limit(20000);
       if(error)throw error;
       (data||[]).forEach(r=>{
+        if(r.status&&r.status!=='pushed')return;// only applied rows may dedup (future holds-merge rows must not)
         if(r.doc_norm)_appliedLedger.current.add('d|'+r.doc_norm);
         if(r.si_doc_number)_appliedLedger.current.add('s|'+String(r.si_doc_number).trim().toLowerCase());
       });
+      setServerBills((data||[]).filter(r=>!r.status||r.status==='pushed'));
     }catch(e){_appliedLedgerLoaded.current=false;/* retry on next import visit; SO-scan dedup still guards meanwhile */}
   };
   // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
@@ -23803,8 +23813,8 @@ export default function App(){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inD(po._bill_details))return so.id+(po.po_id?' · '+po.po_id:'');
         for(const dp of (so.deco_pos||[]))if(inD(dp._bill_details))return so.id+(dp.po_id?' · deco '+dp.po_id:' · deco');
       }
-      if(savedBills.some(x=>x.portalStatus==='success'&&(x.parsed?.doc_number||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
       if(_appliedLedger.current.has('d|'+d))return 'applied earlier (server ledger — possibly another machine)';
+      if(savedBills.some(x=>x.portalStatus==='success'&&(x.parsed?.doc_number||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
       return null;
     };
 
@@ -23819,44 +23829,65 @@ export default function App(){
         for(const it of (so.items||[]))for(const po of (it.po_lines||[]))if(inDetails(po._bill_details))return true;
         for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
       }
-      if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
       // Server ledger: applied on ANY machine (loaded once per import visit; also fed live on push).
+      // Consulted BEFORE the localStorage fallback — it's the system of record for pushed bills.
       // Key spaces are separate — vendor doc#s and SI/S&S order#s are independent numbering systems
       // that can collide numerically, so a doc# is only ever checked against 'd|' keys and an
       // order# (callers pass kind='si') only against 's|' keys.
       if(_appliedLedger.current.has((kind==='si'?'s|':'d|')+d))return true;
+      // localStorage cache fallback — covers this browser's pushes made while the ledger was
+      // unreachable (write retried, but the row may not have landed).
+      if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
       return false;
     };
 
-    // Record applied bills to the server ledger (applied_bills, unique on doc# per credit-flag).
-    // Belt on top of the client checks: the unique index makes "same doc applied twice" a database
-    // refusal rather than a scan-and-hope, and loading the ledger makes dedup cross-machine. The
-    // in-memory set updates FIRST so this session's own dedup is immediate; the insert is then
-    // best-effort-but-loud (a pre-check warns if any doc was already recorded elsewhere).
-    const _recordAppliedBills=(bills)=>{
-      const rows=[];
-      (bills||[]).forEach(b=>{
-        const p=b&&b.parsed;if(!p)return;
-        const d=(p.doc_number||'').trim().toLowerCase();
-        const s=String(p.si_doc_number||'').trim().toLowerCase();
-        if(d)_appliedLedger.current.add('d|'+d);
-        if(s)_appliedLedger.current.add('s|'+s);
-        if(!d&&!s)return;// nothing keyable — SO-scan dedup still covers it via _bill_details
-        rows.push({doc_norm:d||null,si_doc_number:s||null,is_credit:!!p.is_credit,
-          vendor:p.vendor||p.supplier||null,po_number:p.po_number||null,
-          doc_total:safeNum(p.doc_total)||null,source:p.source||null,
-          applied_by:(cu?.name||cu?.email||null)});
+    // Record applied bills to the server ledger (applied_bills, unique on doc# per credit-flag) —
+    // the supplier-bill system of record. Belt on top of the client checks: the unique index makes
+    // "same doc applied twice" a database refusal rather than a scan-and-hope, and loading the
+    // ledger makes dedup + Bill History cross-machine. The in-memory set updates FIRST so this
+    // session's own dedup is immediate; the upsert is then AWAITED with retry+backoff (same shape
+    // as _siMarkDoc) and loud on final failure. Pre-00184 fallback: a missing-column error
+    // downgrades the payload to the legacy 00178 row shape, so behavior before the migration is
+    // exactly the old ledger write. Returns true once the row landed.
+    const _recordAppliedBills=async(bills,retries=3)=>{
+      const rows=buildAppliedBillRows(bills,(cu?.name||cu?.email||null));
+      rows.forEach(r=>{
+        if(r.doc_norm)_appliedLedger.current.add('d|'+r.doc_norm);
+        if(r.si_doc_number)_appliedLedger.current.add('s|'+r.si_doc_number);
       });
-      if(!rows.length||!supabase)return;
+      if(!rows.length||!supabase)return true;
+      // Pre-check warns if any doc was already recorded elsewhere (ignoreDuplicates below would
+      // otherwise swallow the collision silently).
       const docKeys=rows.map(r=>r.doc_norm).filter(Boolean);
-      const doInsert=()=>supabase.from('applied_bills').upsert(rows,{onConflict:'doc_norm,is_credit',ignoreDuplicates:true})
-        .then(({error})=>{if(error)console.warn('[applied ledger] write failed:',error.message||error)},()=>{});
       if(docKeys.length){
-        supabase.from('applied_bills').select('doc_norm').in('doc_norm',docKeys).then(({data})=>{
+        try{
+          const{data}=await supabase.from('applied_bills').select('doc_norm').in('doc_norm',docKeys);
           if(data&&data.length)nf('⚠ '+data.length+' doc(s) in this push were already on the applied ledger (possibly pushed from another machine) — check Billed tracking for a double-apply','error');
-          doInsert();
-        },doInsert);
-      }else doInsert();
+        }catch{/* pre-check is advisory only */}
+      }
+      let payload=rows,downgraded=false,lastErr=null;
+      for(let i=0;i<=retries;i++){
+        if(i)await new Promise(r=>setTimeout(r,800*Math.pow(2,i-1)));
+        try{
+          const{error}=await supabase.from('applied_bills').upsert(payload,{onConflict:'doc_norm,is_credit',ignoreDuplicates:true});
+          if(!error){
+            // Row landed — mirror it into the history union now (the server re-load only happens
+            // on the next import visit). Mirrored from the FULL shape even if the write was the
+            // legacy one: locally we know the extra fields; the server just doesn't store them yet.
+            setServerBills(prev=>{
+              const key=r=>(r.doc_norm||'')+'|'+(r.si_doc_number||'')+'|'+(r.is_credit?1:0);
+              const have=new Set(prev.map(key));
+              const add=rows.filter(r=>!have.has(key(r))).map(r=>({...r,applied_at:new Date().toISOString()}));
+              return add.length?[...add,...prev]:prev;
+            });
+            return true;
+          }
+          if(!downgraded&&isMissingLedgerColumnError(error)){downgraded=true;payload=legacyAppliedBillRows(rows);i--;continue}// 00184 not applied yet → old row shape, attempt not consumed
+          lastErr=error;
+        }catch(e){lastErr=e}
+      }
+      nf('Applied-bills ledger write failed ('+(lastErr?.message||lastErr)+') — this push is recorded on this device only; other machines won\'t dedup or see it in Bill History until a pull self-heals','error');
+      return false;
     };
 
     // True if the bill being pulled is currently SET ASIDE in Look at Later — parked or
@@ -24520,8 +24551,10 @@ export default function App(){
         }
       }
       // Hard ledger: record every successful apply server-side (unique doc# constraint) so a
-      // re-push of the same doc — this machine or any other — is refused/loudly flagged.
-      _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
+      // re-push of the same doc — this machine or any other — is refused/loudly flagged. Awaited
+      // with retry — this runs AFTER the save gate above, so the ledger row is only written once
+      // the SO saves confirmed (recording "applied" for a failed save would strand the bill).
+      await _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
       // Close the loop in the shared S&S queue (lifecycle: new → reviewed → applied) so
       // accounting's completeness view reconciles. Best-effort — billing already applied.
       if(supabase)bills.forEach(b=>{
@@ -24708,7 +24741,7 @@ export default function App(){
         // Apply billed quantities, tracking, and freight to matched SO/PO
         // (uses shared applyBillToSO — skips if already applied at parse time). Ledger only
         // when there was a target to apply to — an unmatched bill writes no billed qty here.
-        if(!bill._applied){applyBillToSO(bill);if(_billHasTarget(bill))_recordAppliedBills([{parsed:bill}]);}
+        if(!bill._applied){applyBillToSO(bill);if(_billHasTarget(bill))await _recordAppliedBills([{parsed:bill}]);}
         // Now push to QuickBooks
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
         if(billRes?.Bill?.Id){
@@ -26299,8 +26332,11 @@ export default function App(){
           </div>
         </div></div>}
 
-        {/* Saved Bills History — also the "Look at later" workspace (status + vendor + time filters) */}
-        {savedBills.length>0&&(()=>{
+        {/* Saved Bills History — also the "Look at later" workspace (status + vendor + time filters).
+            Renders the UNION of the server bill ledger (applied_bills — system of record for pushed
+            bills, survives cleared localStorage/other machines) and local savedBills (cache + unsaved). */}
+        {(savedBills.length>0||serverBills.length>0)&&(()=>{
+          const histBills=mergeServerBills(savedBills,serverBills);
           // Vendor + time scope; the status chips below count within this scope so "Look at later (n)"
           // reflects the filters in view. uploadedTs is the reliable sort key; older rows fall back to
           // parsing the human uploadedAt string.
@@ -26314,8 +26350,8 @@ export default function App(){
           };
           const _vendorOf=sb=>(sb.parsed?.vendor||sb.parsed?.supplier||'').trim();
           const _vendorOk=sb=>billHistVendor==='all'||_vendorOf(sb)===billHistVendor;
-          const scoped=savedBills.filter(sb=>_timeOk(sb)&&_vendorOk(sb));
-          const vendors=[...new Set(savedBills.map(_vendorOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+          const scoped=histBills.filter(sb=>_timeOk(sb)&&_vendorOk(sb));
+          const vendors=[...new Set(histBills.map(_vendorOf).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
           const rl=scoped.filter(b=>b.reviewLater).length;
           const pushed=scoped.filter(b=>b.qbStatus==='success'||b.portalStatus==='success').length;
           const np=scoped.filter(b=>!b.reviewLater&&b.qbStatus!=='success'&&b.portalStatus!=='success').length;
@@ -26410,12 +26446,14 @@ export default function App(){
                     {sb.qbStatus!=='success'&&<button style={{marginLeft:6,fontSize:9,padding:'2px 8px',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:4,color:'#1e40af',fontWeight:700,cursor:'pointer'}}
                       onClick={e=>{e.stopPropagation();setBillImport({step:'review',files:[],parsed:[{...sb,selected:true,qbStatus:null,matchedPO:null,matchedPOSource:null}],uploading:false,showRaw:{}});nf('Bill loaded for re-push — click "Push to QuickBooks"')}}>Re-push</button>}</td>
                   <td style={{padding:'6px 12px',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
-                    <button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
+                    {sb._serverLedger
+                    ?<span style={{fontSize:9,fontWeight:700,color:'#94a3b8'}} title="Pushed on the server ledger (possibly from another machine) — read-only here">server</span>
+                    :<><button onClick={()=>_setBillReviewLater(sb.id,!sb.reviewLater)} title={sb.reviewLater?'Resolve — remove from "Look at later"':'Flag to look at later (parks it in limbo)'}
                       style={{fontSize:9,padding:'2px 8px',borderRadius:4,cursor:'pointer',fontWeight:700,border:'1px solid '+(sb.reviewLater?'#fbbf24':'#e2e8f0'),background:sb.reviewLater?'#fef3c7':'#fff',color:sb.reviewLater?'#b45309':'#94a3b8'}}>
                       {sb.reviewLater?'🕒 Flagged · Resolve':'Flag'}</button>
                     {!sb.reviewLater&&sb.resolution&&<div style={{fontSize:8,fontWeight:700,color:'#64748b',marginTop:2}}
                       title={'Resolved'+(sb.resolution.by?' by '+sb.resolution.by:'')+(sb.resolution.at?' · '+new Date(sb.resolution.at).toLocaleString():'')+(sb.resolution.note?' — '+sb.resolution.note:'')}>
-                      ✓ {sb.resolution.disposition}</div>}</td>
+                      ✓ {sb.resolution.disposition}</div>}</>}</td>
                   <td style={{padding:'6px 12px',fontSize:10,color:'#94a3b8'}}>{sb.uploadedAt||'—'}</td>
                 </tr>
                 {expanded&&<tr style={{background:'#f8fafc',borderBottom:'1px solid #e2e8f0'}}>
