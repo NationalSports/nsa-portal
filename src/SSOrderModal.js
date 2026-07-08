@@ -81,7 +81,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     if (live && onSubmitted) {
       try {
         const recorded = await onSubmitted(r, lines);
-        if (!recorded) setBookErr('the batch queue was not updated and nothing was recorded');
+        if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[S&S] order placed but post-order bookkeeping failed:', e);
         setBookErr(e.message || 'recording failed with an error');

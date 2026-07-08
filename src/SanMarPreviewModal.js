@@ -161,7 +161,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     if (onSubmitted) {
       try {
         const recorded = await onSubmitted(r, lines);
-        if (!recorded) setBookErr('the batch queue was not updated and nothing was recorded');
+        if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
       } catch (e) {
         console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
         setBookErr(e.message || 'recording failed with an error');
