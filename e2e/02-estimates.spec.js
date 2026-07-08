@@ -1,12 +1,34 @@
 const { test, expect } = require('@playwright/test');
-const { login, navTo, clickBtn, collectConsoleErrors } = require('./helpers');
+const { login, seedData, navTo, clickBtn, collectConsoleErrors } = require('./helpers');
+
+// Built-in demo seeds were removed from the app (D_C/D_SO/D_P are empty in no-DB mode),
+// so this spec seeds its own minimal customer + estimate via localStorage.
+const TEST_CUST = { id: 'cust-e2e-1', name: 'E2E Test School', alpha_tag: 'TST' };
+const TEST_EST = {
+  id: 'EST-9001',
+  customer_id: 'cust-e2e-1',
+  status: 'open',
+  created_by: '00000000-0000-0000-0000-000000000001',
+  created_at: '1/1/2026, 9:00:00 AM',
+  updated_at: '1/1/2026, 9:00:00 AM',
+  memo: 'E2E estimate',
+  items: [
+    {
+      product_id: 'p-e2e-1', sku: 'TEST123', name: 'Test Tee', color: 'Navy',
+      sizes: { S: 10, M: 10 }, available_sizes: ['S', 'M', 'L', 'XL'],
+      nsa_cost: 5, unit_sell: 12, retail_price: 12,
+      pick_lines: [], decorations: [],
+    },
+  ],
+};
 
 test.describe('Estimates Flow', () => {
   test.beforeEach(async ({ page }) => {
+    await seedData(page, { ests: [TEST_EST], cust: [TEST_CUST] });
     await login(page, 'Steve Peterson', 'Admin');
   });
 
-  test('estimates page loads with demo data', async ({ page }) => {
+  test('estimates page loads with seeded data', async ({ page }) => {
     await navTo(page, 'Estimates');
     // Should show estimates list — look for EST- IDs in the content area
     await expect(page.locator('.main').locator('text=/EST-\\d+/').first()).toBeVisible({ timeout: 5000 });

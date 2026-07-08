@@ -2,13 +2,12 @@ const { test, expect } = require('@playwright/test');
 const { login, navTo, getPageTitle, collectConsoleErrors } = require('./helpers');
 
 test.describe('Login & Navigation', () => {
-  test('login gate shows department picker', async ({ page }) => {
+  test('login gate shows sign-in form', async ({ page }) => {
+    // The old no-password department/rep picker was replaced by Supabase email/password auth.
     await page.goto('/');
-    await expect(page.locator('text=Who\'s logging in?')).toBeVisible();
-    // Department pills are buttons with role labels
-    await expect(page.getByRole('button', { name: /Admin \d/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Sales Rep \d/ })).toBeVisible();
-    await expect(page.getByRole('button', { name: /Warehouse \d/ })).toBeVisible();
+    await expect(page.locator('input[placeholder*="you@example.com"]')).toBeVisible({ timeout: 20000 });
+    await expect(page.locator('input[placeholder*="Enter password"]')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sign In' })).toBeVisible();
   });
 
   test('login as admin shows full sidebar', async ({ page }) => {
@@ -64,8 +63,8 @@ test.describe('Login & Navigation', () => {
   test('logout and re-login', async ({ page }) => {
     await login(page, 'Steve Peterson', 'Admin');
     await page.locator('button', { hasText: 'Out' }).click();
-    // Should return to login gate
-    await expect(page.locator('text=Who\'s logging in?')).toBeVisible({ timeout: 5000 });
+    // Should return to the Supabase sign-in gate (old "Who's logging in?" picker is gone)
+    await expect(page.locator('input[placeholder*="you@example.com"]')).toBeVisible({ timeout: 5000 });
     // Login as different user
     await login(page, 'Chase Koissian', 'Sales Rep');
     await expect(page.locator('.sidebar-user', { hasText: 'Chase Koissian' })).toBeVisible();

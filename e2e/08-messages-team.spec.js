@@ -20,6 +20,10 @@ test.describe('Messages & Team', () => {
     const errors = collectConsoleErrors(page);
     await navTo(page, 'Team');
     await page.waitForTimeout(500);
+    // The page now defaults to the Access Management view (needs Supabase auth);
+    // switch to the Team Directory tab which lists the built-in reps.
+    await page.getByRole('button', { name: 'Team Directory' }).click();
+    await page.waitForTimeout(500);
     // Should show team members in main content area
     await expect(page.locator('.main').locator('text=Steve Peterson').first()).toBeVisible();
     await expect(page.locator('.sidebar')).toBeVisible();

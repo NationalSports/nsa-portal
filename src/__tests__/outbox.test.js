@@ -9,6 +9,7 @@
 import {
   _outboxGate, _outboxMatchesRow,
   _outboxAdd, _outboxRemove, _outboxRemoveById, _outboxList,
+  _emitOutboxConflict, _setOnOutboxConflict,
 } from '../lib/dbEngine';
 
 const clearBox = () => localStorage.removeItem('nsa_outbox');
@@ -97,6 +98,21 @@ describe('outbox store (localStorage round-trip)', () => {
     expect(_outboxList()).toEqual([]);
     _outboxAdd('sales_orders', { id: 'SO-3', memo: 'ok' });
     expect(_outboxList()).toHaveLength(1);
+  });
+
+  test('_emitOutboxConflict preserves the payload AND notifies the app (stale-rejection path)', () => {
+    const received = [];
+    _setOnOutboxConflict(en => received.push(en));
+    _emitOutboxConflict('estimates', { id: 'EST-7', memo: 'rejected edit', _version: 4 });
+    _setOnOutboxConflict(null);
+    // content persisted durably…
+    const [stored] = _outboxList();
+    expect(stored.id).toBe('EST-7');
+    expect(stored.payload.memo).toBe('rejected edit');
+    expect(stored.baseVersion).toBe(4);
+    // …and the app got the same entry for the live conflict card
+    expect(received).toHaveLength(1);
+    expect(received[0].id).toBe('EST-7');
   });
 
   test('size cap evicts oldest-first, loudly, never wedging the write', () => {
