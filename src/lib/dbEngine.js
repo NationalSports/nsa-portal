@@ -396,7 +396,10 @@ const _dbLoad = async (opts={}) => {
     const decoVendors=d(rDecoVendors);const decoVendorPricing=d(rDecoVendorPricing);
     // Parse app_state key-value pairs
     const appStateRaw=d(rAppState);
-    const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}});
+    const appState={};appStateRaw.forEach(r=>{try{appState[r.id]=JSON.parse(r.value)}catch{appState[r.id]=r.value}
+      // Track each row's CAS version + exact server value string (migration 00181) for
+      // _saveAppStateCAS. version is undefined until the migration lands — treated as 0.
+      if(!r.id.startsWith('_pimg_'))_appStateVersions[r.id]={v:r.version||0,s:r.value};});
     // ─── Reconstruct nested objects ───
     // Product image backups from app_state (reliable fallback when image columns are missing)
     const _pimgMap={};appStateRaw.filter(r=>r.id.startsWith('_pimg_')).forEach(r=>{try{_pimgMap[r.id.slice(6)]=JSON.parse(r.value)}catch{}});
@@ -2113,6 +2116,11 @@ let _batchPosDirtyUntil=0;
 const _appStateDirtyUntil={};
 const _setAppStateDirtyUntil=(key,v)=>{_appStateDirtyUntil[key]=v};
 const _appStateDirty=(key)=>Date.now()<(_appStateDirtyUntil[key]||0);
+// Per-key app_state row versions + the exact value string last seen on/acked by the server
+// (app_state id → {v:version,s:value}). Populated by every _dbLoad app_state parse and by
+// App's _saveAppStateCAS on successful CAS writes / conflict refetches. Consumed only by the
+// compare-and-swap save path for the money keys (labor_rates, comm_overrides) — migration 00181.
+const _appStateVersions={};
 // Direct pick_line status update — atomic, bypasses SO delete-and-reinsert for fast cross-tab sync
 const _dbUpdatePickLineStatus=async(soId,itemIdx,pickId,status,pulledQtys)=>{
   if(!supabase)return;
@@ -2323,7 +2331,7 @@ export const _setOnFailedIdsChange=(fn)=>{_onFailedIdsChange=fn};
 export const _setOnCacheFullChange=(fn)=>{_onCacheFullChange=fn};
 export const _setSessionDead=(v)=>{_sessionDead=v};
 export const _setBatchPosDirtyUntil=(v)=>{_batchPosDirtyUntil=v};
-export {_setAppStateDirtyUntil,_appStateDirty};
+export {_setAppStateDirtyUntil,_appStateDirty,_appStateVersions};
 export const _setLsQuotaWarned=(v)=>{_lsQuotaWarned=v};
 export const _bgSyncInc=()=>{_bgSync++};
 export const _bgSyncDec=()=>{_bgSync--};
