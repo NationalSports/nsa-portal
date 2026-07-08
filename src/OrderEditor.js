@@ -272,7 +272,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let cancelled=false;
     (async()=>{
       try{
-        const{data,error}=await supabase.from('so_art_files').select('so_id,name,deco_type,design_id,item_mockups').in('so_id',soIds);
+        const{data,error}=await supabase.from('so_art_files').select('so_id,name,deco_type,design_id,item_mockups,mockup_files').in('so_id',soIds);
         if(error||cancelled||!Array.isArray(data))return;
         const _u=f=>typeof f==='string'?f:(f?.url||'');
         const map={};const seen={};
@@ -286,6 +286,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const files=[];(Array.isArray(arr)?arr:[]).forEach(f=>{const u=_u(f);if(u&&!sset.has(u)){sset.add(u);files.push({url:u,name:(typeof f==='object'&&f?.name)||''})}});
             if(files.length)map[key].push({from:k,files});
           });
+          // M11: legacy single-design art keeps its approved mock in the shared mockup_files
+          // bucket, not item_mockups — without this fallback those orders yield an EMPTY
+          // Check Mock picker. Only when the row has no per-garment mocks at all, keyed by
+          // the source order id (no sku|color to key on).
+          if(!Object.values(im).some(v=>Array.isArray(v)&&v.length)){
+            const gen=[];(Array.isArray(row.mockup_files)?row.mockup_files:[]).forEach(f=>{const u=_u(f);if(u&&!sset.has(u)){sset.add(u);gen.push({url:u,name:(typeof f==='object'&&f?.name)||''})}});
+            if(gen.length)map[key].push({from:row.so_id||'prior order',files:gen});
+          }
         });
         if(!cancelled)setPriorMocks(map);
       }catch(e){if(!cancelled)setPriorMocks({})}
@@ -338,6 +346,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       else nf('Mock applied'+_cwNote+' — art stays approved');
     }
   };
+  // Prior-mock reuse cards for ONE garment entry from garmentsNeedingMockCheck
+  // ({sku,color,artFiles:[{art_file_id,art_name,groups}]}). Shared by the Set up job wizard's
+  // "Reuse an approved mock" section and the waiting-approval per-item panel so the two
+  // pickers can't drift apart. Picking routes through mockApplyModal/applyPriorMock for
+  // jobIdForApply (approved-as-is vs send to coach).
+  const priorMockCards=(cg,jobIdForApply)=>cg.artFiles.map((af2,ai)=>{
+    const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
+    const _item=safeItems(o).find(it=>(it.sku||'')===cg.sku&&(it.color||'')===(cg.color||''));
+    const _cws=safeArr(_afObj?.color_ways);
+    // H4: shade matching goes through the shared garmentColorClass table. A cws[0]
+    // fallback (exact:false) or unknown source color yields NO target CW — the card
+    // then renders "approved on <cw> — confirm" instead of a green ✓.
+    const _tgtM=_cwMatchForItem(_afObj,_item,cg.color);
+    const _tgtCw=(_tgtM&&_tgtM.exact&&(_cws.find(c=>c.id===_tgtM.id)||{}).garment_color)||'';
+    const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const cls=garmentColorClass(col);const m=cls?_cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return (m&&m.garment_color)||''};
+    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
+    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+      {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
+        return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
+        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
+        <div style={{minWidth:92}}>
+          <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
+          {/* H4: the ✓ only appears on a shade-confirmed match. Anything else is honest amber. */}
+          {_m?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>CW: {grp._cw} ✓</div>
+            :<div style={{fontSize:9,fontWeight:700,color:'#b45309'}}>approved on {grp._cw||(String(grp.from).split('|')[1]||String(grp.from||'another garment'))} — confirm</div>}
+          {_m?<button className="btn btn-sm" style={{fontSize:9,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} onClick={_apply}>✓ Use for {cg.color||cg.sku}</button>
+            :<button className="btn btn-sm" style={{fontSize:9,background:'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} title="This mock was approved on a different garment shade — eyeball it before using" onClick={_apply}>Use for {cg.color||cg.sku} — confirm</button>}
+        </div>
+      </div>})}
+    </div>;
+  });
   // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
   // color ways, preview, spec, etc. come along; mockup IMAGES are stripped from mockup_files/files
   // and the per-garment item_mockups are cleared, so the rep selects mockups per garment afterward.
@@ -8754,6 +8793,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:'pointer'}}
                         title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>🔗 {g.sku}{hasMock?' 🖼️':''}</button>;})}
                   </div>;};
+                // REUSE-7: a job that lands here with reused previously-approved art has NO mockups
+                // (addPrevArt strips them by design) and the Check Mock banner only renders at
+                // art_complete/prod-file statuses — so waiting_approval was a dead end: "approved on
+                // a previous order" above, "No mockup uploaded yet" below, and nothing to pick from.
+                // Surface the prior approved mocks inline so the rep can apply one right here.
+                const _wamc=garmentsNeedingMockCheck(j,o,priorMocks);
+                const _priorPickR=gi=>{const it2=safeItems(o)[gi.item_idx];const s2=it2?.sku||gi.sku||'';const c2=it2?.color||gi.color||'';
+                  const pm=_wamc.find(g2=>g2.sku===s2&&(g2.color||'')===(c2||''));
+                  if(!pm)return null;
+                  return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
+                    <div style={{fontSize:10,fontWeight:800,color:'#854d0e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.4}}>🔍 Reuse an approved mock</div>
+                    <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved before, but not on this garment — pick a prior mock to use here (color-way matched), or send it to the artist for a new one.</div>
+                    {priorMockCards(pm,j.id)}
+                  </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
                     const _myLinkSrc=_linkOfR(gi);
@@ -8836,6 +8889,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         </div>
                       </div>})():<>
                        <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
+                       {_priorPickR(gi)}
                        {_linkChipsR(gi)}
                       </>}
                       {/* Decoration spec */}
@@ -9985,31 +10039,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved on other garments. Pick the matching mock (color-way matched) to skip the artist, or choose Send to Artist below for a new one.</div>
                 {_rc.map((cg,ci)=><div key={ci} style={{marginBottom:8}}>
                   <div style={{fontSize:11,fontWeight:700,color:'#0f172a',marginBottom:4}}>{cg.color?cg.color+' · ':''}{cg.sku}</div>
-                  {cg.artFiles.map((af2,ai)=>{
-                    const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
-                    const _item=safeItems(o).find(it=>(it.sku||'')===cg.sku&&(it.color||'')===(cg.color||''));
-                    const _cws=safeArr(_afObj?.color_ways);
-                    // H4: shade matching goes through the shared garmentColorClass table. A cws[0]
-                    // fallback (exact:false) or unknown source color yields NO target CW — the card
-                    // then renders "approved on <cw> — confirm" instead of a green ✓.
-                    const _tgtM=_cwMatchForItem(_afObj,_item,cg.color);
-                    const _tgtCw=(_tgtM&&_tgtM.exact&&(_cws.find(c=>c.id===_tgtM.id)||{}).garment_color)||'';
-                    const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const cls=garmentColorClass(col);const m=cls?_cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return (m&&m.garment_color)||''};
-                    const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
-                    return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                      {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
-                        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
-                        <div style={{minWidth:92}}>
-                          <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
-                          {/* H4: the ✓ only appears on a shade-confirmed match. Anything else is honest amber. */}
-                          {_m?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>CW: {grp._cw} ✓</div>
-                            :<div style={{fontSize:9,fontWeight:700,color:'#b45309'}}>approved on {grp._cw||(String(grp.from).split('|')[1]||'?')} — confirm</div>}
-                          {_m?<button className="btn btn-sm" style={{fontSize:9,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>✓ Use for {cg.color||cg.sku}</button>
-                            :<button className="btn btn-sm" style={{fontSize:9,background:'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} title="This mock was approved on a different garment shade — eyeball it before using" onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>Use for {cg.color||cg.sku} — confirm</button>}
-                        </div>
-                      </div>})}
-                    </div>;
-                  })}
+                  {priorMockCards(cg,g._existingJobId)}
                 </div>)}
               </div>;
             })()}
