@@ -7335,7 +7335,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (Restores the pre-collapse submit semantics: el?parseInt(el.value)||0:v.)
       const _poQtyVal=(vi,sz,fallback)=>{const el=document.getElementById('po-qty-'+vi+'-'+sz);if(!el)return fallback;const raw=String(el.value).trim();if(raw==='')return 0;const n=parseInt(raw,10);return isNaN(n)?0:n};
       const _poPriceVal=(vi,sz,fallback)=>{const elS=document.getElementById('po-price-'+vi+'-'+sz);const el=elS||document.getElementById('po-price-'+vi);if(!el)return fallback;const v=parseFloat(String(el.value).replace(/[$,\s]/g,''));return isNaN(v)?fallback:v};
-      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawC=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
+      const poLineTotal=(it,vi)=>{const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const _lc=safeNum(it.nsa_cost);const rawC=_lc>0?_lc:(catP?safeNum(catP.nsa_cost):0);const cc=isAdidas?Math.floor(rawC*100)/100:rawC;const scMap={...((vendorInv[it.sku]&&vendorInv[it.sku].price)||{}),...(it._sizeCosts||{})};const pFor=sz=>{const sc=safeNum(scMap[sz]);return sc>0?(isAdidas?Math.floor(sc*100)/100:sc):cc};return it.openSizes.reduce((a,[sz,v])=>a+_poQtyVal(vi,sz,v)*_poPriceVal(vi,sz,pFor(sz)),0)};
       const poOrderTotal=poItems.reduce((a,it,vi)=>poExcluded[vi]?a:a+poLineTotal(it,vi),0);
       // Split a collapsed group's entered per-size qtys back across its member SO lines, filling each
       // member up to its own open qty (in line order); any surplus beyond total open lands on the first
@@ -7497,7 +7497,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <DropShipToggle isDropShip={poDropShip} onSelect={ds=>{setPoDropShip(ds);setPoShipTo(ds?(_decoForPo?'deco':(addrs[0]?.id||'warehouse')):'warehouse')}}
             inSub='Ships to NSA Warehouse — Emerson; warehouse counts it in & receives'
             dsSub='Ships direct to school/decorator — warehouse will NOT receive or count this in'/>
-          {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);const rawCost=catP?safeNum(catP.nsa_cost):safeNum(it.nsa_cost);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
+          {poItems.map((it,vi)=>{const soQ=it._soQty!=null?it._soQty:(Object.values(it.sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(it.est_qty));const excluded=!!poExcluded[vi];const collapsed=(it.members||[]).length>1;const catP=products.find(p=>p.id===it.product_id||p.sku===it.sku);
+            // The cost the rep set on the line ("Cost: $X/ea", stored as nsa_cost) is this order's cost
+            // of record — default the PO to it so a cost edit on the estimate/SO carries through, instead
+            // of the possibly-stale catalog cost. Genuine per-size vendor upcharges (_sizeCosts / live
+            // vendor pricing, below) still win for the sizes that carry them.
+            const lineCost=safeNum(it.nsa_cost);const rawCost=lineCost>0?lineCost:(catP?safeNum(catP.nsa_cost):0);const catCost=isAdidas?Math.floor(rawCost*100)/100:rawCost;
             // Per-size pricing: vendors like Momentec/SanMar charge upcharges for 2XL+. Source the per-size cost from the
             // item's captured _sizeCosts when present, otherwise fall back to live vendor pricing already fetched into
             // vendorInv (e.g. SanMar getPricing), so catalog-added items still render per-size inputs and capture the upcharge.
@@ -7551,7 +7556,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             poItems.forEach((grp,vi)=>{
               if(poExcluded[vi])return;
               const batchCatProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
-              const fallbackCost=safeNum(batchCatProd?.nsa_cost??grp.nsa_cost);
+              // Prefer the line's cost of record (nsa_cost) over the catalog cost so an edited line
+              // cost carries into the PO even when a price input is left blank.
+              const fallbackCost=safeNum(grp.nsa_cost)>0?safeNum(grp.nsa_cost):safeNum(batchCatProd?.nsa_cost);
               // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
               const {hasSizePrices,price}=_groupPriceMap(grp,vi,fallbackCost);
               // One blank, possibly several decorations: split the entered qtys back per SO line so each
@@ -7628,7 +7635,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           poItems.forEach((grp,vi)=>{
             if(poExcluded[vi])return;
             const catProd=products.find(p=>p.id===grp.product_id||p.sku===grp.sku);
-            const fallbackCost=safeNum(catProd?.nsa_cost??grp.nsa_cost);
+            // Prefer the line's cost of record (nsa_cost) over the catalog cost so an edited line
+            // cost carries into the PO even when a price input is left blank.
+            const fallbackCost=safeNum(grp.nsa_cost)>0?safeNum(grp.nsa_cost):safeNum(catProd?.nsa_cost);
             // Prefer per-size price inputs (size upcharges); fall back to single Price/Unit input
             const {hasSizePrices,price}=_groupPriceMap(grp,vi,fallbackCost);
             // One blank, possibly several decorations: split the entered qtys back per SO line so each
