@@ -19285,7 +19285,11 @@ export default function App(){
     const _isArtistUser=cu?.role==='artist'||cu?.role==='art';
     const _isRepUser=cu?.role==='rep'||cu?.role==='admin'||cu?.role==='super_admin';
     const filtered=allArtJobs.filter(j=>{
-      if(_isArtistUser&&j.assigned_artist!==cu.id)return false;
+      // Artist sees a job when it's assigned to them OR the open art request names them —
+      // assigned_artist can go stale (e.g. it held a deactivated duplicate team-member id
+      // while the request pointed at the live one), and either link should surface the job.
+      if(_isArtistUser){const _actReq=(j.art_requests||[]).find(r=>r.status==='requested'||r.status==='in_progress');
+        if(j.assigned_artist!==cu.id&&_actReq?.artist!==cu.id)return false}
       if(!_isArtistUser&&artFilter!=='all'&&(_isRepUser?(j.repId||'')!==artFilter:(j.assigned_artist||'')!==artFilter))return false;
       if(artSearch){const s=artSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
@@ -19355,9 +19359,13 @@ export default function App(){
     const assignArtist=(j,artistId)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId}:jj);
+      // Keep the open art request pointing at the same artist as assigned_artist — the artist
+      // board matches on either, and letting them diverge is how jobs go invisible.
+      const _artistName=REPS.find(r=>r.id===artistId)?.name||'';
+      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId,
+        art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,artist:artistId,artist_name:_artistName}:r)}:jj);
       savSO({...so,jobs:updatedJobs});
-      nf('Assigned to '+(REPS.find(r=>r.id===artistId)?.name||'Unassigned'));
+      nf('Assigned to '+(_artistName||'Unassigned'));
     };
     const rejectArt=(j,reason)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
@@ -19468,8 +19476,16 @@ export default function App(){
           {/* ─── ARTIST VIEW: artist-facing actions ─── */}
           {view==='artist'&&<>
             <div style={{display:'flex',gap:4,alignItems:'center',marginBottom:4}}>
-              {artist?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
-              :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>}
+              {_isArtistUser?(artist?<span style={{fontSize:10,fontWeight:700,color:'#7c3aed',padding:'2px 6px',background:'#ede9fe',borderRadius:4}}>🎨 {artist.name}</span>
+              :<span style={{fontSize:10,color:'#94a3b8',fontStyle:'italic'}}>No artist assigned</span>)
+              // Admin/rep: assign (or re-assign) the artist right from the card. The value only
+              // reads as assigned when it resolves to an ACTIVE artist — a stale id (deactivated
+              // duplicate team member) shows as unassigned so it gets fixed instead of hiding the
+              // job from every artist's board.
+              :<select className="form-select" style={{fontSize:10,padding:'2px 6px',maxWidth:170}} value={artistMembers.some(r=>r.id===j.assigned_artist)?j.assigned_artist:''} onClick={e=>e.stopPropagation()} onChange={e=>assignArtist(j,e.target.value)}>
+                <option value="">🎨 {artist?'Unassigned (was '+artist.name+(artist.is_active===false?' — inactive':'')+')':'Unassigned — pick artist'}</option>
+                {artistMembers.map(r=><option key={r.id} value={r.id}>🎨 {r.name}</option>)}
+              </select>}
             </div>
             <div style={{fontSize:9,color:'#94a3b8'}}>{j.rep} · {j.alpha||j.soMemo}</div>
             {/* Art Time Clock In/Out + Open SO — split 50/50 to keep card compact */}
