@@ -5110,6 +5110,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </div>}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
+                    {/* M13: reusing un-approved art dead-ends (no mock/seps) — badge the state, don't hide it */}
+                    {(art.status==='approved'||art.status==='art_complete')?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:10}}>✓ Approved</span>
+                      :<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fef3c7',padding:'1px 8px',borderRadius:10}} title="This design was never approved on the source order — reusing it likely means going back to the artist">⚠️ {ART_FILE_LABELS[art.status]||'Not approved'}</span>}
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
                     <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files and offers to point matching garments' decorations at it (one confirm). Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
                     {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
@@ -8554,6 +8557,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
+            {/* M15/REUSE-5: a fresh needs_art job whose design already exists on the customer's other
+                orders used to get NO offer — the rep re-requested from the artist for an already-
+                approved design. Surface the cheap path here; the button opens the EXISTING Previous
+                Artwork picker (badged per M13), it does not auto-apply anything. */}
+            {j.art_status==='needs_art'&&(()=>{
+              const _jaIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+              (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jaIds.add(d.art_file_id)})});
+              const _jArts=[..._jaIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+              if(!_jArts.length)return null;// TBD-only job — no design identity to match on
+              // "No art attached" = every design on the job is still an empty shell: not approved,
+              // not under review, and carrying no mockups. Anything further along has its own flow.
+              const _noArt=_jArts.every(a2=>a2.status!=='approved'&&a2.status!=='needs_approval'&&[...(a2.mockup_files||[]),...Object.values(a2.item_mockups||{}).flat()].length===0);
+              if(!_noArt)return null;
+              const _dids=new Set(_jArts.map(a2=>a2.design_id).filter(Boolean));
+              const _nks=new Set(_jArts.map(a2=>{const n=(a2.name||'').trim().toLowerCase();return n?n+'||'+(a2.deco_type||''):null}).filter(Boolean));
+              if(!_dids.size&&!_nks.size)return null;
+              // Same candidate sources + matching identity as priorMocks/the Previous Artwork picker:
+              // parent+own customer, other orders + art library, design_id or name+deco_type.
+              const _pc3=allCustomers.find(c=>c.id===o.customer_id);
+              const _cids3=_pc3?.parent_id?[_pc3.parent_id,o.customer_id]:[o.customer_id];
+              const _cands=[];
+              const _scan=(arts,src)=>{(arts||[]).forEach(a2=>{if(!a2||a2.archived||_jaIds.has(a2.id))return;const n=(a2.name||'').trim().toLowerCase();if((a2.design_id&&_dids.has(a2.design_id))||(n&&_nks.has(n+'||'+(a2.deco_type||''))))_cands.push({art:a2,src})})};
+              _cids3.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);_scan(c?.art_files,'the Art Library')});
+              (artSourceOrders||allOrders||[]).filter(so2=>_cids3.includes(so2.customer_id)&&so2.id!==o.id).forEach(so2=>_scan(so2.art_files,so2.id));
+              if(!_cands.length)return null;
+              const _appr=_cands.filter(c2=>c2.art.status==='approved'||c2.art.status==='art_complete');
+              const _best=_appr[0]||_cands[0];
+              const _open=()=>{setSelJob(null);setPrevArtFilter('all');setShowPrevArt(true)};
+              return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:_appr.length?'linear-gradient(135deg,#f0fdf4,#f7fee7)':'linear-gradient(135deg,#fffbeb,#fefce8)',border:'2px solid '+(_appr.length?'#86efac':'#fde047'),borderRadius:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:18}}>♻️</span>
+                  <span style={{fontWeight:800,fontSize:15,color:_appr.length?'#166534':'#854d0e'}}>{_appr.length?'Reuse approved art from '+_best.src+'?':'This design exists on '+_best.src+' — but was never approved'}</span>
+                </div>
+                <div style={{fontSize:12,color:_appr.length?'#15803d':'#92400e',marginBottom:10}}>
+                  {_appr.length
+                    ?<>"{_best.art.name||'Untitled'}" was already approved for this customer{_appr.length>1?' ('+_appr.length+' approved copies found)':''}. Reuse it instead of re-requesting from the artist — production files come along and matching garments get wired in one confirm.</>
+                    :<>"{_best.art.name||'Untitled'}" matches art on {_best.src} that never finished approval ({ART_FILE_LABELS[_best.art.status]||_best.art.status||'no status'}). You can still reuse it, but it may have no mock or production files.</>}
+                </div>
+                <button className="btn btn-sm" style={{fontSize:12,background:_appr.length?'#16a34a':'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'6px 14px'}} onClick={_open}>♻️ Open Previous Artwork</button>
+              </div>;
+            })()}
             {j.art_status==='art_requested'&&!(j.coach_rejected||(j.rejections||[]).length>0)&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <span style={{fontSize:16}}>📨</span>
