@@ -224,6 +224,7 @@ const _sbSignIn=async(email,password)=>{
   if(!supabase)return{error:'Supabase not configured'};
   const{data,error}=await supabase.auth.signInWithPassword({email,password});
   if(error)return{error:error.message};
+  _sessionDead=false;// a fresh sign-in un-latches the dead-session gate so queued saves resume
   return{user:data.user,session:data.session};
 };
 const _sbSignUp=async(email,password)=>{
@@ -1779,7 +1780,24 @@ const _handleAuthSaveFailure=(id,err)=>{
   const perm=_isPermissionDenied(err);
   if(id){_dbSaveFailedIds.add(id);_recordSaveError(id,perm?'permission denied — your account can’t save this change; contact an admin':'session expired — sign in again to save');_persistFailedIds()}
   if(!perm)_recoverSession();// a permission denial can't be refreshed away — don't churn recovery or bounce to login
+  else _verifyPermDenialHasSession(id);
   return false;
+};
+// A "permission denied"/RLS error is only terminal when a REAL session was behind the write. When the
+// login has fully expired, supabase-js falls back to sending the anon key, and the anon role hitting a
+// staff-only policy produces the exact same RLS message with NO jwt/expiry marker — which used to be
+// misclassified as a rights problem, so recovery never ran, no re-login was forced, and the 60s retry
+// loop replayed the rejected write forever (the RLS-spam-from-an-expired-login incident, 2026-07-08).
+// Async on purpose: _handleAuthSaveFailure's callers need their synchronous `false`; the recovery /
+// forced re-login is a side effect. If a live session IS present, the denial is genuine and untouched.
+const _verifyPermDenialHasSession=async(id)=>{
+  if(!supabase||_sessionDead)return;
+  try{
+    const{data:{session}}=await supabase.auth.getSession();
+    if(session&&!(session.expires_at&&session.expires_at<=Math.floor(Date.now()/1000)))return;// real session behind the write — genuine denial
+    if(id)_recordSaveError(id,'session expired — sign in again to save');
+    _recoverSession();// no live session behind the "denial" — it's a dead login; refresh or bounce to the login screen
+  }catch(_){/* can't tell — keep the permission-denied classification rather than churn recovery */}
 };
 // Proactive guard: ensure the access token isn't expired/near-expiry *before* a write goes out. A
 // hidden/idle/slept tab throttles GoTrue's auto-refresh timer, so the in-memory JWT can be stale; the
@@ -2350,6 +2368,7 @@ export const _setForceReauth=(fn)=>{_forceReauth=fn};
 export const _setOnFailedIdsChange=(fn)=>{_onFailedIdsChange=fn};
 export const _setOnCacheFullChange=(fn)=>{_onCacheFullChange=fn};
 export const _setSessionDead=(v)=>{_sessionDead=v};
+export const _isSessionDead=()=>_sessionDead;// live getter — the bare `_sessionDead` export is a stale snapshot from module init
 export const _setBatchPosDirtyUntil=(v)=>{_batchPosDirtyUntil=v};
 export {_setAppStateDirtyUntil,_appStateDirty,_appStateVersions};
 export const _setLsQuotaWarned=(v)=>{_lsQuotaWarned=v};

@@ -384,6 +384,7 @@ import {
   _setOnFailedIdsChange,
   _setOnCacheFullChange,
   _setSessionDead,
+  _isSessionDead,
   _setBatchPosDirtyUntil,
   _setAppStateDirtyUntil,
   _appStateDirty,
@@ -3096,7 +3097,9 @@ export default function App(){
   _retryDataRef.current={ests,sos,invs,msgs,cust,prod};
   React.useEffect(()=>{
     const retryInterval=setInterval(async()=>{
-      if(_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
+      // A latched-dead session can't save anything — every retry would go out as anon and be
+      // RLS-rejected (log spam, no progress). Hold the queue; sign-in un-latches and retries resume.
+      if(_isSessionDead()||_dbSaveFailedIds.size===0||!_initialLoadDone.current||!_dbLoadSuccess.current)return;
       const {ests,sos,invs,msgs,cust,prod}=_retryDataRef.current;
       console.log('[DB] Retrying failed saves:',[ ..._dbSaveFailedIds]);
       const ids=[..._dbSaveFailedIds];
@@ -3949,7 +3952,7 @@ export default function App(){
       // JWT may be expired. Refresh proactively before anything writes — an expired token makes the server
       // treat writes as anon and RLS rejects them (reads still work), the silent save failure users hit on resume.
       await _ensureFreshSession();
-      if(_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
+      if(!_isSessionDead()&&_dbSaveFailedIds.size>0&&_initialLoadDone.current&&_dbLoadSuccess.current){
         // Tab returning — immediately retry failed saves instead of waiting for backoff timer
         // Reset backoff since user is actively using the tab
         _retryBackoff.current=60000;
