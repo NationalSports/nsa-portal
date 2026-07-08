@@ -8373,48 +8373,6 @@ function VendorStyleCards({ styles, selected, onToggle }) {
   ));
 }
 
-function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
-  const [q, setQ] = useState(initialQuery || '');
-  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
-  const [importing, setImporting] = useState(false);
-  const vendorMap = useVendorMap();
-  const { styles, errors, loading, ran } = useVendorCatalogSearch(q, vendorMap);
-  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
-  const add = async () => {
-    if (!selected.size) return;
-    setImporting(true);
-    try { const rows = await importVendorSelections(selected); onAdd(rows); onClose(); }
-    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
-    finally { setImporting(false); }
-  };
-  const errList = Object.entries(errors || {});
-  return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', zIndex: 1200, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 800, margin: 'auto' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Search live vendor catalogs</div><div style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec. Picked items are imported so they can go into a {destLabel}.</div></div>
-          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
-        </div>
-        <div style={{ padding: 16 }}>
-          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Style number or name — e.g. DM130, PC61, 112, C2 Tee" style={{ width: '100%', marginBottom: 12 }} />
-          {errList.length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {errList.map(([v]) => v).join(', ')}.</div>}
-          <div style={{ maxHeight: '54vh', overflowY: 'auto' }}>
-            {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Searching vendor catalogs…</div>
-              : q.trim().length < 2 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Type a style number or name to search.</div>
-              : styles.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>{ran ? 'No vendor styles matched. Try the exact style number (e.g. DM130).' : ''}</div>
-              : <VendorStyleCards styles={styles} selected={selected} onToggle={toggle} />}
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
-          <button className="btn btn-primary" disabled={importing || !selected.size} onClick={add}>{importing ? 'Importing…' : `Add ${selected.size} to ${destLabel}`}</button>
-          <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
-          <span style={{ fontSize: 11.5, color: '#9AA1AC', marginLeft: 'auto' }}>Imported at ~50% margin — reprice after.</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
@@ -8433,7 +8391,6 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const toggleColorFam = (f) => setColorSel((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [vendorOpen, setVendorOpen] = useState(false);
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -8622,7 +8579,16 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   // Hide vendor styles the local search already surfaced (imported vendor rows carry SKU
   // "<style>-<color>", native rows the bare style) so the same garment isn't listed twice.
   const localSkusU = useMemo(() => results.map((r) => String(r.sku || '').toUpperCase()), [results]);
-  const vendorNew = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
+  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
+  // Apply the "School colors" toggle to the live vendor styles too — drop colorways whose
+  // color isn't in the school's palette (same primary-segment match as the local catalog),
+  // and hide any style left with no matching colorway.
+  const vendorNew = useMemo(() => {
+    if (!(colorOnly && colorWords.length)) return vendorDeduped;
+    return vendorDeduped
+      .map((s) => ({ ...s, colors: (s.colors || []).filter((c) => productMatchesColors(c.colorName, colorWords)) }))
+      .filter((s) => (s.colors || []).length > 0);
+  }, [vendorDeduped, colorOnly, colorWords]);
   // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
   const rowById = new Map(swatchPool.map((r) => [r.id, r]));
   const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
@@ -8635,7 +8601,6 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
   return (
     <div className="card" style={{ marginBottom: 12 }}>
-      {vendorOpen && <VendorSearchModal initialQuery={q} destLabel={destLabel} onClose={() => setVendorOpen(false)} onAdd={(rows) => { if (onPickMany && rows && rows.length) onPickMany(rows, [], {}); }} />}
       <CatalogKitStyles />
       <KitScope style={{ padding: 16 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
@@ -8648,10 +8613,13 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12, alignItems: 'center' }}>
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
-          <button type="button" onClick={() => setVendorOpen(true)} title="Look up any style from SanMar, S&S, Richardson or Momentec — even if it's not in the catalog yet" style={{ marginLeft: 'auto', fontSize: 12, fontWeight: 700, color: '#3730a3', background: '#eef2ff', border: '1px solid #c7d2fe', borderRadius: 999, padding: '5px 12px', cursor: 'pointer' }}>🔎 Search vendor catalogs</button>
         </div>
 
+        {/* Toggles live on one row right under the categories — in-stock / school-colors
+            filter both the local catalog AND the live vendor results below. */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
+          {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
+          {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
           {togBtn(favOnly, () => setFavOnly((v) => !v), `★ Favorites${favUnion.size ? ' (' + favUnion.size + ')' : ''}`, '#b45309', '#fef3c7')}
           {FAV_CURATORS.includes((myEmail || '').toLowerCase()) && togBtn(curate, () => setCurate((v) => !v), 'Curate shared list', '#7c3aed', '#ede9fe')}
           {curate && <span style={{ fontSize: 11.5, color: '#7c3aed', fontWeight: 700 }}>Starring now edits the shared list everyone sees</span>}
@@ -8659,9 +8627,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         </div>
 
         {active && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12, alignItems: 'center' }}>
-            {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
-            {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
             <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockStyleN} of {allStyleN} styles in stock</span>
             {brands.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 2px' }} />}
             {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
@@ -8718,7 +8684,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               {vendorLoading && vendorNew.length === 0
                 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching vendor catalogs…</div>
                 : vendorNew.length === 0 && vendorRan
-                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No vendor styles matched either. Try the exact style number (e.g. DM130).</div>
+                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>{colorOnly && colorWords.length && vendorDeduped.length > 0 ? 'Vendor styles matched, but none in the school colors — turn off "School colors" to see them.' : 'No vendor styles matched either. Try the exact style number (e.g. DM130).'}</div>
                 : <VendorStyleCards styles={vendorNew} selected={vendorSel} onToggle={toggleVendor} />}
               {vendorSel.size > 0 && (
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
