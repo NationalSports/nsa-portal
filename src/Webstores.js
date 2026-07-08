@@ -2949,7 +2949,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
             // in-house art now that the store exists with every setting the rep just configured.
             if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
-            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); }
+            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); return r; }
+            // A brand-new team store (not from OMG or a template): open it straight to the
+            // Art & Logos page so the rep keeps building — add artwork next — instead of
+            // bouncing back to the store list. Club stores stay on the list (product-first).
+            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('art'); setDetail(null); await loadDetail(r.data); return r; }
             return r;
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
