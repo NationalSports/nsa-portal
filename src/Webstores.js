@@ -2752,6 +2752,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
           const base = cleanArt(lib);
           if (!base.web_logo_url && d.art_url) base.web_logo_url = d.art_url;
+          // Mirror the OMG pull (createOmgSO in App.js): the store sale IS the customer's
+          // approval, so library art lands at least 'approved'. Without this, a library record
+          // still at waiting_for_art/needs_approval — e.g. the OMG-import "attach production
+          // file" shell — drags the SO's job back into the artist/coach approval pipeline.
+          // Production files still gate normally (artProdFilesConfirmed): approval is skipped,
+          // the prod-files stage is not.
+          if (base.status !== 'approved' && base.status !== 'art_complete') { base.status = 'approved'; if (!base.approved_at) base.approved_at = new Date().toISOString(); }
           addArtFile({ ...base, id: artId });
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
