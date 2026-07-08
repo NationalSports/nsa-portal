@@ -364,6 +364,7 @@ import {
   _outboxRemoveById,
   _outboxList,
   _outboxGate,
+  _setOnOutboxConflict,
   _dbSaveFailedErrors,
   _clearSaveError,
   _onFailedIdsChange,
@@ -2090,9 +2091,11 @@ export default function App(){
   const[failedSaveCount,setFailedSaveCount]=useState(_dbSaveFailedIds.size);_setOnFailedIdsChange(setFailedSaveCount);
   const[failedSaveOpen,setFailedSaveOpen]=useState(false);
   const[failedSaveBusy,setFailedSaveBusy]=useState(false);
-  // Outbox entries whose base version the server moved past during boot — need a human decision
-  // (apply anyway / discard); never auto-applied. See _outboxGate in dbEngine.
+  // Outbox entries whose base version the server moved past — need a human decision (apply anyway /
+  // discard); never auto-applied. Populated at boot by the _outboxGate rehydrate AND live by the
+  // stale-rejection path (dbEngine calls back here the moment the server refuses a stale write).
   const[outboxConflicts,setOutboxConflicts]=useState([]);
+  _setOnOutboxConflict((en)=>{setOutboxConflicts(prev=>{const key=en.table+':'+en.id;return[...prev.filter(x=>x.table+':'+x.id!==key),en]})});
   const[cacheFull,setCacheFull]=useState(_lsQuotaWarned);_setOnCacheFullChange(setCacheFull);
   // Snapshot of last DB-loaded data — used to diff auto-save and only write changed records
   const _dbSnap=useRef({});

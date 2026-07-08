@@ -874,7 +874,8 @@ const _dbSaveEstimateInner = async (est) => {
       // _dbSavePendingIds non-empty, which permanently blocked the build-version poller from reloading stale tabs.
       if(_rpcErr&&((_rpcErr.message||'').includes('STALE_ESTIMATE_WRITE')||_rpcErr.code==='40001')){
         console.warn('[DB] save_estimate rejected a stale write for',est.id,'—',_rpcErr.message);
-        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
+        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         // Stale = superseded, not failed: clear any prior failed-flag so a stale estimate doesn't linger in the
         // "failed to save" banner or get retried every 60s. With it no longer pending/failed, the realtime/poll
         // merge stops protecting the local copy and heals it to the DB's current version (rep then re-applies).
@@ -902,7 +903,8 @@ const _dbSaveEstimateInner = async (est) => {
       // pending/failed, back off via the cooldown, and report non-failure so _diffSave doesn't roll back.
       if(_rpcRes.data&&_rpcRes.data.stale===true){
         console.warn('[DB] save_estimate returned stale for',est.id,'(client base',est._version,'→ DB',_rpcRes.data.version,')');
-        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab — your view is out of date. Reload before editing.','error');
+        _emitOutboxConflict('estimates',est);// preserve the rejected edit's content — the conflict card lets the rep re-apply or discard
+        if(!_bgSync&&_dbNotify)_dbNotify('This estimate changed in another tab. Your edit was NOT saved but has been preserved — review it in the red banner.','error');
         _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
         _dbStaleCooldown.set(est.id,Date.now()+_STALE_COOLDOWN_MS);
         return 'stale';
@@ -2192,7 +2194,11 @@ const _lsSet=(key,value)=>{try{
   localStorage.setItem(key,value);return true
 }catch(e){if((e.name==='QuotaExceededError'||e.message?.includes('quota'))&&!_lsQuotaWarned){_lsQuotaWarned=true;if(_onCacheFullChange)_onCacheFullChange(true);console.error('[Storage] localStorage quota exceeded writing key:',key)}return false}};
 // One-time cleanup: drop legacy heavy/unbounded keys on startup. Cloud is the source of truth.
-try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','nsa_inv_adj_log'].forEach(k=>localStorage.removeItem(k));const _snapKeys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))_snapKeys.push(k)}_snapKeys.forEach(k=>localStorage.removeItem(k))}catch{}
+// The entity caches (nsa_cust/ests/sos/invs/msgs/prod/vend) are purged too: nothing has written
+// them since the one-time bad-ID migration, but a years-old copy still seeds boot state, and the
+// boot merge prefers that `prev` copy for any failed-save ID — feeding users ancient data. Unsaved
+// edits are preserved by the outbox (nsa_outbox), which replaces the only job these caches had left.
+try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend'].forEach(k=>localStorage.removeItem(k));const _snapKeys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))_snapKeys.push(k)}_snapKeys.forEach(k=>localStorage.removeItem(k))}catch{}
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
 const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
@@ -2239,6 +2245,18 @@ const _outboxAdd=(table,entity)=>{try{
 const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
 const _outboxRemoveById=(id)=>{try{const box=_outboxRead();let hit=false;for(const k of Object.keys(box)){if(box[k]&&box[k].id===id){delete box[k];hit=true}}if(hit)_outboxWrite(box)}catch{}};
 const _outboxList=()=>{try{return Object.values(_outboxRead())}catch{return[]}};
+// Live conflict surfacing: when a save is rejected because the server moved past the client's base
+// version (the estimate stale-guard), the edit's content is preserved in the outbox and the App is
+// notified so the conflict card appears IMMEDIATELY — the rep decides view/apply/discard instead of
+// retyping. Before this, a stale rejection silently dropped the edit content.
+let _onOutboxConflict=null;// set by App — receives the outbox entry to append to the conflict card list
+export const _setOnOutboxConflict=(fn)=>{_onOutboxConflict=fn};
+const _emitOutboxConflict=(table,entity)=>{try{
+  if(!entity||!entity.id)return;
+  _outboxAdd(table,entity);
+  const en=_outboxRead()[table+':'+entity.id];
+  if(en&&_onOutboxConflict)_onOutboxConflict(en);
+}catch(e){console.error('[Outbox] conflict emit failed:',e)}};
 // Failure/success hook wrapping the exported save entry points. Keys off _dbSaveFailedIds so it
 // inherits the interior failure sites' judgment exactly — a false return that deliberately did NOT
 // flag the ID (e.g. a permanently-skipped duplicate SKU, or a version-conflict precheck that wants
@@ -2256,8 +2274,10 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
     try{
       if(r===false){if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}
       // addOnly: an art-files-only save success must not clear an outbox entry holding a failed
-      // FULL entity payload — only the full save (or 'stale') may clear.
-      else if((r===true||r==='stale')&&!addOnly){if(entity&&entity.id)_outboxRemove(table,entity.id)}
+      // FULL entity payload — only the full save may clear. 'stale' deliberately does NOT clear:
+      // the rejected edit's content is preserved for the conflict card (_emitOutboxConflict) so a
+      // version rejection no longer silently destroys what the rep typed.
+      else if(r===true&&!addOnly){if(entity&&entity.id)_outboxRemove(table,entity.id)}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
   },err=>{try{if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}catch{}throw err});
@@ -2417,6 +2437,7 @@ export {
   _outboxList,
   _outboxGate,
   _outboxMatchesRow,
+  _emitOutboxConflict,
   _onFailedIdsChange,
   _persistFailedIds,
   _dbSavePendingIds,
