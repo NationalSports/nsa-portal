@@ -251,6 +251,26 @@ export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD70
 'denim':'#1560BD','indigo':'#4B0082','eggplant':'#614051','heather':'#B7A99A'};
 export const threadHex=(name)=>{if(!name)return null;const n=name.toLowerCase().trim();if(THREAD_COLORS[n])return THREAD_COLORS[n];const match=Object.entries(THREAD_COLORS).find(([k])=>n.includes(k)||k.includes(n));return match?match[1]:null};
 
+// H4/REUSE-3: honest garment-shade classification for color-way matching. Returns 'light',
+// 'dark', or null (unknown). One shared table — the reuse picker (_cwMatchForItem/_grpCw in
+// OrderEditor) must never re-grow its own regex. "Dark" ≈ needs the on-dark CW/underbase, so
+// mid-tones (orange, red, kelly, royal…) classify dark; golds/greys/heathers stay light to
+// match the historical rule. Callers MUST treat null (or a no-match) as UNCONFIRMED — render
+// "approved on <cw> — confirm", never a green ✓ off a fallback.
+const _GC_DARK=/\b(black|navy|charcoal|graphite|maroon|burgundy|wine|brick|crimson|cardinal|scarlet|red|royal|cobalt|indigo|midnight|denim|steel|slate|purple|violet|eggplant|plum|forest|hunter|kelly|emerald|olive|green|teal|brown|rust|blue|orange)\b/;
+const _GC_LIGHT=/\b(white|natural|cream|ivory|ash|sand|stone|oxford|silver|grey|gray|heather|heathered|tan|khaki|vegas|gold|maize|yellow|lemon|pink|peach|salmon|mint|seafoam|lavender|lilac|columbia|carolina)\b/;
+export const garmentColorClass=(color)=>{
+  const c=String(color||'').toLowerCase().trim();
+  if(!c)return null;
+  if(/\b(dark|dk)\b/.test(c))return 'dark';
+  if(/\b(light|lt)\b/.test(c))return 'light';
+  // Light-modifier blues resolve before the dark 'blue' token ("Columbia Blue", "Sky Blue"…).
+  if(/\b(columbia|carolina|sky|powder|baby|ice)[\s-]*blue\b/.test(c))return 'light';
+  if(_GC_DARK.test(c))return 'dark';
+  if(_GC_LIGHT.test(c))return 'light';
+  return null;
+};
+
 export const _vendCols=['id','name','vendor_type','api_provider','nsa_carries_inventory','click_automation','is_active','contact_name','contact_email','contact_phone','address_line1','address_line2','city','state','zip','rep_name','payment_terms','notes','b2b_url','b2b_username','b2b_password','catalog_files'];
 export const _firmDateCols=['item_desc','date','approved'];
 export const _issueCols=['id','status','description','priority','page','viewing','reported_by','role','timestamp','resolved_at','resolution'];

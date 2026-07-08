@@ -5,7 +5,7 @@ import * as XLSX from 'xlsx';
 import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
@@ -295,9 +295,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[o.id,o.customer_id,supabase,(allOrders||[]).length,safeArt(o).length]);
   // The CW a mock inherits from the item it's applied to: prefer the item's decoration
-  // color_way_id when it's valid for this art, else match the art's CWs by garment color
-  // (light → "on white", dark → "on dark"), else the first CW.
-  const _cwForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return deco.color_way_id;const light=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(garmentColor||'');const byLD=cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return light?/white|light/.test(gc):/dark|black/.test(gc)});return (byLD||cws[0]).id};
+  // color_way_id when it's valid for this art, else match the art's CWs by garment shade via
+  // the shared garmentColorClass table (H4 — one table, no per-call-site regex). Returns
+  // {id,exact}: exact=false means we only fell back to cws[0] (unknown garment color, or no
+  // CW of the matching shade) — the UI must render that as "confirm", never a green ✓.
+  const _cwMatchForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return{id:deco.color_way_id,exact:true};const cls=garmentColorClass(garmentColor);const byLD=cls?cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return byLD?{id:byLD.id,exact:true}:{id:cws[0].id,exact:false}};
   // Open the existing "Send to Coach for Approval" modal for a job index (same initializer as
   // the waiting-approval banner's Send to Coach button).
   const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
@@ -308,7 +310,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const{sku,color,artId,files,jobId}=d;const key=sku+'|'+(color||'');
     const item=safeItems(o).find(it=>(it.sku||'')===sku&&(it.color||'')===(color||''));
     const artFile=safeArt(o).find(a=>a.id===artId);
-    const cwId=_cwForItem(artFile,item,color);const cwLabel=cwId&&(artFile?.color_ways||[]).find(c=>c.id===cwId)?.garment_color;
+    // H4: only stamp a color_way_id we actually matched — a cws[0] fallback tag would look
+    // authoritative later. Unconfirmed reuse still applies, but says so in the toast.
+    const _cwM=_cwMatchForItem(artFile,item,color);const cwId=(_cwM&&_cwM.exact)?_cwM.id:null;const cwLabel=cwId&&(artFile?.color_ways||[]).find(c=>c.id===cwId)?.garment_color;const cwUnconf=!!(_cwM&&!_cwM.exact);
     const jIdx=safeJobs(o).findIndex(jj=>jj.id===jobId);
     const jb=jIdx>=0?safeJobs(o)[jIdx]:null;
     // REUSE-6: moving a job forward supersedes a coach change-request. Confirm before overriding, and clear
@@ -328,8 +332,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     setMockApplyModal(null);
     const ok=await saveSONow(updated,'Reused mock',null);
     if(ok){
-      if(sendToCoach){nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
-      else nf('Mock applied'+(cwLabel?' · CW: '+cwLabel:'')+' — art stays approved');
+      const _cwNote=cwLabel?' · CW: '+cwLabel:cwUnconf?' · color-way unconfirmed — verify the mock matches this garment':'';
+      if(sendToCoach){nf('Mock applied'+_cwNote+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
+      else nf('Mock applied'+_cwNote+' — art stays approved');
     }
   };
   // Add a Previous Artwork group to this order WITHOUT auto-applying its mockups. Production files,
@@ -353,7 +358,42 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     clone.item_mockups=im;
     sv('art_files',[...af,clone]);
     const _pf=(clone.prod_files||[]).length;
-    nf('Added "'+(art.name||'Untitled')+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+(_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':''));
+    const _pfNote=_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':'';
+    const _nm=art.name||'Untitled';
+    // M14/REUSE-2: the clone used to land unwired — the rep then opened EVERY garment and swapped
+    // art_file_id by hand. Offer ONE confirm that points the matching decorations at the reused
+    // design via changeArtFileId (same recall/orphan handling as a manual swap). Conservative match:
+    //   • unwired art decos (no art_file_id) — the empty slot this reuse is filling;
+    //   • ART TBD decos whose art_tbd_type equals the reused deco_type;
+    //   • decos pointing at an EMPTY same-design placeholder (design_id, or name+deco_type match,
+    //     status absent/waiting_for_art) — never a design that already has live/approved art.
+    // Decline keeps today's manual behavior.
+    const _cd=clone.deco_type||'';const _nmKey=(clone.name||'').trim().toLowerCase();
+    const targets=[];
+    safeItems(o).forEach((it,ii)=>{safeDecos(it).forEach((d,di)=>{
+      if(d.kind!=='art')return;
+      let match=false;
+      if(!d.art_file_id)match=true;
+      else if(d.art_file_id==='__tbd')match=(d.art_tbd_type||'')===_cd;
+      else{const cur=af.find(a=>a.id===d.art_file_id);
+        match=!!cur&&(cur.deco_type||'')===_cd
+          &&((clone.design_id&&cur.design_id===clone.design_id)||(!!_nmKey&&(cur.name||'').trim().toLowerCase()===_nmKey))
+          &&(!cur.status||cur.status==='waiting_for_art');}
+      if(match)targets.push({ii,di,item:it});
+    })});
+    if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
+    // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
+    // but the rep is told to confirm the color-way for them.
+    const _lbl=t=>((t.item.color?t.item.color+' ':'')+(t.item.sku||t.item.name||('Item '+(t.ii+1))));
+    const garments=[...new Set(targets.map(_lbl))];
+    const cwFlag=[...new Set(targets.filter(t=>{const m=_cwMatchForItem(clone,t.item,t.item.color);return m&&!m.exact}).map(_lbl))];
+    const ok=window.confirm('♻️ Point '+targets.length+' decoration'+(targets.length>1?'s':'')+' on '+garments.length+' garment'+(garments.length>1?'s':'')+' at "'+_nm+'"?\n\n'+garments.join(', ')
+      +(cwFlag.length?'\n\n⚠️ Confirm color-way for: '+cwFlag.join(', ')+' — the approved shade differs or is unknown.':'')
+      +'\n\nCancel adds the art without pointing anything — wire each garment manually.');
+    if(!ok){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — not applied to any garment'+_pfNote);return}
+    targets.forEach(t=>changeArtFileId(t.ii,t.di,clone.id));
+    nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' and pointed '+targets.length+' decoration'+(targets.length>1?'s':'')+' on '+garments.length+' garment'+(garments.length>1?'s':'')+' at it'+_pfNote
+      +(cwFlag.length?' — ⚠️ confirm color-way for '+cwFlag.join(', '):''));
   };
   const[mentionQuery,setMentionQuery]=useState(null);const[mentionIdx,setMentionIdx]=useState(0);const mentionRef=useRef(null);const msgInputRef=useRef(null);
     // Sync from external updates (e.g., coach approval from portal) — merge job art_status + art_files
@@ -5070,8 +5110,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </div>}
                   </div>
                   <div style={{display:'flex',flexDirection:'column',gap:4,alignItems:'flex-end',flexShrink:0}}>
+                    {/* M13: reusing un-approved art dead-ends (no mock/seps) — badge the state, don't hide it */}
+                    {(art.status==='approved'||art.status==='art_complete')?<span style={{fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',padding:'1px 8px',borderRadius:10}}>✓ Approved</span>
+                      :<span style={{fontSize:10,fontWeight:700,color:'#b45309',background:'#fef3c7',padding:'1px 8px',borderRadius:10}} title="This design was never approved on the source order — reusing it likely means going back to the artist">⚠️ {ART_FILE_LABELS[art.status]||'Not approved'}</span>}
                     {alreadyAdded?<span style={{fontSize:10,color:'#22c55e',fontWeight:600}}>Already added</span>:
-                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files. Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
+                    <button className="btn btn-sm btn-primary" style={{fontSize:11}} title="Adds the art + production files and offers to point matching garments' decorations at it (one confirm). Mockups are not auto-applied — pick them per garment." onClick={()=>addPrevArt(art,new Set())}>+ Add</button>}
                     {mockups.length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{mockups.length} mockup(s) — not auto-applied</span>}
                     {(art.prod_files||[]).length>0&&<span style={{fontSize:10,color:'#16a34a',fontWeight:600}}>🏭 {art.prod_files.length} prod file(s)</span>}
                   </div>
@@ -8514,6 +8557,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>;
             })()}
             {/* ── Art Status Banners ── */}
+            {/* M15/REUSE-5: a fresh needs_art job whose design already exists on the customer's other
+                orders used to get NO offer — the rep re-requested from the artist for an already-
+                approved design. Surface the cheap path here; the button opens the EXISTING Previous
+                Artwork picker (badged per M13), it does not auto-apply anything. */}
+            {j.art_status==='needs_art'&&(()=>{
+              const _jaIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
+              (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jaIds.add(d.art_file_id)})});
+              const _jArts=[..._jaIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+              if(!_jArts.length)return null;// TBD-only job — no design identity to match on
+              // "No art attached" = every design on the job is still an empty shell: not approved,
+              // not under review, and carrying no mockups. Anything further along has its own flow.
+              const _noArt=_jArts.every(a2=>a2.status!=='approved'&&a2.status!=='needs_approval'&&[...(a2.mockup_files||[]),...Object.values(a2.item_mockups||{}).flat()].length===0);
+              if(!_noArt)return null;
+              const _dids=new Set(_jArts.map(a2=>a2.design_id).filter(Boolean));
+              const _nks=new Set(_jArts.map(a2=>{const n=(a2.name||'').trim().toLowerCase();return n?n+'||'+(a2.deco_type||''):null}).filter(Boolean));
+              if(!_dids.size&&!_nks.size)return null;
+              // Same candidate sources + matching identity as priorMocks/the Previous Artwork picker:
+              // parent+own customer, other orders + art library, design_id or name+deco_type.
+              const _pc3=allCustomers.find(c=>c.id===o.customer_id);
+              const _cids3=_pc3?.parent_id?[_pc3.parent_id,o.customer_id]:[o.customer_id];
+              const _cands=[];
+              const _scan=(arts,src)=>{(arts||[]).forEach(a2=>{if(!a2||a2.archived||_jaIds.has(a2.id))return;const n=(a2.name||'').trim().toLowerCase();if((a2.design_id&&_dids.has(a2.design_id))||(n&&_nks.has(n+'||'+(a2.deco_type||''))))_cands.push({art:a2,src})})};
+              _cids3.forEach(cid=>{const c=allCustomers.find(cc=>cc.id===cid);_scan(c?.art_files,'the Art Library')});
+              (artSourceOrders||allOrders||[]).filter(so2=>_cids3.includes(so2.customer_id)&&so2.id!==o.id).forEach(so2=>_scan(so2.art_files,so2.id));
+              if(!_cands.length)return null;
+              const _appr=_cands.filter(c2=>c2.art.status==='approved'||c2.art.status==='art_complete');
+              const _best=_appr[0]||_cands[0];
+              const _open=()=>{setSelJob(null);setPrevArtFilter('all');setShowPrevArt(true)};
+              return<div style={{margin:'0 20px 8px',padding:'14px 16px',background:_appr.length?'linear-gradient(135deg,#f0fdf4,#f7fee7)':'linear-gradient(135deg,#fffbeb,#fefce8)',border:'2px solid '+(_appr.length?'#86efac':'#fde047'),borderRadius:10}}>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
+                  <span style={{fontSize:18}}>♻️</span>
+                  <span style={{fontWeight:800,fontSize:15,color:_appr.length?'#166534':'#854d0e'}}>{_appr.length?'Reuse approved art from '+_best.src+'?':'This design exists on '+_best.src+' — but was never approved'}</span>
+                </div>
+                <div style={{fontSize:12,color:_appr.length?'#15803d':'#92400e',marginBottom:10}}>
+                  {_appr.length
+                    ?<>"{_best.art.name||'Untitled'}" was already approved for this customer{_appr.length>1?' ('+_appr.length+' approved copies found)':''}. Reuse it instead of re-requesting from the artist — production files come along and matching garments get wired in one confirm.</>
+                    :<>"{_best.art.name||'Untitled'}" matches art on {_best.src} that never finished approval ({ART_FILE_LABELS[_best.art.status]||_best.art.status||'no status'}). You can still reuse it, but it may have no mock or production files.</>}
+                </div>
+                <button className="btn btn-sm" style={{fontSize:12,background:_appr.length?'#16a34a':'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'6px 14px'}} onClick={_open}>♻️ Open Previous Artwork</button>
+              </div>;
+            })()}
             {j.art_status==='art_requested'&&!(j.coach_rejected||(j.rejections||[]).length>0)&&<div style={{margin:'0 20px',padding:'12px 16px',background:'linear-gradient(135deg,#fce7f3,#fdf2f8)',border:'2px solid #f9a8d4',borderRadius:8}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
                 <span style={{fontSize:16}}>📨</span>
@@ -9831,16 +9915,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     const _afObj=safeArt(o).find(a=>a.id===af2.art_file_id);
                     const _item=safeItems(o).find(it=>(it.sku||'')===cg.sku&&(it.color||'')===(cg.color||''));
                     const _cws=safeArr(_afObj?.color_ways);
-                    const _tgtCw=(_cws.find(c=>c.id===_cwForItem(_afObj,_item,cg.color))||{}).garment_color||'';
-                    const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const lt=/white|natural|cream|ivory|ash|silver|sand|vegas|gold|yellow|light|heather|grey|gray/i.test(col);const m=_cws.find(c=>{const gc=(c.garment_color||'').toLowerCase();return lt?/white|light/.test(gc):/dark|black/.test(gc)});return (m&&m.garment_color)||''};
+                    // H4: shade matching goes through the shared garmentColorClass table. A cws[0]
+                    // fallback (exact:false) or unknown source color yields NO target CW — the card
+                    // then renders "approved on <cw> — confirm" instead of a green ✓.
+                    const _tgtM=_cwMatchForItem(_afObj,_item,cg.color);
+                    const _tgtCw=(_tgtM&&_tgtM.exact&&(_cws.find(c=>c.id===_tgtM.id)||{}).garment_color)||'';
+                    const _grpCw=fk=>{if(!_cws.length)return'';const col=(String(fk).split('|')[1]||'');const cls=garmentColorClass(col);const m=cls?_cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return (m&&m.garment_color)||''};
                     const _grps=[...af2.groups].map(grp=>({...grp,_cw:_grpCw(grp.from)})).sort((x,y)=>((_tgtCw&&x._cw===_tgtCw)?0:1)-((_tgtCw&&y._cw===_tgtCw)?0:1));
                     return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                       {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
                         {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
                         <div style={{minWidth:92}}>
                           <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
-                          {grp._cw&&<div style={{fontSize:9,fontWeight:700,color:_m?'#166534':'#92400e'}}>CW: {grp._cw}{_m?' ✓':''}</div>}
-                          <button className="btn btn-sm" style={{fontSize:9,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>✓ Use for {cg.color||cg.sku}</button>
+                          {/* H4: the ✓ only appears on a shade-confirmed match. Anything else is honest amber. */}
+                          {_m?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>CW: {grp._cw} ✓</div>
+                            :<div style={{fontSize:9,fontWeight:700,color:'#b45309'}}>approved on {grp._cw||(String(grp.from).split('|')[1]||'?')} — confirm</div>}
+                          {_m?<button className="btn btn-sm" style={{fontSize:9,background:'#16a34a',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>✓ Use for {cg.color||cg.sku}</button>
+                            :<button className="btn btn-sm" style={{fontSize:9,background:'#f59e0b',color:'white',border:'none',fontWeight:700,padding:'3px 8px',marginTop:3}} title="This mock was approved on a different garment shade — eyeball it before using" onClick={()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:g._existingJobId})}>Use for {cg.color||cg.sku} — confirm</button>}
                         </div>
                       </div>})}
                     </div>;
