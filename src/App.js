@@ -377,6 +377,8 @@ import {
   _setOnCacheFullChange,
   _setSessionDead,
   _setBatchPosDirtyUntil,
+  _setAppStateDirtyUntil,
+  _appStateDirty,
   _setLsQuotaWarned,
   _bgSyncInc,
   _bgSyncDec,
@@ -2285,6 +2287,12 @@ export default function App(){
   const _pendingQBTokens=useRef(null);
   const _initialLoadDone=useRef(false);
   const _batchPosApplied=useRef(JSON.stringify(loadState('batch_pos',[])));// JSON of the last batch_pos value applied from a DB load/reload
+  // Same applied-markers for the other two-client-clobber-prone whole-blob keys (see
+  // _appStateDirty in dbEngine): the save effects only open a dirty window for LOCAL
+  // mutations, never for values just applied from a DB load.
+  const _jobTimeLogsApplied=useRef(JSON.stringify(loadState('job_time_logs',[])));
+  // Mirrors whRecentActions' own initializer so the mount-time save effect doesn't open a spurious dirty window.
+  const _whActionsApplied=useRef((()=>{try{return JSON.stringify(JSON.parse(localStorage.getItem('nsa_wh_recent_actions')||localStorage.getItem('nsa_wh_recent')||'[]'))}catch{return'[]'}})());
   React.useEffect(()=>{
     if(!supabase){setDbLoading(false);_initialLoadDone.current=true;return}
     let cancelled=false;
@@ -2343,8 +2351,11 @@ export default function App(){
           if(as.change_log)setChangeLog(as.change_log);
           if(as.so_history)setSOHistory(as.so_history);
           if(as.est_history)setEstHistory(as.est_history);
-          if(as.wh_recent_actions)setWhRecentActions(as.wh_recent_actions);
-          if(as.job_time_logs)setJobTimeLogs(as.job_time_logs);
+          // Whole-blob keys mutated by warehouse tabs: honor the dirty window (same guard as
+          // batch_pos at the reload sites) so a receive/clock-out landed during this load isn't
+          // replaced by the stale DB copy the load already read.
+          if(as.wh_recent_actions)setWhRecentActions(prev=>{const incStr=JSON.stringify(as.wh_recent_actions);if(JSON.stringify(prev)===incStr){_whActionsApplied.current=incStr;return prev}if(_appStateDirty('wh_recent_actions'))return prev;_whActionsApplied.current=incStr;return as.wh_recent_actions});
+          if(as.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as.job_time_logs});
           if(as.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as.qb_config,mapping:{..._qbDef.mapping,...(as.qb_config.mapping||{})},syncLog:Array.isArray(as.qb_config.syncLog)?as.qb_config.syncLog:[],sandbox:as.qb_config.sandbox===true&&as.qb_config.realm_id?false:(as.qb_config.sandbox||false)})}
           if(as.omg_first_seen)setOmgFirstSeen(as.omg_first_seen);
           if(as.inv_pos)setInvPOs(as.inv_pos);
@@ -2409,7 +2420,8 @@ export default function App(){
               const as2=d2.appState||{};
               if(as2.batch_pos){_batchPosApplied.current=JSON.stringify(as2.batch_pos);setBatchPOs(as2.batch_pos)}if(as2.submitted_batches)setSubmittedBatches(as2.submitted_batches);
               if(as2.batch_counter)setBatchCounter(as2.batch_counter);if(as2.batch_vendor_counters)setBatchVendorCounters(as2.batch_vendor_counters);if(as2.change_log)setChangeLog(as2.change_log);
-              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);if(as2.job_time_logs)setJobTimeLogs(as2.job_time_logs);
+              if(as2.so_history)setSOHistory(as2.so_history);if(as2.est_history)setEstHistory(as2.est_history);
+              if(as2.job_time_logs)setJobTimeLogs(prev=>{const incStr=JSON.stringify(as2.job_time_logs);if(JSON.stringify(prev)===incStr){_jobTimeLogsApplied.current=incStr;return prev}if(_appStateDirty('job_time_logs'))return prev;_jobTimeLogsApplied.current=incStr;return as2.job_time_logs});
               if(as2.qb_config){const _qbDef={connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'manual',syncInterval:'daily',realm_id:'',sandbox:false,mapping:{income_account:'Sales',cogs_account:'Cost of Goods Sold',deco_account:'Subcontractor - Decoration',ar_account:'Accounts Receivable',ap_account:'Accounts Payable',tax_account:'Sales Tax Payable'},syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}};setQBConfig({..._qbDef,...as2.qb_config,mapping:{..._qbDef.mapping,...(as2.qb_config.mapping||{})},syncLog:Array.isArray(as2.qb_config.syncLog)?as2.qb_config.syncLog:[]})}if(as2.inv_pos)setInvPOs(as2.inv_pos);
               if(as2.inv_adj_log)setInvAdjLog(as2.inv_adj_log);if(as2.inv_po_counter)setInvPOCounter(as2.inv_po_counter);if(as2.comm_overrides)setCommOverrides(as2.comm_overrides);
               if(as2.company_info){const ci={...NSA_DEFAULTS,...as2.company_info};ci.fullAddr=ci.addr+', '+ci.city+', '+ci.state+' '+ci.zip;Object.assign(NSA,ci);setCompanyInfo(ci)}
@@ -9850,7 +9862,8 @@ export default function App(){
   const[prodColsMenu,setProdColsMenu]=useState(false);
   const[assignModal,setAssignModal]=useState(null);// {job, soId, targetStatus}
   const[jobTimeLogs,setJobTimeLogs]=useState(()=>loadState('job_time_logs',[]));// [{jobId,soId,person,clockIn,clockOut,minutes,dept:'production'}]
-  React.useEffect(()=>{_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
+  // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
+  React.useEffect(()=>{const cur=JSON.stringify(jobTimeLogs);if(_jobTimeLogsApplied.current!==cur)_setAppStateDirtyUntil('job_time_logs',Date.now()+12000);_saveAppState('job_time_logs',jobTimeLogs)},[jobTimeLogs]);
   const[activeTimers,setActiveTimers]=useState(()=>loadState('active_timers',{}));// {jobId:{person,clockIn,soId}}
   React.useEffect(()=>{_saveAppState('active_timers',activeTimers)},[activeTimers]);
   // Art time tracking — separate logs for artist work
@@ -15630,7 +15643,8 @@ export default function App(){
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
-  React.useEffect(()=>{_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
+  // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
+  React.useEffect(()=>{const cur=JSON.stringify(whRecentActions);if(_whActionsApplied.current!==cur)_setAppStateDirtyUntil('wh_recent_actions',Date.now()+12000);_saveAppState('wh_recent_actions',whRecentActions)},[whRecentActions]);
   const[whActionRange,setWhActionRange]=useState('7d');
   const[whActionSearch,setWhActionSearch]=useState('');
   const[whEditActionIdx,setWhEditActionIdx]=useState(null);
