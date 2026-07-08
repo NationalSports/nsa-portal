@@ -22843,6 +22843,12 @@ export default function App(){
       return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
     };
 
+    // Bill-push save gate (see _applyBillsToPortal): while a push is collecting confirmations,
+    // every SO save an apply helper dispatches is recorded under the bill's _applyKey so the
+    // applied-bills ledger is only written AFTER the save actually confirmed. Outside a push
+    // (_billApplyCollect null) saves pass through unchanged.
+    let _billApplyCollect=null;
+    const _billApplySave=(bill,so)=>{const p=_dbSaveSO(so);if(_billApplyCollect)_billApplyCollect.push({key:bill&&bill._applyKey,p});return p};
     // Apply parsed bill data (billed sizes, tracking, freight) to matched SO/PO
     // Helper: apply freight from a bill to one or more SOs by ID
     const _applyFreightToSOs=(bill,soIds)=>{
@@ -22918,7 +22924,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,_inbound_freight:Math.round((prevFreight+perSOFreight)*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         });
         return changed?next:prev;
@@ -23290,7 +23296,7 @@ export default function App(){
         }else return s;
         const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
-        _dbSaveSO(updated);
+        _billApplySave(bill,updated);
         return updated;
       }));
     };
@@ -23321,7 +23327,7 @@ export default function App(){
         if(!hit)return s;
         const updated={...s,deco_pos:nextDecoPos,updated_at:new Date().toLocaleString()};
         if(freight>0){const prevShip=safeNum(s._shipping_cost||0);updated._shipping_cost=Math.round((prevShip+freight)*100)/100}
-        _dbSaveSO(updated);
+        _billApplySave(bill,updated);
         return updated;
       }));
     };
@@ -23403,7 +23409,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,items:updatedItems,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+safeNum(fBySO[s.id]||0))*100)/100,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         });
       });
@@ -23453,7 +23459,7 @@ export default function App(){
             })};
           });
           const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
-          _dbSaveSO(updatedSO);
+          _billApplySave(bill,updatedSO);
           return updatedSO;
         }));
         return true;
@@ -23948,11 +23954,11 @@ export default function App(){
 
     // Bulk: push every clean bill in the Ready bucket. Same per-bill path as the single 🚀
     // button (validation already passed for this bucket); failures stay parked and are counted.
-    const _pushParkedBills=(sbs,disposition)=>{
+    const _pushParkedBills=async(sbs,disposition)=>{
       if(!sbs||!sbs.length)return;
       if(!window.confirm('Push '+sbs.length+' bill'+(sbs.length===1?'':'s')+' to the Portal? They all validate cleanly.'))return;
       let ok=0,fail=0;
-      sbs.forEach(sb=>{_pushParkedBill(sb,disposition,'',{quiet:true})?ok++:fail++});
+      for(const sb of sbs){(await _pushParkedBill(sb,disposition,'',{quiet:true}))?ok++:fail++}
       nf(ok+' bill'+(ok===1?'':'s')+' pushed'+(fail?' · '+fail+' failed (still parked)':''),fail?'error':'success');
     };
 
@@ -23966,9 +23972,9 @@ export default function App(){
 
     // Push one parked bill straight from the Look at Later card, recording why. Failure is
     // loud (the card stays parked); success resolves the card with the given disposition.
-    const _pushParkedBill=(sb,disposition,note,opts)=>{
+    const _pushParkedBill=async(sb,disposition,note,opts)=>{
       const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
-      const applied=_applyBillsToPortal([billObj]);
+      const applied=await _applyBillsToPortal([billObj]);
       if(applied>0){
         const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
         setSavedBills(prev=>{
@@ -24241,11 +24247,17 @@ export default function App(){
 
     // Apply a list of ready bills to their SOs and persist their portal status. Shared by the
     // direct push and the "push matched only" path from the problems modal. Returns # applied.
-    const _applyBillsToPortal=(bills)=>{
+    // ASYNC: the applied-bills ledger is only written after each bill's SO saves CONFIRM — the
+    // ledger's unique-doc# constraint refuses re-pushes forever, so recording "applied" while the
+    // SO save later failed would permanently strand the bill's costs off the SO.
+    const _applyBillsToPortal=async(bills)=>{
       let applied=0;
+      const _collect=[];_billApplyCollect=_collect;
+      try{
       bills.forEach(b=>{
         try{
           const p=b.parsed;
+          if(p)p._applyKey=b.id;// routes this bill's SO-save confirmations back to it (save gate below)
           // $0-freight so_po bills apply through explicit line mappings (the freight-carried
           // default path writes nothing at $0). Build them now; if they can't be built, fail
           // HONESTLY instead of recording a success that wrote nothing and dedups forever.
@@ -24261,6 +24273,26 @@ export default function App(){
           b.portalStatus='error';b.portalMsg='Failed: '+e.message;
         }
       });
+      // The apply helpers dispatch their SO saves inside setSOs updaters — wait one macrotask so
+      // React flushes them and _collect holds every save this push triggered.
+      await new Promise(r=>setTimeout(r,0));
+      }finally{_billApplyCollect=null}
+      // Save gate: a bill only counts as applied once every SO save it dispatched confirmed.
+      // `false` is _dbSaveSOInner's explicit failure signal; undefined means the save was queued
+      // behind an in-flight one, which the per-entity queue completes with the latest data —
+      // treated as dispatched-ok (same ok!==false convention as savSONow). Bills that collected
+      // no SO saves (batch-record / inventory-PO only) keep today's behavior — their state
+      // persists via its own save effects and can't be gated here.
+      for(const b of bills){
+        if(b.portalStatus!=='success')continue;
+        const _ps=_collect.filter(e=>e.key===b.id).map(e=>e.p);
+        if(!_ps.length)continue;
+        const _rs=await Promise.all(_ps.map(p=>Promise.resolve(p).catch(()=>false)));
+        if(_rs.some(r=>r===false)){
+          b.portalStatus='error';b.portalMsg='Applied locally but the SO save FAILED — not recorded as applied. Check your connection and push again.';
+          applied--;
+        }
+      }
       // Hard ledger: record every successful apply server-side (unique doc# constraint) so a
       // re-push of the same doc — this machine or any other — is refused/loudly flagged.
       _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
@@ -24326,14 +24358,13 @@ export default function App(){
         selected.forEach(b=>{const errs=_validateBillForPush(b.parsed);if(errs.length)problemBills.push({bill:b,errs});else cleanBills.push(b)});
         if(problemBills.length){setBillPushModal({cleanBills,problemBills});return;}
       }
-      const applied=_applyBillsToPortal(selected);
-      nf(applied+' bill(s) pushed to portal');
+      _applyBillsToPortal(selected).then(applied=>nf(applied+' bill(s) pushed to portal'));
     };
 
     // Problems-modal action: push the exact-match bills and move the flagged ones to "Look at later".
-    const _pushCleanParkProblems=()=>{
+    const _pushCleanParkProblems=async()=>{
       const m=billPushModal;if(!m)return;
-      const applied=m.cleanBills.length?_applyBillsToPortal(m.cleanBills):0;
+      const applied=m.cleanBills.length?await _applyBillsToPortal(m.cleanBills):0;
       if(m.problemBills.length)_parkBillsForLater(m.problemBills.map(p=>p.bill));
       setBillPushModal(null);
       const parts=[];
@@ -24343,10 +24374,10 @@ export default function App(){
     };
 
     // Problems-modal action: override and push everything, problems included.
-    const _pushAllOverride=()=>{
+    const _pushAllOverride=async()=>{
       const m=billPushModal;if(!m)return;
       const all=[...m.cleanBills,...m.problemBills.map(p=>p.bill)];
-      const applied=_applyBillsToPortal(all);
+      const applied=await _applyBillsToPortal(all);
       setBillPushModal(null);
       nf(applied+' bill(s) pushed to portal (override)');
     };
@@ -26551,7 +26582,7 @@ export default function App(){
                 <div className="modal-footer" style={{display:'flex',justifyContent:'flex-end',gap:8}}>
                   <button className="btn btn-secondary" onClick={()=>setBillOverrideModal(null)}>Cancel</button>
                   <button className="btn btn-primary" disabled={!note.trim()} style={{background:RED,borderColor:RED,fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.5,opacity:note.trim()?1:0.5}}
-                    onClick={()=>{if(_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()))setBillOverrideModal(null)}}>Push with note</button>
+                    onClick={()=>{_pushParkedBill(sb,'pushed with override (overage accepted)',note.trim()).then(ok=>{if(ok)setBillOverrideModal(null)})}}>Push with note</button>
                 </div>
               </div>
             </div>;
