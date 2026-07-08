@@ -254,7 +254,13 @@ export const calcOrderMargin=(o,allOrders)=>{
   // Actual shipping spend (outbound from ShipStation + inbound freight) rolls into cost so margin is real
   const actualShipCost=_sNum(o._shipping_cost||o._shipstation_cost||0)||((o._shipments||[]).reduce((a,s)=>a+_sNum(s.shipping_cost||0),0));
   cost+=actualShipCost+_sNum(o._inbound_freight||0);
-  return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0};
+  // Shipping billed to the customer is revenue that offsets the shipping cost — mirrors calcGP in
+  // CommissionsPage so margin treats shipping as a wash (only an over/under-quote moves it), not
+  // pure cost drag. `rev` stays product+deco (dashboards sum it as sales), so the shipping charge
+  // is applied to margin/pct here and returned separately as shipRev — never folded into rev.
+  const shipRev=o.shipping_type==='pct'?rev*(_sNum(o.shipping_value)/100):_sNum(o.shipping_value);
+  const totalRev=rev+shipRev;const margin=totalRev-cost;
+  return{rev,cost,shipRev,margin,pct:totalRev>0?Math.round(margin/totalRev*100):0};
 };
 
 // ── calcQualifyingSpend — net sales (product + deco) that qualifies for promo earning ──

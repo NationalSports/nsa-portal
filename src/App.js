@@ -7500,11 +7500,13 @@ export default function App(){
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
         body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true)}</>;
       }else if(report==='kpis'){
-        let rev=0,cost=0,orders=0;const custSet=new Set();const perRep=new Map();
-        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0};pr.rev+=m.rev;pr.cost+=m.cost;perRep.set(id,pr)}});
-        const margin=rev-cost,pct=rev>0?Math.round(margin/rev*100):0,avg=orders>0?rev/orders:0;
+        let rev=0,cost=0,shipRev=0,orders=0;const custSet=new Set();const perRep=new Map();
+        // Shipping charged offsets shipping cost (mirrors calcOrderMargin/calcGP): margin runs on
+        // rev+shipRev. `rev` stays product+deco sales for the Revenue tile and Avg Order.
+        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;shipRev+=safeNum(m.shipRev);orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0,shipRev:0};pr.rev+=m.rev;pr.cost+=m.cost;pr.shipRev+=safeNum(m.shipRev);perRep.set(id,pr)}});
+        const marginBase=rev+shipRev,margin=marginBase-cost,pct=marginBase>0?Math.round(margin/marginBase*100):0,avg=orders>0?rev/orders:0;
         let topRep=null,topRevV=0;perRep.forEach((v,id)=>{if(v.rev>topRevV){topRevV=v.rev;topRep=id}});
-        const marginRows=[...perRep.entries()].map(([id,v])=>({label:repName(id),rev:v.rev,pct:v.rev>0?Math.round((v.rev-v.cost)/v.rev*100):0})).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
+        const marginRows=[...perRep.entries()].map(([id,v])=>{const mb=v.rev+v.shipRev;return{label:repName(id),rev:v.rev,pct:mb>0?Math.round((mb-v.cost)/mb*100):0}}).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
         const kpi=(label,value,sub,color)=><div style={{flex:'1 1 28%',minWidth:92,background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8,padding:'8px 10px'}}><div style={_lbl}>{label}</div><div style={{fontSize:18,fontWeight:800,color:color||NAVY,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{value}</div>{sub?<div style={{fontSize:10,color:'#94a3b8'}}>{sub}</div>:null}</div>;
         body=<>
           <div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:14}}>
@@ -12256,7 +12258,15 @@ export default function App(){
     else{cost+=q*safeNum(it.nsa_cost)}
     safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=eq*_decoUnitCostComb(d,q,af,cq,_comb)})});
     (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
-    return{rev,cost,margin:rev-cost,pct:rev>0?Math.round((rev-cost)/rev*100):0,units}};
+    // Shipping is a revenue and a cost (mirrors calcGP / calcOrderMargin): actual spend rolls
+    // into cost, the charge to the customer offsets it, so margin only moves on an over/under-
+    // quote or unbilled freight. `rev` stays product+deco — reports sum it as sales — so the
+    // charge is returned as shipRev and applied to margin/pct only.
+    const shipCost=safeNum(so._shipping_cost||so._shipstation_cost||0)||(so._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);
+    cost+=shipCost+safeNum(so._inbound_freight||0);
+    const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
+    const mBase=rev+shipRev;
+    return{rev,cost,shipRev,margin:mBase-cost,pct:mBase>0?Math.round((mBase-cost)/mBase*100):0,units}};
 
     const filtSOs=rptRep==='all'?sos:sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===rptRep});
     const filtInvs=rptRep==='all'?invs:invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===rptRep});
@@ -12264,11 +12274,13 @@ export default function App(){
 
     // Pipeline data
     const pipeline=filtSOs.map(so=>{const m=soCalc(so);const c=cust.find(x=>x.id===so.customer_id);const st=calcSOStatus(so);
-      return{...so,_rev:m.rev,_cost:m.cost,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_status:st}});
+      return{...so,_rev:m.rev,_cost:m.cost,_shipRev:m.shipRev,_margin:m.margin,_pct:m.pct,_units:m.units,_cname:c?.name||'Unknown',_status:st}});
     const totalRev=pipeline.reduce((a,s)=>a+s._rev,0);
     const totalMargin=pipeline.reduce((a,s)=>a+s._margin,0);
     const totalUnits=pipeline.reduce((a,s)=>a+s._units,0);
-    const avgMarginPct=totalRev>0?Math.round(totalMargin/totalRev*100):0;
+    // Margin includes the shipping wash, so the pct denominator carries shipRev too
+    const totalShipRev=pipeline.reduce((a,s)=>a+safeNum(s._shipRev),0);
+    const avgMarginPct=(totalRev+totalShipRev)>0?Math.round(totalMargin/(totalRev+totalShipRev)*100):0;
     const avgOrderSize=pipeline.length>0?Math.round(totalRev/pipeline.length):0;
 
     // Rep leaderboard
@@ -12276,7 +12288,9 @@ export default function App(){
     const _now=new Date();const _curM=_now.getMonth();const _curY=_now.getFullYear();const _curD=_now.getDate();
     const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
       const rSOs=sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===r.id});const rEsts=ests.filter(e=>e.created_by===r.id);
-      const rev=rSOs.reduce((a,s)=>a+soCalc(s).rev,0);const margin=rSOs.reduce((a,s)=>a+soCalc(s).margin,0);
+      // One soCalc pass per SO; shipRev tallied so the leaderboard pct denominator matches margin
+      const _sums=rSOs.reduce((a,s)=>{const m=soCalc(s);a.rev+=m.rev;a.margin+=m.margin;a.shipRev+=safeNum(m.shipRev);return a},{rev:0,margin:0,shipRev:0});
+      const rev=_sums.rev,margin=_sums.margin,repShipRev=_sums.shipRev;
       const rInv=invs.filter(i=>{const c=cust.find(x=>x.id===i.customer_id);const so=sos.find(s=>s.id===i.so_id);return commissionRepId(c,so)===r.id});
       const collected=rInv.filter(i=>i.status==='paid').reduce((a,i)=>a+i.paid,0);
       const openAR=rInv.filter(i=>i.status!=='paid').reduce((a,i)=>a+(i.total-i.paid),0);
@@ -12286,7 +12300,7 @@ export default function App(){
       const mtdThis=rSOs.filter(s=>{const dt=_parseDtLB(s.created_at);return dt&&dt.y===_curY&&dt.m===_curM&&dt.d<=_curD}).reduce((a,s)=>a+soCalc(s).rev,0);
       const mtdLast=rSOs.filter(s=>{const dt=_parseDtLB(s.created_at);return dt&&dt.y===_curY-1&&dt.m===_curM&&dt.d<=_curD}).reduce((a,s)=>a+soCalc(s).rev,0);
       const mtdIncrease=mtdThis-mtdLast;const mtdPct=mtdLast>0?Math.round((mtdIncrease/mtdLast)*100):mtdThis>0?100:0;
-      return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:rev>0?Math.round(margin/rev*100):0,mtdThis,mtdLast,mtdIncrease,mtdPct};
+      return{...r,rev,margin,soCount:rSOs.length,estCount:rEsts.length,collected,openAR,uniqueCusts,convRate,pct:(rev+repShipRev)>0?Math.round(margin/(rev+repShipRev)*100):0,mtdThis,mtdLast,mtdIncrease,mtdPct};
     }).sort((a,b)=>b.rev-a.rev);
 
     // Customer health
