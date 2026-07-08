@@ -180,7 +180,6 @@ export function vendorColorToProductRow(style, color) {
     is_archived: false,
     available_sizes: Array.isArray(color.sizes) ? color.sizes : [],
     image_front_url: color.image || style.image || null,
-    image_url: color.image || style.image || null,
     inventory_source: style.source === 'sm' ? 'sanmar' : style.source === 'ss' ? 'ss_activewear' : style.source === 'rs' ? 'richardson' : style.source === 'mt' ? 'momentec' : null,
   };
 }

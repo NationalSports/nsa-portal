@@ -8307,45 +8307,85 @@ function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, o
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-// Live vendor-catalog lookup. Searches SanMar/District, S&S, Richardson and Momentec APIs
-// for any style (even ones not in the local catalog), then imports the picked colorways into
-// `products` so they can be dropped into a store. Returns the imported product rows.
-function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
-  const [q, setQ] = useState(initialQuery || '');
+// ── Live vendor-catalog search (shared by the popup modal AND the picker's main search bar).
+// Searches SanMar/District, S&S, Richardson and Momentec APIs for any style (even ones not in
+// the local catalog); picked colorways are imported into `products` so they can go in a store.
+const VENDOR_SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
+const vendorKeyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
+
+// Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
+// a valid id (or null). Map api_provider → id.
+function useVendorMap() {
+  const [vendorMap, setVendorMap] = useState(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
+  return vendorMap;
+}
+
+// Debounced live search across all vendor APIs. Returns { styles, errors, loading, ran }.
+function useVendorCatalogSearch(q, vendorMap, { enabled = true, delay = 550 } = {}) {
   const [loading, setLoading] = useState(false);
   const [styles, setStyles] = useState([]);
   const [errors, setErrors] = useState({});
   const [ran, setRan] = useState(false);
-  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
-  const [importing, setImporting] = useState(false);
-  // Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
-  // a valid id (or null). Map api_provider → id.
-  const [vendorMap, setVendorMap] = useState(null);
-  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
   useEffect(() => {
-    const query = q.trim();
-    if (query.length < 2 || vendorMap == null) { setStyles([]); setRan(false); return; }
+    const query = (q || '').trim();
+    if (!enabled || query.length < 2 || vendorMap == null) { setStyles([]); setErrors({}); setRan(false); setLoading(false); return; }
     let cancelled = false;
     setLoading(true);
     const t = setTimeout(async () => {
       try { const { results, errors } = await searchVendorCatalogs(query, { vendorMap }); if (!cancelled) { setStyles(results); setErrors(errors || {}); } }
       catch (e) { if (!cancelled) { setStyles([]); setErrors({ Search: String(e?.message || e) }); } }
       finally { if (!cancelled) { setLoading(false); setRan(true); } }
-    }, 550);
+    }, delay);
     return () => { cancelled = true; clearTimeout(t); };
-  }, [q, vendorMap]);
-  const SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
-  const keyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
-  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = keyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  }, [q, vendorMap, enabled, delay]);
+  return { styles, errors, loading, ran };
+}
+
+// Import the picked colorways (Map key -> { style, color }) into `products`; returns the rows.
+async function importVendorSelections(selected) {
+  const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
+  const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
+  if (error) throw new Error(error.message);
+  return (data && data.length ? data : rows);
+}
+
+// Style cards with per-colorway toggle buttons — the shared results UI.
+function VendorStyleCards({ styles, selected, onToggle }) {
+  return styles.map((s) => (
+    <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
+        <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{VENDOR_SRC[s.source] || s.source}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {s.colors.map((c) => { const on = selected.has(vendorKeyOf(s, c)); return (
+          <button key={c.colorName || c.sku} type="button" onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+            <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
+            <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
+            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+            {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+          </button>
+        ); })}
+      </div>
+    </div>
+  ));
+}
+
+function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onClose }) {
+  const [q, setQ] = useState(initialQuery || '');
+  const [selected, setSelected] = useState(() => new Map()); // key -> { style, color }
+  const [importing, setImporting] = useState(false);
+  const vendorMap = useVendorMap();
+  const { styles, errors, loading, ran } = useVendorCatalogSearch(q, vendorMap);
+  const toggle = (s, c) => setSelected((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
   const add = async () => {
     if (!selected.size) return;
     setImporting(true);
-    const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
-    const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
-    setImporting(false);
-    if (error) { alert('Could not import from vendor: ' + error.message); return; }
-    onAdd((data && data.length ? data : rows));
-    onClose();
+    try { const rows = await importVendorSelections(selected); onAdd(rows); onClose(); }
+    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
+    finally { setImporting(false); }
   };
   const errList = Object.entries(errors || {});
   return (
@@ -8362,25 +8402,7 @@ function VendorSearchModal({ initialQuery = '', destLabel = 'store', onAdd, onCl
             {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Searching vendor catalogs…</div>
               : q.trim().length < 2 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Type a style number or name to search.</div>
               : styles.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>{ran ? 'No vendor styles matched. Try the exact style number (e.g. DM130).' : ''}</div>
-              : styles.map((s) => (
-                <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                    {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                    <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
-                    <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{SRC[s.source] || s.source}</span>
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                    {s.colors.map((c) => { const on = selected.has(keyOf(s, c)); return (
-                      <button key={c.colorName || c.sku} type="button" onClick={() => toggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
-                        <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
-                        <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
-                        <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
-                        {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
-                      </button>
-                    ); })}
-                  </div>
-                </div>
-              ))}
+              : <VendorStyleCards styles={styles} selected={selected} onToggle={toggle} />}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
@@ -8412,6 +8434,22 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [selected, setSelected] = useState(() => new Set());
   const [bulkOpen, setBulkOpen] = useState(false);
   const [vendorOpen, setVendorOpen] = useState(false);
+  // Live vendor-catalog results inline under the main search — the same SanMar/S&S/
+  // Richardson/Momentec engines as the popup, so a typed style (e.g. ST358) that isn't in
+  // the local catalog still shows up. Slightly longer debounce: these are external APIs.
+  const vendorMap = useVendorMap();
+  const vendorEnabled = !favOnly && q.trim().length >= 2;
+  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
+  const [vendorSel, setVendorSel] = useState(() => new Map()); // key -> { style, color }
+  const [vendorImporting, setVendorImporting] = useState(false);
+  const toggleVendor = (s, c) => setVendorSel((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
+  const addVendorSel = async () => {
+    if (!vendorSel.size || vendorImporting) return;
+    setVendorImporting(true);
+    try { const rows = await importVendorSelections(vendorSel); if (onPickMany && rows.length) onPickMany(rows, [], {}); setVendorSel(new Map()); }
+    catch (e) { alert('Could not import from vendor: ' + (e?.message || e)); }
+    finally { setVendorImporting(false); }
+  };
   const [bulkDecos, setBulkDecos] = useState([]);
   // Shared "item setup" applied to every selected product when bulk-adding.
   const [bulkTab, setBulkTab] = useState('setup');
@@ -8580,6 +8618,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     for (const [k, byColor] of m) out.set(k, [...byColor.values()].sort((a, b) => repScore(b) - repScore(a) || String(a.color || '').localeCompare(String(b.color || ''))));
     return out;
   })();
+  // Hide vendor styles the local search already surfaced (imported vendor rows carry SKU
+  // "<style>-<color>", native rows the bare style) so the same garment isn't listed twice.
+  const localSkusU = useMemo(() => results.map((r) => String(r.sku || '').toUpperCase()), [results]);
+  const vendorNew = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
   // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
   const rowById = new Map(swatchPool.map((r) => [r.id, r]));
   const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
@@ -8664,6 +8706,26 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           )}
           {active && !searching && results.length >= limit && (
             <ShowMore onClick={() => setLimit((n) => n + 200)}>Show more results</ShowMore>
+          )}
+          {vendorEnabled && (vendorLoading || vendorNew.length > 0 || vendorSel.size > 0 || (vendorRan && styles.length === 0)) && (
+            <div style={{ marginTop: 18, borderTop: '1px dashed #dbe2ea', paddingTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                <span style={{ fontWeight: 800, fontSize: 13.5 }}>Live vendor catalogs</span>
+                <span style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec — picked colors are imported, then added to the {destLabel}.</span>
+              </div>
+              {Object.keys(vendorErrors || {}).length > 0 && <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>Couldn't reach: {Object.keys(vendorErrors).join(', ')}.</div>}
+              {vendorLoading && vendorNew.length === 0
+                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching vendor catalogs…</div>
+                : vendorNew.length === 0 && vendorRan
+                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>No vendor styles matched either. Try the exact style number (e.g. DM130).</div>
+                : <VendorStyleCards styles={vendorNew} selected={vendorSel} onToggle={toggleVendor} />}
+              {vendorSel.size > 0 && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn btn-primary" disabled={vendorImporting} onClick={addVendorSel}>{vendorImporting ? 'Importing…' : `Add ${vendorSel.size} from vendor to ${destLabel}`}</button>
+                  <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Imported at ~50% margin — reprice after.</span>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </KitScope>
