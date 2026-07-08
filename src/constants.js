@@ -341,6 +341,10 @@ export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))
 // must not satisfy either gate until someone re-confirms them. Legacy rows leave the flag undefined
 // and keep the file-based fallbacks below.
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+// Digitizer design code — the digitizing house stamps a "DG" number into every delivered
+// file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
+// "DG648617"; null when the name carries no DG number.
+export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
 // Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached),
 // or, for embroidery, a .dst attached anywhere on the art — the .dst IS the production file, so it
 // confirms on its own even when prod_files_attached is an explicit false. Staleness after a
