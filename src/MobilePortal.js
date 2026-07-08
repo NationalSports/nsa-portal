@@ -137,6 +137,18 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[composeDept,setComposeDept]=useState('all');
   const[composeMentionQ,setComposeMentionQ]=useState(null); // null or string for @mention filter
 
+  // ?scan= deep link from a printed QR label opened on a phone (handed down by App.js).
+  // These hooks must run before the newEst/detail early returns (React error #300 otherwise);
+  // handleMobileScan is defined further down, so the effect reaches it through a ref.
+  const _scanReqSeen=useRef(null);
+  const _mobileScanRef=useRef(null);
+  useEffect(()=>{
+    if(!scanRequest||_scanReqSeen.current===scanRequest)return;
+    _scanReqSeen.current=scanRequest;
+    if(_mobileScanRef.current)_mobileScanRef.current(scanRequest);
+    if(onScanRequestDone)onScanRequestDone();
+  },[scanRequest]);// eslint-disable-line react-hooks/exhaustive-deps
+
   // Derived data
   const repName=(id)=>{const r=REPS.find(x=>x.id===id);return r?r.name:'—'};
   const custObj=(id)=>cust.find(x=>x.id===id);
@@ -1395,14 +1407,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(soHit){setMoreSubPage(null);setTab('orders');setDetail({type:'order',data:soHit});if(nf)nf('Scanned: '+soHit.id);return}
     if(nf)nf('No match for "'+v+'"','error');
   };
-  // ?scan= deep link from a printed QR label opened on a phone (handed down by App.js).
-  const _scanReqSeen=useRef(null);
-  useEffect(()=>{
-    if(!scanRequest||_scanReqSeen.current===scanRequest)return;
-    _scanReqSeen.current=scanRequest;
-    handleMobileScan(scanRequest);
-    if(onScanRequestDone)onScanRequestDone();
-  },[scanRequest]);// eslint-disable-line react-hooks/exhaustive-deps
+  _mobileScanRef.current=handleMobileScan;// keep the top-of-component scan effect pointed at the latest closure
 
   // Per-PO shortcuts on the review screen.
   const batchPoSetAll=(po)=>setWhBatchQty(prev=>({...prev,[po.key]:fullOpenMap(po)}));
