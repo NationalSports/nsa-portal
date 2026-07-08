@@ -7947,7 +7947,7 @@ export default function App(){
       const soRef=td.so_id?sos.find(s=>s.id===td.so_id):null;const custRef=td.customer_id?cust.find(c=>c.id===td.customer_id):null;
       const ifId=td.if_id||((td.title||'').match(/\bIF-\d+/i)||[])[0]||'';
       // ── Resolve a PO referenced by this task (stored po_id, else parsed from title/description) ──
-      const _poMetaKeys=new Set(['status','po_id','received','cancelled','shipments','vendor','created_at','expected_date','memo','notes','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','batch_queue_id','batch_po_number','preexisting','email_history','shipping','_bill_details','_bill_cost','_billed','_tracking_numbers']);
+      const _poMetaKeys=new Set(['status','po_id','received','cancelled','shipments','vendor','created_at','expected_date','memo','notes','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys','_bill_details','_bill_cost','_billed','_tracking_numbers']);
       const _poText=(td.title||'')+' '+(td.description||'');
       const _poSearchSos=soRef?[soRef]:sos;
       const _gatherPOs=(s)=>{const out=[];safeItems(s).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(pl.po_id)out.push({pl,it})})});(s.deco_pos||[]).forEach(dp=>{if(dp.po_id)out.push({pl:dp,it:null})});return out};
@@ -8044,7 +8044,7 @@ export default function App(){
   // skipSoId: the SO open in OrderEditor promotes its own lines through the editor's copy
   // (which may be newer than App state), so its savSO here is skipped.
   // Resolves to the batch PO number, or null if the vendor has nothing queued.
-  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null})=>{
+  const orderVendorBatch=async({vendorKey:vk,shipToDecoId=null,groupKey:gk=null,skipSoId=null,apiResult=null,apiLines=null})=>{
     const _gk=gk||(vk+(shipToDecoId?':'+shipToDecoId:''));
     // Re-entry guard: a double-click (or a manual Order racing a vendor-API modal's deferred
     // onSubmitted) would run the whole promotion twice before state settles — duplicate
@@ -8093,7 +8093,12 @@ export default function App(){
     // PO line (and the batch history) so the badge can flag it as a real API-placed order
     // rather than just a queued/manually-ordered batch. No-op for the manual "Order" button.
     const apiOid=apiResult&&(apiResult.orderId||apiResult.orderNumber||apiResult.transactionId);
-    const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString()}:null;
+    // Phase A of order-aware matching (SPORTSLINK_ORDER_AWARE_MATCHING.md): alongside the ack id,
+    // persist the exact line keys we SUBMITTED to the vendor (their sku/partId, size/color codes,
+    // unit cost) as vendor_keys on the po_line. Pure capture — nothing reads it yet; it accumulates
+    // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
+    const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice)}))}:null;
+    const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
     const sb={po_number:poNum,vendor_key:vk,vendor_name:vgName,total_cost:total,total_units:totalUnits,
       submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
       ...(apiStamp||{}),
@@ -8441,7 +8446,7 @@ export default function App(){
     // code path created the PO — so match against both keys, case/space-insensitively.
     const vKeys=new Set([selV.id,selV.name].filter(Boolean).map(s=>String(s).trim().toLowerCase()));
     const vMatch=v=>{const k=(v==null?'':String(v)).trim().toLowerCase();return !!k&&vKeys.has(k)};
-    const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','tracking_numbers'];
+    const PO_NON=['status','po_id','received','shipments','cancelled','vendor','deco_vendor','created_at','expected_date','memo','notes','po_type','unit_cost','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys','tracking_numbers'];
     const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
     const vPOs=[];
     sos.forEach(so=>{const c2=cust.find(x=>x.id===so.customer_id);const cName=c2?.alpha_tag||c2?.name||'';
@@ -9667,7 +9672,7 @@ export default function App(){
         const jm=jobTrackModal;
         const so=sos.find(s=>s.id===jm.soId)||jm.so;
         const trackUrl=tn=>{if(/^1Z/i.test(tn))return'https://www.ups.com/track?tracknum='+tn;if(/^(94|93|92|91)\d{18,}/.test(tn))return'https://tools.usps.com/go/TrackConfirmAction?tLabels='+tn;return'https://www.fedex.com/fedextrack/?trknbr='+tn};
-        const PO_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+        const PO_META=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
         const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
         // One section per job item, each listing that item's POs with per-size billed/received/shipment detail
         const sections=(jm.items||[]).map(gi=>{
@@ -11284,7 +11289,7 @@ export default function App(){
                       const it=updItems[ml.itemIdx];if(!it)return;
                       const pls=[...(it.po_lines||[])];
                       if(pls[ml.poLineIdx]){
-                        const _META=new Set(['po_id','status','unit_cost','shipping','batch_queue_id','batch_po_number']);
+                        const _META=new Set(['po_id','status','unit_cost','shipping','batch_queue_id','batch_po_number','api_order_id','api_ordered_at','vendor_keys']);
                         // Map this line back to its rendered receive row: non-batch rows carry _pl;
                         // batch rows match on SO + item index (+ source PO# when present).
                         const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
@@ -11495,15 +11500,15 @@ export default function App(){
                 setPg('batch_pos');
               }}>{'🚀'} Order {nextPO} for {vg.name}{hitThreshold?' — FREE SHIP':''} (${total.toFixed(2)})</button>
             {vg.vendor_key==='sanmar'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r})})}>
+              onClick={()=>setSanMarPreview({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,shipToDecoId:vg.ship_to_deco_id||null,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,shipToDecoId:vg.ship_to_deco_id||null,apiResult:r,apiLines})})}>
               🚀 Submit SanMar Order (API)
             </button>}
             {vg.vendor_key==='sss'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #c4b5fd',background:'white',color:'#6d28d9',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
+              onClick={()=>setSSOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}>
               🚀 Order via S&S API
             </button>}
             {vg.vendor_key==='momentec'&&vg.pos.some(bp=>(bp.items||[]).some(it=>!it.drop_ship))&&<button style={{width:'100%',marginTop:6,padding:'8px 14px',borderRadius:8,border:'1px solid #fdba74',background:'white',color:'#c2410c',cursor:'pointer',fontWeight:700,fontSize:12}}
-              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r})})}>
+              onClick={()=>setMomentecOrder({poNumber:nextPO,batchPOs:vg.pos,vendorName:vg.name,onSubmitted:(r,apiLines)=>orderVendorBatch({vendorKey:vk,groupKey:gk,apiResult:r,apiLines})})}>
               🚀 Order via Momentec API
             </button>}
             <div style={{fontSize:10,color:'#64748b',marginTop:6,textAlign:'center'}}>
@@ -11882,7 +11887,7 @@ export default function App(){
     // Mirrors OrderEditor `totals` so pipeline numbers match the SO detail page:
     // qty falls back to est_qty when sizes aren't broken out; cost prefers PO
     // unit_cost (and deco_pos _bill_cost when billed) over catalog nsa_cost.
-    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
+    const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping','api_order_id','api_ordered_at','vendor_keys']);
     const soCalc=(so)=>{let rev=0,cost=0,units=0;const _aq={};safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});const _comb=linkedArtCostQty(so,_aq,sos);const af=safeArt(so);safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;units+=q;
     if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=q*safeNum(it.unit_sell)}
     let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
@@ -21050,10 +21055,27 @@ export default function App(){
       });
     }catch(e){_billHoldsLoaded.current=false;/* let a later import visit retry; localStorage still backs the queue meanwhile */}
   };
+  // Server-side applied-bills ledger (applied_bills table, unique on doc#) loaded into a Set so
+  // _docAlreadyApplied can answer cross-machine: a doc applied on ANY machine is a duplicate here,
+  // even if this browser never saw it. Keys: 'd|<doc#>' and 's|<SI/S&S order#>', lowercased.
+  const _appliedLedger=React.useRef(new Set());
+  const _appliedLedgerLoaded=React.useRef(false);
+  const loadAppliedLedger=async()=>{
+    if(!supabase||_appliedLedgerLoaded.current)return;
+    _appliedLedgerLoaded.current=true;
+    try{
+      const{data,error}=await supabase.from('applied_bills').select('doc_norm,si_doc_number').limit(20000);
+      if(error)throw error;
+      (data||[]).forEach(r=>{
+        if(r.doc_norm)_appliedLedger.current.add('d|'+r.doc_norm);
+        if(r.si_doc_number)_appliedLedger.current.add('s|'+String(r.si_doc_number).trim().toLowerCase());
+      });
+    }catch(e){_appliedLedgerLoaded.current=false;/* retry on next import visit; SO-scan dedup still guards meanwhile */}
+  };
   // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
   // before any manual pull, so the dedup sees server holds; a teammate's mid-session hold is picked
   // up on the next reload. Best-effort — localStorage still backs the queue if this can't reach the DB.
-  useEffect(()=>{if(supabase&&pg==='import')loadBillHolds();},[pg]);// eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{if(supabase&&pg==='import'){loadBillHolds();loadAppliedLedger();}},[pg]);// eslint-disable-line react-hooks/exhaustive-deps
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -22445,19 +22467,25 @@ export default function App(){
       // Mirror the pulled docs into the shared si_documents ledger (best-effort, non-blocking) so
       // the Sports Inc tab's completeness view is whole no matter which door the docs came through.
       _siUpsertDocs(docs).catch(()=>{/* ledger fills on the next daily cron */});
-      const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let scanned=0;let idx=0;
+      const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let scanned=0;let oldSys=0;let idx=0;
       docs.forEach(doc=>{
         let parsed;try{parsed=rematchBill(mapSportsLinkDocToBill(doc))}catch(e){return}
         // Belt-and-suspenders: skip any scanned/"SEE VENDOR INVOICE FOR DETAIL" doc that slips
         // past excludeScannedDocuments — no usable SKU/qty can't fill the Billed tracking, so
         // leave it for the manual PDF parse instead of cluttering review with an empty bill.
         if(!parsed.has_usable_lines){scanned++;return}
+        // Old-system POs (no space after "PO" — e.g. "PO8689SBFBQ") are billed through
+        // NetSuite → QuickBooks, never the portal (SOP §Outside of Portal). When one didn't
+        // match any portal order, keep it OUT of review — it can only ever become a
+        // "no PO match" dirty bill here. It stays visible in the Sports Inc tab's Outside
+        // bucket for the completeness check. Matched ones (rare re-entered orders) pass through.
+        if(!parsed.matchedPOSource&&/^P[O0]\d/i.test(((parsed._po_raw||parsed.po_number)||'').trim())){oldSys++;return}
         const dn=(parsed.doc_number||'').trim().toLowerCase();
         // Dedup on BOTH the supplier invoice # and the SI doc #: bills applied before the
         // supplierDocNumber cutover recorded their siDocNumber on the PO line, so checking only
         // doc_number would re-add — and let staff re-push — an already-billed invoice (double-bill).
         const sdn=String(parsed.si_doc_number||'').trim();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si')))){skippedDups.push(parsed.doc_number);return}
         // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
         if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
@@ -22465,7 +22493,7 @@ export default function App(){
         results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text:'',parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now(),source:'sportsinc'});
         idx++;
       });
-      const extraNote=(scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
+      const extraNote=(scanned?' — '+scanned+' scanned doc(s) (e.g. S&S) left for manual PDF parse':'')+(oldSys?' — '+oldSys+' old-system doc(s) (no-space PO → NetSuite) left for the Sports Inc tab':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:docs.length,sourceNoun:'Sports Inc document(s)',verb:'pulled',extraNote});
     };
 
@@ -22515,7 +22543,7 @@ export default function App(){
         // invoice # was keyed by its order # (si_doc_number); checking only the invoice # would
         // re-add it. Checking both the invoice # and the order # catches it either way.
         const sdn=String(parsed.si_doc_number||'').trim();
-        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn)))){skippedDups.push(parsed.doc_number);return}
+        if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si')))){skippedDups.push(parsed.doc_number);return}
         // Already set aside in Look at Later (server-backed hold) — leave it parked, don't re-add.
         if((dn||sdn)&&_docHeld(parsed)){heldSkip.push(parsed.doc_number);return}
         if(dn)seenDocs.add(dn);
@@ -22670,7 +22698,7 @@ export default function App(){
         const parsed={...t.parsed};
         // Already billed (from either door)? Self-heal: capture the queue row, don't re-add.
         const sdn=String(parsed.si_doc_number||row.si_doc_number||'').trim();
-        if(_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn))){
+        if(_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si'))){
           dups.push(parsed.doc_number||row.si_doc_number);
           const upd={status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),
             match_method:'duplicate',match_reason:'Already billed on the Portal — captured without re-applying',applied_doc_number:parsed.doc_number||null};
@@ -22702,6 +22730,19 @@ export default function App(){
       try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){nf('Update failed: '+(e.message||e),'error');return}
       setSiQueue(prev=>prev.map(r=>r.si_doc_number===row.si_doc_number?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
       nf(verb||'Updated','success');
+    };
+    // Bulk: mark every doc in the Outside bucket outside-portal in one confirmed click. These are
+    // old-system (no-space) POs the SOP says to confirm-and-clear — one click instead of N.
+    const markSiStatusBulk=async(rows,status,verb)=>{
+      if(!rows||!rows.length)return;
+      if(!window.confirm(verb+' all '+rows.length+' document'+(rows.length===1?'':'s')+'? They stay fully auditable and count as captured.'))return;
+      const ids=rows.map(r=>r.si_doc_number);
+      const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
+      try{const{error}=await supabase.from('si_documents').update(upd).in('si_doc_number',ids);if(error)throw error}
+      catch(e){nf('Bulk update failed: '+(e.message||e),'error');return}
+      const idSet=new Set(ids);
+      setSiQueue(prev=>prev.map(r=>idSet.has(r.si_doc_number)?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+      nf(rows.length+' document'+(rows.length===1?'':'s')+' marked — all captured','success');
     };
 
     // ── Bill size-label alignment ──────────────────────────────────────────────
@@ -22880,7 +22921,7 @@ export default function App(){
     };
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
-    const rematchBill=(bill)=>{
+    const rematchBill=(bill,opts)=>{
       const updated={...bill,matchedPO:null,matchedPOSource:null};
       if(!bill.po_number)return updated;
       const rawLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
@@ -22926,6 +22967,38 @@ export default function App(){
           updated.matchedPOSource='so_po';_canon(pid,po.po_id);return updated;
         }
       }}}
+      // Last-resort tier: match on the PO's numeric core alone ("PO 3152 SJMBASE" bill ↔
+      // "PO 3152 SJMBASB" order) — vendors hand-key the alpha tag and mangle it, but the
+      // number is OURS and round-trips reliably. Only fires when the core is ≥3 digits and
+      // exactly ONE portal PO (across batches / inv POs / SO po_lines) carries that core —
+      // any ambiguity falls through to the wizard/AI instead of guessing. Measured on the
+      // live SI queue this recovers the "core exists, tag differs" class (~$8k at audit time).
+      // Guarded OFF for: (a) interactive typing in the PO edit box (opts.noCoreTier) — firing
+      // mid-keystroke would rewrite the field under the user's cursor; (b) old-system no-space
+      // POs ("PO8689SBFBQ") — those are NetSuite's, and a numeric coincidence with a live portal
+      // PO must not canonicalize them onto an unrelated order.
+      const coreOf=s=>{const m=stripPO(s).match(/^([0-9]{3,})(?![0-9])/);return m?m[1]:null};
+      const core=(opts?.noCoreTier||/^P[O0]\d/i.test((bill.po_number||'').trim()))?null:coreOf(poLc);
+      if(core){
+        const hits=[];
+        submittedBatches.forEach(sb=>{if(sb.po_number&&coreOf(sb.po_number.toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'batch',canon:sb.po_number,m:sb})});
+        invPOs.forEach(p=>{if(p.po_number&&coreOf(p.po_number.toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'inv_po',canon:p.po_number,m:p})});
+        for(const so of sos)for(const it of (so.items||[]))for(const po of (it.po_lines||[])){
+          if(po.po_id&&coreOf((po.po_id||'').toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'so_po',canon:po.po_id,m:{so_id:so.id,po_id:po.po_id,po,item:it,so}});
+        }
+        // Distinct OWNERS, not just distinct PO strings: several size lines of the same PO on the
+        // same SO are one candidate, but the same po_id text on two different SOs (hand-typed —
+        // nothing prevents it) is ambiguous and must fall through rather than pick one arbitrarily.
+        const owners=[...new Set(hits.map(h=>h.kind+'|'+(h.kind==='so_po'?h.m.so_id:(h.m.id||h.m.po_number||''))+'|'+h.canon))];
+        if(owners.length===1&&hits.length){
+          const h=hits[0];
+          updated.matchedPO=h.m;updated.matchedPOSource=h.kind;
+          updated._po_raw=bill.po_number;updated.po_number=h.canon;updated._core_match=true;
+          if(!(updated.warnings||[]).some(w=>w.indexOf('matched by PO number only')>-1))
+            updated.warnings=[...(updated.warnings||[]),'Matched by PO number only — the bill\'s tag ('+bill.po_number+') differs from the order ('+h.canon+'); glance before pushing'];
+          return updated;
+        }
+      }
       return updated;
     };
 
@@ -23457,12 +23530,13 @@ export default function App(){
         for(const dp of (so.deco_pos||[]))if(inD(dp._bill_details))return so.id+(dp.po_id?' · deco '+dp.po_id:' · deco');
       }
       if(savedBills.some(x=>x.portalStatus==='success'&&(x.parsed?.doc_number||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
+      if(_appliedLedger.current.has('d|'+d))return 'applied earlier (server ledger — possibly another machine)';
       return null;
     };
 
     // True if a bill with this doc number was already applied to the Portal — checks the
     // applied state on POs/batches (authoritative) plus pushed bill history as a fallback.
-    const _docAlreadyApplied=(doc)=>{
+    const _docAlreadyApplied=(doc,kind)=>{
       const d=(doc||'').trim().toLowerCase();
       if(!d)return false;
       if(submittedBatches.some(sb=>(sb.bill_doc_number||'').trim().toLowerCase()===d))return true;
@@ -23472,7 +23546,43 @@ export default function App(){
         for(const dp of (so.deco_pos||[]))if(inDetails(dp._bill_details))return true;
       }
       if(savedBills.some(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d))return true;
+      // Server ledger: applied on ANY machine (loaded once per import visit; also fed live on push).
+      // Key spaces are separate — vendor doc#s and SI/S&S order#s are independent numbering systems
+      // that can collide numerically, so a doc# is only ever checked against 'd|' keys and an
+      // order# (callers pass kind='si') only against 's|' keys.
+      if(_appliedLedger.current.has((kind==='si'?'s|':'d|')+d))return true;
       return false;
+    };
+
+    // Record applied bills to the server ledger (applied_bills, unique on doc# per credit-flag).
+    // Belt on top of the client checks: the unique index makes "same doc applied twice" a database
+    // refusal rather than a scan-and-hope, and loading the ledger makes dedup cross-machine. The
+    // in-memory set updates FIRST so this session's own dedup is immediate; the insert is then
+    // best-effort-but-loud (a pre-check warns if any doc was already recorded elsewhere).
+    const _recordAppliedBills=(bills)=>{
+      const rows=[];
+      (bills||[]).forEach(b=>{
+        const p=b&&b.parsed;if(!p)return;
+        const d=(p.doc_number||'').trim().toLowerCase();
+        const s=String(p.si_doc_number||'').trim().toLowerCase();
+        if(d)_appliedLedger.current.add('d|'+d);
+        if(s)_appliedLedger.current.add('s|'+s);
+        if(!d&&!s)return;// nothing keyable — SO-scan dedup still covers it via _bill_details
+        rows.push({doc_norm:d||null,si_doc_number:s||null,is_credit:!!p.is_credit,
+          vendor:p.vendor||p.supplier||null,po_number:p.po_number||null,
+          doc_total:safeNum(p.doc_total)||null,source:p.source||null,
+          applied_by:(cu?.name||cu?.email||null)});
+      });
+      if(!rows.length||!supabase)return;
+      const docKeys=rows.map(r=>r.doc_norm).filter(Boolean);
+      const doInsert=()=>supabase.from('applied_bills').upsert(rows,{onConflict:'doc_norm,is_credit',ignoreDuplicates:true})
+        .then(({error})=>{if(error)console.warn('[applied ledger] write failed:',error.message||error)},()=>{});
+      if(docKeys.length){
+        supabase.from('applied_bills').select('doc_norm').in('doc_norm',docKeys).then(({data})=>{
+          if(data&&data.length)nf('⚠ '+data.length+' doc(s) in this push were already on the applied ledger (possibly pushed from another machine) — check Billed tracking for a double-apply','error');
+          doInsert();
+        },doInsert);
+      }else doInsert();
     };
 
     // True if the bill being pulled is currently SET ASIDE in Look at Later — parked or
@@ -23555,17 +23665,22 @@ export default function App(){
             g.add+=add;g.billCost+=safeNum(m.bill_cost);
           }else{
             const so=sos.find(s=>s.id===m.so_id);if(!so)return;
-            let poRef=null,item=null;
-            for(const it of (so.items||[])){
+            let poRef=null,item=null,itIdx=-1,poIdx=-1;
+            const itemsArr=(so.items||[]);
+            for(let ii=0;ii<itemsArr.length;ii++){
+              const it=itemsArr[ii];
               if(m.item_id?it.id!==m.item_id:(it.sku||'').toUpperCase()!==(m.sku||'').toUpperCase())continue;
-              const po=(it.po_lines||[]).find(pl=>m.po_id?(pl.po_id||'')===m.po_id:true);
-              if(po){poRef=po;item=it;break}
+              const pls=(it.po_lines||[]);
+              const pi=pls.findIndex(pl=>m.po_id?(pl.po_id||'')===m.po_id:true);
+              if(pi>-1){poRef=pls[pi];item=it;itIdx=ii;poIdx=pi;break}
             }
             if(!poRef)return;
             const key='s|'+so.id+'|'+(item.id||item.sku)+'|'+(poRef.po_id||'')+'|'+size;
-            // _itRef/_poRef: the exact live item/po_line objects — _correctOrderFromBill matches on
-            // identity, never by SKU (SOs legitimately carry duplicate-SKU lines via "Copy line").
-            const g=(groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,billCost:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||so.id,so:so.id,_itRef:item,_poRef:poRef,poCost:safeNum(m.unit_cost)||safeNum(poRef.unit_cost)}));
+            // _itIdx/_poIdx: the exact item/po_line ADDRESS (plus _itRef/_poRef object identity) —
+            // _correctOrderFromBill matches on the index path with a po-id/SKU sanity check, never by
+            // SKU alone (SOs legitimately carry duplicate-SKU lines via "Copy line"). Index paths stay
+            // valid across a bulk run where an earlier bill's correction re-created the objects.
+            const g=(groups[key]||(groups[key]={ordered:safeNum(poRef[size]),billed:safeNum((poRef.billed||{})[size]),add:0,billCost:0,label:(m.sku||item.sku)+' '+size+' on '+(poRef.po_id||so.id),sku:m.sku||item.sku,size,sizeKey:size,po:poRef.po_id||so.id,so:so.id,_itRef:item,_poRef:poRef,_itIdx:itIdx,_poIdx:poIdx,poCost:safeNum(m.unit_cost)||safeNum(poRef.unit_cost)}));
             g.add+=add;g.billCost+=safeNum(m.bill_cost);
           }
         });
@@ -23602,10 +23717,10 @@ export default function App(){
         if(so){
           const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
           const addBySku={};(p.items||[]).forEach(it=>{if(it.size&&it.qty){const sk=(it.sku||'').toUpperCase();const bySz=(addBySku[sk]=addBySku[sk]||{});const e=bySz[it.size]||(bySz[it.size]={qty:0,cost:0});e.qty+=safeNum(it.qty);e.cost+=safeNum(it.extension||0)||safeNum(it.unit_price||0)*safeNum(it.qty)}});
-          (so.items||[]).forEach(it=>{
+          (so.items||[]).forEach((it,itIdx)=>{
             const _bsk=Object.keys(addBySku).find(bs=>_billSkuMatchesItem(bs,it));
             const adds=_bsk?addBySku[_bsk]:null;if(!adds)return;
-            (it.po_lines||[]).forEach(po=>{
+            (it.po_lines||[]).forEach((po,poIdx)=>{
               const pid=(po.po_id||'').toLowerCase().replace(/\s+/g,'');
               if(pid!==poLc&&!pid.startsWith(poLc))return;
               const _pk=_poLineSizeKeys(po);
@@ -23613,7 +23728,7 @@ export default function App(){
                 const add=e.qty;
                 const k=_alignSize(size,_pk);
                 const ordered=safeNum(po[k]);const billed=safeNum((po.billed||{})[k]);
-                out.push({ordered,billed,add,billCost:e.cost,label:it.sku+' '+size+' on '+(po.po_id||so.id),sku:it.sku,size,sizeKey:k,po:po.po_id||so.id,so:so.id,_itRef:it,_poRef:po,poCost:safeNum(po.unit_cost)});
+                out.push({ordered,billed,add,billCost:e.cost,label:it.sku+' '+size+' on '+(po.po_id||so.id),sku:it.sku,size,sizeKey:k,po:po.po_id||so.id,so:so.id,_itRef:it,_poRef:po,_itIdx:itIdx,_poIdx:poIdx,poCost:safeNum(po.unit_cost)});
               });
             });
           });
@@ -23672,7 +23787,7 @@ export default function App(){
 
     // Resolve a parked bill WITH a disposition — the why is kept on the saved-bill row
     // (shown in Bill History), so month-end completeness stays provable.
-    const _resolveBillWithDisposition=(billId,disposition,note)=>{
+    const _resolveBillWithDisposition=(billId,disposition,note,opts)=>{
       const resolution={disposition,note:note||'',by:(cu?.name||cu?.email||''),at:new Date().toISOString()};
       const cur=savedBills.find(sb=>sb.id===billId);
       setSavedBills(prev=>{
@@ -23683,7 +23798,7 @@ export default function App(){
       // fresh pull won't resurface it). Loud if it only hit localStorage.
       if(cur)_saveBillHold({...cur,reviewLater:false,resolution},'resolved').then(r=>{if(r&&r.ok===false&&!r.offline)nf('Resolved on this device — server save failed; it may reappear on another machine','error')});
       setBillResolveId(null);
-      nf('Resolved — '+disposition);
+      if(!opts?.quiet)nf('Resolved — '+disposition);
     };
 
     // "Correct the order from the bill" (accounting SOP: the bill is the source of truth).
@@ -23691,26 +23806,29 @@ export default function App(){
     // to cover billed+this-bill, with an audit entry on the line (_order_corrections).
     // Batch-target groups are not auto-correctable (their ordered qty derives from the
     // batch's source POs) — those are reported, not touched.
-    const _correctOrderFromBill=(sb)=>{
+    const _correctOrderFromBill=(sb,opts)=>{
       const p=sb.parsed||{};
       const recon=_billReconData(p);
-      // Only groups that captured the exact live item/po_line objects are correctable —
-      // identity matching (not SKU) so a duplicate-SKU sibling line can never be touched.
-      const fixes=(recon?.groups||[]).filter(g=>g.so&&g._itRef&&g._poRef&&g.billed+g.add>g.ordered);
+      // Only groups that captured an exact item/po_line ADDRESS are correctable. Matching is by
+      // index path + po-id/SKU sanity (never SKU alone — SOs carry duplicate-SKU "Copy line"
+      // siblings): index paths survive a bulk run where an earlier bill's correction re-created
+      // the objects, which pure identity matching would silently no-op on.
+      const fixes=(recon?.groups||[]).filter(g=>g.so&&g._itIdx>-1&&g._poIdx>-1&&g.billed+g.add>g.ordered);
       const skipped=(recon?.groups||[]).filter(g=>!g.so&&g.billed+g.add>g.ordered);
-      if(!fixes.length){nf(skipped.length?'These over-billed lines are on a batch PO — correct the batch\'s source PO instead':'Nothing to correct — no over-billed lines on an order','error');return}
+      if(!fixes.length){if(!opts?.quiet)nf(skipped.length?'These over-billed lines are on a batch PO — correct the batch\'s source PO instead':'Nothing to correct — no over-billed lines on an order','error');return false}
       const summary=fixes.map(g=>(g.sku?g.sku+' ':'')+g.size+' on '+g.po+': '+g.ordered+' → '+(g.billed+g.add)).join('\n');
-      if(!window.confirm('Correct the order from the bill?\n\nOrdered quantities will be raised to match what was billed:\n\n'+summary+'\n\nAn audit note is kept on each corrected line.'))return;
+      // skipConfirm: the bulk path shows ONE combined confirm for the whole bucket instead.
+      if(!opts?.skipConfirm&&!window.confirm('Correct the order from the bill?\n\nOrdered quantities will be raised to match what was billed:\n\n'+summary+'\n\nAn audit note is kept on each corrected line.'))return false;
       const today=new Date().toISOString().slice(0,10);
       setSOs(prev=>prev.map(s=>{
         const soFixes=fixes.filter(g=>g.so===s.id);
         if(!soFixes.length)return s;
         let changed=false;
-        const updatedItems=(s.items||[]).map(it=>{
-          const itFixes=soFixes.filter(g=>g._itRef===it);
+        const updatedItems=(s.items||[]).map((it,itIdx)=>{
+          const itFixes=soFixes.filter(g=>(g._itRef===it||g._itIdx===itIdx)&&(!g.sku||(it.sku||'').toUpperCase()===(g.sku||'').toUpperCase()));
           if(!itFixes.length)return it;
-          return{...it,po_lines:(it.po_lines||[]).map(po=>{
-            const lineFixes=itFixes.filter(g=>g._poRef===po);
+          return{...it,po_lines:(it.po_lines||[]).map((po,poIdx)=>{
+            const lineFixes=itFixes.filter(g=>(g._poRef===po||g._poIdx===poIdx)&&(po.po_id||s.id)===g.po);
             if(!lineFixes.length)return po;
             const np={...po};const corr=[...(po._order_corrections||[])];
             lineFixes.forEach(g=>{
@@ -23729,12 +23847,84 @@ export default function App(){
         _dbSaveSO(updatedSO);
         return updatedSO;
       }));
-      nf('Order corrected from bill — '+fixes.length+' line'+(fixes.length===1?'':'s')+' updated'+(skipped.length?' · '+skipped.length+' batch line'+(skipped.length===1?'':'s')+' left as-is':''));
+      if(!opts?.quiet)nf('Order corrected from bill — '+fixes.length+' line'+(fixes.length===1?'':'s')+' updated'+(skipped.length?' · '+skipped.length+' batch line'+(skipped.length===1?'':'s')+' left as-is':''));
+      return true;
+    };
+
+    // Bulk: correct every over-billed order line in a bucket at once, behind ONE combined
+    // confirmation listing every change. Unlike looping the single-bill action, this AGGREGATES
+    // per order line first: two parked bills over-billing the SAME line need ordered raised to
+    // billed + BOTH adds (a per-bill loop would take the max, not the sum, and leave the bucket
+    // needing a second pass after the first pushes land).
+    const _correctOrdersFromBills=(sbs)=>{
+      const byLine={};// so|itIdx|poIdx|sizeKey → {g (first group for address/labels), add (Σ across bills), docs:[]}
+      (sbs||[]).forEach(sb=>{
+        const recon=_billReconData(sb.parsed||{});
+        (recon?.groups||[]).forEach(g=>{
+          if(!(g.so&&g._itIdx>-1&&g._poIdx>-1&&g.billed+g.add>g.ordered))return;
+          const k=[g.so,g._itIdx,g._poIdx,g.sizeKey].join('|');
+          const e=byLine[k]||(byLine[k]={g,add:0,docs:[]});
+          e.add+=g.add;
+          const doc=(sb.parsed?.doc_number||'').trim();if(doc&&!e.docs.includes(doc))e.docs.push(doc);
+        });
+      });
+      const targets=Object.values(byLine).filter(e=>e.g.billed+e.add>e.g.ordered);
+      if(!targets.length){nf('Nothing to correct — no over-billed order lines in this bucket (batch-PO lines aren\'t auto-correctable)','error');return}
+      const summary=targets.slice(0,25).map(e=>(e.g.sku?e.g.sku+' ':'')+e.g.size+' on '+e.g.po+': '+e.g.ordered+' → '+(e.g.billed+e.add)).join('\n')
+        +(targets.length>25?'\n…and '+(targets.length-25)+' more line(s)':'');
+      if(!window.confirm('Correct '+targets.length+' order line'+(targets.length===1?'':'s')+' across '+sbs.length+' bill'+(sbs.length===1?'':'s')+' from their bills?\n\n'+summary+'\n\nAn audit note is kept on each corrected line.'))return;
+      const today=new Date().toISOString().slice(0,10);
+      setSOs(prev=>prev.map(s=>{
+        const soT=targets.filter(e=>e.g.so===s.id);
+        if(!soT.length)return s;
+        let changed=false;
+        const updatedItems=(s.items||[]).map((it,itIdx)=>{
+          const itT=soT.filter(e=>e.g._itIdx===itIdx&&(!e.g.sku||(it.sku||'').toUpperCase()===(e.g.sku||'').toUpperCase()));
+          if(!itT.length)return it;
+          return{...it,po_lines:(it.po_lines||[]).map((po,poIdx)=>{
+            const lineT=itT.filter(e=>e.g._poIdx===poIdx&&(po.po_id||s.id)===e.g.po);
+            if(!lineT.length)return po;
+            const np={...po};const corr=[...(po._order_corrections||[])];
+            lineT.forEach(e=>{
+              const to=e.g.billed+e.add;
+              if(safeNum(np[e.g.sizeKey])>=to)return;
+              corr.push({doc:e.docs.join(', '),date:today,size:e.g.sizeKey,from:safeNum(np[e.g.sizeKey]),to,by:(cu?.name||cu?.email||'')});
+              np[e.g.sizeKey]=to;
+            });
+            if(corr.length===(po._order_corrections||[]).length)return po;
+            changed=true;
+            return{...np,_order_corrections:corr};
+          })};
+        });
+        if(!changed)return s;
+        const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
+        _dbSaveSO(updatedSO);
+        return updatedSO;
+      }));
+      nf(targets.length+' order line'+(targets.length===1?'':'s')+' corrected across '+sbs.length+' bill'+(sbs.length===1?'':'s')+' — the bucket re-checks itself');
+    };
+
+    // Bulk: push every clean bill in the Ready bucket. Same per-bill path as the single 🚀
+    // button (validation already passed for this bucket); failures stay parked and are counted.
+    const _pushParkedBills=(sbs,disposition)=>{
+      if(!sbs||!sbs.length)return;
+      if(!window.confirm('Push '+sbs.length+' bill'+(sbs.length===1?'':'s')+' to the Portal? They all validate cleanly.'))return;
+      let ok=0,fail=0;
+      sbs.forEach(sb=>{_pushParkedBill(sb,disposition,'',{quiet:true})?ok++:fail++});
+      nf(ok+' bill'+(ok===1?'':'s')+' pushed'+(fail?' · '+fail+' failed (still parked)':''),fail?'error':'success');
+    };
+
+    // Bulk: resolve every bill in the Duplicates bucket, each stamped with where its doc was applied.
+    const _resolveDuplicateBills=(sbs)=>{
+      if(!sbs||!sbs.length)return;
+      if(!window.confirm('Resolve '+sbs.length+' bill'+(sbs.length===1?'':'s')+' as duplicates? Each is stamped with where its doc # was already applied.'))return;
+      sbs.forEach(sb=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(sb.parsed?.doc_number)||'an earlier push'),{quiet:true}));
+      nf(sbs.length+' duplicate'+(sbs.length===1?'':'s')+' resolved');
     };
 
     // Push one parked bill straight from the Look at Later card, recording why. Failure is
     // loud (the card stays parked); success resolves the card with the given disposition.
-    const _pushParkedBill=(sb,disposition,note)=>{
+    const _pushParkedBill=(sb,disposition,note,opts)=>{
       const billObj={id:sb.id,file:sb.file,parsed:sb.parsed,uploadedAt:sb.uploadedAt,uploadedTs:sb.uploadedTs,selected:true};
       const applied=_applyBillsToPortal([billObj]);
       if(applied>0){
@@ -23745,9 +23935,9 @@ export default function App(){
         });
         // Mark the hold pushed on the server too (belt-and-suspenders with the applied-bill dedup).
         _saveBillHold({id:sb.id,file:sb.file,parsed:billObj.parsed,portalStatus:'success',resolution},'pushed');
-        nf('Pushed to Portal — '+disposition);
+        if(!opts?.quiet)nf('Pushed to Portal — '+disposition);
       }else{
-        nf('Push failed: '+(billObj.portalMsg||'could not apply — check the match'),'error');
+        if(!opts?.quiet)nf('Push failed: '+(billObj.portalMsg||'could not apply — check the match'),'error');
       }
       return applied>0;
     };
@@ -24029,6 +24219,9 @@ export default function App(){
           b.portalStatus='error';b.portalMsg='Failed: '+e.message;
         }
       });
+      // Hard ledger: record every successful apply server-side (unique doc# constraint) so a
+      // re-push of the same doc — this machine or any other — is refused/loudly flagged.
+      _recordAppliedBills(bills.filter(b=>b.portalStatus==='success'));
       // Close the loop in the shared S&S queue (lifecycle: new → reviewed → applied) so
       // accounting's completeness view reconciles. Best-effort — billing already applied.
       if(supabase)bills.forEach(b=>{
@@ -24217,8 +24410,9 @@ export default function App(){
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
         // Apply billed quantities, tracking, and freight to matched SO/PO
-        // (uses shared applyBillToSO — skips if already applied at parse time)
-        if(!bill._applied)applyBillToSO(bill);
+        // (uses shared applyBillToSO — skips if already applied at parse time). Ledger only
+        // when there was a target to apply to — an unmatched bill writes no billed qty here.
+        if(!bill._applied){applyBillToSO(bill);if(_billHasTarget(bill))_recordAppliedBills([{parsed:bill}]);}
         // Now push to QuickBooks
         const billRes=await qbApi('upsert_bill',{bill:qbBill});
         if(billRes?.Bill?.Id){
@@ -25513,7 +25707,7 @@ export default function App(){
                   <div style={{display:'flex',gap:6,alignItems:'center',flex:1,flexWrap:'wrap'}}>
                     <label style={{fontSize:10,fontWeight:600}}>PO</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.po_number}
-                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value})}:p)}))}/>
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:rematchBill({...p.parsed,po_number:e.target.value},{noCoreTier:true})}:p)}))}/>
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Vendor</label>
                     <input className="form-input" list={`vendor-options-${bi}`} style={{width:160,fontSize:11,padding:'3px 6px'}} value={bill.vendor||bill.supplier||''}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,vendor:e.target.value,supplier:e.target.value}}:p)}))}/>
@@ -26001,6 +26195,7 @@ export default function App(){
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh'})}
                   {skBtn({bg:RED,fg:'#fff',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:syncSiQueueNow,children:'⚡ Pull now'})}
                   {approve.length>0&&skBtn({bg:'#fff',fg:NAVY,fs:12,pad:'9px 16px',title:'Load every matched document into Import & Review — one screen, one push, nothing applies from this tab',onClick:()=>_siSendToReview(approve),children:'→ Review all matched ('+approve.length+')'})}
+                  {outside.length>1&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',title:'Old-system (no-space) POs are billed through NetSuite/QuickBooks — confirm and clear the whole bucket in one click; they stay auditable and count as captured',onClick:()=>markSiStatusBulk(outside,'outside_portal','Mark outside portal'),children:'✓ Mark all outside ('+outside.length+')'})}
                 </div>
               </div>
               {siQueue.length>0&&<div style={{display:'flex',height:9,borderRadius:5,overflow:'hidden',background:'rgba(255,255,255,.14)'}}>
@@ -26142,6 +26337,12 @@ export default function App(){
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:15,letterSpacing:.4,textTransform:'uppercase',color:bColor}}>{bIcon} {bLabel} ({list.length})</span>
                   <span style={{fontFamily:FD,fontSize:13,fontWeight:700,color:bColor,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(bTotal)}</span>
                   <span style={{fontSize:11,color:TXTL}}>{bDesc}</span>
+                  {/* Bulk actions — the whole bucket in one click, behind one combined confirm */}
+                  <span style={{marginLeft:'auto',display:'flex',gap:8}} onClick={e=>e.stopPropagation()}>
+                    {bkey==='ready'&&list.length>1&&skBtn({bg:GREEN,fg:'#fff',fs:11,pad:'7px 14px',title:'Apply every clean bill in this bucket to its order\'s Billed tracking',onClick:()=>_pushParkedBills(list.map(e=>e.sb),'pushed from Look at Later (bulk)'),children:'🚀 Push all ('+list.length+')'})}
+                    {bkey==='overbilled'&&list.length>1&&skBtn({bg:NAVY,fg:'#fff',fs:11,pad:'7px 14px',title:'Raise ordered quantities to match what was billed, for every over-billed line in this bucket — one combined confirmation lists every change',onClick:()=>_correctOrdersFromBills(list.map(e=>e.sb)),children:'✏️ Correct all orders ('+list.length+')'})}
+                    {bkey==='duplicate'&&list.length>1&&skBtn({bg:'#8790a3',fg:'#fff',fs:11,pad:'7px 14px',title:'Resolve every bill in this bucket as a duplicate, each stamped with where its doc # was applied',onClick:()=>_resolveDuplicateBills(list.map(e=>e.sb)),children:'♻️ Resolve all ('+list.length+')'})}
+                  </span>
                 </div>
                 {!collapsed&&list.map(({sb,p,matched,errs,clean,bucket})=>{
                 const reasons=matched?errs:(p.po_number?['No PO match for '+p.po_number]:['No PO number on the bill']);

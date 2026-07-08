@@ -88,7 +88,7 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
     // Only a LIVE (prod) order should mark the batch as ordered; stage validates only.
     // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order.
     try {
-      if (live) onSubmitted && onSubmitted(r);
+      if (live) onSubmitted && onSubmitted(r, lines);
     } catch (e) {
       console.error('[Momentec] order placed but post-order bookkeeping failed:', e);
     }

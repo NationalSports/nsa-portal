@@ -156,7 +156,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     // Promote/clear the batch OUTSIDE the submit try: a bookkeeping error must never make a
     // genuinely-placed order look like it failed (or leave it stuck in the queue silently).
     try {
-      onSubmitted && onSubmitted(r);
+      onSubmitted && onSubmitted(r, lines);
     } catch (e) {
       console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
     }
