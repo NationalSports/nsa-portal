@@ -20,7 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
-const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd } = require('../../src/lib/opsRecap');
+const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const num = (v) => (Number(v) || 0);
@@ -141,13 +141,31 @@ exports.handler = async (event) => {
       (q) => q.eq('status', 'approved').gte('approved_at', start.toISOString()).lt('approved_at', end.toISOString())))
       .filter((e) => !e.deleted_at && inWin(e.approved_at));
 
+    // Portal invoices (bounded — excludes the large NetSuite-imported history in
+    // customer_invoices). Drives billed value on shipped rows, the "already
+    // invoiced?" test for ready-to-invoice / shipped-not-invoiced, and the
+    // newly-past-due section. Loaded BEFORE the order working set so closed-but-
+    // never-invoiced orders can be kept in it.
+    const invoices = await loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,deleted_at',
+      (q) => q.is('deleted_at', null));
+    const invTotalBySo = {}; const invoicedSoIds = new Set();
+    invoices.forEach((inv) => {
+      if (String(inv.status || '').toLowerCase() === 'void' || !inv.so_id) return;
+      invoicedSoIds.add(inv.so_id);
+      invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
+    });
+
     // Working set: header row for every order is cheap; child tables are the heavy
     // part, so bound them to orders that can still appear in a recap — anything not
-    // closed, plus closed ones stamped inside the window ("shipped yesterday").
+    // closed, plus closed ones stamped inside the window ("shipped yesterday"),
+    // plus closed ones with no non-void invoice (the standing "Shipped — not
+    // invoiced" money-recovery bucket must see orders closed without invoicing;
+    // webstore/promo orders never invoice, so they don't widen the set).
     const headers = await loadAll(admin, 'sales_orders',
-      'id,customer_id,created_by,status,expected_date,updated_at,memo,deleted_at,_shipping_status,_ship_date,ship_preference,delivered');
+      'id,customer_id,created_by,status,expected_date,updated_at,memo,deleted_at,_shipping_status,_ship_date,ship_preference,delivered,source,promo_applied');
     const orders = headers.filter((o) => !o.deleted_at && !DEAD_STATUS.has(o.status) &&
-      (o.status !== 'complete' || inWin(o._ship_date) || inWin(o.updated_at)));
+      (o.status !== 'complete' || inWin(o._ship_date) || inWin(o.updated_at) ||
+        (!invoicedSoIds.has(o.id) && !o.promo_applied && o.source !== 'webstore')));
     const soIds = orders.map((o) => o.id);
     // so_items via select('*') so qty_only items (est_qty) count wherever the column
     // lives, without erroring on schema drift.
@@ -164,21 +182,10 @@ exports.handler = async (event) => {
     // matching the client's pick_lines/po_lines).
     const picksByItem = {}; picks.forEach((p) => (picksByItem[p.so_item_id] || (picksByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), status: p.status, pick_id: p.pick_id }));
     const posByItem = {}; pos.forEach((p) => (posByItem[p.so_item_id] || (posByItem[p.so_item_id] = [])).push({ ...(p.sizes || {}), received: p.received || {}, cancelled: p.cancelled || {} }));
-    const itemsBySo = {}; items.forEach((it) => (itemsBySo[it.so_id] || (itemsBySo[it.so_id] = [])).push({ sku: it.sku, name: it.name, sizes: it.sizes || {}, est_qty: it.est_qty, picks: picksByItem[it.id] || [], pos: posByItem[it.id] || [] }));
+    const itemsBySo = {}; items.forEach((it) => (itemsBySo[it.so_id] || (itemsBySo[it.so_id] = [])).push({ sku: it.sku, name: it.name, sizes: it.sizes || {}, est_qty: it.est_qty, unit_sell: it.unit_sell, is_free_promo: it.is_free_promo, picks: picksByItem[it.id] || [], pos: posByItem[it.id] || [] }));
     const jobsBySo = {}; jobs.forEach((j) => (jobsBySo[j.so_id] || (jobsBySo[j.so_id] = [])).push({ id: j.id, prod_status: j.prod_status }));
     orders.forEach((o) => { o.items = itemsBySo[o.id] || []; o.jobs = jobsBySo[o.id] || []; });
 
-    // Portal invoices (bounded — excludes the large NetSuite-imported history in
-    // customer_invoices). Drives billed value on shipped rows, the "already
-    // invoiced?" test for ready-to-invoice, and the newly-past-due section.
-    const invoices = await loadAll(admin, 'invoices', 'id,customer_id,so_id,date,due_date,total,paid,status,type,memo,created_by,deleted_at',
-      (q) => q.is('deleted_at', null));
-    const invTotalBySo = {}; const invoicedSoIds = new Set();
-    invoices.forEach((inv) => {
-      if (String(inv.status || '').toLowerCase() === 'void' || !inv.so_id) return;
-      invoicedSoIds.add(inv.so_id);
-      invTotalBySo[inv.so_id] = (invTotalBySo[inv.so_id] || 0) + num(inv.total);
-    });
     // Payments for fully-paid invoices, so we can tell which were settled yesterday.
     const paidInvIds = invoices.filter(isFullyPaidInvoice).map((inv) => inv.id);
     const paymentsByInv = {};
@@ -187,8 +194,8 @@ exports.handler = async (event) => {
     });
 
     // ── Categorize into per-rep buckets ──
-    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, pastDue, paid }
-    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [], paid: [] }));
+    const byRep = {}; // repId -> { shipped, approved, picked, checkedIn, deadlines, readyInv, shipNoInv, pastDue, paid }
+    const cell = (id) => (byRep[id] || (byRep[id] = { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], pastDue: [], paid: [] }));
 
     approvedEsts.forEach((e) => {
       const rep = e.created_by || custById[e.customer_id]?.primary_rep_id;
@@ -211,6 +218,10 @@ exports.handler = async (event) => {
 
       // Ready to invoice (production done) and not yet invoiced.
       if (isReadyToInvoice(so, ff) && !invoicedSoIds.has(so.id)) cell(rep).readyInv.push(so);
+
+      // Shipped but never invoiced — money leak. A standing bucket like readyInv
+      // (repeats daily until an invoice exists), not windowed to yesterday.
+      if (isShippedNotInvoiced(so, ff) && !invoicedSoIds.has(so.id)) cell(rep).shipNoInv.push({ so, value: soGoodsValue(so) });
 
       if (!shippedOut && so.status !== 'complete') {
         const due = parseDate(so.expected_date);
@@ -255,10 +266,10 @@ exports.handler = async (event) => {
         || members.find((m) => lc(m.email).split('@')[0] === localPart)
         || members.find((m) => lc(m.name).split(/\s+/)[0] === localPart);
       if (!testRep) return { statusCode: 404, body: `Couldn't resolve which rep's digest to render for ${testTo}. Pass &rep=<name or id>.` };
-      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], pastDue: [], paid: [] };
+      const b = byRep[testRep.id] || { shipped: [], approved: [], picked: [], checkedIn: [], deadlines: [], readyInv: [], shipNoInv: [], pastDue: [], paid: [] };
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.pastDue.length + b.paid.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.deadlines.length + b.readyInv.length + b.shipNoInv.length + b.pastDue.length + b.paid.length;
       // live=1 sends a real (non-[TEST]) digest — used to roll the recap out on demand.
       const live = qs.live === '1' || qs.live === 'true';
       const isCc = String(testTo).toLowerCase() !== String(testRep.email || '').toLowerCase();
@@ -286,7 +297,7 @@ exports.handler = async (event) => {
       const rep = repById[repId];
       if (!rep || !rep.email || rep.is_active === false || !/.+@.+\..+/.test(rep.email)) continue;
       if (rep.ops_digest_opt_out === true) { skippedOptOut++; continue; }
-      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.pastDue.length + b.paid.length;
+      const activity = b.shipped.length + b.approved.length + b.picked.length + b.checkedIn.length + b.readyInv.length + b.shipNoInv.length + b.pastDue.length + b.paid.length;
       if (activity === 0 && (b.deadlines.length === 0 || weekendSend)) continue;
       b.picked.sort((x, y) => parseDate(y.latest) - parseDate(x.latest));
       b.deadlines.sort((x, y) => x.due - y.due);
@@ -342,6 +353,7 @@ function opsSubject(b, shortN, dayLabel) {
   if (b.checkedIn.length) bits.push(`${b.checkedIn.length} checked in`);
   if (b.paid.length) bits.push(`${b.paid.length} paid`);
   if (b.readyInv.length) bits.push(`${b.readyInv.length} ready to invoice`);
+  if (b.shipNoInv.length) bits.push(`${b.shipNoInv.length} shipped uninvoiced`);
   if (b.pastDue.length) bits.push(`${b.pastDue.length} newly past due`);
   if (!bits.length && b.deadlines.length) return `${b.deadlines.length} deadline${b.deadlines.length === 1 ? '' : 's'} coming up (${dayLabel})`;
   return `Your day: ${bits.join(' · ')} (${dayLabel})`;
@@ -395,6 +407,12 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
     row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · every unit in, ready to build', '', soLink(so.id))).join('')) : '';
   const readyBlock = b.readyInv.length ? sectionHead('🧾 Ready to Invoice') + table(b.readyInv.map((so) =>
     row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · production done, not invoiced yet', '', soLink(so.id), 'Invoice →')).join('')) : '';
+  // Shipped — not invoiced: money recovery. Dollar figures are goods value (units ×
+  // sell; no deco/shipping), a floor on what's unbilled.
+  const shipNoInvTotal = b.shipNoInv.reduce((a, r) => a + num(r.value), 0);
+  const shipNoInvBlock = b.shipNoInv.length ? sectionHead(`🚨 Shipped — Not Invoiced <span style="font-weight:600;color:#B91C1C;font-size:12px">· ${money(shipNoInvTotal)}+ unbilled</span>`) + table(b.shipNoInv.map(({ so, value }) =>
+    row(esc(so.id), esc(custName(so.customer_id)) + (so.memo ? ` · ${esc(so.memo)}` : '') + ' · shipped out, never invoiced',
+      value > 0 ? `<span style="font-size:13px;font-weight:800;color:#B91C1C">${money(value)}</span> &nbsp;` : '', soLink(so.id), 'Invoice →')).join('')) : '';
   const invLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}`;
   const paidBlock = b.paid.length ? sectionHead('💰 Paid Yesterday') + table(b.paid.map(({ inv, amount }) =>
     row(esc(inv.id), esc(custName(inv.customer_id)) + (inv.memo ? ` · ${esc(inv.memo)}` : '') + ' · paid in full',
@@ -428,7 +446,7 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
       ${testNote ? `<div style="background:#FEF3C7;border:1px solid #FCD34D;color:#92400E;font-size:12px;font-weight:700;padding:8px 12px;border-radius:6px;margin:0 0 12px">🧪 ${esc(testNote)}</div>` : ''}
       ${summary}
       <div style="text-align:center;margin:0 0 6px"><a href="${myDay}" style="display:inline-block;background:${NAVY};color:#fff;padding:11px 28px;border-radius:6px;text-decoration:none;font-weight:700;font-size:14px">Open My Day →</a></div>
-      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${paidBlock}${readyBlock}${pastDueBlock}${deadlineBlock}
+      ${shippedBlock}${approvedBlock}${pickedBlock}${checkedBlock}${paidBlock}${readyBlock}${shipNoInvBlock}${pastDueBlock}${deadlineBlock}
       <p style="font-size:12px;color:${SUB};margin:22px 0 0;line-height:1.5">You're getting this because you're the assigned rep on these orders. Shipped/checked-in/picked reflect yesterday's activity; deadlines look ${'≤'}${14} days ahead. Turn this email off any time from Sales Tools → My Day.</p>
     </div>
     <div style="text-align:center;color:${SUB};font-size:11px;padding:16px 0 4px">National Sports Apparel · Custom team apparel</div>

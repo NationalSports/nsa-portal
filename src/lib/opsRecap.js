@@ -147,6 +147,37 @@ function isReadyToInvoice(so, ff) {
   return itemsOf(so).every((it) => it.no_deco === true) && ff.fulfilledSz >= ff.totalSz;
 }
 
+// ── Shipped — not invoiced (money recovery) ──
+// isReadyToInvoice deliberately stops firing once an order ships, so an order that
+// shipped without ever being invoiced falls out of the invoicing funnel entirely
+// and the revenue silently leaks. This catches those: a real shipping signal and
+// still no invoice. Webstore/OMG store orders are paid at checkout and promos skip
+// invoicing — both excluded. Like isReadyToInvoice, the "has no non-void invoice?"
+// half lives at the call site (needs the invoices table), so callers must also
+// exclude SOs that already have a non-void invoice.
+function isShippedNotInvoiced(so, ff) {
+  if (!so || so.promo_applied || so.source === 'webstore') return false;
+  return isShippedOut(so, ff);
+}
+
+// ── Goods-only order value ──
+// units × unit_sell (size-level sells when present), free-promo lines excluded,
+// est_qty fallback for qty_only lines. No decoration/shipping/tax — those need the
+// full client pricing engine — so it UNDERSTATES the invoiceable total. Used for
+// the digest's dollar callouts where the client's calcOrderMargin isn't available.
+function soGoodsValue(so) {
+  return itemsOf(so).reduce((acc, it) => {
+    if (it.is_free_promo) return acc;
+    let units = 0, rev = 0;
+    Object.entries(it.sizes || {}).forEach(([k, v]) => {
+      if (!isSizeKey(k)) return; const n = num(v); if (n <= 0) return;
+      units += n; rev += n * num((it._sizeSells || {})[k] || it.unit_sell);
+    });
+    if (units === 0) rev = num(it.est_qty) * num(it.unit_sell);
+    return acc + rev;
+  }, 0);
+}
+
 // ── Invoice A/R helpers ──
 const invoiceBalance = (inv) => {
   if (!inv) return 0;
@@ -197,6 +228,6 @@ const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '
 
 module.exports = {
   NON_SIZE, isSizeKey, sizeUnits, sizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
-  isReadyToInvoice, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
+  isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
   dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
 };

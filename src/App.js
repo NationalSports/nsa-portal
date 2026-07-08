@@ -25,7 +25,7 @@ import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, r
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd } from './lib/opsRecap';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -28787,6 +28787,13 @@ export default function App(){
       return opsReadyToInvoice(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
     }).sort((a,b)=>parseDate(b.updated_at)-parseDate(a.updated_at));
 
+    // Shipped but never invoiced — money leak. NOT windowed (like Past Due, a live
+    // view): a shipped order with no invoice needs chasing no matter how old it is.
+    const mdShipNoInv=sos.filter(so=>{
+      if(!_mdMine(_mdRepOf(so))||so.deleted_at||so.status==='cancelled')return false;
+      return opsShippedNotInvoiced(so,_mdFF(so))&&!_mdInvoicedSoIds.has(so.id);
+    }).sort((a,b)=>parseDate(b._ship_date||b.updated_at)-parseDate(a._ship_date||a.updated_at));
+
     // Past-due invoices for my customers (live view — every currently-overdue open invoice).
     const _mdTodayYmd=new Date(_mdNow-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
     const mdPastDue=invs.filter(iv=>{
@@ -28821,6 +28828,7 @@ export default function App(){
       {stTab==='myday'&&(()=>{
         const _mdPastDueTotal=mdPastDue.reduce((a,p)=>a+p.balance,0);
         const _mdPaidTotal=mdPaid.reduce((a,p)=>a+p.amount,0);
+        const _mdShipNoInvTotal=mdShipNoInv.reduce((a,so)=>a+safeNum(calcOrderMargin(so,sos).rev),0);
         const tiles=[
           {id:'shipped',label:'Shipped',icon:'box',color:'#0e7490',n:mdShipped.length},
           {id:'approved',label:'Estimates Approved',icon:'check',color:'#047857',n:mdApproved.length},
@@ -28828,10 +28836,11 @@ export default function App(){
           {id:'checkedin',label:'All Checked In',icon:'warehouse',color:'#7c3aed',n:mdCheckedIn.length},
           {id:'paid',label:'Paid',icon:'check',color:'#047857',n:mdPaid.length,sub:_mdPaidTotal>0?_md$(_mdPaidTotal)+' in':''},
           {id:'readyinv',label:'Ready to Invoice',icon:'file',color:'#0891b2',n:mdReadyInv.length},
+          {id:'shipnoinv',label:'Shipped — Not Invoiced',icon:'dollar',color:'#c2410c',n:mdShipNoInv.length,sub:_mdShipNoInvTotal>0?_md$(_mdShipNoInvTotal)+' unbilled':''},
           {id:'pastdue',label:'Past Due',icon:'dollar',color:'#b91c1c',n:mdPastDue.length,sub:_mdPastDueTotal>0?_md$(_mdPastDueTotal)+' open':''},
           {id:'deadlines',label:'Deadlines ≤'+stMdDeadline+'d',icon:'clock',color:'#be123c',n:mdDeadlines.length},
         ];
-        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdPastDue.length+mdDeadlines.length;
+        const total=mdShipped.length+mdApproved.length+mdPicked.length+mdCheckedIn.length+mdPaid.length+mdReadyInv.length+mdShipNoInv.length+mdPastDue.length+mdDeadlines.length;
         const Section=({id,title,count,children})=><div id={'md-'+id} className="card" style={{marginBottom:16}}>
           <div className="card-header"><h3 style={{margin:0,fontSize:15}}>{title} <span style={{color:'#94a3b8',fontWeight:600}}>({count})</span></h3></div>
           <div className="card-body" style={{padding:0,overflowX:'auto'}}>{children}</div>
@@ -28934,6 +28943,16 @@ export default function App(){
                 <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#0891b2',fontWeight:600}}>production done · not invoiced</div></td>
                 <td>{_mdCustName(so.customer_id)}</td>
                 <td style={{fontWeight:700,color:'#0891b2'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
+              </tr>)}</tbody></table></Section>}
+
+          {mdShipNoInv.length>0&&<Section id="shipnoinv" title="🚨 Shipped — Not Invoiced" count={mdShipNoInv.length}>
+            <table className="data-table" style={{fontSize:12}}><thead><tr><th>Order</th><th>Customer</th><th>Value</th><th>Shipped</th><th></th></tr></thead>
+              <tbody>{mdShipNoInv.map(so=><tr key={so.id} style={{background:'#fff7ed'}}>
+                <td style={{fontWeight:600}}>{so.id}{so.memo&&<div style={{fontSize:11,color:'#64748b',fontWeight:400}}>{so.memo}</div>}<div style={{fontSize:10,color:'#c2410c',fontWeight:600}}>shipped out · never invoiced</div></td>
+                <td>{_mdCustName(so.customer_id)}</td>
+                <td style={{fontWeight:700,color:'#c2410c'}}>{_md$(calcOrderMargin(so,sos).rev)}</td>
+                <td style={{color:'#64748b'}}>{_mdWhen(so._ship_date||so.updated_at)}</td>
                 <td><button className="btn btn-sm btn-primary" style={{fontSize:10}} onClick={()=>_mdOpenSO(so)}>Invoice</button></td>
               </tr>)}</tbody></table></Section>}
 
