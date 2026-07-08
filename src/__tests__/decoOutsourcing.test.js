@@ -129,13 +129,27 @@ describe('isDecoOutsourced — unified job+cost gate (the branch lives on the de
     };
     expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
   });
-  test('a different-type deco on the same covered item stays in-house — cost is counted here (SO-1199 fix parity)', () => {
+  test('SO-1199: a deco PO whose type matches NONE of an item\'s decorations covers the whole item', () => {
+    // The item\'s only decoration is a screen print, but it sits on an EMBROIDERY deco PO (left at the
+    // default/mislabeled type). Nothing on the item matches the PO type, so the PO must be paying for
+    // this decoration — it\'s outside: no in-house job, cost comes from the PO.
     const o = {
       deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }],
       art_files: [{ id: 'afSP', deco_type: 'screen_print' }],
       items: [{ decorations: [{ kind: 'art', art_file_id: 'afSP' }] }],
     };
-    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(false);
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);
+  });
+  test('a genuinely MIXED garment keeps per-type: the deco the PO does not match stays in-house', () => {
+    // Here the embroidery PO matches the item\'s embroidery deco, so the whole-item wildcard is NOT
+    // triggered — the screen print on the same garment is real mixed work and stays in-house.
+    const o = {
+      deco_pos: [{ deco_type: 'embroidery', item_idxs: [0] }],
+      art_files: [{ id: 'afEMB', deco_type: 'embroidery' }, { id: 'afSP', deco_type: 'screen_print' }],
+      items: [{ decorations: [{ kind: 'art', art_file_id: 'afEMB' }, { kind: 'art', art_file_id: 'afSP' }] }],
+    };
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[0])).toBe(true);  // embroidery — matches PO → outside
+    expect(isDecoOutsourced(o, 0, o.items[0].decorations[1])).toBe(false); // screen print — no match, mixed → in-house
   });
   test('a deco on an item covered by no PO is in-house', () => {
     const o = {
@@ -175,9 +189,11 @@ describe('isDecoOutsourced — unified job+cost gate (the branch lives on the de
 });
 
 describe('syncJobs gate — end-to-end intent (mirrors OrderEditor.syncJobs deco classification)', () => {
-  // Reproduces SO-1199: an EMBROIDERY deco PO (Silver Screen) covers items 0,1,2,3 — but the rep has
-  // since changed items 0 & 1 to a screen-print logo and item 2 to a DTF logo. Only item 3 is still
-  // embroidery (genuinely outsourced). Item 4 is an ordinary in-house screen print, on no deco PO.
+  // Reproduces SO-1199: an EMBROIDERY deco PO (Silver Screen) covers a batch of garments the rep sent
+  // out — but the garments carry screen-print, DTF and embroidery decorations, and the PO was left at
+  // its default 'embroidery' type. Every covered garment is outsourced (by matching type OR the
+  // whole-item wildcard for a PO that matches nothing on it) — EXCEPT a genuinely MIXED garment keeps
+  // its non-matching deco in-house. A garment on no deco PO is always in-house.
   const order = {
     deco_pos: [{ po_id: 'DPO 3242', vendor: 'Silver Screen', deco_type: 'embroidery', item_idxs: [0, 1, 2, 3] }],
     art_files: [
@@ -186,11 +202,14 @@ describe('syncJobs gate — end-to-end intent (mirrors OrderEditor.syncJobs deco
       { id: 'afEMB', deco_type: 'embroidery' },
     ],
     items: [
-      { sku: 'A', decorations: [{ kind: 'art', art_file_id: 'afSP', position: 'Front Center' }] },
-      { sku: 'B', decorations: [{ kind: 'art', art_file_id: 'afSP', position: 'Front Center' }] },
-      { sku: 'C', decorations: [{ kind: 'art', art_file_id: 'afDTF', position: 'Front Center' }] },
-      { sku: 'D', decorations: [{ kind: 'art', art_file_id: 'afEMB', position: 'Front Center' }] },
-      { sku: 'E', decorations: [{ kind: 'art', art_file_id: 'afSP', position: 'Front Center' }] },
+      { sku: 'A', decorations: [{ kind: 'art', art_file_id: 'afSP', position: 'Front Center' }] },  // SP on PO, no match → outside
+      { sku: 'B', decorations: [{ kind: 'art', art_file_id: 'afDTF', position: 'Front Center' }] }, // DTF on PO, no match → outside
+      { sku: 'C', decorations: [{ kind: 'art', art_file_id: 'afEMB', position: 'Front Center' }] }, // EMB on PO, matches → outside
+      { sku: 'D', decorations: [                                                                    // mixed garment on PO:
+        { kind: 'art', art_file_id: 'afEMB', position: 'Left Chest' },                              //   EMB matches PO → outside
+        { kind: 'art', art_file_id: 'afSP', position: 'Back Center' },                              //   SP no match, but EMB matched → in-house
+      ] },
+      { sku: 'E', decorations: [{ kind: 'art', art_file_id: 'afSP', position: 'Front Center' }] },  // SP off-PO → in-house
     ],
   };
 
@@ -212,21 +231,16 @@ describe('syncJobs gate — end-to-end intent (mirrors OrderEditor.syncJobs deco
     return skus;
   };
 
-  test('screen-print & DTF designs on the embroidery deco PO now generate jobs; the matching embroidery does not', () => {
-    expect(jobSkus(order).sort()).toEqual(['A', 'B', 'C', 'E']); // D (embroidery, matches PO) stays outsourced
+  test('every covered garment is outsourced; a mixed garment keeps its non-matching deco in-house', () => {
+    // D's screen print (unmatched, but the garment's embroidery matched the PO so no wildcard) + E
+    // (off-PO). A/B/C are fully outside — B (DTF) and A (SP) via the whole-item wildcard, C by match.
+    expect(jobSkus(order).sort()).toEqual(['D', 'E']);
   });
 
-  test('before the fix the whole item was skipped — every covered item would have had NO job', () => {
-    // Demonstrates the old per-item behavior for contrast: any item on the deco PO produced nothing.
-    const oldGate = (o) => {
-      const skus = [];
-      (o.items || []).forEach((it, ii) => {
-        const onPO = (o.deco_pos || []).some(dp => (dp.item_idxs || []).includes(ii));
-        if (onPO) return;
-        (it.decorations || []).forEach((d) => { if (d.kind === 'art') skus.push(it.sku); });
-      });
-      return skus;
-    };
-    expect(oldGate(order)).toEqual(['E']); // only the off-PO item — A/B/C/D were all wrongly suppressed
+  test('a garment whose only decoration does not match the covering PO is fully outside (SO-1199 fix)', () => {
+    const outByItem = outsourcedDecoTypes(order);
+    expect([...outByItem[1]]).toContain('*');            // item B: DTF on an embroidery PO → wildcard
+    expect(decoIsOutsourced(outByItem[1], 'dtf')).toBe(true);
+    expect([...outByItem[3]]).not.toContain('*');        // item D: embroidery matched, so no wildcard
   });
 });

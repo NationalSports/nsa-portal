@@ -2525,17 +2525,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Items that share the exact same set of decorations AND deco type are grouped into one job
   // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
   const syncJobs=useCallback(()=>{
+    // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'). Computed up front
+    // because it gates BOTH which decorations spawn in-house jobs (itemSigs, below) AND whether a
+    // frozen released/merged job is retired. A deco PO whose type matches none of an item's
+    // decorations covers that whole item (see outsourcedDecoTypes) — so this also handles the
+    // mismatched/default-typed-PO case (SO-1199: an 'embroidery' PO over DTF/screen-print garments).
+    const outsourcedByItem=outsourcedDecoTypes(o);
     // Released jobs (submitted via the wizard) are frozen — their items are
     // committed to art and shouldn't be re-merged into auto-generated groups.
     // Build a set of (item_idx, deco_idx) pairs already covered by a released
     // job so we can skip them when assembling itemSigs below.
     const _isRel=j=>j._released||j.key?.startsWith('released_');
-    const releasedJobs=safeJobs(o).filter(_isRel);
+    // A job whose decorations have ALL been routed to an outside decorator (their items put on a deco
+    // PO, or flagged outside) must retire even when frozen — the vendor now produces this work, so an
+    // in-house production job would double-track it (and double-count its cost against the PO). A
+    // decoration that's genuinely gone (item/deco removed) is NOT outsourced-covered here, so real
+    // orphans still fall through to the preservation branches below.
+    const _jobAllOutsourced=j=>{
+      const pairs=[];
+      (j?.items||[]).forEach(gi=>{const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:[]);dis.forEach(di=>pairs.push([gi.item_idx,di]))});
+      if(!pairs.length)return false;
+      return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;return isDecoOutsourced(o,ii,d,outsourcedByItem)});
+    };
+    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j));
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j));
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2544,14 +2561,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Step 1: Build decoration entries per item, grouped by deco type
     // Each item may produce multiple entries if it has decorations with different deco types
     const itemSigs=[];
-    // Decoration sent to an outside decorator is produced by the vendor, not in-house, so it must not
-    // spawn a production job. Outsourcing is per DECO TYPE, not per item: a deco PO (and an item-level
-    // outside-deco PO line) each carry a single deco_type, so changing an item's art to an in-house
-    // type while it still sits on an unrelated deco PO (e.g. a screen-print logo on an item that's also
-    // on an embroidery deco PO) must still produce that screen-print job. The previous per-item skip
-    // dropped the whole item on ANY covering PO — that's why a freshly-changed design auto-created no
-    // job. outsourcedByItem maps item_idx -> Set of outsourced types; decoIsOutsourced matches per deco.
-    const outsourcedByItem=outsourcedDecoTypes(o);
+    // outsourcedByItem (computed at the top) maps item_idx -> Set of outsourced deco types (or '*').
+    // decoIsOutsourced matches PER DECO, so a screen-print logo kept in-house on a garment that's also
+    // on an embroidery deco PO still spawns its own job, while any deco the PO covers (by matching type
+    // or the whole-item '*' wildcard for a PO that matches nothing on the item) does not.
     safeItems(o).forEach((it,ii)=>{
       const outTypes=outsourcedByItem[ii];
       // First, classify each decoration by its resolved deco type
@@ -2874,6 +2887,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!j||_isRel(j)||j._merged||j.split_from)return false;// already handled above
       if(_keptIds.has(j.id)||_keptKeys.has(j.key))return false;// already represented by a rebuilt job
       if(_isCarryOver(j))return false;// stale job from a prior order that reused this SO number
+      if(_jobAllOutsourced(j))return false;// decorations routed to an outside decorator — retire, don't orphan-preserve
       // Stale duplicate — its decorations are already covered by a current job. Only the
       // orphan-preservation case (decoration genuinely missing) should fall through below.
       const pairs=_jobDecoPairs(j);
