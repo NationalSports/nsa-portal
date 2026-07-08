@@ -66,6 +66,11 @@ const _searchPOStatus=(so,poId)=>{
   if(anyDS)return bld>=ord&&ord>0?'shipped':bld>0?'partial':'waiting';
   return open<=0&&rcvd>0?'received':rcvd>0?'partial':'waiting';
 };
+// Job identifiers folded into an SO's global-search haystack so searching a job number or art name
+// also surfaces the parent order — not just the job row (the job row already links to the SO, but the
+// SO itself never matched a job query). Deco type is deliberately excluded so a generic "embroidery"
+// query doesn't flood the Sales Orders section with every order that has an embroidery job.
+const _soJobsSearchHay=(so)=>safeJobs(so).map(j=>((j.id||'')+' '+(j.art_name||''))).join(' ').toLowerCase();
 // App-side OMG status sync (no DB triggers). From the linked sales order's
 // receiving + jobs, derive (a) the store-wide stage and (b) a per-SKU+size
 // received-quantity map so backordered sizes hold their parents at on-order.
@@ -30491,7 +30496,7 @@ export default function App(){
     const rcAll=cust.filter(_custMatch);
     const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)];
     const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))});
-    const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))});
+    const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))});
     const rp=prod.filter(p=>((p.sku||'')+' '+(p.name||'')+' '+(p.brand||'')+' '+(p.color||'')).toLowerCase().includes(s));
     const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
     const rpk=allPicks;
@@ -30712,7 +30717,7 @@ export default function App(){
             // by its own subs (which sort alphabetically before it).
             const rc=[...rcAll.filter(cc=>!cc.parent_id),...rcAll.filter(cc=>cc.parent_id)].slice(0,6);
             const re=ests.filter(e=>{const cc=cust.find(x=>x.id===e.customer_id);const h=(e.id+' '+(e.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))}).slice(0,4);
-            const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc);return _toks.every(t=>h.includes(t))}).slice(0,4);
+            const rs=sos.filter(so=>{const cc=cust.find(x=>x.id===so.customer_id);const h=(so.id+' '+(so.memo||'')).toLowerCase()+' '+_custHay(cc)+' '+_soJobsSearchHay(so);return _toks.every(t=>h.includes(t))}).slice(0,4);
             const rp=gProdResults.slice(0,6);
             // Build IF index from all SOs
             const allPicks=[];sos.forEach(so=>{safeItems(so).forEach(it=>{safePicks(it).forEach(pk=>{if(pk.pick_id&&pk.pick_id.toLowerCase().includes(s)&&!allPicks.find(x=>x.pick_id===pk.pick_id)){allPicks.push({pick_id:pk.pick_id,so_id:so.id,so,status:pk.status||'pick'})}})})});
