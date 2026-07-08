@@ -10,6 +10,7 @@ import {
   _outboxGate, _outboxMatchesRow,
   _outboxAdd, _outboxRemove, _outboxRemoveById, _outboxList,
   _emitOutboxConflict, _setOnOutboxConflict,
+  _dbOwnVersions, _rebaseOntoOwnWrite,
 } from '../lib/dbEngine';
 
 const clearBox = () => localStorage.removeItem('nsa_outbox');
@@ -129,5 +130,40 @@ describe('outbox store (localStorage round-trip)', () => {
     expect(left[0].id).toBe('SO-NEW');
     expect(errSpy).toHaveBeenCalled(); // eviction is data loss — must never be silent
     errSpy.mockRestore();
+  });
+});
+
+describe('_rebaseOntoOwnWrite (self-conflict prevention — the EST-1395 false conflict card)', () => {
+  // Scenario from prod, 2026-07-08: save 1 (approval flush) wrote v8; convertSO's payload was a
+  // clone taken at v7, and _checkVersion's own-echo skip meant nothing healed the base — so the
+  // conversion was rejected as a conflict with this client's OWN write and a conflict card shown.
+  afterEach(() => { for (const k of Object.keys(_dbOwnVersions)) delete _dbOwnVersions[k]; });
+
+  test('a payload cloned before our own version bump adopts the version we wrote', () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    _dbOwnVersions['EST-1395'] = 8;               // save 1 succeeded → server returned v8
+    const clone = { id: 'EST-1395', status: 'converted', _version: 7 }; // cloned pre-bump
+    _rebaseOntoOwnWrite(clone);
+    expect(clone._version).toBe(8);               // goes out as a current-base write, not stale
+    warnSpy.mockRestore();
+  });
+
+  test('never rebases DOWN or past a foreign write', () => {
+    _dbOwnVersions['EST-1'] = 5;
+    const ahead = { id: 'EST-1', _version: 9 };   // e.g. precheck already healed to a foreign v9
+    _rebaseOntoOwnWrite(ahead);
+    expect(ahead._version).toBe(9);               // own older write must not roll it back
+    const equal = { id: 'EST-1', _version: 5 };
+    _rebaseOntoOwnWrite(equal);
+    expect(equal._version).toBe(5);
+  });
+
+  test('no-op for entities this client never saved (optimistic locking untouched)', () => {
+    const e = { id: 'EST-2', _version: 3 };
+    _rebaseOntoOwnWrite(e);
+    expect(e._version).toBe(3);
+    const fresh = { id: 'EST-3' };                // brand-new draft, no version yet
+    _rebaseOntoOwnWrite(fresh);
+    expect(fresh._version).toBeUndefined();
   });
 });

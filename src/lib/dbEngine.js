@@ -721,6 +721,9 @@ const _dbSaveEstimateInner = async (est) => {
   // result so it clears pending and never lands in the failed banner.
   const _cd=_dbStaleCooldown.get(est.id);
   if(_cd&&Date.now()<_cd){return 'stale';}
+  // Adopt this client's own last-written version first: a payload cloned before the previous save's
+  // version bump landed must not be rejected as stale against our own write (see _dbOwnVersions).
+  _rebaseOntoOwnWrite(est);
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
@@ -911,7 +914,7 @@ const _dbSaveEstimateInner = async (est) => {
         return 'stale';
       }
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
-      if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_serverVersioned=true}
+      if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_dbOwnVersions[est.id]=est._version;_serverVersioned=true}
     }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
@@ -959,6 +962,7 @@ const _dbSaveEstimateInner = async (est) => {
     // concurrent foreign write (cur == base) and silently clobber it — defeating optimistic locking for
     // the most common conflict case.
     if(est._version&&!_serverVersioned)est._version=est._version+1;
+    if(est._version)_dbOwnVersions[est.id]=est._version;
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
@@ -2337,6 +2341,17 @@ const _mergeAssignedTodos=(dbTodos,localTodos)=>{
 };
 // Track recent saves by this client — prevents false "modified by another user" conflicts from own realtime echo
 const _dbRecentSaves={};// {id: timestamp}
+// Last _version THIS client successfully wrote, per entity. A save whose payload was cloned before
+// the previous save's version bump landed (convertSO's `convertedEst={...est}` copy, an editor copy
+// captured mid-save) carries a stale base — and _checkVersion's own-echo skip (_dbRecentSaves, 60s)
+// means the auto-heal precheck won't fix it, so save_estimate rejects the write as a conflict WITH
+// OURSELVES (the EST-1395 false conflict card, 2026-07-08: the conversion's status:'converted' save
+// was rejected against this client's own v8 write seconds earlier, leaving the estimate 'approved'
+// in the cloud while the UI showed 'converted'). Rebasing adopts only versions this tab itself
+// wrote: after a foreign write the base is still below the server's version, so the stale guard and
+// conflict card fire exactly as before.
+const _dbOwnVersions={};// id → last _version this client successfully wrote
+const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,
 // letting another user's/tab's legitimate art deletions reconcile normally instead of being resurrected.
@@ -2462,6 +2477,8 @@ export {
   _dbSavePendingIds,
   _mergeAssignedTodos,
   _dbRecentSaves,
+  _dbOwnVersions,
+  _rebaseOntoOwnWrite,
   _recentlySavedByMe,
   _dbSave,
   // exported for the characterization tests only — internal to the engine otherwise
