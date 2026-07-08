@@ -2818,7 +2818,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const a=Array.isArray(prev.deco_idxs)?prev.deco_idxs:[];const b=Array.isArray(gi.deco_idxs)?gi.deco_idxs:[];
         if(a.length||b.length)_byK.set(k,{...prev,deco_idxs:[...new Set([...a,...b])]});
       });const uniqueItems=[..._byK.values()];
-      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;let _szE=Object.entries(safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
+      // Honor a split-size override (gi.sizes) like recalcedReleased below: a merged job that was
+      // ALSO split (parent keeps _merged after a slice is carved off) owns only its slice of the
+      // line, so re-deriving from the full line inflated it back to the whole quantity — the split
+      // modal then offered to "split off" phantom units that were really on the sibling slice.
+      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
@@ -2898,7 +2902,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // art_status is part of the signature so a status heal (e.g. a stale 'art_complete' downgraded
     // because the job's art went back to Art TBD) actually lands — syncJobs is a fixed point over
     // its own output, so this can't ping-pong.
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')).sort().join(',');
+    // Per-item units/fulfilled are part of the signature too: a heal that only fixes a stale
+    // gi.units (e.g. a split parent's item still carrying the full line quantity while the
+    // job totals were already correct) must still land, or the item rows keep showing "56/90".
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
     }
