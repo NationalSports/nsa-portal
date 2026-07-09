@@ -1,4 +1,32 @@
-import { guessDarkColor, autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, garmentIsDark } from '../lib/artGrid';
+import { guessDarkColor, autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, garmentIsDark, hydrateStoreArt } from '../lib/artGrid';
+
+describe('hydrateStoreArt', () => {
+  const liveCws = [{ id: 'cw_r', garment_color: 'Royal' }, { id: 'cw_l', garment_color: 'Light' }];
+  const liveWls = [{ url: 'royal.png', color_way: 'Royal', color_way_id: 'cw_r' }, { url: 'light.png', color_way: 'Light', color_way_id: 'cw_l' }];
+  test('a stale store snapshot picks up the live record\'s web logos and color ways (matched by id)', () => {
+    const snapshot = { id: 'a1', name: 'Oak Grove Football', deco_type: 'screen_print', web_logo_url: 'orig.png', color_ways: [], _srcLabel: 'Uploaded' };
+    const live = { id: 'a1', name: 'Oak Grove Football', deco_type: 'screen_print', web_logo_url: 'orig.png', color_ways: liveCws, web_logos: liveWls };
+    const [out] = hydrateStoreArt([snapshot], [live]);
+    expect(out.web_logos).toEqual(liveWls);
+    expect(out.color_ways).toEqual(liveCws);
+    // the hydrated record still feeds Autocolor its per-CW variants
+    expect(autoColorChoice(out, 'White')).toMatchObject({ kind: 'variant', url: 'light.png', colorWayId: 'cw_l' });
+    expect(autoColorChoice(out, 'True Royal')).toMatchObject({ kind: 'variant', url: 'royal.png', colorWayId: 'cw_r' });
+  });
+  test('falls back to name + deco method when the library copy has a different id', () => {
+    const snapshot = { id: 'a_old', name: 'Crest', deco_type: 'screen_print', color_ways: [] };
+    const live = { id: 'a_new', name: 'crest ', deco_type: 'screen_print', web_logos: liveWls, color_ways: liveCws };
+    const [out] = hydrateStoreArt([snapshot], [live]);
+    expect(out.web_logos).toEqual(liveWls);
+  });
+  test('no name match across different deco methods; no live copy leaves the snapshot as-is', () => {
+    const snapshot = { id: 'a2', name: 'Crest', deco_type: 'screen_print', web_logo_url: 'orig.png' };
+    const emb = { id: 'a_emb', name: 'Crest', deco_type: 'embroidery', web_logos: liveWls };
+    expect(hydrateStoreArt([snapshot], [emb])[0]).toEqual(snapshot);
+    expect(hydrateStoreArt([snapshot], [])[0]).toEqual(snapshot);
+    expect(hydrateStoreArt(null, null)).toEqual([]);
+  });
+});
 
 describe('garmentHex', () => {
   test('known colors map to their swatch', () => {

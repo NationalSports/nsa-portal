@@ -90,6 +90,23 @@ export function autoColorChoice(activeArt, colorName, opts = {}) {
   return { kind: 'recolor', choice: guessDarkColor(colorName) ? 'white' : 'original' };
 }
 
+// Store-art records are point-in-time snapshots copied onto the webstore row when art is
+// added to a store, but color ways and web logos keep evolving on the customer's LIVE art
+// record. Overlay the live library copy — matched by id, else by name + deco method (the
+// same match attachArtPreview uses) — so Autocolor, the CW chips, and the CW pager never
+// work off a stale snapshot that predates the artist's per-CW web logos.
+export function hydrateStoreArt(storeArt, libraryArt) {
+  const lib = Array.isArray(libraryArt) ? libraryArt : [];
+  return (Array.isArray(storeArt) ? storeArt : []).map((a) => {
+    if (!a) return a;
+    const nm = String(a.name || '').trim().toLowerCase();
+    const dt = a.deco_type || '';
+    const live = lib.find((l) => l && l.id === a.id)
+      || (nm ? lib.find((l) => l && String(l.name || '').trim().toLowerCase() === nm && (l.deco_type || '') === dt) : null);
+    return live ? { ...a, ...live } : a;
+  });
+}
+
 // Resolve a garment's placement: start from the chosen preset, layer the per-style
 // placement (drag/resize applies to the whole style), then a per-garment nudge override
 // for the odd garment. preset is an ART_PLACEMENTS entry ({ id, x, y, w }).
