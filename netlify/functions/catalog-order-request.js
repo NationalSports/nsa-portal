@@ -3,6 +3,7 @@
 // locked because rows carry coach contact info), and emails the rep via Brevo
 // with the line list + a CSV attachment. Reply-to is the coach so the rep can
 // answer directly.
+const { resolveSender } = require('./_emailSender');
 const MAX_LINES = 300;
 const REP_EMAIL = process.env.CATALOG_ORDER_EMAIL || 'steve@nationalsportsapparel.com';
 
@@ -201,7 +202,7 @@ exports.handler = async (event) => {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
       body: JSON.stringify({
-        sender: { name: 'NSA Catalog', email: 'noreply@nationalsportsapparel.com' },
+        sender: resolveSender({ name: 'NSA Catalog' }),
         // Route to the account's assigned rep when we resolved one; otherwise the
         // shared catalog inbox so an unmatched request still reaches someone.
         to: [{ email: repEmail || REP_EMAIL }],
@@ -228,7 +229,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel', replyTo: { email: REP_EMAIL } }),
           to: [{ email: coach_email, name: coach_name }],
           replyTo: { email: REP_EMAIL },
           subject: `We got your order request — ${lines.length} item${lines.length === 1 ? '' : 's'}, ${totalUnits} units`,

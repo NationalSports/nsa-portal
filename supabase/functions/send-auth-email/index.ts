@@ -28,7 +28,7 @@
 //                                  the hook)
 //      Optional overrides:
 //        AUTH_EMAIL_SENDER_NAME   (default "National Sports Apparel")
-//        AUTH_EMAIL_SENDER_EMAIL  (default noreply@nationalsportsapparel.com)
+//        AUTH_EMAIL_SENDER_EMAIL  (default hello@nationalsportsapparel.com)
 //   2. Deploy WITHOUT JWT verification (GoTrue authenticates with a
 //      Standard Webhooks signature, not a Supabase JWT):
 //        supabase functions deploy send-auth-email --no-verify-jwt
@@ -44,7 +44,8 @@ const BREVO_API_KEY = Deno.env.get("BREVO_API_KEY") ?? "";
 // The dashboard stores the secret as "v1,whsec_<base64>"; the verifier wants the base64 part.
 const HOOK_SECRET = (Deno.env.get("SEND_EMAIL_HOOK_SECRET") ?? "").replace(/^v1,whsec_/, "");
 const SENDER_NAME = Deno.env.get("AUTH_EMAIL_SENDER_NAME") ?? "National Sports Apparel";
-const SENDER_EMAIL = Deno.env.get("AUTH_EMAIL_SENDER_EMAIL") ?? "noreply@nationalsportsapparel.com";
+// Prefer a replyable mailbox — school filters often block noreply@.
+const SENDER_EMAIL = Deno.env.get("AUTH_EMAIL_SENDER_EMAIL") ?? "hello@nationalsportsapparel.com";
 
 type EmailActionType =
   | "signup"

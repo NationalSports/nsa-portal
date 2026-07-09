@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Daily mirror of active Sports Inc (SportsLink) documents into the si_documents queue.
 //
 // Pulls every active document on/after the portal cutover, classifies EDI vs scanned, and
@@ -162,7 +163,7 @@ async function sendDigest(sbUrl, sbKey) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'NSA Portal — Sports Inc', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'NSA Portal — Sports Inc' }),
       to: [{ email: to }],
       subject,
       htmlContent,

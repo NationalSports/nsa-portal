@@ -3,6 +3,7 @@
 // not expired, last reminded 3+ days ago, and reminded fewer than 3 times.
 // Scheduled via netlify.toml ([functions."onboarding-reminder"].schedule).
 const { getSupabaseAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const { brandedEmail } = require('./_onboardingEmail');
 
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -19,7 +20,7 @@ async function sendReminder(invite) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'National Sports Apparel' }),
       to: [{ email: invite.personal_email, name: invite.full_name || invite.personal_email }],
       subject: 'Reminder: finish your National Sports Apparel new-hire paperwork',
       htmlContent: brandedEmail({

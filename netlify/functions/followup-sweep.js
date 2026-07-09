@@ -18,6 +18,7 @@
 
 const { getSupabaseAdmin } = require('./_shared');
 const { unsubUrl } = require('./_followupShared');
+const { resolveSender } = require('./_emailSender');
 
 const DEFAULT_MAX = 6;
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
@@ -54,7 +55,9 @@ async function sendEmail({ toList, subject, html, replyTo, unsubLink }) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      // Prefer the rep's NSA mailbox as From when available — school filters often
+      // quarantine noreply@ and From≠Reply-To mismatches.
+      sender: resolveSender({ name: 'National Sports Apparel', replyTo }),
       to: toList,
       subject,
       htmlContent: html,

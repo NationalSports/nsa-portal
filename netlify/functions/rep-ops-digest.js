@@ -20,6 +20,7 @@
 // the heavy child-table loads are bounded to the working set: orders still open,
 // plus closed ones whose ship/update stamp falls in the window.
 const { getSupabaseAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const { soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups, isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, isOpenInvoice, invoiceBalance, invoiceDaysPastDue, isFullyPaidInvoice, paymentsLatestYmd, quoteAgeDays, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -303,7 +304,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: [{ email: testTo, name: testRep.name || '' }],
           subject: `${live ? '' : '[TEST] '}${isCc ? testRep.name + ': ' : ''}${opsSubject(b, b.picked.filter((p) => p.short).length, dayLabel)}`,
           htmlContent: html,
@@ -333,7 +334,7 @@ exports.handler = async (event) => {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
           body: JSON.stringify({
-            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            sender: resolveSender({ name: 'National Sports Apparel' }),
             to: [{ email: rep.email, name: rep.name || '' }],
             subject: opsSubject(b, shortN, dayLabel),
             htmlContent: buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo }),
@@ -351,7 +352,7 @@ exports.handler = async (event) => {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
           body: JSON.stringify({
-            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            sender: resolveSender({ name: 'National Sports Apparel' }),
             to: [{ email: ex.email, name: ex.name || '' }],
             subject: `${rep.name}: ${opsSubject(b, shortN, dayLabel)}`,
             htmlContent: buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, ccFor: rep.name }),

@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Daily mirror of S&S Activewear orders into the ss_documents queue.
 //
 // S&S comes through Sports Inc only as a scanned/header-only doc (no usable lines), so
@@ -209,7 +210,7 @@ async function sendDigest(sbUrl, sbKey) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'NSA Portal — S&S Activewear', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'NSA Portal — S&S Activewear' }),
       to: [{ email: to }],
       subject,
       htmlContent,

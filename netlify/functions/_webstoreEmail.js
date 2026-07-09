@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Shared webstore order helpers — used by stripe-webhook.js (fallback path when
 // the buyer closes the tab right after paying) and webstore-checkout.js (the
 // main server-side checkout flow). Single source of truth for the confirmation
@@ -80,7 +81,7 @@ async function sendOrderConfirmation(sb, order) {
     method: 'POST',
     headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: store.name || 'National Sports Apparel' }),
       to: [{ email: order.buyer_email, name: order.buyer_name || '' }],
       subject: order.order_number ? `Your ${store.name} order #${order.order_number} is confirmed` : `Your ${store.name} order is confirmed`,
       htmlContent: html,

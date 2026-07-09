@@ -118,6 +118,21 @@ describe('followup-sweep send safety', () => {
     expect(payload.headers['List-Unsubscribe-Post']).toBe('List-Unsubscribe=One-Click');
   });
 
+  test('sends From the rep NSA mailbox when replyTo is available (not noreply@)', async () => {
+    await runSweep((op) => {
+      if (op.kind === 'select' && op.table === 'estimates') return { data: [dueEstimate()] };
+      if (op.kind === 'select' && op.table === 'team_members') {
+        return { data: [{ id: 'rep1', email: 'jane@nationalsportsapparel.com', name: 'Jane' }] };
+      }
+      if (op.kind === 'update') return { data: [{ id: 'EST-1001' }], error: null };
+      return { data: [] };
+    });
+    const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(payload.sender.email).toBe('jane@nationalsportsapparel.com');
+    expect(payload.sender.email).not.toMatch(/^noreply@/i);
+    expect(payload.replyTo.email).toBe('jane@nationalsportsapparel.com');
+  });
+
   test('unsubscribe endpoint only accepts a valid signature and flips auto off', async () => {
     const { unsubToken } = require('../../netlify/functions/_followupShared');
     const unsub = require('../../netlify/functions/followup-unsubscribe');

@@ -9,6 +9,7 @@
 // all-reps send only runs from the scheduler, which carries no httpMethod):
 //   GET /.netlify/functions/rep-ar-digest?test=<email>[&rep=<id|name>][&key=<k>]
 const { getSupabaseAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const { isOpenInvoice, invoiceBalance, invoiceDaysPastDue, agingBucket, AGING_BUCKETS } = require('../../src/lib/opsRecap');
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -107,7 +108,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: [{ email: testTo, name: testRep.name || '' }],
           subject: `${live ? '' : '[TEST] '}${isCc ? testRep.name + ': ' : ''}${arSubject(rows)}`,
           htmlContent: html,
@@ -133,7 +134,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: [{ email: rep.email, name: rep.name || '' }],
           subject: arSubject(rows),
           htmlContent: html,
@@ -151,7 +152,7 @@ exports.handler = async (event) => {
           method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
           body: JSON.stringify({
-            sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+            sender: resolveSender({ name: 'National Sports Apparel' }),
             to: [{ email: ex.email, name: ex.name || '' }],
             subject: `${rep.name}: ${arSubject(rows)}`,
             htmlContent: buildArHtml({ rep, rows, dateLabel, portal, custName, ccFor: rep.name }),

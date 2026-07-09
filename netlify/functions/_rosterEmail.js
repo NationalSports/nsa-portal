@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Shared roster-invite email — used by roster-invite.js (manual send from the
 // admin / coach portal) and roster-reminder-sweep.js (automatic 5-day nudge).
 //
@@ -49,7 +50,7 @@ async function sendRosterEmail({ store, player, reminder }) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: store.name || 'National Sports Apparel' }),
       to: [{ email: to, name: player.player_name || to }],
       subject: reminder
         ? `Reminder: order ${player.player_name || 'your player'}${num}'s gear — ${store.name}`

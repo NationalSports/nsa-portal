@@ -151,7 +151,7 @@ async function alertStaffOfDispute(order, dispute) {
     body: JSON.stringify({
       sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
       to: [{ email: to }],
-      subject: `⚠️ Chargeback opened — webstore order ${order.id}`,
+      subject: `Chargeback opened — webstore order ${order.id}`,
       htmlContent: html,
     }),
   });

@@ -855,7 +855,7 @@ async function notifyStaffOfReply({ to, toName, order, storeName, text }) {
       sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
       to: [{ email: to, name: toName || '' }],
       replyTo: order.buyer_email ? { email: order.buyer_email, name: order.buyer_name || '' } : undefined,
-      subject: `💬 ${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
+      subject: `${order.buyer_name || 'Customer'} replied — ${storeName} order${order.omg_order_number ? ' #' + order.omg_order_number : ''}`,
       htmlContent: html,
     }),
   });

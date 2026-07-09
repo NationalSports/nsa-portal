@@ -6,6 +6,7 @@
 // column was always meant to cover Momentec/other catalogs) and emails the rep so
 // they can open the design in the dealer tool and build the order. Reply-to is the
 // customer. Mirrors catalog-order-request.js (same Supabase + Brevo plumbing).
+const { resolveSender } = require('./_emailSender');
 const REP_EMAIL = process.env.DESIGN_REQUEST_EMAIL || process.env.CATALOG_ORDER_EMAIL || 'steve@nationalsportsapparel.com';
 const BRANDS = { momentec: 'Momentec FreeStyle', adidas: 'adidas', other: 'Custom' };
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -89,7 +90,7 @@ exports.handler = async (event) => {
         </div>`;
       const res = await fetch('https://api.brevo.com/v3/smtp/email', {
         method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-        body: JSON.stringify({ sender: { name: 'NSA Uniform Builder', email: 'noreply@nationalsportsapparel.com' }, to: [{ email: REP_EMAIL }], replyTo: { email, name }, subject: `Design request: ${name}${team ? ' (' + team + ')' : ''} — ${brandLabel}`, htmlContent: html }),
+        body: JSON.stringify({ sender: resolveSender({ name: 'NSA Uniform Builder' }), to: [{ email: REP_EMAIL }], replyTo: { email, name }, subject: `Design request: ${name}${team ? ' (' + team + ')' : ''} — ${brandLabel}`, htmlContent: html }),
       });
       emailed = res.ok;
       if (!emailed) console.error('[design-request] Brevo error:', res.status, await res.text());
@@ -104,7 +105,7 @@ exports.handler = async (event) => {
       try {
         await fetch('https://api.brevo.com/v3/smtp/email', {
           method: 'POST', headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
-          body: JSON.stringify({ sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' }, to: [{ email, name }], replyTo: { email: REP_EMAIL }, subject: 'We got your design — we’ll be in touch', htmlContent: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:620px;margin:0 auto"><div style="background:#191919;color:#fff;padding:18px 22px;border-radius:8px 8px 0 0"><h2 style="margin:0;font-size:17px">Thanks, ${esc(name)} — your design is in</h2></div><div style="background:#fff;padding:20px 22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;font-size:14px;color:#334155;line-height:1.6">Your National Sports Apparel rep has your ${esc(brandLabel)} design${team ? ` for <strong>${esc(team)}</strong>` : ''} and will follow up with pricing and next steps.${validUrl ? `<br><br><a href="${esc(designUrl)}">View your design</a>` : ''}<p style="font-size:12px;color:#94a3b8;margin-top:14px">Reply to this email with any changes or questions.</p></div></div>` }),
+          body: JSON.stringify({ sender: resolveSender({ name: 'National Sports Apparel', replyTo: { email: REP_EMAIL } }), to: [{ email, name }], replyTo: { email: REP_EMAIL }, subject: 'We got your design — we’ll be in touch', htmlContent: `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:620px;margin:0 auto"><div style="background:#191919;color:#fff;padding:18px 22px;border-radius:8px 8px 0 0"><h2 style="margin:0;font-size:17px">Thanks, ${esc(name)} — your design is in</h2></div><div style="background:#fff;padding:20px 22px;border:1px solid #e2e8f0;border-top:none;border-radius:0 0 8px 8px;font-size:14px;color:#334155;line-height:1.6">Your National Sports Apparel rep has your ${esc(brandLabel)} design${team ? ` for <strong>${esc(team)}</strong>` : ''} and will follow up with pricing and next steps.${validUrl ? `<br><br><a href="${esc(designUrl)}">View your design</a>` : ''}<p style="font-size:12px;color:#94a3b8;margin-top:14px">Reply to this email with any changes or questions.</p></div></div>` }),
         });
       } catch (e) { console.error('[design-request] customer confirmation failed:', e.message); }
     }

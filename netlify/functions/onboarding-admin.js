@@ -10,6 +10,7 @@
 //   generate_zip  → decrypt + render the packet PDFs, return a base64 ZIP
 const crypto = require('crypto');
 const { getSupabaseAdmin, corsHeaders, verifyAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const { buildPacketFiles, zipFiles, safeName, formatPayComponents, hireLegalName } = require('./_onboardingPacket');
 const { decryptField } = require('./_onboardingCrypto');
 const { brandedEmail } = require('./_onboardingEmail');
@@ -36,7 +37,7 @@ async function sendInviteEmail(invite) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'National Sports Apparel' }),
       to: [{ email: invite.personal_email, name: invite.full_name || invite.personal_email }],
       subject: 'Welcome to National Sports Apparel — complete your new-hire paperwork',
       htmlContent: brandedEmail({

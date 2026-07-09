@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Netlify function: receives coach roster submission and emails CSV to rep via Brevo
 exports.handler = async (event) => {
   const headers = { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'Content-Type' };
@@ -44,7 +45,7 @@ exports.handler = async (event) => {
     const fileName = `roster_${(so || 'order').replace(/[^a-zA-Z0-9-]/g, '_')}_${(sku || 'item').replace(/[^a-zA-Z0-9-]/g, '_')}.csv`;
 
     const payload = {
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'National Sports Apparel' }),
       to: [{ email: rep_email, name: rep_name || rep_email }],
       subject: `Roster submitted by ${coach_name || 'Coach'} — ${so || 'Order'} / ${sku || 'Item'}`,
       htmlContent,

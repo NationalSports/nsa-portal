@@ -6,6 +6,7 @@
 //   POST { payment_intent_id, email }     -> emails that same receipt via Brevo
 const stripe = require('stripe');
 const { getSupabaseAdmin, corsHeaders } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -141,7 +142,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: [{ email }],
           subject: 'Your National Sports Apparel payment receipt',
           htmlContent: buildHtml(r, true),

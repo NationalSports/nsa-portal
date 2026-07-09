@@ -3196,7 +3196,7 @@ export default function App(){
           +'<h2 style="color:#d97706;margin:0 0 8px">Save not persisting: '+soId+'</h2>'
           +'<p><strong>SO:</strong> '+soId+'<br/><strong>User:</strong> '+(cu?.name||cu?.id||'unknown')+'<br/><strong>When:</strong> '+new Date().toLocaleString()+'<br/><strong>Reason:</strong> '+(reason||'(none)')+'</p>'
           +'<p><strong>No data has been lost</strong> — the previous rows stay in place until a new save fully verifies. But this SO\'s save has now failed verification more than once, so the portal\'s automatic retry isn\'t healing it. Check the user\'s connection and System Health → Change Log.</p>'
-          +'</div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
+          +'</div>',senderName:'NSA Portal',senderEmail:(companyInfo?.email&&/@nationalsportsapparel\.com$/i.test(companyInfo.email))?companyInfo.email:undefined}).catch(e=>console.warn('[alert] verify_fail email failed:',e));
         return;
       }
       const lostText=(prevCount!=null&&newCount!=null)?(prevCount-newCount)+' of '+prevCount+' item(s)':(prevCount!=null?prevCount+' item(s)':'item(s)');
@@ -3215,7 +3215,7 @@ export default function App(){
       if(fr.sent>=MAX){
         fr.suppressed++;_alertDedupeRef.current[dedupeKey]=now;
         if(!fr.noticed){fr.noticed=true;
-          sendBrevoEmail({to:[{email:'steve@nationalsportsapparel.com',name:'Steve Peterson'}],subject:'⚠️ NSA Portal — data-loss alerts throttled (possible bulk re-save)',htmlContent:'<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a"><p>More than '+MAX+' save-guard alerts fired within 10 minutes, so further alert emails are being suppressed to protect your inbox. This pattern usually means a bulk or background re-save is tripping the guards across many orders rather than a single genuine loss.</p><p>No alerts are lost — every event is still recorded in <strong>System Health &rarr; Change Log</strong>. Please review it there.</p></div>',senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] throttle notice failed:',e));
+          sendBrevoEmail({to:[{email:'steve@nationalsportsapparel.com',name:'Steve Peterson'}],subject:'⚠️ NSA Portal — data-loss alerts throttled (possible bulk re-save)',htmlContent:'<div style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:1.5;color:#0f172a"><p>More than '+MAX+' save-guard alerts fired within 10 minutes, so further alert emails are being suppressed to protect your inbox. This pattern usually means a bulk or background re-save is tripping the guards across many orders rather than a single genuine loss.</p><p>No alerts are lost — every event is still recorded in <strong>System Health &rarr; Change Log</strong>. Please review it there.</p></div>',senderName:'NSA Portal',senderEmail:(companyInfo?.email&&/@nationalsportsapparel\.com$/i.test(companyInfo.email))?companyInfo.email:undefined}).catch(e=>console.warn('[alert] throttle notice failed:',e));
         }
         return;
       }
@@ -3235,7 +3235,7 @@ export default function App(){
         +(isBlocked?'<p>The save was refused before any data was deleted. The user was prompted to reload.</p>':'<p style="color:#dc2626"><strong>Action needed:</strong> verify the SO and restore from <code>app_state.so_history</code> if items are missing.</p>')
         +'<p style="margin-top:16px;color:#64748b;font-size:12px">This alert is throttled to once per SO+type per 5 min. The full audit trail is in System Health → Change Log.</p>'
         +'</div>';
-      sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:companyInfo?.email||'team@nsa-teamwear.com'}).catch(e=>console.warn('[alert] email failed:',e));
+      sendBrevoEmail({to:[{email:adminEmail,name:'Steve Peterson'}],cc:ccEmail?[{email:ccEmail}]:undefined,subject,htmlContent:html,senderName:'NSA Portal',senderEmail:(companyInfo?.email&&/@nationalsportsapparel\.com$/i.test(companyInfo.email))?companyInfo.email:undefined}).catch(e=>console.warn('[alert] email failed:',e));
     }catch(e){console.warn('[alert] _dataLossAlert failed:',e)}
   });
   // Merge PO/pick lines the save guard restored (stale/foreign client state) back into live state, so
@@ -4878,7 +4878,7 @@ export default function App(){
       setAssignedTodos(prev => [newTodo, ...prev]);
       if (supabase) _dbSavingGuard(() => supabase.from('assigned_todos').upsert([newTodo], {onConflict:'id'}).then(r=>{ if(r.error) console.error('[DB] notify todo:', r.error.message); }));
       // 2) Send an email to the rep via Brevo
-      const senderEmail = companyInfo?.email || 'team@nsa-teamwear.com';
+      const senderEmail = (companyInfo?.email&&/@nationalsportsapparel\.com$/i.test(companyInfo.email))?companyInfo.email:undefined;
       const html = `<div style="font-family:sans-serif;max-width:600px">
         <h2 style="color:#166534">OMG Store Ready: ${storeName}</h2>
         <p>Hi ${rep.name.split(' ')[0]},</p>
@@ -18724,7 +18724,7 @@ export default function App(){
               const _trk=m.tracking||'';const _trkUrl=m.trackingUrl||'';
               const _bodyInner='<p>Hi,</p><p>A shipment for <strong>'+(m.custName||'your order')+'</strong> ('+m.soId+') is on its way.</p>'+(_trk?'<p><strong>Carrier:</strong> '+(m.carrier||'').toUpperCase()+'<br/><strong>Tracking #:</strong> '+(_trkUrl?'<a href="'+_trkUrl+'">'+_trk+'</a>':_trk)+'</p>':'')+'<p>The shipping label is attached as a PDF.</p>';
               let _html=_bodyInner;try{_html=buildBrandedEmailHtml(_bodyInner,companyInfo)}catch(_e){}
-              const _senderEmail=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
+              const _senderEmail=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:undefined;
               try{
                 const _res=await sendBrevoEmail({to:all.map(e=>({email:e})),subject:'Shipping label — '+m.soId,htmlContent:_html,senderName:'National Sports Apparel',senderEmail:_senderEmail,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,attachment:_att||undefined});
                 if(_res.ok){nf('📧 Label emailed to '+all.join(', '));addWhAction({type:'manual_label_emailed',soId:m.soId,customer:m.custName,tracking:_trk,carrier:m.carrier||'',emailedTo:all.join(', '),by:cu?.id||'warehouse'});setEmailLabelModal(null)}

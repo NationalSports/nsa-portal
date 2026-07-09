@@ -4,6 +4,7 @@
 // rows, so this can stay unauthenticated without becoming an email relay
 // (unlike brevo-proxy, which is now staff-only).
 const { createClient } = require('@supabase/supabase-js');
+const { resolveSender } = require('./_emailSender');
 
 const HEADERS = { 'Content-Type': 'application/json' };
 
@@ -56,7 +57,7 @@ exports.handler = async (event) => {
       method: 'POST',
       headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
       body: JSON.stringify({
-        sender: { name: 'NSA Quote System', email: 'noreply@nationalsportsapparel.com' },
+        sender: resolveSender({ name: 'NSA Quote System' }),
         to: [{ email: rep.email, name: rep.name || '' }],
         subject: 'Quote Request Submitted — ' + custName,
         htmlContent: html,
