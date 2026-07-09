@@ -90,6 +90,43 @@ export function autoColorChoice(activeArt, colorName, opts = {}) {
   return { kind: 'recolor', choice: guessDarkColor(colorName) ? 'white' : 'original' };
 }
 
+// Normalize an art name for matching a bare store upload to the artist's library record.
+// Art in the library is usually named with a print-size prefix ("11in Oak Grove Football")
+// while the same logo enters a store as a plain upload / OMG import named just "Oak Grove
+// Football" — so strip size tokens (11in, 3.5", 12 inch) anywhere and collapse punctuation.
+const _normArtName = (name) => String(name || '')
+  .toLowerCase()
+  .replace(/\b\d+(\.\d+)?\s*(in\b|inch\b|")/g, ' ') // 11in / 3.5" / 12 inch
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
+const _hasWebLogos = (r) => Array.isArray(r && r.web_logos) && r.web_logos.some((w) => w && w.url);
+
+// Store-art records are point-in-time snapshots copied onto the webstore row when art is
+// added to a store, but color ways and web logos keep evolving on the customer's LIVE art
+// record. Overlay the live library copy's color-way data so Autocolor, the CW chips, and
+// the CW pager work off the current art instead of a stale (or size-renamed) snapshot.
+// Match order: id → exact name+deco → size-normalized name+deco (the bare store upload vs
+// the "11in …" library art). The store record's own identity (id/name) is preserved so
+// selection, apply, and remove still key on the store art id; only overlay when the live
+// copy is actually richer, never regressing a store that already has its own web logos.
+export function hydrateStoreArt(storeArt, libraryArt) {
+  const lib = Array.isArray(libraryArt) ? libraryArt : [];
+  return (Array.isArray(storeArt) ? storeArt : []).map((a) => {
+    if (!a) return a;
+    const nm = String(a.name || '').trim().toLowerCase();
+    const dt = a.deco_type || '';
+    const norm = _normArtName(a.name);
+    const live = lib.find((l) => l && l.id === a.id)
+      || (nm ? lib.find((l) => l && String(l.name || '').trim().toLowerCase() === nm && (l.deco_type || '') === dt) : null)
+      || (norm ? lib.find((l) => l && _normArtName(l.name) === norm && (l.deco_type || '') === dt) : null);
+    if (!live) return a;
+    const next = { ...a };
+    if (_hasWebLogos(live)) { next.web_logos = live.web_logos; if (live.web_logo_url) next.web_logo_url = live.web_logo_url; }
+    if (Array.isArray(live.color_ways) && live.color_ways.length) next.color_ways = live.color_ways;
+    return next;
+  });
+}
+
 // Resolve a garment's placement: start from the chosen preset, layer the per-style
 // placement (drag/resize applies to the whole style), then a per-garment nudge override
 // for the odd garment. preset is an ART_PLACEMENTS entry ({ id, x, y, w }).
