@@ -12,6 +12,7 @@ import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset } from './businessLogic';
 import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex } from './lib/artGrid';
+import { buildTeamArtLibrary } from './lib/artIdentity';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -1217,22 +1218,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         par = p;
       }
       const { sos: allSos, ests: allEsts } = _live.current;
-      const byName = new Map(); const acc = [];
-      // De-dupe by name (the same logo recurs across orders with different ids); keep the
-      // copy that actually has a PNG/SVG preview.
-      const addArt = (a, label, srcCustId) => {
-        if (!a || !a.id || a.archived) return;
-        const key = (a.name || a.id).trim().toLowerCase();
-        const rec = { ...a, _srcLabel: label, _srcCustId: srcCustId };
-        const idx = byName.get(key);
-        if (idx == null) { byName.set(key, acc.length); acc.push(rec); return; }
-        if (artImgUrl(a) && !artImgUrl(acc[idx])) acc[idx] = rec;
-      };
-      (cust?.art_files || []).forEach((a) => addArt(a, 'Team library', cust.id));
-      (par?.art_files || []).forEach((a) => addArt(a, (par.alpha_tag || par.name || 'Parent') + ' library', par.id));
-      (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => addArt(a, so.id, store.customer_id)));
-      (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => addArt(a, e.id, store.customer_id)));
-      libraryArt = acc;
+      // Parent-library art must NEVER replace a team-owned record of the same name
+      // (that was how football art snuck onto volleyball stores / batch SOs — a parent
+      // copy with a preview image overwrote the team's id in the name-deduped pool).
+      // buildTeamArtLibrary keeps team rows authoritative; parent only fills gaps.
+      const orderArt = [];
+      (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => orderArt.push({ art: a, label: so.id, srcCustId: store.customer_id })));
+      (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => orderArt.push({ art: a, label: e.id, srcCustId: store.customer_id })));
+      libraryArt = buildTeamArtLibrary({
+        teamArt: cust?.art_files || [],
+        parentArt: par?.art_files || [],
+        orderArt,
+        teamId: cust?.id,
+        parentId: par?.id,
+        parentLabel: (par?.alpha_tag || par?.name || 'Parent') + ' library',
+      });
       // Store palette (child's pantone, falling back to the parent org's) drives the
       // picker's default "school colors" filter.
       storeColors = (cust?.pantone_colors && cust.pantone_colors.length) ? cust.pantone_colors : (par?.pantone_colors || []);

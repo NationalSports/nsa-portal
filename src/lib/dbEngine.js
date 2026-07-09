@@ -449,8 +449,26 @@ const _dbLoad = async (opts={}) => {
       const _rawJobs=soJobs.filter(j=>j.so_id===so.id);
       const _carryArtIds=new Set();
       _rawJobs.forEach(j=>{if(_isCarryJob(j.created_at))(Array.isArray(j._art_ids)&&j._art_ids.length?j._art_ids:[j.art_file_id]).forEach(aid=>{if(aid)_carryArtIds.add(aid)})});
-      const art_files=soArt.filter(a=>a.so_id===so.id&&!(_carryArtIds.has(a.id)&&!_liveArtIds.has(a.id))).map(_loadArtRow);
+      // All DB art rows for this SO (before carry-over filtering). Kept as _hydratedArtIds so a
+      // later save can delete rows we hid at load — otherwise filtered carry-over art stays in
+      // so_art_files forever because the delete guard only removes ids the client "knew about".
+      const _rawSoArt=soArt.filter(a=>a.so_id===so.id);
+      const art_files=_rawSoArt.filter(a=>{
+        if(_liveArtIds.has(a.id))return true;// still wired to a live decoration — keep
+        if(_carryArtIds.has(a.id))return false;// only referenced by carry-over jobs
+        // Recycled-number art can also sit under this so_id with a job minted AFTER the new SO
+        // (SO-1057: JOB-1057-01 on 6/29 against March football art). Drop only when the file is
+        // archived AND its upload predates the SO by >24h — archived avoids wiping intentional
+        // estimate→SO library art that hasn't been wired to a decoration yet.
+        if(a.archived&&_soCreatedMs!=null){
+          const ut=Date.parse(a.uploaded);if(!Number.isNaN(ut)&&ut<_soCreatedMs-864e5)return false;
+        }
+        return true;
+      }).map(_loadArtRow);
       const firm_dates=soFirm.filter(f=>f.so_id===so.id).map(f=>({item_desc:f.item_desc,date:f.date,approved:f.approved}));
+      // Keep dead frozen jobs in the loaded payload so OrderEditor.syncJobs can see them, retire
+      // them (no live decorations), and persist jobs:[] — which now deletes so_jobs rows. Filtering
+      // them out here would hide the UI symptom without ever writing the delete.
       const jobs=_rawJobs.filter(j=>!_isCarryJob(j.created_at)).map(j=>{const{so_id:_,...rest}=j;return rest});
       // Dedup orphaned duplicate so_items sharing an item_index. These arise when an "insert-new-then-delete-old"
       // save swap was interrupted after the child (deco/pick) deletes but before the parent so_items delete — leaving
@@ -479,7 +497,8 @@ const _dbLoad = async (opts={}) => {
       // _hydratedPickIds: same idea for pick lines, keyed by pick_id.
       const _hydratedPickIds=[...new Set(items.flatMap(it=>(it.pick_lines||[]).map(p=>p.pick_id).filter(Boolean)))];
       const _soItemsHydrated=!_lastLoadTimedOut.has('so_items');if(_soItemsHydrated)_everHydratedItems.add(so.id);
-      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated:!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items'),_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:art_files.map(a=>a.id).filter(Boolean)}});
+      const _decosHydrated=!_lastLoadTimedOut.has('so_item_decorations')&&!_lastLoadTimedOut.has('so_items');
+      return{...so,items,art_files,firm_dates,jobs,_itemsHydrated:_soItemsHydrated,_decosHydrated,_artHydrated:!_lastLoadTimedOut.has('so_art_files'),_jobsHydrated:!_lastLoadTimedOut.has('so_jobs'),_posHydrated:!_lastLoadTimedOut.has('so_item_po_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPoIds,_picksHydrated:!_lastLoadTimedOut.has('so_item_pick_lines')&&!_lastLoadTimedOut.has('so_items'),_hydratedPickIds,_hydratedArtIds:_rawSoArt.map(a=>a.id).filter(Boolean)}});
     // Invoices: attach payments and items
     const invoices=invRaw.map(inv=>{
       const payments=invPay.filter(p=>p.invoice_id===inv.id).map(p=>({amount:p.amount,method:p.method,ref:p.ref,date:p.date}));
@@ -1386,11 +1405,17 @@ const _dbSaveSOInner = async (so) => {
         const toDelete=(existingJobs||[]).filter(ej=>!currentJobIds.includes(ej.id)).map(ej=>ej.id);
         if(toDelete.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',toDelete);
       }
+    }else if(Array.isArray(jobs)&&so._jobsHydrated!==false){
+      // Intentional empty jobs list (syncJobs retired every job after line art was cleared, or admin
+      // deleted the last job). Mirror the art_files=[] path: only wipe when jobs hydrated cleanly so a
+      // timed-out so_jobs load can't delete real rows. Previously we left DB jobs untouched on empty
+      // arrays, which is why JOB-1057-01 survived after decorations were wiped (syncJobs→[] never
+      // reached the delete branch).
+      await supabase.from('so_jobs').delete().eq('so_id',so.id);
     }
-    // If jobs is empty/undefined, leave existing DB jobs untouched to prevent accidental data loss.
-    // We intentionally do NOT delete jobs just because the in-memory array is empty: syncJobs rebuilds the
-    // jobs list from item decorations, so a transiently-missing decoration would otherwise wipe a submitted
-    // job. Orphaned jobs from a recycled SO number are cleaned at order creation instead (see new-SO purge).
+    // If jobs is undefined/null (not hydrated / not present on the payload), leave existing DB jobs
+    // untouched. Orphaned jobs from a recycled SO number are cleaned at order creation (new-SO purge)
+    // and dead frozen jobs are retired by syncJobs + the load-time live-decoration filter.
     await supabase.from('so_firm_dates').delete().eq('so_id',so.id);
     // Art files already synced above (before the bgSync item-shrink guard). No second sync needed here.
     // If art_files is undefined/null (not hydrated), leave existing DB art files untouched to prevent accidental data loss

@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -20,6 +20,7 @@ import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
+import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -263,9 +264,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // so a renamed-but-same design still surfaces its approved mocks for reuse.
     const myArts=safeArt(o).filter(a=>(a?.name||'').trim()||a?.design_id);
     if(!myArts.length){setPriorMocks({});return}
-    const keyByName={},keyByDesign={};
-    myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByName[nm]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
+    // M10: name fallback requires deco_type (keyByNameDeco), never bare name — an
+    // embroidery "Spirit Logo" must not surface mocks for a screen-print job.
+    const keyByNameDeco={},keyByDesign={};
+    myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByNameDeco[k]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
     const pc=allCustomers.find(c=>c.id===o.customer_id);
+    // Sibling sub-accounts stay segmented (volleyball must not pull football mocks via parent).
     const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
     const soIds=(allOrders||[]).filter(s=>custIds.includes(s.customer_id)&&s.id!==o.id).map(s=>s.id);
     if(!soIds.length){setPriorMocks({});return}
@@ -277,7 +281,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _u=f=>typeof f==='string'?f:(f?.url||'');
         const map={};const seen={};
         data.forEach(row=>{
-          const key=(row.design_id&&keyByDesign[row.design_id])||keyByName[(row.name||'').trim().toLowerCase()];
+          const key=resolvePriorMockKey(row,{keyByDesign,keyByNameDeco});
           if(!key)return;
           const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
           if(!map[key]){map[key]=[];seen[key]=new Set()}
@@ -400,27 +404,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _pf=(clone.prod_files||[]).length;
     const _pfNote=_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':'';
     const _nm=art.name||'Untitled';
-    // M14/REUSE-2: the clone used to land unwired — the rep then opened EVERY garment and swapped
-    // art_file_id by hand. Offer ONE confirm that points the matching decorations at the reused
-    // design via changeArtFileId (same recall/orphan handling as a manual swap). Conservative match:
-    //   • unwired art decos (no art_file_id) — the empty slot this reuse is filling;
-    //   • ART TBD decos whose art_tbd_type equals the reused deco_type;
-    //   • decos pointing at an EMPTY same-design placeholder (design_id, or name+deco_type match,
-    //     status absent/waiting_for_art) — never a design that already has live/approved art.
-    // Decline keeps today's manual behavior.
-    const _cd=clone.deco_type||'';const _nmKey=(clone.name||'').trim().toLowerCase();
-    const targets=[];
-    safeItems(o).forEach((it,ii)=>{safeDecos(it).forEach((d,di)=>{
-      if(d.kind!=='art')return;
-      let match=false;
-      if(!d.art_file_id)match=true;
-      else if(d.art_file_id==='__tbd')match=(d.art_tbd_type||'')===_cd;
-      else{const cur=af.find(a=>a.id===d.art_file_id);
-        match=!!cur&&(cur.deco_type||'')===_cd
-          &&((clone.design_id&&cur.design_id===clone.design_id)||(!!_nmKey&&(cur.name||'').trim().toLowerCase()===_nmKey))
-          &&(!cur.status||cur.status==='waiting_for_art');}
-      if(match)targets.push({ii,di,item:it});
-    })});
+    // M14/REUSE-2: offer ONE confirm that points matching decorations at the reused design.
+    // Never steal every empty art slot on a multi-logo order (that was wiring football art
+    // onto volleyball garments that happened to be unwired). Matching lives in
+    // prevArtAutoWireTargets so it stays unit-tested and can't drift from the UI.
+    const targets=prevArtAutoWireTargets(safeItems(o),af,clone).map(({ii,di})=>({ii,di,item:safeItems(o)[ii]}));
     if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
     // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
     // but the rep is told to confirm the color-way for them.
@@ -2625,12 +2613,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!pairs.length)return false;
       return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;return isDecoOutsourced(o,ii,d,outsourcedByItem)});
     };
-    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j));
+    // Frozen jobs whose claimed decorations were all cleared (rep deleted art from every line)
+    // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
+    // live deco behind it (SO-1057 JOB-1057-01 after line art was wiped).
+    const _jobHasLiveDeco=j=>jobHasLiveDecorations(j,o);
+    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j));
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2865,7 +2857,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&!newJobs.find(nj=>nj.id===j.id));
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
@@ -2999,7 +2991,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // job totals were already correct) must still land, or the item rows keep showing "56/90".
     const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
-      setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
+      setO(e=>{
+        const next={...e,jobs:synced};
+        // Persist when jobs shrink (dead _merged/released retired after line art cleared, or
+        // carry-over dropped). Without a save, so_jobs rows linger — empty jobs[] used to be a
+        // no-op delete, which is why JOB-1057-01 survived after decorations were wiped.
+        if(synced.length<safeJobs(e).length){
+          Promise.resolve().then(()=>{try{onSave(next)}catch(_){}});
+        }
+        return next;
+      });
     }
   },[syncJobs]);// eslint-disable-line
 
