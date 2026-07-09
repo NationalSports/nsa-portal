@@ -670,7 +670,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
                 <div key={i} style={{ gridColumn: full ? '1 / span 2' : tall ? '1' : '2', gridRow: spanRows ? '1 / span 2' : 'auto', aspectRatio: full ? '4 / 3' : spanRows ? '3 / 4' : '1', background: '#fff', borderRadius: 6, overflow: 'hidden', transform: `skewX(-3deg) rotate(${i === 1 ? -1.5 : i === 2 ? 1.5 : 0}deg)`, boxShadow: '0 16px 40px rgba(0,0,0,0.28)' }}>
                   <div style={{ width: '100%', height: '100%', transform: 'skewX(3deg)', position: 'relative' }}>
                     <div style={{ position: 'absolute', inset: '8%' }}>
-                      <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                      <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                       <DecoOverlay decorations={p.decorations} colorName={p.color} />
                     </div>
                   </div>
@@ -948,7 +948,7 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
             ? <div style={{ position: 'absolute', inset: '10%', width: '80%', height: '80%' }}>
-                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
               </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
@@ -1032,9 +1032,9 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
           <div key={i} style={{ flex: '1 1 0', minWidth: 120, padding: '14px 12px 16px', borderRight: i < comps.length - 1 ? `1px solid ${theme.line}` : 'none', textAlign: 'center' }}>
             <div style={{ width: '100%', aspectRatio: '1 / 1', background: theme.warm, borderRadius: 4, overflow: 'hidden', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               {/* Inner 4:5 frame = the frame placements are authored against. object-fit
-                  contain shows the whole garment (no cropped sleeves), matching the editor's
-                  garment frame, so the inherited decoration overlay lands where it was placed. */}
-              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}><img src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} /><DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
+                  cover fills the frame exactly like the art editor's garment stage, so the
+                  inherited decoration overlay lands where it was placed. */}
+              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}><img src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /><DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
             </div>
             <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, lineHeight: 1.2 }}>{c.name}</div>
           </div>
@@ -1169,7 +1169,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
+            {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
             {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} decorations={p.decorations} />}
           </div>
@@ -1345,7 +1345,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
               <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
                 {/* Full-width item image */}
                 <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
-                  {compImg(c) ? <><img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {compImg(c) ? <><img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
                   {/* Step badge — top-left */}
                   <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
                   {/* Required badge — top-right */}
