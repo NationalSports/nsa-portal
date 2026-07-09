@@ -1610,14 +1610,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
-    if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
-    // Unique slug: <slug>-copy, then -copy-2, -copy-3…
+    if (!opts.asTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
+    const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
+    // Unique slug: <base>-copy (or -template), then -2, -3…
     const taken = new Set(stores.map((s) => s.slug));
-    let slug = slugify(src.name) + '-copy';
+    let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
     const { id, created_at, updated_at, ...rest } = src;
-    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false, ...(opts.rebrand ? { logo_url: null } : {}) };
-    flash('Duplicating store…');
+    // A template is a separate is_template store carrying the catalog/packages/transfers
+    // only — never the source's logo (it starts brand-free). is_template makes it show in
+    // the Templates tab and stay available to the coach store builder's item pool.
+    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null } : {}) };
+    flash(opts.asTemplate ? 'Saving template…' : 'Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
     if (error) { flash('Could not duplicate: ' + error.message); return; }
 
@@ -1642,19 +1646,31 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (te) flash('Transfer setup copy failed: ' + te.message);
     }
     setStores((prev) => [store, ...prev]);
-    flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
+    flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    if (opts.rebrand) setEditing(store);
+    // Templates skip that — they're branding-free by design.
+    if (opts.rebrand && !opts.asTemplate) setEditing(store);
   }, [stores, flash]);
 
-  // Mark / unmark a store as a reusable template — the starting point for
-  // "New from template", which clones it into a fresh draft via duplicateStore.
+  // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
+  // catalog only, no logo). The source store is left untouched and stays in the store list;
+  // the template appears in the Templates tab and the coach store builder's item pool.
+  const saveAsTemplate = useCallback((store) => {
+    const name = window.prompt('Name this template (labels it in the Templates tab and the coach builder — shoppers never see it):', `${store.name} Template`);
+    if (name == null) return; // cancelled
+    const trimmed = name.trim();
+    if (!trimmed) { flash('A template needs a name'); return; }
+    duplicateStore(store, { asTemplate: true, name: trimmed });
+  }, [duplicateStore, flash]);
+
+  // Remove a template: un-flags it (is_template=false) so it's no longer a template and
+  // returns to the normal store list as a draft. Non-destructive — never deletes a store.
   const toggleTemplate = useCallback(async (store) => {
     const next = !store.is_template;
     const { error } = await supabase.from('webstores').update({ is_template: next, updated_at: new Date().toISOString() }).eq('id', store.id);
     if (error) { flash('Error: ' + error.message); return; }
     setStores((prev) => prev.map((s) => s.id === store.id ? { ...s, is_template: next } : s));
-    flash(next ? 'Saved as a template' : 'Removed from templates');
+    flash(next ? 'Saved as a template' : 'Removed from templates — it\'s back in the store list');
   }, [flash]);
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
@@ -3017,7 +3033,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '', rebrand: true })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '', rebrand: true })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -3442,7 +3458,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3758,7 +3774,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         </td>
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                            {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            {onSaveAsTemplate && <button title="Save as template — copies this store's items into a reusable template (the store stays here)" onClick={(e) => { e.stopPropagation(); onSaveAsTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#D1D5DE' }}>☆</button>}
                             <button
                               title="Copy store link"
                               onClick={(e) => {
@@ -4053,9 +4069,10 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
               const nums = t.number_enabled ? (t.number_unique ? 'Unique #s' : 'On') : 'Off';
               return (
                 <div key={t.id} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden' }}>
+                  <div onClick={() => onOpen && onOpen(t)} title="View / edit this template's items" style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden', cursor: onOpen ? 'pointer' : 'default' }}>
                     <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(-55deg,rgba(255,255,255,0.05) 0 1px,transparent 1px 9px)' }} />
                     <div style={{ position: 'relative', ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 20, letterSpacing: '.5px', color: '#fff', lineHeight: 1 }}>{t.name}</div>
+                    {onOpen && <div style={{ position: 'relative', fontSize: 11, color: 'rgba(255,255,255,.6)', marginTop: 5 }}>View / edit items →</div>}
                   </div>
                   <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid #EEF1F6' }}>
@@ -4067,6 +4084,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                       ))}
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                      {onOpen && <button className="btn btn-sm btn-secondary" onClick={() => onOpen(t)}>View items</button>}
                       {onNewFromTemplate && <button className="btn btn-sm btn-primary" onClick={() => onNewFromTemplate(t)} style={{ flex: 1 }}>Start Store</button>}
                       {onToggleTemplate && <button className="btn btn-sm btn-secondary" onClick={() => onToggleTemplate(t)}>Remove Template</button>}
                     </div>
@@ -4075,7 +4093,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
               );
             })}
             {templates.length === 0 && (
-              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
+              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Hit the ☆ Save as template button on any store in the Stores list to copy its items into a reusable template here.</div>
             )}
           </div>
         </>
