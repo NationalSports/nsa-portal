@@ -3018,7 +3018,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
       {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta); }} />}
 
-      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
+      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
       {templateFor && <SaveAsTemplateModal store={templateFor} onClose={() => setTemplateFor(null)} onConfirm={confirmSaveAsTemplate} />}
 
@@ -4972,7 +4972,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -5074,7 +5074,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -5337,7 +5337,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
-      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
@@ -7326,11 +7326,13 @@ function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtr
   );
 }
 
-function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
+function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const forcedCategory = (tpl && tpl.kind === 'section') ? (tpl.section || tpl.name || null) : null;
+  // Stable dep for the destination store's colors (inline arrays change identity per render).
+  const teamKey = (teamHexes || []).filter(Boolean).join(',');
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -7342,11 +7344,22 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
       const matched = items.map((it) => ({ product: bySku.get(String(it.sku || '').trim().toUpperCase()), meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required } })).filter((m) => m.product);
-      const built = await buildStyleRows(matched);
+      let built = await buildStyleRows(matched);
+      // Default each style's picked colors to the DESTINATION store's palette (same
+      // color-word matching as the product picker's school-colors filter). The colors
+      // saved in the template only remain the default when no colorway matches the
+      // store's colors. The rep still adjusts everything before adding.
+      const words = storeColorWords(teamKey.split(',').filter(Boolean).map((hex) => ({ hex })));
+      if (words.length) {
+        built = built.map((r) => {
+          const team = r.colors.filter((c) => productMatchesColors(c.color, words)).map((c) => c.id);
+          return team.length ? { ...r, picked: new Set(team), defaults: new Set(team) } : r;
+        });
+      }
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [tpl]);
+  }, [tpl, teamKey]);
   const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
   const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
   const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
@@ -7360,7 +7373,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors.{teamKey ? " Colors matching this store's palette come pre-selected." : ''} No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         {!loading && rows.length > 0 && (
@@ -7386,7 +7399,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   );
 }
 
-function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), onApply, onApplyColors, onClose }) {
+function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), teamHexes = [], onApply, onApplyColors, onClose }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [myEmail, setMyEmail] = useState('');
@@ -7446,7 +7459,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
   return (
     <>
-    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
+    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} teamHexes={teamHexes} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
