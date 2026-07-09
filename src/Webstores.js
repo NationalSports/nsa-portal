@@ -1611,7 +1611,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
-    if (!opts.asTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
+    if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
     const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
     // Unique slug: <base>-copy (or -template), then -2, -3…
     const taken = new Set(stores.map((s) => s.slug));
@@ -1622,9 +1622,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // only — never the source's logo (it starts brand-free). is_template makes it show in
     // the Templates tab and stay available to the coach store builder's item pool.
     const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null } : {}) };
-    flash(opts.asTemplate ? 'Saving template…' : 'Duplicating store…');
+    flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return; }
+    if (error) { flash('Could not duplicate: ' + error.message); return null; }
 
     const { data: srcProductsAll } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
     // opts.itemIds (from "Save as template") limits the copy to the picked catalog items;
@@ -1653,8 +1653,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setStores((prev) => [store, ...prev]);
     flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    // Templates skip that — they're branding-free by design.
-    if (opts.rebrand && !opts.asTemplate) setEditing(store);
+    // Templates skip that; start-from-template goes to the color picker instead.
+    if (opts.rebrand && !opts.asTemplate && !opts.startFromTemplate) setEditing(store);
+    return store;
   }, [stores, flash]);
 
   // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
@@ -1931,6 +1932,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setTplColorFlow({ tpl, storeId: store.id, existingPids, store, startSort: (data || []).length });
   }, []);
   const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
+  // Start a new store from a STORE template ("Start Store" on a Templates-tab card).
+  // Clones the template's settings, packages and transfer setup (no logo), then opens the
+  // color picker for the template's items — one row per garment style, defaulting to the
+  // color(s) saved on the template — so the rep picks the new team's colors before
+  // anything lands in the catalog. Packages copy as-is; the picker covers single items.
+  const startStoreFromStoreTemplate = useCallback(async (t) => {
+    const { data: rows } = await supabase.from('webstore_products').select('id,kind,sku,retail_price,fundraise_amount,category,kit_name,required').eq('store_id', t.id).order('sort_order');
+    const all = rows || [];
+    const store = await duplicateStore(t, { suffix: '', rebrand: true, startFromTemplate: true, itemIds: all.filter((r) => r.kind === 'bundle').map((r) => r.id) });
+    if (!store) return;
+    const singles = all.filter((r) => r.kind === 'single' && r.sku);
+    if (!singles.length) { openStore(store); return; }
+    const pseudoTpl = { name: t.name, items: singles.map((r) => ({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required })) };
+    beginTplColorFlow(pseudoTpl, store);
+  }, [duplicateStore, beginTplColorFlow, openStore]);
   const finishTplColorFlow = useCallback(async (plan) => {
     const flow = tplColorFlow; if (!flow) return;
     const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
@@ -3038,7 +3054,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '', rebrand: true })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -7833,7 +7849,7 @@ function SaveAsTemplateModal({ store, onClose, onConfirm }) {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      const { data: prods } = await supabase.from('webstore_products').select('id,kind,product_id,sku,display_name,retail_price,sort_order,active').eq('store_id', store.id).order('sort_order');
+      const { data: prods } = await supabase.from('webstore_products').select('id,kind,product_id,sku,display_name,retail_price,sort_order,active,variant_group_id').eq('store_id', store.id).order('sort_order');
       const rows = prods || [];
       const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
       const imgByPid = {}; const nameByPid = {};
@@ -7841,31 +7857,39 @@ function SaveAsTemplateModal({ store, onClose, onConfirm }) {
         const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
         (pr || []).forEach((p) => { imgByPid[p.id] = p.image_front_url; nameByPid[p.id] = p.name; });
       }
-      const built = rows.map((r) => ({
-        id: r.id,
-        kind: r.kind,
-        name: r.display_name || nameByPid[r.product_id] || r.sku || '(unnamed item)',
-        image: r.kind === 'bundle' ? null : (imgByPid[r.product_id] || null),
-        sku: r.sku || '',
-        price: r.retail_price,
-        active: r.active !== false,
-      }));
-      if (!cancelled) { setItems(built); setSel(new Set(built.map((b) => b.id))); setLoading(false); }
+      // One entry per garment STYLE, not per color: colors of the same style (shared
+      // variant_group_id, or same name once any baked-in colorway code is stripped) fold
+      // into one row. Selecting the row carries all of its colors into the template —
+      // they become the picker's default colors when the template is used.
+      const groups = new Map();
+      rows.forEach((r) => {
+        const dispName = r.display_name || nameByPid[r.product_id] || r.sku || '(unnamed item)';
+        const key = r.kind === 'bundle' ? 'b:' + r.id : (r.variant_group_id ? 'g:' + r.variant_group_id : 's:' + styleKey(dispName).toLowerCase());
+        if (!groups.has(key)) groups.set(key, { key, kind: r.kind, name: r.kind === 'bundle' ? dispName : styleKey(dispName), image: null, ids: [], skus: [], prices: [], anyActive: false });
+        const g = groups.get(key);
+        g.ids.push(r.id);
+        if (r.sku) g.skus.push(r.sku);
+        if (r.retail_price != null) g.prices.push(Number(r.retail_price));
+        if (!g.image && r.kind !== 'bundle') g.image = imgByPid[r.product_id] || null;
+        if (r.active !== false) g.anyActive = true;
+      });
+      const built = [...groups.values()];
+      if (!cancelled) { setItems(built); setSel(new Set(built.map((b) => b.key))); setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [store]);
-  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
-  const setAll = (on) => setSel(on ? new Set(items.map((i) => i.id)) : new Set());
+  const toggle = (key) => setSel((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const setAll = (on) => setSel(on ? new Set(items.map((i) => i.key)) : new Set());
   const trimmed = name.trim();
   const canSave = !!trimmed && sel.size > 0 && !busy && !loading;
-  const confirm = async () => { if (!canSave) return; setBusy(true); await onConfirm(trimmed, [...sel]); };
+  const confirm = async () => { if (!canSave) return; setBusy(true); await onConfirm(trimmed, items.filter((i) => sel.has(i.key)).flatMap((i) => i.ids)); };
   return (
     <div onClick={busy ? undefined : onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 620, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid #eef0f3' }}>
           <div>
             <div style={{ fontWeight: 800, fontSize: 16 }}>Save as template</div>
-            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, maxWidth: 470 }}>Copies the selected items into a reusable template. “{store?.name}” stays in your store list, and logos never carry over — items only.</div>
+            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, maxWidth: 470 }}>Copies the selected items into a reusable template — one entry per style, no logos. Whoever uses the template picks each item's colors then. “{store?.name}” stays in your store list.</div>
           </div>
           <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: busy ? 'default' : 'pointer', color: '#6A7180' }}>×</button>
         </div>
@@ -7886,17 +7910,21 @@ function SaveAsTemplateModal({ store, onClose, onConfirm }) {
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading items…</div>
             : items.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>This store has no catalog items to template.</div>
             : items.map((it) => {
-              const on = sel.has(it.id);
+              const on = sel.has(it.key);
+              const lo = it.prices.length ? Math.min(...it.prices) : null;
+              const hi = it.prices.length ? Math.max(...it.prices) : null;
+              const price = lo == null ? '' : (lo === hi ? '$' + lo.toFixed(2) : `$${lo.toFixed(2)}–$${hi.toFixed(2)}`);
               return (
-                <button key={it.id} type="button" onClick={() => toggle(it.id)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, border: `1px solid ${on ? '#c7d7fb' : '#eef1f5'}`, borderRadius: 10, padding: '8px 12px', background: on ? '#f5f8ff' : '#fff', cursor: 'pointer', fontFamily: 'inherit', marginBottom: 6 }}>
+                <button key={it.key} type="button" onClick={() => toggle(it.key)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, border: `1px solid ${on ? '#c7d7fb' : '#eef1f5'}`, borderRadius: 10, padding: '8px 12px', background: on ? '#f5f8ff' : '#fff', cursor: 'pointer', fontFamily: 'inherit', marginBottom: 6 }}>
                   <input type="checkbox" readOnly checked={on} style={{ width: 16, height: 16, flexShrink: 0, accentColor: '#1d4ed8' }} />
                   <div style={{ width: 38, height: 38, borderRadius: 7, background: '#f1f5f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
                     {it.image ? <img src={it.image} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 15 }}>{it.kind === 'bundle' ? '📦' : '👕'}</span>}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}{it.kind === 'bundle' ? ' · Package' : ''}</div>
-                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{it.sku ? it.sku + ' · ' : ''}{it.price != null ? '$' + Number(it.price).toFixed(2) : ''}{it.active === false ? ' · archived' : ''}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{it.skus[0] ? it.skus[0] + (it.skus.length > 1 ? ` +${it.skus.length - 1}` : '') + ' · ' : ''}{price}{!it.anyActive ? ' · archived' : ''}</div>
                   </div>
+                  {it.kind !== 'bundle' && it.ids.length > 1 && <span style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: '#eef4ff', borderRadius: 999, padding: '3px 9px', flexShrink: 0 }}>{it.ids.length} colors</span>}
                 </button>
               );
             })}
