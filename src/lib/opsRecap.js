@@ -20,10 +20,15 @@ const NON_SIZE = new Set([
   'id', 'so_item_id', 'po_id', 'vendor', 'expected_date', 'received', 'cancelled', 'billed',
   'shipments', 'tracking_numbers', 'po_type', 'unit_cost', 'drop_ship', 'deco_type', 'notes',
   'shipping', 'preexisting', 'batch_queue_id', 'batch_po_number',
+  // PO-line bookkeeping that can appear alongside size buckets (mirrors OrderEditor _PO_SZ_META)
+  'email_history', 'api_order_id', 'api_ordered_at', 'vendor_keys',
 ]);
 const isSizeKey = (k) => !NON_SIZE.has(k) && !String(k).startsWith('_');
 const sizeUnits = (m) => Object.entries(m || {}).reduce((a, [k, v]) => a + (isSizeKey(k) ? num(v) : 0), 0);
 const sizeKeys = (m) => Object.keys(m || {}).filter(isSizeKey);
+// Numeric size buckets on a flattened pick/PO line — same discovery rule as desktop warehouse
+// receive (exclude meta keys; accept QTY / OS / OSFA / any apparel size). Used by mobile check-in.
+const numericSizeKeys = (m) => Object.keys(m || {}).filter((k) => isSizeKey(k) && typeof m[k] === 'number');
 
 const itemsOf = (so) => (so && Array.isArray(so.items) ? so.items : []);
 const picksOf = (it) => (it && (it.pick_lines || it.picks)) || [];
@@ -245,7 +250,7 @@ const AGING_BUCKETS = ['1-30', '31-60', '61-90', '90+'];
 const agingBucket = (dpd) => (dpd == null || dpd < 1 ? 'current' : dpd <= 30 ? '1-30' : dpd <= 60 ? '31-60' : dpd <= 90 ? '61-90' : '90+');
 
 module.exports = {
-  NON_SIZE, isSizeKey, sizeUnits, sizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
+  NON_SIZE, isSizeKey, sizeUnits, sizeKeys, numericSizeKeys, soFulfillment, isShippedOut, isCheckedIn, shortOnPull, pulledGroups,
   isReadyToInvoice, isShippedNotInvoiced, soGoodsValue, invoiceBalance, isOpenInvoice, invoiceDaysPastDue, AGING_BUCKETS, agingBucket,
   dateYmd, paymentsLatestYmd, isFullyPaidInvoice,
   quoteAgeDays, quoteColdBucket, QUOTE_FOLLOWUP_DAYS, QUOTE_COLD_DAYS, QUOTE_STALE_DAYS,

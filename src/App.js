@@ -26,7 +26,7 @@ import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
-import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket } from './lib/opsRecap';
+import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -16028,7 +16028,9 @@ export default function App(){
       const newReceived={...(po.received||{})};const shipment={date:new Date().toLocaleDateString()};let any=false;
       Object.entries(rcv||{}).forEach(([sz,qty])=>{if(qty>0){newReceived[sz]=(newReceived[sz]||0)+qty;shipment[sz]=qty;any=true;grand+=qty}});
       if(!any)return;
-      const szKeys=Object.keys(po).filter(k=>SZ_ORD.includes(k));
+      // Match mobile/desktop size discovery — SZ_ORD alone misses QTY/OS buckets and left
+      // those lines stuck in "partial" after a full check-in.
+      const szKeys=opsNumericSizeKeys(po);
       const open=szKeys.reduce((a,sz)=>a+Math.max(0,(po[sz]||0)-(newReceived[sz]||0)-((po.cancelled||{})[sz]||0)),0);
       const status=open<=0&&Object.values(newReceived).some(v=>v>0)?'received':Object.values(newReceived).some(v=>v>0)?'partial':'waiting';
       it.po_lines[poLineIdx]={...po,received:newReceived,shipments:[...(po.shipments||[]),shipment],status};
