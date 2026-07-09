@@ -456,11 +456,11 @@ const _dbLoad = async (opts={}) => {
       const art_files=_rawSoArt.filter(a=>{
         if(_liveArtIds.has(a.id))return true;// still wired to a live decoration — keep
         if(_carryArtIds.has(a.id))return false;// only referenced by carry-over jobs
-        // Recycled-number art can also sit under this so_id with no job pointing at it (or with a
-        // job created AFTER the new SO row, as on SO-1057 where syncJobs minted JOB-1057-01 on
-        // 6/29 against March football art). Drop art whose upload predates the SO by >24h when
-        // no live decoration references it.
-        if(_soCreatedMs!=null){
+        // Recycled-number art can also sit under this so_id with a job minted AFTER the new SO
+        // (SO-1057: JOB-1057-01 on 6/29 against March football art). Drop only when the file is
+        // archived AND its upload predates the SO by >24h — archived avoids wiping intentional
+        // estimate→SO library art that hasn't been wired to a decoration yet.
+        if(a.archived&&_soCreatedMs!=null){
           const ut=Date.parse(a.uploaded);if(!Number.isNaN(ut)&&ut<_soCreatedMs-864e5)return false;
         }
         return true;

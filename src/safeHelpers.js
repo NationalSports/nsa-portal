@@ -157,6 +157,21 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
 // next invoice should credit them against the remaining balance.
 export const sumDepositInvoiced = (invoicesForSO) =>
   (invoicesForSO || []).reduce((a, inv) => inv?.inv_type === 'deposit' ? a + safeNum(inv?.total) : a, 0);
+
+// Final + $0 invoice create: skip minting a redundant $0 invoice only when prior
+// invoices/deposits already cover the balance. Never-invoiced $0 orders (FREE PROMO
+// with no billable deco, etc.) still need a $0 invoice for AR/audit + promo paid-spend.
+// Promo-funds orders (promo_applied) always create the $0 invoice when requested.
+export const shouldSkipZeroFinalInvoice = ({ invType, invTotal, isPromoOrder, priorInvs, depositApplied }) => {
+  if (invType !== 'final') return false;
+  if (safeNum(invTotal) !== 0) return false;
+  if (isPromoOrder) return false;
+  const prior = priorInvs || [];
+  const priorCoverage = prior.length > 0 || safeNum(depositApplied) > 0
+    || prior.reduce((a, inv) => a + safeNum(inv?.total), 0) > 0;
+  return priorCoverage;
+};
+
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
