@@ -21,6 +21,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -2761,9 +2762,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       });
       jobMap[jobKey]=job;
     });
-    // Build map of existing NON-split jobs keyed by job key AND by art_file_id (skip splits so they don't collide)
-    const existingJobMap={};const existingByArtId={};
-    safeJobs(o).forEach(j=>{if(!j.split_from){existingJobMap[j.key||j.id]=j;const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);jArtIds.forEach(aid=>{existingByArtId[aid]=existingByArtId[aid]||j})}});
+    // Match rebuilt jobs to existing ones by key, then by art_file_id ONLY when that art id
+    // is unique to one non-split job. Shared logos (hoodie + pants) must not inherit each
+    // other's rejections / coach_rejected / art_status — SO-1159 class bleed.
+    const _jobLookups=buildExistingJobLookups(safeJobs(o));
+    const {existingJobMap,existingByArtId}=_jobLookups;
+    const _claimedExistingIds=new Set();
     const soNum=o.id?.replace('SO-','')||'0';
     // Guard against duplicate job ids. A collision makes two jobs share an id, and
     // id-based lookups (e.g. dashboard "Review Mockup" todos) then resolve to the
@@ -2775,8 +2779,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     let jIdx=1;
     const _nextJobId=()=>{let id;do{id='JOB-'+soNum+'-'+String(jIdx).padStart(2,'0');jIdx++}while(_reserved.has(id)||_usedIds.has(id));_usedIds.add(id);return id};
     const newJobs=Object.values(jobMap).map(j=>{
-      // Try matching by key first, then by art_file_id as fallback to prevent data loss on key changes
-      const existing=existingJobMap[j.key]||(j.art_file_id?existingByArtId[j.art_file_id]:null);
+      const {existing}=matchExistingJob(j,_jobLookups,_claimedExistingIds);
       const itemSt=j.fulfilled_units>=j.total_units&&j.total_units>0?'items_received':j.fulfilled_units>0?'partially_received':'need_to_order';
       let prodSt=existing?.prod_status||'hold';
       const artFile=safeArr(o?.art_files).find(f=>f.id===j.art_file_id);
@@ -2795,6 +2798,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // (_healUnresolvedArt below still downgrades a preserved completed-ish status
       // when the job's art is TBD/unresolved.)
       const _preservedArtSt=(existing?.art_status&&existing.art_status!=='needs_art')?existing.art_status:_newArtSt;
+      const _wf=inheritJobWorkflowFields(existing);
       return{
         id,key:j.key,art_file_id:j.art_file_id,art_name:existing?._name_locked?(existing.art_name||j.art_name):j.art_name,deco_type:j.deco_type,
         positions:[...j.positions].filter(Boolean).join(', '),items:j.items,
@@ -2807,12 +2811,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         count_discrepancy:existing?.count_discrepancy||null,notes:existing?.notes||null,
         _auto:existing?._auto!=null?existing._auto:true,
         _name_locked:existing?._name_locked||false,
-        // Preserve art workflow fields from existing job
-        art_requests:existing?.art_requests||[],art_messages:existing?.art_messages||[],
-        assigned_artist:existing?.assigned_artist||null,rep_notes:existing?.rep_notes||null,
-        rejections:existing?.rejections||null,
-        sent_to_coach_at:existing?.sent_to_coach_at||null,coach_approved_at:existing?.coach_approved_at||null,coach_email_opened_at:existing?.coach_email_opened_at||null,
-        coach_rejected:existing?.coach_rejected||null,
+        // Preserve art workflow fields from the matched existing job only (never a shared-art sibling)
+        ..._wf,
         _art_ids:j._art_ids||[],
         // Preserve dual-run order fields
         run_order:existing?.run_order||null,run1_done:existing?.run1_done||false,run2_done:existing?.run2_done||false,
@@ -2823,7 +2823,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Preserve per-item sizes/fulSizes overrides from prior custom splits so the parent job keeps
     // an accurate per-size remainder instead of being rebuilt from full order-item sizes.
     newJobs.forEach(nj=>{
-      const existing=existingJobMap[nj.key]||(nj.art_file_id?existingByArtId[nj.art_file_id]:null);
+      // Prefer key; unique-art fallback only (same rule as matchExistingJob — do not pull
+      // size overrides from a sibling that merely shares the logo).
+      const existing=existingJobMap[nj.key]||(nj.art_file_id&&existingByArtId[nj.art_file_id]?existingByArtId[nj.art_file_id]:null);
       if(!existing||!Array.isArray(existing.items))return;
       // (item_idx-sku) pairs already carried by this job's split-off slices. A garment a split moved
       // ENTIRELY off the parent is absent from existing.items, so without this it would be rebuilt here
