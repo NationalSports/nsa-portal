@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -2613,12 +2613,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!pairs.length)return false;
       return pairs.every(([ii,di])=>{const it=safeItems(o)[ii];if(!it)return false;const d=safeDecos(it)[di];if(!d)return false;return isDecoOutsourced(o,ii,d,outsourcedByItem)});
     };
-    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j));
+    // Frozen jobs whose claimed decorations were all cleared (rep deleted art from every line)
+    // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
+    // live deco behind it (SO-1057 JOB-1057-01 after line art was wiped).
+    const _jobHasLiveDeco=j=>jobHasLiveDecorations(j,o);
+    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j));
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2853,7 +2857,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&!newJobs.find(nj=>nj.id===j.id));
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
@@ -2987,7 +2991,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // job totals were already correct) must still land, or the item rows keep showing "56/90".
     const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
-      setO(e=>({...e,jobs:synced}));// don't bump updated_at for auto-sync — avoids false dirty/conflict detection
+      setO(e=>{
+        const next={...e,jobs:synced};
+        // Persist when jobs shrink (dead _merged/released retired after line art cleared, or
+        // carry-over dropped). Without a save, so_jobs rows linger — empty jobs[] used to be a
+        // no-op delete, which is why JOB-1057-01 survived after decorations were wiped.
+        if(synced.length<safeJobs(e).length){
+          Promise.resolve().then(()=>{try{onSave(next)}catch(_){}});
+        }
+        return next;
+      });
     }
   },[syncJobs]);// eslint-disable-line
 

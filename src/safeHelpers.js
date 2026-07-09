@@ -52,6 +52,27 @@ export const jobHasUnresolvedArt = (j, o, { archivedIsUnresolved = false } = {})
   });
 };
 
+// True when at least one (item_idx, deco_idx) pair this job claims still resolves to a live
+// decoration on the SO. Used to retire frozen (_merged / released / split) jobs after a rep
+// clears every line decoration — without this, syncJobs keeps the frozen snapshot forever
+// (SO-1057: JOB-1057-01 stayed after all art was deleted from the lines because _merged=true).
+// Empty items[] → false (nothing to produce). Missing item or missing deco index → that pair
+// does not count. Legacy items without deco_idxs: any decoration on the line counts as live.
+export const jobHasLiveDecorations = (j, o) => {
+  const items = safeItems(o);
+  const pairs = j?.items || [];
+  if (!pairs.length) return false;
+  return pairs.some(gi => {
+    const it = items[gi.item_idx];
+    if (!it) return false;
+    const decos = safeDecos(it);
+    if (!decos.length) return false;
+    const dis = jobItemDecoIdxs(gi);
+    if (!dis) return true; // legacy unknown coverage — line still has decorations
+    return dis.some(di => decos[di] != null);
+  });
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
