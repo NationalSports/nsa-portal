@@ -4,7 +4,81 @@ School and district filters (Google Workspace for Education, Microsoft 365,
 Barracuda, etc.) are stricter than consumer Gmail. Most blocks we see are
 **authentication / sender reputation**, not content bugs in the portal.
 
-## What we changed in code
+## Live DNS diagnosis (2026-07-09)
+
+Checked public DNS for `nationalsportsapparel.com`:
+
+| Check | Status | Notes |
+|-------|--------|--------|
+| MX | OK | Google Workspace (`aspmx.l.google.com`, etc.) |
+| Brevo domain verify TXT | OK | `brevo-code:…` present |
+| Brevo DKIM | OK | `brevo1` / `brevo2` CNAMEs → Brevo |
+| **SPF** | **MISSING** | No `v=spf1` TXT on the root domain |
+| **Google DKIM** | **MISSING** | No `google._domainkey` (or similar) record |
+| DMARC | Weak | `p=none` only — monitors, does not enforce |
+
+**This is why `steve@`, `chase@`, and other work mailboxes get blocked** even when
+mail is sent from Gmail/Google Workspace (not just portal/Brevo mail). Districts
+fail or quarantine unauthenticated Google mail. Portal/Brevo mail can still
+DKIM-pass via Brevo’s keys, but work mail has neither SPF nor Google DKIM.
+
+Code changes below help portal sends. **They cannot fix steve@/chase@** — that
+requires the DNS steps in the next section.
+
+## Fix work email (Google Workspace) — do this first
+
+Add these DNS records at your domain registrar / DNS host. Wait ~15–60 minutes,
+then retest.
+
+### 1. SPF (required)
+
+One TXT record on `@` / `nationalsportsapparel.com`:
+
+```
+v=spf1 include:_spf.google.com include:spf.brevo.com ~all
+```
+
+- `include:_spf.google.com` — authorizes Gmail / Google Workspace (steve@, chase@, …)
+- `include:spf.brevo.com` — authorizes portal / Brevo transactional sends
+- Use **exactly one** SPF TXT record. If an SPF record already exists elsewhere,
+  merge into this single line — multiple SPF records break authentication.
+
+### 2. Google DKIM (required)
+
+1. Google Admin → Apps → Google Workspace → Gmail → **Authenticate email**
+2. Generate a new DKIM key for `nationalsportsapparel.com`
+3. Publish the TXT (or CNAME) record Google shows (usually
+   `google._domainkey.nationalsportsapparel.com`)
+4. Click **Start authentication** in Admin after DNS propagates
+
+Without this, school filters often treat Workspace mail as unauthenticated even
+when SPF is present.
+
+### 3. DMARC (tighten after SPF+DKIM pass)
+
+Current record:
+
+```
+v=DMARC1; p=none; rua=mailto:rua@dmarc.brevo.com
+```
+
+Keep `p=none` for a few days while you watch reports, then move to:
+
+```
+v=DMARC1; p=quarantine; pct=100; rua=mailto:rua@dmarc.brevo.com; adkim=r; aspf=r
+```
+
+and later `p=reject` once reports show clean Google + Brevo alignment.
+
+### 4. Verify
+
+1. Send from `steve@` (or chase@) to a personal Gmail → open the message →
+   **Show original** → confirm `SPF: PASS`, `DKIM: PASS`, `DMARC: PASS`
+2. Repeat to a known school address
+3. Google Admin Toolbox → [Check MX](https://toolbox.googleapps.com/apps/checkmx/)
+   for `nationalsportsapparel.com`
+
+## What we changed in portal code
 
 1. **Default From is `hello@nationalsportsapparel.com`**, not `noreply@`.
    Override with env `BREVO_DEFAULT_SENDER` if needed.
@@ -16,29 +90,23 @@ Barracuda, etc.) are stricter than consumer Gmail. Most blocks we see are
 4. Shared helpers: `netlify/functions/_emailSender.js` and
    `resolveBrevoSender` in `src/utils.js`.
 
-## Ops checklist (required for districts to accept mail)
+These only affect Brevo/portal sends. Work Gmail still depends on SPF + Google
+DKIM above.
 
-These are **outside the repo** — DNS + Brevo dashboard:
+## Ops checklist
 
-1. **Authenticate the domain in Brevo** for `nationalsportsapparel.com`
-   (SPF + DKIM). Confirm `hello@`, `stores@`, `accounting@`, and any rep
-   addresses used as From are verified senders.
-2. **DMARC** on the domain — start with `p=none` monitoring, then
-   `p=quarantine` / `p=reject` once alignment is clean. Alignment failures
-   are a common district hard-fail.
-3. **Do not send From `nsa-teamwear.com`** for portal mail unless that domain
-   is also authenticated in Brevo with matching SPF/DKIM/DMARC.
-4. Ask district IT to **allowlist** `@nationalsportsapparel.com` (and/or
-   Brevo’s sending IPs from their docs) when a specific school still
-   quarantines after auth is green.
-5. Prefer **portal links over large PDF attachments** when a coach’s district
-   strips attachments — the send UI still attaches PDFs; reps can omit them
-   for stubborn districts.
-6. Watch Brevo **bounces / blocks / spam complaints**. Repeated sends to dead
-   `.edu` / `.k12.*` addresses hurt domain reputation; remove bad addresses
-   from contact records.
+1. Publish **SPF** + **Google DKIM** (section above) — unblocks steve@/chase@.
+2. Confirm `hello@`, `stores@`, `accounting@`, and rep addresses are verified
+   senders in **Brevo**.
+3. Tighten **DMARC** after auth is clean.
+4. Ask district IT to **allowlist** `@nationalsportsapparel.com` only if a
+   specific school still quarantines after headers show PASS.
+5. Prefer **portal links over large PDF attachments** when a district strips
+   attachments.
+6. Watch Brevo **bounces / blocks / spam complaints** and remove dead
+   `.edu` / `.k12.*` addresses from contacts.
 
-## Quick verification
+## Quick verification (portal mail)
 
 1. Send a test estimate to a personal Gmail and a known school address.
 2. Check message headers: SPF/DKIM/DMARC should pass and From should be
