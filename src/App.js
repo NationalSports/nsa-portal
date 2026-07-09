@@ -14840,26 +14840,31 @@ export default function App(){
     // Store detail view
     if(omgSel){
       const s=omgSel;const c=cust.find(x=>x.id===s.customer_id);const rep=REPS.find(r=>r.id===s.rep_id);
-      // Customer art library — mirrors the customer Artwork tab: the account's
-      // (and parent's) saved logos PLUS art aggregated from their past SOs and
-      // estimates, since most existing logos live on prior orders, not the
-      // library column. De-duped by name+deco_type, preferring the most
-      // production-ready instance (library > files-on-hand > approved > other).
+      // Customer art library — team + parent library + THIS team's past SOs/estimates.
+      // Sibling sub-accounts are intentionally excluded (volleyball must not see football
+      // SO art). When the store is linked to a parent account, only the parent's own
+      // library + parent SOs/ests are shown — not every sub-team's art (that was how
+      // football logos snuck into a volleyball OMG pull / createOmgSO).
       const _artLib=(()=>{
         if(!c)return{list:[],byId:{}};
-        const isP=!c.parent_id;
-        const subs=isP?cust.filter(x=>x.parent_id===c.id):[];
         const parentC=c.parent_id?cust.find(x=>x.id===c.parent_id):null;
-        const orderIds=[c.id,...subs.map(x=>x.id),c.parent_id].filter(Boolean);
+        // Own + parent only — never sibling subs.
+        const orderIds=[c.id,c.parent_id].filter(Boolean);
         const pool=[];
-        (c.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Library'}));
-        if(parentC)(parentC.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Parent library'}));
-        (sos||[]).filter(o=>orderIds.includes(o.customer_id)).forEach(o=>(o.art_files||[]).forEach(a=>pool.push({a,pref:(a.prod_files||[]).length?3:(a.status==='approved'?2:1),label:o.id})));
-        (ests||[]).filter(e=>orderIds.includes(e.customer_id)).forEach(e=>(e.art_files||[]).forEach(a=>pool.push({a,pref:1,label:e.id})));
+        (c.art_files||[]).forEach(a=>pool.push({a,pref:4,label:'Library',srcCustId:c.id}));
+        if(parentC)(parentC.art_files||[]).forEach(a=>pool.push({a,pref:3,label:'Parent library',srcCustId:parentC.id}));
+        (sos||[]).filter(o=>orderIds.includes(o.customer_id)).forEach(o=>(o.art_files||[]).forEach(a=>pool.push({a,pref:(a.prod_files||[]).length?3:(a.status==='approved'?2:1),label:o.id,srcCustId:o.customer_id})));
+        (ests||[]).filter(e=>orderIds.includes(e.customer_id)).forEach(e=>(e.art_files||[]).forEach(a=>pool.push({a,pref:1,label:e.id,srcCustId:e.customer_id})));
         const byId={};pool.forEach(({a})=>{if(a&&a.id&&!byId[a.id])byId[a.id]=a});
+        // Prefer by id for the picker list; name-dedupe only within the SAME source customer
+        // so a parent "Front Logo" cannot replace the team's own "Front Logo" id.
         const byKey=new Map();
-        pool.forEach(({a,pref,label})=>{if(!a||!a.id||!(a.name||'').trim())return;const key=(a.name||'').toLowerCase()+'||'+(a.deco_type||'');const ex=byKey.get(key);if(!ex||pref>ex.pref)byKey.set(key,{a,pref,label})});
-        const list=[...byKey.values()].map(({a,label})=>({...a,_srcLabel:label})).sort((x,y)=>(x.name||'').localeCompare(y.name||''));
+        pool.forEach(({a,pref,label,srcCustId})=>{
+          if(!a||!a.id||!(a.name||'').trim())return;
+          const key=(srcCustId||'')+'||'+(a.name||'').toLowerCase()+'||'+(a.deco_type||'');
+          const ex=byKey.get(key);if(!ex||pref>ex.pref)byKey.set(key,{a,pref,label,srcCustId});
+        });
+        const list=[...byKey.values()].map(({a,label,srcCustId})=>({...a,_srcLabel:label,_srcCustId:srcCustId})).sort((x,y)=>(x.name||'').localeCompare(y.name||''));
         return{list,byId};
       })();
       const custArt=_artLib.list;
@@ -14925,6 +14930,8 @@ export default function App(){
                   // customer's approval; if the library art already has prod files it lands
                   // art-complete, otherwise production_files_needed.
                   const copy=JSON.parse(JSON.stringify(src));
+                  // Drop picker-only tags so they never persist onto the SO art row.
+                  delete copy._srcLabel;delete copy._srcCustId;
                   const item_mockups={...(copy.item_mockups||{})};
                   Object.entries(omgMocks).forEach(([k2,v])=>{if(!item_mockups[k2])item_mockups[k2]=v});
                   const _libStatus=copy.status==='art_complete'?'art_complete':'approved';

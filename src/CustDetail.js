@@ -5,6 +5,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
+import { artWriteMatches } from './lib/artIdentity';
 import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
 import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
 import { StripePaymentModal } from './modals';
@@ -206,8 +207,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const lib=customer.art_files||[];
     if(lib.some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt)){nf&&nf('"'+(art.name||'art')+'" is already in the program library');return}
     if(!window.confirm('Add "'+(art.name||'this art')+'" to the program library so it applies to all sub-customers?'))return;
-    const mockFiles=(art._allMockups||[]).map(m=>m.file||m.url).filter(Boolean);
-    const prodFiles=(art._allProd||[]).map(m=>m.file||m.url).filter(Boolean);
+    // Only take mockups/prod files from THIS art's source team — never the name-merged
+    // _allMockups/_allProd bags (those collapse sibling sports into one card and would
+    // copy football imagery into the program library under a volleyball logo name).
+    const srcId=art._srcCustId;
+    const ownMocks=(art._allMockups||[]).filter(m=>!srcId||!m.srcCustId||m.srcCustId===srcId);
+    const ownProd=(art._allProd||[]).filter(m=>!srcId||!m.srcCustId||m.srcCustId===srcId);
+    const mockFiles=(ownMocks.length?ownMocks:(art.mockup_files||[]).map(f=>({file:f}))).map(m=>m.file||m.url).filter(Boolean);
+    const prodFiles=(ownProd.length?ownProd:(art.prod_files||[]).map(f=>({file:f}))).map(m=>m.file||m.url).filter(Boolean);
     const entry={id:'caf'+Date.now(),name:art.name||'',deco_type:dt||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:parseInt(art.stitches,10)||null,art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,color_ways:art.color_ways||[],files:[],mockup_files:mockFiles,prod_files:prodFiles,notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
     const newCust={...customer,art_files:[...lib,entry]};setCustLocal(newCust);onRefreshCustomer(newCust);
     nf&&nf('"'+(art.name||'art')+'" added to the program library — now applies to all sub-customers');
@@ -945,7 +952,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Aggregate art: customer-level library + parent library + SO/Estimate art
     const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library',_srcCustId:customer.id}));
     const parentCust2=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):null;
-    const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent'})):[];
+    const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent',_srcCustId:parentCust2.id})):[];
     const orderArt=[];
     custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
     custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
@@ -975,8 +982,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const allMockups=[];const seen=new Set();
       const allProd=[];const seenP=new Set();
       const grpKey=_logoKey(art);
-      artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
-      artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel})}})});
+      // Tag each file with its source customer so promote/writes can refuse sibling-sport bleed.
+      artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel,srcCustId:inst._srcCustId})}})});
+      artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel,srcCustId:inst._srcCustId})}})});
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
       return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_allProd:allProd,_ownIdx:ownIdx};
@@ -995,11 +1003,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       return rep;
     });
     // Archive/unarchive a logo across every order it's on plus the customer library copy.
+    // Name+deco writes stay scoped to the art's source customer so a parent-view edit of
+    // "Front Logo" can't archive a sibling sport's identically-named art.
     const archiveLogo=(art,arch)=>{
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
-      if((ownArt||[]).some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt?{...a,archived:arch}:a));
+      const srcCustId=art._srcCustId;
+      const _match=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:nm,decoType:dt,soCustomerId:soCustId,srcCustId});
+      custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_match(a,so.customer_id)&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if(_match(a,est.customer_id)&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
+      if((ownArt||[]).some(a=>_match(a,customer.id)&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>_match(a,customer.id)?{...a,archived:arch}:a));
       nf&&nf((arch?'Archived ':'Unarchived ')+'"'+(art.name||'art')+'"');
     };
     // Status counts for filter tabs (archived excluded from the normal tabs)
@@ -1082,17 +1094,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const urlOf=f=>typeof f==='string'?f:(f?.url||'');
     // Program-library copies of this logo live in customer.art_files. File add/remove/tag must
     // also hit those so library art is self-contained (not just whatever order it came from).
-    const _libMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
+    // Name+deco writes must stay on the art's source customer — otherwise a parent-view
+    // edit of "Front Logo" rewrites a sibling sport's identically-named art (and its
+    // customer folder). artWriteMatches enforces that; same-id always matches.
+    const _srcCustId=art._srcCustId;
+    const _rowMatch=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:soCustId,srcCustId:_srcCustId});
+    const _libMatch=a=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:customer.id,srcCustId:_srcCustId||customer.id});
     const libHasLogo=()=>(customer.art_files||[]).some(_libMatch);
     const updateLibArt=(updater)=>{const lib=customer.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...customer,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer(newCust);return true};
     const removeMockFromArt=(url)=>{
       if(!url)return;
       if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" everywhere it\'s used (orders + program library)? This cannot be undone.'))return;
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const filt=arr=>(arr||[]).filter(f=>urlOf(f)!==url);
       if(saveArt)custSOs.forEach(so=>{let changed=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if((a.name||'').toLowerCase()!==nm||(a.deco_type||'')!==dt)return a;
+          if(!_rowMatch(a,so.customer_id))return a;
           const mf=filt(a.mockup_files),fl=filt(a.files),pf=filt(a.prod_files);
           const im={...(a.item_mockups||{})};let imCh=false;Object.keys(im).forEach(k=>{const nv=filt(im[k]);if(nv.length!==(im[k]||[]).length)imCh=true;im[k]=nv});
           if(mf.length!==(a.mockup_files||[]).length||fl.length!==(a.files||[]).length||pf.length!==(a.prod_files||[]).length||imCh){changed=true;return{...a,mockup_files:mf,files:fl,prod_files:pf,item_mockups:im}}
@@ -1110,14 +1126,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const so=custSOs.find(s=>s.id===soId);
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the mockup to','error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
       if(hasLib){updateLibArt(a=>({...a,mockup_files:[...(a.mockup_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
+      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
       // Prompt for the color way these mockups are for (or create a new one), then tag them.
       const _tag=(cwName)=>{if(cwName)added.forEach(m=>applyMockToCW(m,cwName));setCwPrompt(null)};
@@ -1130,14 +1145,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const so=custSOs.find(s=>s.id===soId);
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,prod_files:[...(a.prod_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
       if(hasLib){updateLibArt(a=>({...a,prod_files:[...(a.prod_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
+      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
       nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
@@ -1150,8 +1164,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logo_url:url}));
       if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logo_url:url,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
       setCustArtDetail(d=>d?{...d,web_logo_url:url}:d);
@@ -1159,18 +1172,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     };
     const pickWebLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)setWebLogoFile(f)};inp.click()};
     const removeWebLogo=()=>{
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       updateLibArt(a=>({...a,web_logo_url:''}));
       setCustArtDetail(d=>d?{...d,web_logo_url:''}:d);
       nf&&nf('Web logo removed');
     };
     const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
-    const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
     const cwColors=(art.color_ways&&art.color_ways.length)
       ? [...new Set(art.color_ways.map(c=>c.garment_color||c.color||'').filter(Boolean))]
-      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
+      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_rowMatch(af,so.customer_id)})).map(it=>it.color)).filter(Boolean))];
     // Tag a mock with a color way wherever this file is attached on the artwork.
     const applyMockToCW=(mock,cwColor)=>{
       if(!cwColor)return;
@@ -1180,7 +1191,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(saveArt)custSOs.forEach(so=>{
         let soChanged=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if(!_logoMatch(a))return a;
+          if(!_rowMatch(a,so.customer_id))return a;
           const has=(a.mockup_files||[]).some(f=>urlOf(f)===url)||Object.values(a.item_mockups||{}).flat().some(f=>urlOf(f)===url);
           if(!has)return a;
           soChanged=true;
@@ -1197,11 +1208,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const persistColorWays=(newCws)=>{
       if(saveArt)custSOs.forEach(so=>{
         let changed=false;
-        const updArt=(so.art_files||[]).map(a=>{if(!_logoMatch(a))return a;changed=true;return{...a,color_ways:newCws}});
+        const updArt=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;changed=true;return{...a,color_ways:newCws}});
         if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
       const lib=customer.art_files||[];
-      if(onRefreshCustomer&&lib.some(_logoMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_logoMatch(a)?{...a,color_ways:newCws}:a)});
+      if(onRefreshCustomer&&lib.some(_libMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_libMatch(a)?{...a,color_ways:newCws}:a)});
       setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     };
     // For text fields: update only the modal's local state while typing (snappy, no focus loss), then
@@ -1220,8 +1231,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // resolution survives CW renames; blank entries become the is_default "all garments" logo.
       const clean=normalizeWebLogos(list,cwList||art.color_ways||[]);
       const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logos:clean,web_logo_url:def}));
       if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logos:clean,web_logo_url:def,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
       setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);

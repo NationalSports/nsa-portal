@@ -20,6 +20,7 @@ import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
+import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -263,9 +264,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // so a renamed-but-same design still surfaces its approved mocks for reuse.
     const myArts=safeArt(o).filter(a=>(a?.name||'').trim()||a?.design_id);
     if(!myArts.length){setPriorMocks({});return}
-    const keyByName={},keyByDesign={};
-    myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByName[nm]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
+    // M10: name fallback requires deco_type (keyByNameDeco), never bare name — an
+    // embroidery "Spirit Logo" must not surface mocks for a screen-print job.
+    const keyByNameDeco={},keyByDesign={};
+    myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByNameDeco[k]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
     const pc=allCustomers.find(c=>c.id===o.customer_id);
+    // Sibling sub-accounts stay segmented (volleyball must not pull football mocks via parent).
     const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
     const soIds=(allOrders||[]).filter(s=>custIds.includes(s.customer_id)&&s.id!==o.id).map(s=>s.id);
     if(!soIds.length){setPriorMocks({});return}
@@ -277,7 +281,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _u=f=>typeof f==='string'?f:(f?.url||'');
         const map={};const seen={};
         data.forEach(row=>{
-          const key=(row.design_id&&keyByDesign[row.design_id])||keyByName[(row.name||'').trim().toLowerCase()];
+          const key=resolvePriorMockKey(row,{keyByDesign,keyByNameDeco});
           if(!key)return;
           const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
           if(!map[key]){map[key]=[];seen[key]=new Set()}
@@ -400,27 +404,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const _pf=(clone.prod_files||[]).length;
     const _pfNote=_pf?', incl. '+_pf+' production file'+(_pf>1?'s':'')+' (review before use)':'';
     const _nm=art.name||'Untitled';
-    // M14/REUSE-2: the clone used to land unwired — the rep then opened EVERY garment and swapped
-    // art_file_id by hand. Offer ONE confirm that points the matching decorations at the reused
-    // design via changeArtFileId (same recall/orphan handling as a manual swap). Conservative match:
-    //   • unwired art decos (no art_file_id) — the empty slot this reuse is filling;
-    //   • ART TBD decos whose art_tbd_type equals the reused deco_type;
-    //   • decos pointing at an EMPTY same-design placeholder (design_id, or name+deco_type match,
-    //     status absent/waiting_for_art) — never a design that already has live/approved art.
-    // Decline keeps today's manual behavior.
-    const _cd=clone.deco_type||'';const _nmKey=(clone.name||'').trim().toLowerCase();
-    const targets=[];
-    safeItems(o).forEach((it,ii)=>{safeDecos(it).forEach((d,di)=>{
-      if(d.kind!=='art')return;
-      let match=false;
-      if(!d.art_file_id)match=true;
-      else if(d.art_file_id==='__tbd')match=(d.art_tbd_type||'')===_cd;
-      else{const cur=af.find(a=>a.id===d.art_file_id);
-        match=!!cur&&(cur.deco_type||'')===_cd
-          &&((clone.design_id&&cur.design_id===clone.design_id)||(!!_nmKey&&(cur.name||'').trim().toLowerCase()===_nmKey))
-          &&(!cur.status||cur.status==='waiting_for_art');}
-      if(match)targets.push({ii,di,item:it});
-    })});
+    // M14/REUSE-2: offer ONE confirm that points matching decorations at the reused design.
+    // Never steal every empty art slot on a multi-logo order (that was wiring football art
+    // onto volleyball garments that happened to be unwired). Matching lives in
+    // prevArtAutoWireTargets so it stays unit-tested and can't drift from the UI.
+    const targets=prevArtAutoWireTargets(safeItems(o),af,clone).map(({ii,di})=>({ii,di,item:safeItems(o)[ii]}));
     if(!targets.length){nf('Added "'+_nm+'" from '+(art._so_id||'Library')+' — mockups not auto-applied'+_pfNote);return}
     // H4 tie-in: garments whose shade only fallback-matches this art's CWs still get pointed,
     // but the rep is told to confirm the color-way for them.
