@@ -5,6 +5,7 @@ import { auTierDisc, dP, calcOrderTotals, isAU } from './pricing';
 import { isJobReady } from './businessLogic';
 import { isBoxCode, boxUnits, BOX_STATUS_META } from './boxTracking';
 import { SZ_ORD } from './constants';
+import { numericSizeKeys } from './lib/opsRecap';
 
 // ─── Inline Icon (same SVG paths as main app) ───
 const MIcon=({name,size=20})=>{const p={home:<path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,box:<path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>,dollar:<><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></>,users:<><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></>,mail:<><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></>,search:<><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></>,menu:<><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></>,back:<polyline points="15 18 9 12 15 6"/>,plus:<path d="M12 5v14M5 12h14"/>,x:<><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,check:<polyline points="20 6 9 17 4 12"/>,clock:<><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></>,file:<><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></>,grid:<><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></>,alert:<><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></>,scan:<><path d="M3 7V5a2 2 0 012-2h2"/><path d="M17 3h2a2 2 0 012 2v2"/><path d="M21 17v2a2 2 0 01-2 2h-2"/><path d="M7 21H5a2 2 0 01-2-2v-2"/><line x1="7" y1="12" x2="17" y2="12"/></>,phone:<><path d="M22 16.92v3a2 2 0 01-2.18 2 19.79 19.79 0 01-8.63-3.07 19.5 19.5 0 01-6-6 19.79 19.79 0 01-3.07-8.67A2 2 0 014.11 2h3a2 2 0 012 1.72 12.84 12.84 0 00.7 2.81 2 2 0 01-.45 2.11L8.09 9.91a16 16 0 006 6l1.27-1.27a2 2 0 012.11-.45 12.84 12.84 0 002.81.7A2 2 0 0122 16.92z"/></>,monitor:<><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></>,warehouse:<><path d="M22 8.35V20a2 2 0 01-2 2H4a2 2 0 01-2-2V8.35A2 2 0 013.26 6.5l8-3.2a2 2 0 011.48 0l8 3.2A2 2 0 0122 8.35z"/><path d="M6 18h12M6 14h12"/></>,package:<><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/><path d="M3.27 6.96L12 12.01l8.73-5.05M12 22.08V12"/></>};return<svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{p[name]}</svg>};
@@ -340,7 +341,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         {/* ─── Purchase Orders + Check-In status — so warehouse can see what's on order and what's arrived ─── */}
         {(()=>{
           const _ca=canAccess||(()=>true);
-          const szKeys=(obj)=>Object.keys(obj||{}).filter(k=>SZ_ORD.includes(k)&&typeof obj[k]==='number').sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+          // Same size-key discovery as warehouse receive (meta-exclusion, not SZ_ORD whitelist)
+          // so QTY / OS / OSFA and other non-standard buckets show up for check-in.
+          const szKeys=(obj)=>{
+            const ordIdx=(k)=>{const i=SZ_ORD.indexOf(k);return i===-1?999:i};
+            return numericSizeKeys(obj).sort((a,b)=>ordIdx(a)-ordIdx(b));
+          };
           const map={};
           items.forEach((it)=>{(it.po_lines||[]).forEach((po)=>{
             const pid=po.po_id||'PO';const key=pid+'|'+(po.vendor||'');
@@ -1277,8 +1283,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   // ═══════════════════════════════════════════
   // WAREHOUSE — full IF pull + PO check-in/view
   // ═══════════════════════════════════════════
-  // Extract real size keys (numeric) from a pick/po line, ordered by SZ_ORD.
-  const whSizes=(obj)=>Object.keys(obj||{}).filter(k=>SZ_ORD.includes(k)&&typeof obj[k]==='number').sort((a,b)=>SZ_ORD.indexOf(a)-SZ_ORD.indexOf(b));
+  // Extract real size keys (numeric) from a pick/po line. Match desktop warehouse receive:
+  // exclude meta keys, accept any numeric bucket (QTY, OS, OSFA, apparel sizes, etc.).
+  // SZ_ORD alone misses qty-only / one-size lines and left those SKUs blank on mobile check-in.
+  const whSizes=(obj)=>{
+    const ordIdx=(k)=>{const i=SZ_ORD.indexOf(k);return i===-1?999:i};
+    return numericSizeKeys(obj).sort((a,b)=>ordIdx(a)-ordIdx(b));
+  };
   const whProd=(it)=>prod.find(x=>x.id===it?.product_id)||prod.find(x=>x.sku===it?.sku)||null;
 
   // Open IFs (pick groups not yet fully pulled) across active orders, grouped by SO + pick_id.

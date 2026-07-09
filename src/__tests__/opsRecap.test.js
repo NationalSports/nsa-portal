@@ -6,7 +6,7 @@
 
 const {
   soFulfillment, isShippedNotInvoiced, isReadyToInvoice, soGoodsValue,
-  quoteAgeDays, quoteColdBucket,
+  quoteAgeDays, quoteColdBucket, numericSizeKeys, NON_SIZE,
 } = require('../lib/opsRecap');
 
 // Minimal SO: one line fully covered, jobs optional.
@@ -77,6 +77,30 @@ describe('soGoodsValue', () => {
       ],
     });
     expect(soGoodsValue(so)).toBe(100);
+  });
+});
+
+describe('numericSizeKeys (mobile/desktop PO size discovery)', () => {
+  // Regression: mobile check-in used SZ_ORD.includes and blanked lines whose qty
+  // lived under QTY (qty_only) or OS (one-size hats/caps) — desktop already used
+  // meta-exclusion and showed those buckets.
+  test('accepts QTY and OS buckets that are not in SZ_ORD', () => {
+    const po = {
+      po_id: 'NSA 3457', vendor: 'SanMar', status: 'partial',
+      OS: 24, QTY: 10, unit_cost: 12.5, drop_ship: false,
+      received: { OS: 0 }, cancelled: {}, shipments: [],
+    };
+    expect(numericSizeKeys(po).sort()).toEqual(['OS', 'QTY']);
+  });
+
+  test('keeps apparel sizes and drops PO meta / underscore keys', () => {
+    const po = {
+      S: 2, M: 3, L: 1, status: 'waiting', po_id: 'PO-1', vendor: 'SanMar',
+      unit_cost: 8, received: {}, cancelled: {}, shipments: [],
+      _bill_details: 1, email_history: 0,
+    };
+    expect(numericSizeKeys(po).sort()).toEqual(['L', 'M', 'S']);
+    expect(NON_SIZE.has('email_history')).toBe(true);
   });
 });
 
