@@ -7402,8 +7402,26 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name');
-    setTemplates(data || []); setLoading(false);
+    const [{ data }, { data: tplStores }] = await Promise.all([
+      supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name'),
+      supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+    ]);
+    // Store templates (Templates tab / "Save as template") join the gallery too: each
+    // becomes a pseudo item-template — its single items as {sku, price, …} entries — so
+    // the same "Add to store" color-picker flow applies them. Packages don't carry here.
+    let storeTpls = [];
+    const ids = (tplStores || []).map((s) => s.id);
+    if (ids.length) {
+      const { data: rows } = await supabase.from('webstore_products').select('store_id,kind,sku,retail_price,fundraise_amount,category,kit_name,required').in('store_id', ids).order('sort_order');
+      const byStore = new Map();
+      (rows || []).forEach((r) => {
+        if (r.kind !== 'single' || !r.sku) return;
+        if (!byStore.has(r.store_id)) byStore.set(r.store_id, []);
+        byStore.get(r.store_id).push({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required });
+      });
+      storeTpls = (tplStores || []).map((s) => ({ id: 'ws:' + s.id, name: s.name, sport: null, brand_focus: null, gender: null, items: byStore.get(s.id) || [], _storeTpl: true })).filter((t) => t.items.length);
+    }
+    setTemplates([...storeTpls, ...(data || [])]); setLoading(false);
   }, []);
   useEffect(() => { (async () => { try { const { data } = await supabase.auth.getUser(); setMyEmail(data?.user?.email || ''); } catch (e) { /* */ } })(); load(); }, [load]);
 
@@ -7489,6 +7507,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          {t._storeTpl && chip('Store template', '#fefce8', '#a16207')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
@@ -7496,8 +7515,8 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                         <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
                           <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
-                          {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
-                          {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                          {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
+                          {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
                       </div>
                     ))}
