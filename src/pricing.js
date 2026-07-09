@@ -1,6 +1,9 @@
 /* eslint-disable */
 import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
 import { safeNum, safeJobs } from './safeHelpers';
+// Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
+// in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
+import { isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 
 // ── Utility helpers ──
 export const rQ=v=>Math.round(v*4)/4;
@@ -234,8 +237,10 @@ export const calcOrderMargin=(o,allOrders)=>{
   // Combined deco-cost tier qty for manually-linked jobs sharing a screen across orders. Empty
   // (no combine) when allOrders is omitted, so existing single-arg callers are unchanged.
   const comb=linkedArtCostQty(o,artQty,allOrders);
+  // Precompute once — same gate as Costs tab / OrderEditor totals / calcGP (keep in sync).
+  const outByItem=outsourcedDecoTypes(o);
   let rev=0,cost=0;
-  items.forEach(it=>{
+  items.forEach((it,ii)=>{
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
     if(!q)return;
@@ -245,7 +250,8 @@ export const calcOrderMargin=(o,allOrders)=>{
     }
     if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
     else{cost+=q*_sNum(it.nsa_cost)}
-    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=decoCostAt(d,q,af,cq,comb)})
+    // Sell always counts (customer still pays); in-house cost is suppressed when a deco PO covers it.
+    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);if(!isDecoOutsourced(o,ii,d,outByItem))cost+=decoCostAt(d,q,af,cq,comb)})
   });
   // SO-level decoration POs (outside-deco + Topstar) are a real cost the customer is billed for.
   // calcTotals and the Reports page already count these; include them here too so the dashboard
@@ -277,8 +283,11 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
     if(!q)return;
     _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
+  // Outside-deco cost lives on deco_pos (not per-line); suppress phantom in-house deco cost
+  // so outsourced lines aren't wrongly treated as thin-margin (SO-1397).
+  const outByItem=outsourcedDecoTypes(o);
   let total=0;
-  items.forEach(it=>{
+  items.forEach((it,ii)=>{
     if(it.is_free_promo)return;
     const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
     const q=sq>0?sq:_sNum(it.est_qty);
@@ -293,7 +302,7 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
       const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;
       const dp=dP(d,q,af,cq);
       const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);
-      rev+=eq*_sNum(dp.sell);cost+=eq*_sNum(dp.cost);
+      rev+=eq*_sNum(dp.sell);if(!isDecoOutsourced(o,ii,d,outByItem))cost+=eq*_sNum(dp.cost);
     });
     const margin=rev>0?(rev-cost)/rev:0;
     if(margin>=minMargin)total+=rev;

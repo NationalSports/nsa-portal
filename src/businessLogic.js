@@ -186,9 +186,10 @@ const decoConcreteType = (o, d) => {
 };
 // THE unified in-house↔outside switch. A decoration is produced outside when it carries a legacy
 // kind:'outside_deco', or a covering deco PO (SO-level o.deco_pos or an item-level outside-deco PO
-// line) matches its resolved type. This is the single gate BOTH job creation (syncJobs) and cost
-// accounting (Costs tab) read, so routing a decoration onto a deco PO suppresses its in-house job
-// AND its in-house cost together — never double-counting the in-house cost against the PO's bill.
+// line) matches its resolved type. This is the single gate job creation (syncJobs) AND every cost
+// walk read (Costs tab, OrderEditor totals, calcGP, soCalc, calcOrderMargin, calcTotals) — so
+// routing a decoration onto a deco PO suppresses its in-house job AND its in-house cost together,
+// never double-counting the in-house cost against the PO's bill (SO-1397).
 // Pass a precomputed outsourcedDecoTypes(o) as `outByItem` when calling inside an item loop.
 const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   if (!d) return false;
@@ -613,8 +614,11 @@ function calcTotals(o, cust) {
     safeDecos(it).forEach(d => { if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q } });
   });
   const af = safeArt(o);
+  // Same outsourced gate as Costs tab / OrderEditor totals / calcGP / calcOrderMargin —
+  // never add in-house deco cost for decorations a deco PO already covers (SO-1397).
+  const outByItem = outsourcedDecoTypes(o);
   let rev = 0, cost = 0;
-  safeItems(o).forEach(it => {
+  safeItems(o).forEach((it, ii) => {
     const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
     if (!q) return;
     rev += q * safeNum(it.unit_sell);
@@ -624,7 +628,7 @@ function calcTotals(o, cust) {
       const dp = dP(d, q, af, cq);
       const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
       rev += eq * dp.sell;
-      cost += eq * dp.cost;
+      if (!isDecoOutsourced(o, ii, d, outByItem)) cost += eq * dp.cost;
     });
     // Legacy per-item outside-deco POs: the supplier-bill refactor moved these
     // onto o.deco_pos[], but historical orders still carry them on items[].po_lines —

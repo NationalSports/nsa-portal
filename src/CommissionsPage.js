@@ -4,7 +4,7 @@
 // behavior-identical to the old closure call.
 import { useAppData } from './AppContext';
 import { calcSOStatus } from './components';
-import { commissionRepId } from './businessLogic';
+import { commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
@@ -51,14 +51,17 @@ export default function CommissionsPage(){
       // Garment rev/cost must match the SO detail page and Reports pipeline (rReports.soCalc):
       // per-size sells/costs for 2XL+ upcharges, and actual PO unit_cost over catalog nsa_cost.
       // Commission pays on this GP, so a flat unit_sell/nsa_cost walk paid reps on a wrong number.
+      // Outsourced gate mirrors OrderEditor totals / Costs tab — never double-count in-house
+      // deco cost against a covering deco PO (SO-1397 understated GP/commission).
       const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
-      safeItems(so).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sq>0?sq:safeNum(it.est_qty);if(!qty)return;
+      const outByItem=outsourcedDecoTypes(so);
+      safeItems(so).forEach((it,ii)=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sq>0?sq:safeNum(it.est_qty);if(!qty)return;
         if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=qty*safeNum(it.unit_sell)}
         let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
         if(poQty>0){cost+=poCost;const uncov=Math.max(0,qty-poQty);if(uncov>0){if(it._sizeCosts&&sq>0){const tot=Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0);const avg=sq>0?tot/sq:safeNum(it.nsa_cost);cost+=uncov*avg}else{cost+=uncov*safeNum(it.nsa_cost)}}}
         else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
         else{cost+=qty*safeNum(it.nsa_cost)}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
       });
       // Outside deco POs — SO-level cost bucket
       (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -168,9 +171,10 @@ export default function CommissionsPage(){
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const _comb=linkedArtCostQty(so,_aq,sos);
         const af=safeArt(so);let rev=0,cost=0;
-        safeItems(so).forEach(it=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+        const outByItem=outsourcedDecoTypes(so);
+        safeItems(so).forEach((it,ii)=>{const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
           rev+=qty*safeNum(it.unit_sell);cost+=qty*safeNum(it.nsa_cost);
-          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;cost+=qty*_decoUnitCostComb(d,qty,af,cq,_comb)});
+          safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);rev+=qty*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=qty*_decoUnitCostComb(d,qty,af,cq,_comb)});
         });
         (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
         const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
@@ -200,12 +204,13 @@ export default function CommissionsPage(){
         const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+q2}})});
         const _comb=linkedArtCostQty(so,_aq,sos);
         const soAf=safeArt(so);let productCost=0,decoCost=0,promoRev=0;
-        safeItems(so).forEach(it=>{
+        const outByItem=outsourcedDecoTypes(so);
+        safeItems(so).forEach((it,ii)=>{
           const qty=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);if(!qty)return;
           if(it.is_promo){
             productCost+=qty*safeNum(it.nsa_cost);
             const sellP=safeNum(it.retail_price)||safeNum(it.nsa_cost)*2;promoRev+=qty*sellP;
-            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
+            safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,soAf,cq);if(!isDecoOutsourced(so,ii,d,outByItem))decoCost+=qty*_decoUnitCostComb(d,qty,soAf,cq,_comb);promoRev+=qty*rQ(dp2.sell*1.25)});
           }
         });
         // Outside deco POs — only if promo-qualifying items are covered. Simpler: add all SO deco.
