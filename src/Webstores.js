@@ -1071,6 +1071,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
   const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
   const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
+  const [templateFor, setTemplateFor] = useState(null);         // store being saved as a template → SaveAsTemplateModal
 
   // "Create from OMG" — the single unified entry point for turning an OMG report link into a
   // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
@@ -1625,7 +1626,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
     if (error) { flash('Could not duplicate: ' + error.message); return; }
 
-    const { data: srcProducts } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+    const { data: srcProductsAll } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+    // opts.itemIds (from "Save as template") limits the copy to the picked catalog items;
+    // absent = copy the whole catalog (plain Duplicate / Clone & Rebrand / Start Store).
+    const wantIds = opts.itemIds ? new Set(opts.itemIds) : null;
+    const srcProducts = wantIds ? (srcProductsAll || []).filter((p) => wantIds.has(p.id)) : (srcProductsAll || []);
     const idMap = {}; // old webstore_product id -> new id
     for (const p of (srcProducts || [])) {
       const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
@@ -1655,13 +1660,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
   // catalog only, no logo). The source store is left untouched and stays in the store list;
   // the template appears in the Templates tab and the coach store builder's item pool.
-  const saveAsTemplate = useCallback((store) => {
-    const name = window.prompt('Name this template (labels it in the Templates tab and the coach builder — shoppers never see it):', `${store.name} Template`);
-    if (name == null) return; // cancelled
-    const trimmed = name.trim();
-    if (!trimmed) { flash('A template needs a name'); return; }
-    duplicateStore(store, { asTemplate: true, name: trimmed });
-  }, [duplicateStore, flash]);
+  const saveAsTemplate = useCallback((store) => setTemplateFor(store), []);
+  // Confirmed from the modal: clone the store into a template carrying only the picked items.
+  const confirmSaveAsTemplate = useCallback(async (name, itemIds) => {
+    if (templateFor) await duplicateStore(templateFor, { asTemplate: true, name, itemIds });
+    setTemplateFor(null);
+  }, [templateFor, duplicateStore]);
 
   // Remove a template: un-flags it (is_template=false) so it's no longer a template and
   // returns to the normal store list as a draft. Non-destructive — never deletes a store.
@@ -3000,6 +3004,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
+      {templateFor && <SaveAsTemplateModal store={templateFor} onClose={() => setTemplateFor(null)} onConfirm={confirmSaveAsTemplate} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
@@ -7815,6 +7820,98 @@ function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
 
 // Pick an existing store to bolt a template onto (used by the Templates-page "Add to a
 // store" action). Lists live (non-template) stores, searchable by store or club name.
+// "Save as template" dialog: name the template and pick which catalog items carry over
+// (all selected by default). Confirming clones the store into a separate is_template store
+// with only the chosen items — the source store is untouched and stays in the store list.
+function SaveAsTemplateModal({ store, onClose, onConfirm }) {
+  const [name, setName] = useState(`${store?.name || ''} Template`);
+  const [items, setItems] = useState([]);
+  const [sel, setSel] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const { data: prods } = await supabase.from('webstore_products').select('id,kind,product_id,sku,display_name,retail_price,sort_order,active').eq('store_id', store.id).order('sort_order');
+      const rows = prods || [];
+      const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+      const imgByPid = {}; const nameByPid = {};
+      if (pids.length) {
+        const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
+        (pr || []).forEach((p) => { imgByPid[p.id] = p.image_front_url; nameByPid[p.id] = p.name; });
+      }
+      const built = rows.map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        name: r.display_name || nameByPid[r.product_id] || r.sku || '(unnamed item)',
+        image: r.kind === 'bundle' ? null : (imgByPid[r.product_id] || null),
+        sku: r.sku || '',
+        price: r.retail_price,
+        active: r.active !== false,
+      }));
+      if (!cancelled) { setItems(built); setSel(new Set(built.map((b) => b.id))); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [store]);
+  const toggle = (id) => setSel((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const setAll = (on) => setSel(on ? new Set(items.map((i) => i.id)) : new Set());
+  const trimmed = name.trim();
+  const canSave = !!trimmed && sel.size > 0 && !busy && !loading;
+  const confirm = async () => { if (!canSave) return; setBusy(true); await onConfirm(trimmed, [...sel]); };
+  return (
+    <div onClick={busy ? undefined : onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 620, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Save as template</div>
+            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, maxWidth: 470 }}>Copies the selected items into a reusable template. “{store?.name}” stays in your store list, and logos never carry over — items only.</div>
+          </div>
+          <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: busy ? 'default' : 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '16px 18px 10px' }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px', color: '#64748b', marginBottom: 6 }}>Template name</label>
+          <input className="form-input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Women's Volleyball Team Store" style={{ width: '100%' }} />
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shoppers never see this — it labels the template in the Templates tab and the coach store builder.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderTop: '1px solid #eef0f3', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>{loading ? 'Loading items…' : `Including ${sel.size} of ${items.length} item${items.length === 1 ? '' : 's'}`}</span>
+          <span style={{ marginLeft: 'auto' }} />
+          {!loading && items.length > 0 && <>
+            <button type="button" onClick={() => setAll(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAll(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </>}
+        </div>
+        <div style={{ padding: 12, maxHeight: '44vh', overflowY: 'auto' }}>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading items…</div>
+            : items.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>This store has no catalog items to template.</div>
+            : items.map((it) => {
+              const on = sel.has(it.id);
+              return (
+                <button key={it.id} type="button" onClick={() => toggle(it.id)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, border: `1px solid ${on ? '#c7d7fb' : '#eef1f5'}`, borderRadius: 10, padding: '8px 12px', background: on ? '#f5f8ff' : '#fff', cursor: 'pointer', fontFamily: 'inherit', marginBottom: 6 }}>
+                  <input type="checkbox" readOnly checked={on} style={{ width: 16, height: 16, flexShrink: 0, accentColor: '#1d4ed8' }} />
+                  <div style={{ width: 38, height: 38, borderRadius: 7, background: '#f1f5f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    {it.image ? <img src={it.image} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 15 }}>{it.kind === 'bundle' ? '📦' : '👕'}</span>}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}{it.kind === 'bundle' ? ' · Package' : ''}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{it.sku ? it.sku + ' · ' : ''}{it.price != null ? '$' + Number(it.price).toFixed(2) : ''}{it.active === false ? ' · archived' : ''}</div>
+                  </div>
+                </button>
+              );
+            })}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={!canSave} onClick={confirm}>{busy ? 'Saving…' : `Save template${!loading && sel.size ? ` (${sel.size} item${sel.size === 1 ? '' : 's'})` : ''}`}</button>
+          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          {!loading && !busy && !trimmed && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Name required</span>}
+          {!loading && !busy && trimmed && sel.size === 0 && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Pick at least one item</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StorePickerModal({ stores = [], custName = () => '', title = 'Pick a store', onPick, onClose }) {
   const [q, setQ] = useState('');
   const ql = q.trim().toLowerCase();
