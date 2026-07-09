@@ -19,6 +19,27 @@ describe('hydrateStoreArt', () => {
     const [out] = hydrateStoreArt([snapshot], [live]);
     expect(out.web_logos).toEqual(liveWls);
   });
+  // The real Oak Grove case: the store has a bare upload "Oak Grove Football" while the
+  // artist built the color ways on "11in Oak Grove Football" — different id, different image,
+  // name differs only by the print-size prefix.
+  test('bridges a bare store upload to the artist\'s size-prefixed library art', () => {
+    const snapshot = { id: 'logo_upload', name: 'Oak Grove Football', deco_type: 'screen_print', web_logo_url: 'raw.png', color_ways: [] };
+    const live = { id: 'caf_art', name: '11in Oak Grove Football', deco_type: 'screen_print', web_logo_url: 'royal.png', color_ways: liveCws, web_logos: liveWls };
+    const [out] = hydrateStoreArt([snapshot], [live]);
+    // identity stays the store record's; only color-way data is overlaid
+    expect(out.id).toBe('logo_upload');
+    expect(out.web_logos).toEqual(liveWls);
+    expect(out.color_ways).toEqual(liveCws);
+    expect(autoColorChoice(out, 'White')).toMatchObject({ kind: 'variant', url: 'light.png', colorWayId: 'cw_l' });
+    expect(autoColorChoice(out, 'True Royal')).toMatchObject({ kind: 'variant', url: 'royal.png', colorWayId: 'cw_r' });
+  });
+  test('never regresses a store record that has richer web logos than the live copy', () => {
+    const snapshot = { id: 's1', name: 'Crest', deco_type: 'screen_print', web_logos: liveWls, color_ways: liveCws };
+    const emptyLive = { id: 's1', name: 'Crest', deco_type: 'screen_print', web_logos: [], color_ways: [] };
+    const [out] = hydrateStoreArt([snapshot], [emptyLive]);
+    expect(out.web_logos).toEqual(liveWls);
+    expect(out.color_ways).toEqual(liveCws);
+  });
   test('no name match across different deco methods; no live copy leaves the snapshot as-is', () => {
     const snapshot = { id: 'a2', name: 'Crest', deco_type: 'screen_print', web_logo_url: 'orig.png' };
     const emb = { id: 'a_emb', name: 'Crest', deco_type: 'embroidery', web_logos: liveWls };
