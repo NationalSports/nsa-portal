@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -6550,12 +6550,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {soInvTotal>0&&<div style={{fontSize:11,color:'#047857',marginTop:4,padding:'4px 8px',background:'#d1fae5',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO.</div>}
           </div>}
 
-          {/* Final: warning about closing SO */}
-          {invType==='final'&&<div style={{marginBottom:12,padding:12,background:invTotal===0?'#f0fdf4':'#fef2f2',border:'1px solid '+(invTotal===0?'#a7f3d0':'#fecaca'),borderRadius:8}}>
-            <div style={{fontWeight:700,color:invTotal===0?'#047857':'#dc2626',fontSize:13,marginBottom:4}}>{invTotal===0?'Close Sales Order':'Final Invoice'}</div>
-            <div style={{fontSize:12,color:invTotal===0?'#065f46':'#991b1b'}}>{invTotal===0?<>This order is <strong>fully covered</strong> by prior invoices or deposits. Clicking below will mark <strong>{o.id}</strong> as Complete — no additional charge.</>:<>This will invoice the full order amount and mark <strong>{o.id}</strong> as <strong>Complete</strong>.</>}</div>
-            {soInvTotal>0&&invTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
-          </div>}
+          {/* Final: warning about closing SO.
+              Distinguish "already covered by prior invoices/deposits" from a true $0 order
+              (FREE PROMO garment with no billable deco, etc.) that still needs a $0 invoice. */}
+          {invType==='final'&&(()=>{
+            const _zeroCovered=shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied});
+            const _zeroInvoice=invTotal===0&&!_zeroCovered;
+            return<div style={{marginBottom:12,padding:12,background:invTotal===0?'#f0fdf4':'#fef2f2',border:'1px solid '+(invTotal===0?'#a7f3d0':'#fecaca'),borderRadius:8}}>
+              <div style={{fontWeight:700,color:invTotal===0?'#047857':'#dc2626',fontSize:13,marginBottom:4}}>{_zeroCovered?'Close Sales Order':_zeroInvoice?'$0 Invoice':'Final Invoice'}</div>
+              <div style={{fontSize:12,color:invTotal===0?'#065f46':'#991b1b'}}>{_zeroCovered?<>This order is <strong>fully covered</strong> by prior invoices or deposits. Clicking below will mark <strong>{o.id}</strong> as Complete — no additional charge.</>:_zeroInvoice?<>This order totals <strong>$0</strong> (promo / free garment). Clicking below creates a <strong>$0 invoice</strong> and marks <strong>{o.id}</strong> as Complete.</>:<>This will invoice the full order amount and mark <strong>{o.id}</strong> as <strong>Complete</strong>.</>}</div>
+              {soInvTotal>0&&invTotal>0&&<div style={{fontSize:11,color:'#b91c1c',marginTop:4,padding:'4px 8px',background:'#fee2e2',borderRadius:4}}>Note: ${soInvTotal.toLocaleString()} already invoiced on this SO. This final invoice will be for the full remaining order value.</div>}
+            </div>;
+          })()}
 
           {/* Memo + Invoice Date */}
           <div style={{display:'grid',gridTemplateColumns:'1fr 160px',gap:12,marginBottom:12}}>
@@ -6617,18 +6623,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <span style={{fontSize:12,color:'#1e40af',fontWeight:600}}>Deposit ({invDepositPct}%)</span>
               <span style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>${invTotal.toFixed(2)}</span>
             </div>}
-            <div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'2px solid #e2e8f0'}}>
-              <span style={{fontSize:14,fontWeight:800}}>{invType==='final'&&invTotal===0?'Balance Due':'Invoice Total'}</span>
-              <span style={{fontSize:18,fontWeight:800,color:invType==='final'&&invTotal===0?'#16a34a':'#dc2626'}}>${invTotal.toFixed(2)}{invType==='final'&&invTotal===0?' — Fully Paid':''}</span>
-            </div>
+            {(()=>{
+              const _zeroCovered=shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied});
+              return<div style={{display:'flex',justifyContent:'space-between',paddingTop:8,borderTop:'2px solid #e2e8f0'}}>
+                <span style={{fontSize:14,fontWeight:800}}>{_zeroCovered?'Balance Due':'Invoice Total'}</span>
+                <span style={{fontSize:18,fontWeight:800,color:invType==='final'&&invTotal===0?'#16a34a':'#dc2626'}}>${invTotal.toFixed(2)}{_zeroCovered?' — Fully Paid':invType==='final'&&invTotal===0?' — $0':''}</span>
+              </div>;
+            })()}
           </div>
         </div>
         <div className="modal-footer">
           <button className="btn btn-secondary" onClick={()=>setShowInvCreate(false)}>Cancel</button>
           <button className="btn btn-primary" style={invType==='final'&&invTotal===0?{background:'#16a34a',borderColor:'#16a34a'}:invType==='final'?{background:'#dc2626',borderColor:'#dc2626'}:{}} disabled={invCreating||(invType==='partial'&&invSelItems.length===0)} onClick={async()=>{
             if(invCreating)return;// double-click guard — a second click would mint a second invoice with the same id
-            // When Final invoice is $0 (fully covered by prior invoices/deposits), skip creating a $0 invoice and just close the SO
-            if(invType==='final'&&invTotal===0&&!isPromoOrder){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
+            // When Final is $0 AND prior invoices/deposits already cover the balance, skip a
+            // redundant $0 invoice and just close the SO. Never-invoiced $0 orders (FREE PROMO
+            // with no billable deco, etc.) still get a $0 invoice for AR/audit + promo paid-spend.
+            if(shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied})){const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed — fully paid');setShowInvCreate(false);return;}
             setInvCreating(true);
             try{
             const invId=nextInvId(allInvoices);
@@ -6643,7 +6654,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(invType!=='deposit'&&qty===0)return null;
               const decoSell=safeDecos(it).reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp2=dP(d,qty,safeArt(o),cq);return a+(dp2._nq!=null?(totalQty>0?dp2._nq/totalQty:0)*dp2.sell:(d.reversible?2:1)*dp2.sell)},0);
               // Blended per-each sell so per-size 2XL+ upcharges are billed (matches the SO total).
-              const perEachSell=it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell);
+              // FREE PROMO garments bill $0 garment + deco only (matches SO / itemTotals above).
+              const garmentEach=it.is_free_promo?0:(it._sizeSells&&_szQty>0?(Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0)/_szQty):safeNum(it.unit_sell));
+              const perEachSell=garmentEach;
               const lineAmt=qty*(perEachSell+decoSell);
               return{desc:it.sku+' '+it.name+(it.color?' — '+it.color:''),qty,rate:perEachSell+decoSell,amount:invType==='deposit'?Math.round(lineAmt*invDepositPct/100*100)/100:lineAmt,
                 _sku:it.sku,_name:it.name,_color:it.color,_so_line_key:soLineKey(it,idx)}}).filter(Boolean);
@@ -6655,9 +6668,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // prints the address the order actually ships to, not the customer default.
             const shipToSel=resolveOrderShipTo(o,cust);
             const shippingOverride=shipToSel?{shipping_name:shipToSel.name||cust?.name||'',shipping_address:shipToSel.text||[shipToSel.street,shipToSel.city,shipToSel.state,shipToSel.zip].filter(Boolean).join(', ')}:null;
+            // $0 invoices (promo / free garment) must be status 'paid' — soIsPaid treats $0
+            // totals as paid only when every related invoice is marked paid.
+            const _roundedTotal=Math.round(invTotal*100)/100;
             const inv={id:invId,type:'invoice',inv_type:invType,customer_id:o.customer_id,so_id:o.id,
-              date:_invDateStr,due_date:dueDate,total:Math.round(invTotal*100)/100,paid:0,
-              memo:invMemo||defaultMemo,status:'open',_rep:o.created_by||cu.id,
+              date:_invDateStr,due_date:dueDate,total:_roundedTotal,paid:0,
+              memo:invMemo||defaultMemo,status:_roundedTotal===0?'paid':'open',_rep:o.created_by||cu.id,
               tax:Math.round(invTaxAmt*100)/100,tax_rate:o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0),tax_exempt:o.tax_exempt||cust?.tax_exempt||false,shipping:Math.round((invShipAmt+_priorShipBill)*100)/100,
               ...(invType==='deposit'?{deposit_pct:invDepositPct}:{}),
               ...(billingOverride?{billing_name:billingOverride.label||'',billing_address:[billingOverride.street,billingOverride.city,billingOverride.state,billingOverride.zip].filter(Boolean).join(', ')}:{}),
@@ -6666,7 +6682,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ...(invCredit>0?{credit_amount:Math.round((invType==='deposit'?invCredit*invDepositPct/100:invCredit)*100)/100}:{}),
               ...(depositApplied>0?{deposit_applied:Math.round(depositApplied*100)/100}:{}),
               line_items:lineItems,
-              items:activeItems.map(idx=>{const it=items[idx];const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:safeNum(it.unit_sell)}})};
+              items:activeItems.map(idx=>{const it=items[idx];const _sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return{sku:it.sku,name:it.name,qty:_sq>0?_sq:safeNum(it.est_qty),unit_sell:it.is_free_promo?0:safeNum(it.unit_sell)}})};
             let invSaved=true;
             if(invType==='final'&&onInvCommit){
               // Persist the invoice and WAIT — only a confirmed invoice save may close the SO.
@@ -6688,7 +6704,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSmsPhone(contact?.phone||'');setInvSmsEnabled(_smsUiEnabled&&!!contact?.phone);setInvFollowUpDays(portalSettings?.invFollowUpDays||7);setInvFollowUp(seedFollowUp(inv));setInvSendAt(_invDateStr);
             setInvSmsMsg('Hi '+(contact?.name||'Coach')+', your invoice '+inv.id+' for $'+invTotal.toFixed(2)+' is ready. Due by '+dueDate+'. View: https://nationalsportsapparel.com/coach?portal='+(cust?.alpha_tag||''));
             }finally{setInvCreating(false)}
-          }}>{isPromoOrder&&invTotal===0?(invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice'):invType==='final'&&invTotal===0?'Close Sales Order — Fully Paid':(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')+' — $'+invTotal.toFixed(2)}</button>
+          }}>{(()=>{
+            const _zeroCovered=shouldSkipZeroFinalInvoice({invType,invTotal,isPromoOrder,priorInvs:soInvs,depositApplied});
+            if(isPromoOrder&&invTotal===0)return invType==='final'?'Close Promo Order — $0 Invoice':'Create $0 Promo Invoice';
+            if(_zeroCovered)return'Close Sales Order — Fully Paid';
+            if(invType==='final'&&invTotal===0)return'Create $0 Invoice — Close SO';
+            return(invType==='final'?'Create Final Invoice — Close SO':invType==='full'?'Create Invoice — SO Stays Open':'Create '+invType.charAt(0).toUpperCase()+invType.slice(1)+' Invoice')+' — $'+invTotal.toFixed(2);
+          })()}</button>
         </div>
       </div></div>})()}
 
