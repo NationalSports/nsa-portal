@@ -9919,11 +9919,14 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
             return (
             <div key={g.key} onClick={() => { if (!selG) toggleStyle(g.key); }} title={selG ? '' : 'Tap to select this style'} style={{ border: selG ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 12, padding: 8, background: '#fff', cursor: selG ? 'default' : 'pointer', boxShadow: selG ? '0 2px 10px rgba(79,70,229,.10)' : 'none' }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
-              {/* WYSIWYG: this stage must render EXACTLY like the storefront card (4:5, cover)
-                  — %-placement maps to a different visible spot if the crop/frame differs. */}
+              {/* WYSIWYG: this stage must render EXACTLY like the storefront (4:5 box, garment
+                  `contain`), so %-placement maps to the same spot on the garment. The storefront
+                  (Storefront.js DecoOverlay) fits the garment with objectFit:contain and positions
+                  the logo over that same frame — using `cover` here would crop/scale the garment
+                  differently and land the logo on a different part of it than the store shows. */}
               <div ref={(el) => { if (el) boxRefs.current[g.key] = el; else delete boxRefs.current[g.key]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
                 style={{ position: 'relative', aspectRatio: '4 / 5', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 9, overflow: 'hidden', touchAction: selG ? 'none' : 'auto' }}>
-                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
+                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
