@@ -5,10 +5,11 @@
  * key changes (regroup / position rename), we fall back to `art_file_id` so
  * workflow fields aren't lost.
  *
- * That fallback is unsafe when multiple jobs share one art file (hoodie + pants
- * with the same logo). Copying the first job registered for that art id bleeds
- * `rejections` / `coach_rejected` / `art_status` onto the sibling — the SO-1159
- * class ("pants comment on hoodie card", approved job shot back to Waiting for Art).
+ * That fallback is unsafe when multiple jobs share one art file. Copying the
+ * first job registered for that art id bleeds `rejections` / `coach_rejected` /
+ * `art_status` onto the sibling — approved jobs get shot back to Waiting for Art
+ * with another garment's coach comment. (Investigated after SO-1159; that order
+ * may also be a coach reject on the wrong job — the bleed class is real either way.)
  *
  * Rules:
  *  1. Prefer exact key match.

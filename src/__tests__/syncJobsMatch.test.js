@@ -1,6 +1,7 @@
 /**
- * Regression: SO-1159 — hoodie job inherited pants coach rejection via shared art_file_id.
- * syncJobs must not copy rejections/coach_rejected across sibling jobs that share a logo.
+ * Regression: syncJobs must not copy rejections/coach_rejected across sibling
+ * jobs that share a logo (art_file_id). Prompted by SO-1159 (hoodie card showed
+ * a pants coach comment); the shared-art bleed is the class under test.
  */
 import {
   buildExistingJobLookups,
@@ -70,7 +71,7 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(existing.rejections).toBeNull();
   });
 
-  test('SO-1159: shared art_file_id must NOT fall back when two jobs own the logo', () => {
+  test('shared art_file_id must NOT fall back when two jobs own the logo', () => {
     // Simulate a key change on the hoodie rebuild so key lookup misses — the old
     // bug then grabbed pants via existingByArtId['af-logo'] = first registered job.
     const lookups = buildExistingJobLookups([pants, hoodie]);
