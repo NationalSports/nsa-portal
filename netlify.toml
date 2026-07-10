@@ -168,6 +168,15 @@
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
 
+# SanMar product-only ("form") photo scrape — every 2 hours at :15. Replaces
+# model photography with the garment-only front/back shots from sanmar.com
+# product pages (products.image_flat_front_url/back; a DB trigger keeps
+# image_front_url pointed at the flat photo so the daily catalog syncs can't
+# clobber it). Per-style state in sanmar_flat_state; steady state is a near
+# no-op (60-day recheck).
+[functions."sanmar-flat-images-cron"]
+  schedule = "15 */2 * * *"
+
 # Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
 # safely after the 10:30 EST SI processing cutoff). The cron fires
 # sportslink-sync-background, which mirrors all active SI documents since the portal
