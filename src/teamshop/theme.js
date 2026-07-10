@@ -58,7 +58,11 @@ const CSS = `
   .nts-listing { grid-template-columns: 1fr; }
   .nts-sidebar { position: static; }
   .nts-header-tagline { display: none; }
-  .nts-header-grid { grid-template-columns: auto 1fr !important; }
+  /* Stack the menu bar centered on small screens: nav on top, utilities below,
+     both centered (the empty left spacer collapses away). */
+  .nts-header-row2 { grid-template-columns: 1fr !important; justify-items: center; gap: 10px !important; }
+  .nts-header-row2 > span:empty { display: none; }
+  .nts-header-row2 > div { justify-self: center !important; }
 }
 `;
 

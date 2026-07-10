@@ -207,32 +207,36 @@ export default function TeamShopApp() {
   return (
     <div className="nts-root" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#2A2F3E', fontFamily: FONT_BODY }}>
       <header style={{ position: 'sticky', top: 0, zIndex: 50, background: 'rgba(255,255,255,0.97)', backdropFilter: 'saturate(180%) blur(8px)', borderBottom: `1px solid ${BORDER}` }}>
-        <div style={{ maxWidth: 1280, margin: '0 auto', padding: '16px 24px 0' }}>
-          <div className="nts-header-grid" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 16 }}>
-            <span />
-            <button
-              onClick={() => setRoute('landing')}
-              style={{ display: 'flex', alignItems: 'center', gap: 13, justifySelf: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
-            >
+        <div style={{ maxWidth: 1200, margin: '0 auto', padding: '12px 24px 4px' }}>
+          {/* Centered brand lockup — logo dead-center, thin tagline balanced
+              beneath it so the whole mark reads as one centered unit. */}
+          <button
+            onClick={() => setRoute('landing')}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, margin: '0 auto', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+          >
+            <span style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               {/* Real National Sports Apparel logo (public/), light-bg treatment
                   per CoachPortal.js — size by height, never stretched. The
                   "Team Shop" sub-brand rides alongside it. */}
-              <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{ height: 44, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
-              <span style={displayType('clamp(15px, 1.7vw, 19px)', { letterSpacing: '0.18em', color: NAVY, lineHeight: 1, borderLeft: `1px solid ${BORDER}`, paddingLeft: 13 })}>Team Shop</span>
-            </button>
-            <span className="nts-header-tagline" style={{ justifySelf: 'end', textAlign: 'right', fontSize: 13.5, fontWeight: 500, color: TEXT_MUTED, maxWidth: 280, lineHeight: 1.45 }}>
+              <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{ height: 40, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+              <span style={displayType('clamp(15px, 1.7vw, 18px)', { letterSpacing: '0.18em', color: NAVY, lineHeight: 1, borderLeft: `1px solid ${BORDER}`, paddingLeft: 12 })}>Team Shop</span>
+            </span>
+            <span className="nts-header-tagline" style={{ fontSize: 12, fontWeight: 500, color: TEXT_MUTED, letterSpacing: '0.02em', lineHeight: 1.4 }}>
               Free decoration setup* · Saved logos · Fast turnaround, days not weeks*
             </span>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '14px 0', flexWrap: 'wrap' }}>
-            <nav style={{ display: 'flex', alignItems: 'center', gap: 30, flexWrap: 'wrap', margin: '0 auto' }}>
+          </button>
+          {/* Menu bar: nav centered, utilities pinned right via a balanced
+              1fr / auto / 1fr track so the nav stays optically centered. */}
+          <div className="nts-header-row2" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 16, padding: '8px 0 4px' }}>
+            <span />
+            <nav style={{ display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(route === 'catalog')}>Shop</button>
               <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(false)}>Apparel</button>
               <span style={inertNavStyle}>Decoration</span>
               <span style={inertNavStyle}>Team Stores</span>
               <span style={inertNavStyle}>Swift Ship</span>
             </nav>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 18, margin: '0 auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 18, justifySelf: 'end' }}>
               {/* TODO(teamshop-nav): search overlay — inert per mockup; catalog search lives in the sidebar. */}
               <span aria-hidden="true" style={{ color: NAVY, display: 'flex' }}>
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
