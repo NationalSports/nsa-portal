@@ -905,15 +905,20 @@ async function generateFlyerPdfBase64(store, items = []) {
     ? pkg._componentImages.slice(0, 4)
     : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items||[]).filter((i)=>i.active===false && i.image_front_url).map((i)=>i.image_front_url).slice(0, 4)));
   const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle').slice(0,8);
-  // Pre-load product images (best-effort, CORS permitting), including the package images.
+  // Pre-load product images (best-effort), including the package images. Supplier CDNs
+  // (cdnm.sanmar.com etc.) send no CORS headers, so a direct browser fetch() throws and
+  // the flyer rendered empty gray cards — go through image-proxy first (same pattern as
+  // QuickMockBuilder), falling back to a direct fetch for hosts the proxy doesn't allow.
   const imgCache = {};
+  const _imgB64 = async (u) => {
+    const toB64 = async (src) => { const resp = await fetch(src); if (!resp.ok) throw new Error('img ' + resp.status); const blob = await resp.blob(); return new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); }); };
+    try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
+    catch(_) { try { return await toB64(u); } catch(_) { return null; } }
+  };
   await Promise.all([...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].map(async (item) => {
     if (!item.image_front_url) return;
-    try {
-      const resp = await fetch(item.image_front_url);
-      const blob = await resp.blob();
-      imgCache[item.image_front_url] = await new Promise((res) => { const fr = new FileReader(); fr.onloadend = () => res(fr.result); fr.readAsDataURL(blob); });
-    } catch(_) {}
+    const b64 = await _imgB64(item.image_front_url);
+    if (b64) imgCache[item.image_front_url] = b64;
   }));
   const addImg = (b64, x, iy, w, h) => { try { const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x,iy,w,h,'','FAST'); return true; } catch(_) { return false; } };
   // Player Pack highlight band
