@@ -652,6 +652,13 @@ const _qrImg = (data, size = 300) => `https://quickchart.io/qr?size=${size}&marg
 const _hex = (v, fb) => (/^#[0-9a-fA-F]{6}$/.test(v || '') ? v : fb);
 const _fmtDate = (d) => (d ? new Date(String(d).slice(0, 10) + 'T00:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' }) : null);
 const _deliveryLabel = (store) => (store.delivery_mode === 'deliver_club' ? 'Delivered to the team' : "Shipped to each buyer's home");
+// The item's applied web logos (webstore_products.decorations), front side, not yet baked
+// into the photo — the same set the storefront's DecoOverlay composites at render time.
+// The flyers must draw these too or items show as blank undecorated garments.
+const _flyerDecos = (it) => (Array.isArray(it?.decorations) ? it.decorations : []).filter((d) => d && !d.baked && (d.side || 'front') === 'front' && d.art_url);
+// Resolved placement (a decoration's own x/y/w override the preset), in % of the
+// storefront card box the garment photo cover-fills.
+const _decoPos = (d) => { const pl = placementById(d.placement); return { x: d.x != null ? d.x : pl.x, y: d.y != null ? d.y : pl.y, w: d.w != null ? d.w : pl.w }; };
 
 // Launch email written for families (coach receives + forwards). Branded with team colors.
 function launchEmailHtml(store, portalUrl) {
@@ -744,7 +751,10 @@ function flyerHtml(store, items = []) {
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
   // Image fills the whole card; the price floats as a pill badge (team accent color)
   // over the bottom-left corner so the product photo gets the maximum area.
-  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<img src="${_esc(it.image_front_url)}" alt="" style="width:100%;height:100%;object-fit:contain;padding:8px"/>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  // Garment photo cover-fills a 4:5 box (the storefront card's geometry) so the applied
+  // web-logo decorations land at the same % placements shoppers see in the store.
+  const decoImgs = (it) => _flyerDecos(it).map((d) => { const p = _decoPos(d); return `<img src="${_esc(d.art_url)}" alt="" style="position:absolute;left:${p.x}%;top:${p.y}%;width:${p.w}%;transform:translate(-50%,-50%);filter:drop-shadow(0 1px 2px rgba(0,0,0,.2));z-index:1"/>`; }).join('');
+  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(it.image_front_url)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
@@ -915,12 +925,46 @@ async function generateFlyerPdfBase64(store, items = []) {
     try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
     catch(_) { try { return await toB64(u); } catch(_) { return null; } }
   };
-  await Promise.all([...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].map(async (item) => {
-    if (!item.image_front_url) return;
-    const b64 = await _imgB64(item.image_front_url);
-    if (b64) imgCache[item.image_front_url] = b64;
+  const urls = new Set();
+  [pkg, ...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].forEach((item) => {
+    if (!item) return;
+    if (item.image_front_url) urls.add(item.image_front_url);
+    _flyerDecos(item).forEach((d) => urls.add(d.art_url));
+  });
+  await Promise.all([...urls].map(async (u) => {
+    const b64 = await _imgB64(u);
+    if (b64) imgCache[u] = b64;
   }));
-  const addImg = (b64, x, iy, w, h) => { try { const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG'; doc.addImage(b64,fmt,x,iy,w,h,'','FAST'); return true; } catch(_) { return false; } };
+  // Contain-fit the image inside the (x,iy,w,h) box, centered — drawing at the raw box
+  // size stretched photos to the card's aspect ratio and they came out scrunched.
+  const addImg = (b64, x, iy, w, h) => { try {
+    const fmt=b64.startsWith('data:image/png')?'PNG':b64.startsWith('data:image/webp')?'WEBP':'JPEG';
+    let dw=w, dh=h, dx=x, dy=iy;
+    try { const p=doc.getImageProperties(b64); if (p.width>0 && p.height>0) { const s=Math.min(w/p.width, h/p.height); dw=p.width*s; dh=p.height*s; dx=x+(w-dw)/2; dy=iy+(h-dh)/2; } } catch(_) {}
+    doc.addImage(b64,fmt,dx,dy,dw,dh,'','FAST'); return {dx,dy,dw,dh};
+  } catch(_) { return false; } };
+  // Composite the item's applied web logos over its drawn garment photo, mirroring the
+  // storefront's DecoOverlay. Placements are % of a 4:5 card box the photo COVER-fills;
+  // the PDF CONTAIN-fits the photo instead, so map box-% → photo fractions → PDF points.
+  const drawDecos = (item, rect) => {
+    if (!rect || !item) return;
+    const gb64 = imgCache[item.image_front_url]; if (!gb64) return;
+    let gp; try { gp = doc.getImageProperties(gb64); } catch(_) { return; }
+    if (!(gp && gp.width > 0 && gp.height > 0)) return;
+    const cw = 0.8, ch = 1; // storefront card box aspect (4:5), arbitrary units
+    const s = Math.max(cw/gp.width, ch/gp.height);
+    const ox = (cw - gp.width*s)/2, oy = (ch - gp.height*s)/2;
+    _flyerDecos(item).forEach((d) => {
+      const b = imgCache[d.art_url]; if (!b) return;
+      let lp; try { lp = doc.getImageProperties(b); } catch(_) { return; }
+      const p = _decoPos(d);
+      const u = ((p.x/100)*cw - ox)/(gp.width*s), v = ((p.y/100)*ch - oy)/(gp.height*s);
+      const wpt = ((p.w/100)*cw)/(gp.width*s)*rect.dw;
+      const hpt = (lp.width > 0 && lp.height > 0) ? wpt*lp.height/lp.width : wpt;
+      const fmt = b.startsWith('data:image/png')?'PNG':b.startsWith('data:image/webp')?'WEBP':'JPEG';
+      try { doc.addImage(b, fmt, rect.dx + u*rect.dw - wpt/2, rect.dy + v*rect.dh - hpt/2, wpt, hpt, '', 'FAST'); } catch(_) {}
+    });
+  };
   // Player Pack highlight band
   if (pkg) {
     y += 14;
@@ -930,7 +974,7 @@ async function generateFlyerPdfBase64(store, items = []) {
     if (pkgImgs.length) {
       const bx=48, by=y+8, bw=72, bhh=bh-16;
       doc.setFillColor(255,255,255); doc.roundedRect(bx,by,bw,bhh,4,4,'F');
-      if (pkgImgs.length === 1) { const b=imgCache[pkgImgs[0]]; if (b) addImg(b, bx+4, by+4, bw-8, bhh-8); }
+      if (pkgImgs.length === 1) { const b=imgCache[pkgImgs[0]]; if (b) { const r = addImg(b, bx+4, by+4, bw-8, bhh-8); if (pkgImgs[0] === pkg.image_front_url) drawDecos(pkg, r); } }
       else { const cols=2, rows=Math.ceil(pkgImgs.length/2), cw=(bw-6)/cols, ch=(bhh-6)/rows; pkgImgs.forEach((u,k)=>{ const b=imgCache[u]; if(!b) return; const cx=bx+3+(k%2)*cw, cy=by+3+Math.floor(k/2)*ch; addImg(b, cx+1, cy+1, cw-2, ch-2); }); }
       tx = 132;
     }
@@ -955,7 +999,9 @@ async function generateFlyerPdfBase64(store, items = []) {
       const col=idx%4, row=Math.floor(idx/4), x=40+col*(colW+GAP), iy=y+row*(cardH+GAP);
       doc.setFillColor(255,255,255); doc.setDrawColor(231,223,208); doc.setLineWidth(0.4); doc.roundedRect(x,iy,colW,cardH,4,4,'FD');
       const b64=imgCache[item.image_front_url];
-      if(!(b64 && addImg(b64,x+5,iy+5,colW-10,cardH-10))){ doc.setFillColor(235,231,224); doc.rect(x+5,iy+5,colW-10,cardH-10,'F'); }
+      const r = b64 && addImg(b64,x+5,iy+5,colW-10,cardH-10);
+      if(!r){ doc.setFillColor(235,231,224); doc.rect(x+5,iy+5,colW-10,cardH-10,'F'); }
+      else drawDecos(item, r);
       if(item.retail_price){
         const lbl='$'+Math.round(Number(item.retail_price));
         doc.setFont('helvetica','bold'); doc.setFontSize(11); const tw=doc.getTextWidth(lbl);
@@ -1013,7 +1059,7 @@ async function loadFlyerItems(store) {
   // NOTE: webstore_products has NO is_bundle_parent column — selecting it 400s the whole query
   // (which silently emptied the flyer). Bundles are detected by kind==='bundle' below.
   const { data: cat } = await supabase.from('webstore_products')
-    .select('id,display_name,retail_price,image_url,product_id,kind,active')
+    .select('id,display_name,retail_price,image_url,product_id,kind,active,decorations')
     .eq('store_id', store.id).order('sort_order');
   const rows = cat || [];
   const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
