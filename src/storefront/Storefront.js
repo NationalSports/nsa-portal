@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
-import { placementById } from '../lib/artPlacements';
+import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
 
@@ -824,29 +824,8 @@ function bundleBadge(count, theme) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
-// Per-color web-logo override (mirrors the store builder): a deco's cw_by_color maps a
-// lowercased garment color -> the web logo to show for that color (e.g. a white logo on a
-// black tee); falls back to the placed art_url.
-const decoUrlForColor = (d, colorName) => {
-  const k = String(colorName || '').trim().toLowerCase();
-  const v = d && d.cw_by_color && k && d.cw_by_color[k]; // bare url (legacy) or { url, color_way_id }
-  return (typeof v === 'string' ? v : (v && v.url) || '') || (d && d.art_url) || '';
-};
-// Applied logo art (from webstore_products.decorations) composited on the
-// garment image at its placement — the on-screen mock shoppers see. colorName picks the
-// per-color web logo so the right color way shows for the active variant.
-function DecoOverlay({ decorations, side = 'front', colorName }) {
-  if (!Array.isArray(decorations)) return null;
-  // Skip `baked` decorations — their logo is already rendered into the garment image (a
-  // Quick Mock), so overlaying it again would double-stamp. They're retained on the record
-  // only so the store→SO conversion still knows what art to print.
-  return <>{decorations.filter((d) => d && !d.baked && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
-    const pl = placementById(d.placement);
-    // A decoration may carry its own x/y/w (editable placement) overriding the preset.
-    const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
-    return <img key={i} src={decoUrlForColor(d, colorName)} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
-  })}</>;
-}
+// decoUrlForColor + DecoOverlay moved to src/lib/decoOverlay.js (shared with the
+// Team Shop placement picker) — imported at the top of this file, rendering unchanged.
 
 // Sample number/name on the garment mockup so shoppers see an item is personalized.
 // Default back placement; the real value is entered at checkout. Mirrors the builder.
