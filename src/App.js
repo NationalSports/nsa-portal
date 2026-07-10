@@ -22899,7 +22899,11 @@ export default function App(){
     const _siUpsertDocs=async(docs)=>{
       if(!supabase)return 0;
       const dateOnly=v=>(String(v||'').match(/^\d{4}-\d{2}-\d{2}/)||[null])[0];
-      const rows=(docs||[]).filter(d=>d&&d.siDocNumber!=null).map(d=>{const b=mapSportsLinkDocToBill(d);return{
+      // Dedupe by siDocNumber first: the API pages by date order, so a doc that shifts pages
+      // mid-pull arrives twice — and Postgres rejects an upsert batch that hits the same key
+      // twice ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+      const seen=new Map();(docs||[]).forEach(d=>{if(d&&d.siDocNumber!=null)seen.set(d.siDocNumber,d)});
+      const rows=[...seen.values()].map(d=>{const b=mapSportsLinkDocToBill(d);return{
         si_doc_number:d.siDocNumber,supplier_doc_number:b.supplier_doc_number||null,po_number:b.po_number||null,supplier:b.supplier||null,
         si_doc_date:dateOnly(d.siDocDate),supplier_doc_date:dateOnly(d.supplierDocDate),ship_date:dateOnly(d.shipDate),due_date:dateOnly(d.dueDate),
         tracking_number:b.tracking||null,merchandise_total:b.merchandise_total,freight_amount:b.freight,si_upcharge:b.si_upcharge,doc_total:b.doc_total,
@@ -26481,7 +26485,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,flexWrap:'wrap',marginBottom:16}}>
                 <div>
                   <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:RED_LT}}>Sports Inc · Invoice Center</div>
-                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>documents captured</span></div>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{approve.length+review.length+grab.length+outside.length} <span style={{color:'rgba(255,255,255,.55)'}}>to work</span> <span style={{color:'rgba(255,255,255,.35)'}}>·</span> {captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>captured</span></div>
                 </div>
                 <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh'})}
@@ -26491,10 +26495,16 @@ export default function App(){
                 </div>
               </div>
               {siQueue.length>0&&<div style={{display:'flex',height:9,borderRadius:5,overflow:'hidden',background:'rgba(255,255,255,.14)'}}>
-                {[[captured.length,GREEN],[grab.length,GOLD],[outside.length,'#8790a3'],[approve.length+review.length,RED]].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
+                {[[captured.length,GREEN],[approve.length,'#6FD59A'],[review.length,RED],[grab.length,GOLD],[outside.length,'#8790a3']].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
               </div>}
-              <div style={{display:'flex',gap:24,marginTop:14,flexWrap:'wrap'}}>
-                {[['captured',captured.length,GREEN],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3'],['ready',approve.length,'#6FD59A'],['needs you',review.length,RED_LT]].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
+              {/* Legend spells out the arithmetic the header implies: done on the left; on the right,
+                  "to work" (the number on the Sports Inc tab badge) = the four open buckets. */}
+              <div style={{display:'flex',gap:14,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:GREEN}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{captured.length}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>captured · done</span></div>
+                <span style={{width:1,height:20,background:'rgba(255,255,255,.25)'}}/>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{approve.length+review.length+grab.length+outside.length}</span>
+                <span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>to work =</span>
+                {[['ready to review',approve.length,'#6FD59A'],['needs you',review.length,RED_LT],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3']].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}>{i>0&&<span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'rgba(255,255,255,.4)'}}>+</span>}<span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
               </div>
             </div>
             {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}

@@ -63,6 +63,12 @@ exports.handler = async () => {
   }
 
   // 2) Map to queue rows. Header fields + classification only — NOT the human-decision fields.
+  // Dedupe by siDocNumber first: date-ordered pagination can return the same doc on two pages
+  // if the list shifts mid-pull, and Postgres rejects an upsert batch that hits the same key
+  // twice ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+  const bySiDoc = new Map();
+  for (const d of docs) if (d && d.siDocNumber != null) bySiDoc.set(d.siDocNumber, d);
+  docs = [...bySiDoc.values()];
   const rows = docs.map((d) => {
     const lines = Array.isArray(d.lines) ? d.lines : [];
     const usable = lines.some((l) => String(l.supplierItemNumber || '').trim() && (num(l.quantityShipped) || 0) > 0);
