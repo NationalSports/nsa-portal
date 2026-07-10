@@ -64,6 +64,7 @@ async function applyArtDecision(admin, d, touchTs) {
   }
   const msg = error.message || '';
   if (/NSA_STALE_STATE/.test(msg)) return { ok: false, status: 409, code: 'stale_state', error: STALE_MSG };
+  if (/NSA_NOT_SENT/.test(msg)) return { ok: false, status: 409, code: 'not_sent', error: 'This proof has not been sent for your approval yet — your rep is still reviewing it.' };
   if (/NSA_MOCKS_CHANGED/.test(msg)) return { ok: false, status: 409, code: 'mocks_changed', error: 'The artwork changed while you were reviewing it — please refresh to see the latest version.' };
   if (/NSA_NOT_FOUND/.test(msg)) return { ok: false, status: 404, code: 'not_found', error: 'This artwork could not be found — please refresh the page.' };
   if (/NSA_BAD_INPUT/.test(msg)) return { ok: false, status: 400, code: 'bad_input', error: msg };
@@ -73,9 +74,11 @@ async function applyArtDecision(admin, d, touchTs) {
   // ── Pre-00172 fallback: guarded, complete write sets, sequential ──
   if (d.decision === 'approve') {
     if (!ART_DECISION_STATUSES.has(d.approved_status)) return { ok: false, status: 400, error: 'invalid approved_status' };
+    // A1: only art a rep actually FORWARDED may be decided — un-sent waiting_approval
+    // jobs are still under internal rep review (same guard as migration 00187's RPC).
     const { data: rows, error: jErr } = await admin.from('so_jobs')
       .update({ art_status: d.approved_status, coach_approved_at: new Date().toISOString(), coach_approval_comment: comment || null, coach_rejected: false })
-      .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'waiting_approval').select('id');
+      .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'waiting_approval').not('sent_to_coach_at', 'is', null).select('id');
     if (jErr) return { ok: false, status: 500, error: jErr.message };
     if (!rows || !rows.length) return { ok: false, status: 409, code: 'stale_state', error: STALE_MSG };
     if (artIds.length) {
@@ -90,7 +93,7 @@ async function applyArtDecision(admin, d, touchTs) {
     const prevRej = ((jrows || [])[0] || {}).rejections || [];
     const { data: rows, error: jErr } = await admin.from('so_jobs')
       .update({ art_status: 'art_requested', coach_rejected: true, sent_to_coach_at: null, coach_approved_at: null, rejections: [...prevRej, { reason: comment, by: 'Coach', at: now, rejected_at: now }] })
-      .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'waiting_approval').select('id');
+      .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'waiting_approval').not('sent_to_coach_at', 'is', null).select('id');
     if (jErr) return { ok: false, status: 500, error: jErr.message };
     if (!rows || !rows.length) return { ok: false, status: 409, code: 'stale_state', error: STALE_MSG };
     for (const aid of artIds) {
@@ -177,10 +180,11 @@ exports.handler = async (event) => {
       if (!Object.keys(patch).length) continue;
       // A patch that moves art_status is a coach decision from an OLD portal tab
       // (new tabs use artDecision above). Gate it on the job still awaiting the
-      // coach, so a link opened before a rep recall can't resurrect the job (H1).
+      // coach (H1) AND actually forwarded to the coach (A1 — un-sent art is still
+      // under internal rep review).
       if (Object.prototype.hasOwnProperty.call(patch, 'art_status')) {
         const { data: rows, error } = await admin.from('so_jobs').update(patch)
-          .eq('so_id', row.so_id).eq('id', row.id).eq('art_status', 'waiting_approval').select('id');
+          .eq('so_id', row.so_id).eq('id', row.id).eq('art_status', 'waiting_approval').not('sent_to_coach_at', 'is', null).select('id');
         if (error) errors.push('so_jobs ' + row.id + ': ' + error.message);
         else if (!rows || !rows.length) errors.push('so_jobs ' + row.id + ': ' + STALE_MSG);
         continue;

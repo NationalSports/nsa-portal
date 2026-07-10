@@ -346,13 +346,18 @@ export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attac
 // "DG648617"; null when the name carries no DG number.
 export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
 // Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached),
-// or, for embroidery, a .dst attached anywhere on the art — the .dst IS the production file, so it
-// confirms on its own even when prod_files_attached is an explicit false. Staleness after a
-// recall/update is gated by the art file's STATUS (it reads 'approved' only once the current art is
-// signed off), not by that flag, so an old .dst on a re-queued (waiting_for_art) design never counts.
+// or, for embroidery, a .dst attached to an art file whose CURRENT art is signed off
+// (status==='approved') — the .dst IS the production file, so a legit one confirms even when the
+// checkbox was never clicked. The status gate is what makes a recall/update safe: pulling art back
+// flips the file to waiting_for_art (and the artist's redo to needs_approval) WITHOUT stripping the
+// old .dst from prod_files, so an ungated .dst check would let the STALE stitch file skip the
+// separations re-check at every direct approve gate (Approve Artwork, moveArtStatus, the coach's
+// approve) — the machine would run the old design. (Regression 93401d1→fixed: the gate used to be
+// claimed-but-not-enforced here; the direct gates never check status before calling this.)
 // A file merely sitting in prod_files (e.g. an order PDF) is not enough; artProdFilesReady stays the
-// looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js.
-export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
+// looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
+// (which only runs its .dst check under the af.status==='approved' branch).
+export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
 // 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
 // dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.

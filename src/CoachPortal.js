@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, soLineKey, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -757,8 +757,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Resolve CC-pay setting; sub-customers inherit from their parent.
   const _parentForCC=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
   const ccDisabled=!!(customer.disable_cc_pay||(_parentForCC&&_parentForCC.disable_cc_pay));
-  // Artwork awaiting coach approval — surface at top of portal
-  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval');
+  // Artwork awaiting coach approval — surface at top of portal. ONLY art a rep actually
+  // forwarded (sent_to_coach_at): every artist mockup parks at waiting_approval for
+  // INTERNAL rep review first, and listing those here let a coach approve a draft the
+  // rep never sent — bypassing the rep-review gate entirely (audit A1).
+  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval'&&j.sent_to_coach_at);
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
@@ -1520,7 +1523,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:24,marginBottom:4}}>🎨</div>
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}
-          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
             {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
@@ -1529,6 +1533,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
+                // A coach must never approve a proof with unmocked garments — they'd be
+                // approving art they can't see. Same per-garment gate the rep side enforces
+                // (skusMissingMockups honors mock links and legacy general-mockup art).
+                const _liveJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id)||j;
+                const _mmC=skusMissingMockups(_liveJob,liveSO);
+                if(_mmC.length>0){alert('This proof is missing a mockup for: '+_mmC.join(', ')+'.\n\nPlease ask your rep to complete the proof — you can also use "Request Changes" below to send them a note.');return}
                 const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const coachComment=comment.trim();
                 // Folder already carries a confirmed production separation (checkbox, or an
