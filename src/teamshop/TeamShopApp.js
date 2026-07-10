@@ -9,6 +9,7 @@ import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
 import CartPage from './CartPage';
 import CheckoutPage from './CheckoutPage';
+import AccountPage from './AccountPage';
 import { useCart } from './cart';
 import {
   ensureTeamShopStyles, NAVY, NAVY_DARK, RED, BORDER, TEXT_MUTED, FONT_BODY, displayType,
@@ -92,9 +93,20 @@ import {
 // is showing on the product page, in whichever catalog context the coach is
 // currently in. Setting it back to null (onBack) returns to that catalog's
 // grid.
+//
+// Stage 9 adds AccountPage.js — the approved "Account" Claude Design mockup,
+// the LAST page in the approved design set — as a new top-level 'account'
+// route (same tier as 'landing'/'catalog'/'order'). It's the destination for
+// the header Account icon and the footer's "My logos"/"Reorder" links
+// (previously all inert TODO(teamshop-nav) placeholders). It shares
+// orderCustomer/setOrderCustomer with the rest of the app — same
+// 'nts_customer' localStorage key, one team context everywhere — via
+// AccountPage's customer/onCustomerSelect props. accountSection tells it
+// which section to scroll to (see goAccount below); "Order help*" stays
+// inert, there's nowhere for it to go yet.
 
 export default function TeamShopApp() {
-  const [route, setRoute] = useState('landing'); // landing|catalog|order
+  const [route, setRoute] = useState('landing'); // landing|catalog|order|account
   const [enteredShop, setEnteredShop] = useState(false); // false while StartWithLogo owns the 'order' route
   const [orderCustomer, setOrderCustomer] = useState(null);
   const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed|cart|checkout (within the order flow)
@@ -103,6 +115,7 @@ export default function TeamShopApp() {
   const [selectedLogo, setSelectedLogo] = useState(null);
   const [confirmedLine, setConfirmedLine] = useState(null); // { product, logo, line } for the confirmation view text
   const [previewProduct, setPreviewProduct] = useState(null); // product shown on ProductPage, in either catalog context
+  const [accountSection, setAccountSection] = useState(null); // which AccountPage section to scroll to, if any
 
   const { lines: cartLines, addLine } = useCart(orderCustomer && orderCustomer.id);
 
@@ -117,6 +130,9 @@ export default function TeamShopApp() {
   // Entering the top-level catalog fresh (nav/header/Home CTAs) always starts
   // at the grid, never mid-way through a stale product-page preview.
   const goCatalog = () => { setRoute('catalog'); setPreviewProduct(null); };
+  // Account icon (header) and footer "My logos"/"Reorder" links all land
+  // here; `section` scrolls AccountPage to the right part ('logos'|'orders').
+  const goAccount = (section) => { setRoute('account'); setAccountSection(section || null); setPreviewProduct(null); };
 
   const lineFromProduct = (product, decorations) => ({
     product_id: product && product.id,
@@ -183,8 +199,9 @@ export default function TeamShopApp() {
     background: 'none', border: 'none', padding: 0, cursor: 'pointer',
     color: active ? RED : NAVY,
   });
-  // TODO(teamshop-nav): Decoration / Team Stores / Swift Ship / Search /
-  // Account have no destinations yet — inert placeholders per the mockup.
+  // TODO(teamshop-nav): Decoration / Team Stores / Swift Ship / Search have
+  // no destinations yet — inert placeholders per the mockup. (Account now
+  // routes to AccountPage — see goAccount above.)
   const inertNavStyle = { ...displayType(16, { letterSpacing: '0.07em' }), color: NAVY, cursor: 'default' };
 
   return (
@@ -220,10 +237,14 @@ export default function TeamShopApp() {
               <span aria-hidden="true" style={{ color: NAVY, display: 'flex' }}>
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
               </span>
-              {/* TODO(teamshop-nav): account view — inert per mockup. */}
-              <span aria-hidden="true" style={{ color: NAVY, display: 'flex' }}>
+              <button
+                className="nts-navlink"
+                aria-label="Account"
+                onClick={() => goAccount()}
+                style={{ color: route === 'account' ? RED : NAVY, display: 'flex', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              >
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
-              </span>
+              </button>
               <button
                 className="nts-navlink"
                 aria-label={`Cart, ${cartLines.length} items`}
@@ -261,6 +282,14 @@ export default function TeamShopApp() {
             // No onAddBlank here — anonymous browsing has never offered
             // "Add blank" (no cart to add to without a signed-in customer);
             // unchanged from the pre-existing anonymous Catalog's behavior.
+          />
+        )}
+
+        {route === 'account' && (
+          <AccountPage
+            section={accountSection}
+            customer={orderCustomer}
+            onCustomerSelect={setOrderCustomer}
           />
         )}
 
@@ -358,8 +387,10 @@ export default function TeamShopApp() {
       </main>
 
       {/* Footer per the mockup. Column links are inert placeholders —
-          TODO(teamshop-footer): point at real category/decoration/account
-          destinations as those views land. */}
+          TODO(teamshop-footer): point at real category/decoration
+          destinations as those views land. (Account's "My logos"/"Reorder"
+          now route to AccountPage — see FOOTER_ACCOUNT_ACTIONS below;
+          "Order help*" stays inert, there's nowhere for it to go yet.) */}
       <footer style={{ background: NAVY_DARK, color: 'rgba(255,255,255,0.72)', padding: 'clamp(48px, 6vw, 72px) 24px 40px' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 40, paddingBottom: 40, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -389,9 +420,30 @@ export default function TeamShopApp() {
               <div key={heading}>
                 <p style={displayType(13, { letterSpacing: '0.12em', color: '#fff', margin: '0 0 16px' })}>{heading}</p>
                 <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 11 }}>
-                  {items.map((item) => (
-                    <li key={item}><span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>{item}</span></li>
-                  ))}
+                  {items.map((item) => {
+                    // FOOTER_ACCOUNT_ACTIONS: only the Account column's "My
+                    // logos"/"Reorder" have a real destination (AccountPage);
+                    // every other footer link, including "Order help*",
+                    // stays an inert TODO(teamshop-footer) placeholder.
+                    const action = heading === 'Account' && item === 'My logos' ? () => goAccount('logos')
+                      : heading === 'Account' && item === 'Reorder' ? () => goAccount('orders')
+                        : null;
+                    return (
+                      <li key={item}>
+                        {action ? (
+                          <button
+                            className="nts-footlink"
+                            onClick={action}
+                            style={{ background: 'none', border: 'none', padding: 0, color: 'rgba(255,255,255,0.72)', fontSize: 14, cursor: 'pointer', fontFamily: 'inherit', textAlign: 'left' }}
+                          >
+                            {item}
+                          </button>
+                        ) : (
+                          <span style={{ color: 'rgba(255,255,255,0.72)', fontSize: 14 }}>{item}</span>
+                        )}
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ))}

@@ -29,7 +29,7 @@ function fileToBase64(file) {
   });
 }
 
-export default function LogoPicker({ customer, onSelect }) {
+export default function LogoPicker({ customer, onSelect, onLogosChange }) {
   const { accessToken } = useCoachSession();
   const [state, setState] = useState('loading'); // loading|ready|error
   const [logos, setLogos] = useState([]);
@@ -68,6 +68,13 @@ export default function LogoPicker({ customer, onSelect }) {
     })();
     return () => { alive = false; };
   }, [accessToken, customerId, callArt]);
+
+  // Optional: report the current logo list upward (e.g. AccountPage's "saved
+  // logos" count) without forking the fetch above — same one list, reported
+  // whenever it changes (initial load, or a new upload).
+  useEffect(() => {
+    if (onLogosChange) onLogosChange(logos);
+  }, [logos, onLogosChange]);
 
   const uploadFile = useCallback(async (file) => {
     if (!file) return;
