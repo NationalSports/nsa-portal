@@ -218,6 +218,111 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
   return [];
 };
 
+// ── Mocks follow the garment when its identity changes ──
+// Per-garment mockups and mock links are keyed `sku|color`, so an IN-PLACE sku or color
+// edit on a line item silently orphans them: the mock stays under the old garment's key
+// and the approval gate reports the garment unmocked (SO-1480: a JM5228→KD5416 stock
+// swap stranded the Royal/White mock under the departed SKU). Re-key every art file's
+// item_mockups — the exact `sku|color` key, slot-suffixed keys (`sku|color|numbers`,
+// `sku|color|<cw>`), and the legacy bare-sku key — plus mock_links (both member keys and
+// link targets) from the old garment key to the new one. Colliding buckets merge, deduped
+// by url. Entry-level `sku` tags are updated to match. Pure: returns a NEW array only
+// when something changed, else the same reference (callers can skip a save on no-op).
+// Callers must ensure no OTHER live line still uses the old sku|color before moving —
+// two identical lines share one key by design.
+// opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
+// SKU, so callers must pass false when another live line still carries the old SKU in a
+// different color — moving the bare bucket would steal that line's legacy fallback.
+export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, opts) => {
+  const moveBareSku = !opts || opts.moveBareSku !== false;
+  const fromKey = mockLinkKeyOf(fromSku, fromColor);
+  const toKey = mockLinkKeyOf(toSku, toColor);
+  if (fromKey === toKey) return artFiles;
+  const mapKey = (k) => {
+    if (k === fromKey) return toKey;
+    if (k.startsWith(fromKey + '|')) return toKey + k.slice(fromKey.length);
+    if (moveBareSku && fromSku && k === fromSku) return toSku || k; // legacy bare-sku bucket
+    return k;
+  };
+  const entryUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+  let anyChanged = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (!a) return a;
+    let changed = false;
+    // item_mockups: move matching buckets to the new key, merging on collision.
+    const im = a.item_mockups || {};
+    const nim = {};
+    Object.entries(im).forEach(([k, v]) => {
+      const nk = mapKey(k);
+      const arr = safeArr(v).map((f) => (f && typeof f === 'object' && f.sku === fromSku && toSku) ? { ...f, sku: toSku } : f);
+      if (nk !== k || arr.some((f, i) => f !== v[i])) changed = true;
+      if (nim[nk]) {
+        const have = new Set(nim[nk].map(entryUrl));
+        nim[nk] = [...nim[nk], ...arr.filter((f) => !have.has(entryUrl(f)))];
+      } else nim[nk] = arr;
+    });
+    // mock_links: re-key both the member keys and the link targets; drop self-links.
+    const ml = mockLinksOf(a);
+    const nml = {};
+    Object.entries(ml).forEach(([k, v]) => {
+      const nk = mapKey(k); const nv = mapKey(String(v || ''));
+      if (nk !== k || nv !== v) changed = true;
+      if (nk !== nv) nml[nk] = nv;
+      else changed = true; // self-link created by the rename — drop it
+    });
+    if (!changed) return a;
+    anyChanged = true;
+    return { ...a, item_mockups: nim, ...(Object.keys(ml).length ? { mock_links: nml } : {}) };
+  });
+  return anyChanged ? next : artFiles;
+};
+
+// One shared message for the per-garment mock gate. The gate itself (skusMissingMockups)
+// is enforced at six surfaces — OrderEditor's Approve Artwork / Send-to-Coach button /
+// openCoachSend / Skip-Artist release, CoachPortal's Approve, CustDetail's preview
+// Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
+// what the rep is told to do about it.
+export const missingMockupsMsg = (action, missing) =>
+  'Cannot ' + action + ' — no mockup yet for: ' + missing.join(', ') + '. Upload a mockup or link one ("use the same mockup as…") first.';
+
+// ── Auto-link a copy-swapped garment to its source's mockup ──
+// The style-swap flows clone a line to a NEW sku ("copy decorations from JM5228 →
+// KD5416") rather than editing in place, so rekeyGarmentMocks can't apply (the source
+// line may legitimately stay). Instead, link the new garment to the source garment's
+// mock via the system's own mock_links mechanism — visible as "uses the same mockup
+// as …" and un-linkable in the UI. Only links when the COLOR matches exactly: a
+// different color must never inherit a mock silently (the wrong-colorway class the
+// 2026-07 audits closed elsewhere). Skips garments that already have their own mock
+// or an existing link. Pure: returns the same reference when nothing changed.
+export const linkSwappedGarmentMock = (artFiles, srcItem, newSku, newColor) => {
+  if (!srcItem || (srcItem.color || '') !== (newColor || '')) return artFiles;
+  const oldKey = mockLinkKeyOf(srcItem.sku, srcItem.color);
+  const newKey = mockLinkKeyOf(newSku, newColor);
+  if (oldKey === newKey || !newSku) return artFiles;
+  const artIds = [...new Set(safeDecos(srcItem)
+    .filter((d) => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd')
+    .map((d) => d.art_file_id))];
+  if (!artIds.length) return artFiles;
+  let anyChanged = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (!a || !artIds.includes(a.id)) return a;
+    const im = a.item_mockups || {};
+    const srcHasMock = safeArr(im[oldKey]).length > 0 || safeArr(im[srcItem.sku]).length > 0;
+    if (!srcHasMock) return a;
+    if (safeArr(im[newKey]).length > 0) return a; // new garment already has its own mock
+    const links = { ...mockLinksOf(a) };
+    if (links[newKey]) return a; // already linked
+    // Flatten to the root source, mirroring setMockLinkOE's write behavior.
+    let root = oldKey; const seen = new Set([newKey]);
+    while (links[root] && !seen.has(root)) { seen.add(root); root = links[root]; }
+    if (root === newKey) return a;
+    links[newKey] = root;
+    anyChanged = true;
+    return { ...a, mock_links: links };
+  });
+  return anyChanged ? next : artFiles;
+};
+
 // SINGLE SOURCE OF TRUTH for per-garment mockup slot keys. A garment gets one mockup
 // slot per decoration; reversible decorations get TWO (Side A / Side B — a reversible
 // garment prints on both color ways). Slot keys extend the garment's `sku|color` base:

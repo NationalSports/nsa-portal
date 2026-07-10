@@ -10,7 +10,7 @@
 // It STOPS a doc's follow-ups when:
 //   • the doc resolves — estimate approved/converted, invoice paid, art
 //     approved or rejected (no more nagging once they've responded), or
-//   • the safety cap (follow_up_max, default 6) is reached, or
+//   • the safety cap (follow_up_max, default 4) is reached, or
 //   • there's no repeat cadence (one-time follow-up).
 //
 // Scheduled hourly via netlify.toml ([functions."followup-sweep"].schedule).
@@ -19,7 +19,9 @@
 const { getSupabaseAdmin } = require('./_shared');
 const { unsubUrl } = require('./_followupShared');
 
-const DEFAULT_MAX = 6;
+// Matches the client-side default (Send modals seed follow_up_max||4) — the two used to
+// disagree (client 4 vs sweep 6), so a row saved without an explicit max got 2 extra nags.
+const DEFAULT_MAX = 4;
 const PORTAL_BASE = 'https://nationalsportsapparel.com/coach';
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 

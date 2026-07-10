@@ -2865,6 +2865,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
           const base = cleanArt(lib);
           if (!base.web_logo_url && d.art_url) base.web_logo_url = d.art_url;
+          // Inherited production files must be re-reviewed on THIS order, never auto-confirmed:
+          // a prod_files_attached:true carried over from a prior order/colorway would combine
+          // with the forced 'approved' below to skip the separations stage entirely (audit A8).
+          // Mirrors the manual reuse path (OrderEditor addPrevArt).
+          base.prod_files_attached = false;
           // Mirror the OMG pull (createOmgSO in App.js): the store sale IS the customer's
           // approval, so library art lands at least 'approved'. Without this, a library record
           // still at waiting_for_art/needs_approval — e.g. the OMG-import "attach production
