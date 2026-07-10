@@ -3,6 +3,7 @@ import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
 import Home from './Home';
+import StartWithLogo from './StartWithLogo';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
 import CartPage from './CartPage';
@@ -49,9 +50,31 @@ import {
 // category panels/tiles, value props, how-it-works, decoration styles,
 // featured products, social proof). Header/footer below are shared across
 // every view, landing included, so Home.js is content-only.
+//
+// Stage 7 adds StartWithLogo.js — the approved "Start With Your Logo" Claude
+// Design mockup. Every path into the 'order' route IS a "Start with your
+// logo" CTA (hero, footer, popup, how-it-works, header/footer buttons all
+// call the same handler), so StartWithLogo is the entry chrome for that
+// route: it wraps CoachGate -> TeamPicker -> LogoPicker with the mockup's
+// hero copy/stepper/live-preview card until the coach reaches the mockup's
+// "Done" step and continues ("Start shopping"), at which point `enteredShop`
+// flips true and the pre-existing nav/orderView switch (unchanged) takes
+// over for the rest of the session — including mid-flow re-visits to the
+// 'logos' sub-view, which stay in their plain Stage-3 styling.
+//
+// Logo-first wiring: choosing a logo before any product is picked
+// (StartWithLogo's onLogoChosen) sets selectedLogo and, since selectedProduct
+// is still null, lands on 'catalog' (see startPlacementWithLogo). The very
+// next product picked from there skips the 'logos' step entirely (see
+// startPlacement) and goes straight to 'placement' with that logo — the
+// "logo select -> catalog -> placement" path the mockup implies. That
+// carried-over logo is a one-shot convenience for the very next product only
+// (cleared in finishPlacement): every product after that goes through the
+// 'logos' step again, same as the pre-existing product-first path.
 
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
+  const [enteredShop, setEnteredShop] = useState(false); // false while StartWithLogo owns the 'order' route
   const [orderCustomer, setOrderCustomer] = useState(null);
   const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed|cart|checkout (within the order flow)
   const [checkoutQuote, setCheckoutQuote] = useState(null); // server quote (lines + quote_hash) handed from CartPage
@@ -62,6 +85,13 @@ export default function TeamShopApp() {
   const { lines: cartLines, addLine } = useCart(orderCustomer && orderCustomer.id);
 
   useEffect(() => { ensureTeamShopStyles(); }, []);
+
+  // Every "Start with your logo" CTA (hero, header, footer, popup,
+  // how-it-works) shares this handler — it (re)enters the StartWithLogo
+  // entry chrome. The cart icon is the one path into 'order' that is NOT a
+  // "Start with your logo" CTA — it jumps straight to the existing cart view.
+  const goStartWithLogo = () => { setRoute('order'); setEnteredShop(false); };
+  const goCart = () => { setRoute('order'); setEnteredShop(true); setOrderView('cart'); };
 
   const lineFromProduct = (product, decorations) => ({
     product_id: product && product.id,
@@ -74,16 +104,29 @@ export default function TeamShopApp() {
 
   const startPlacement = (product) => {
     setSelectedProduct(product);
-    setSelectedLogo(null);
-    setOrderView('logos');
+    // A logo already selected (via the logo-first StartWithLogo entry) skips
+    // straight to placement for this one product; see the Stage-7 comment
+    // above the component. Otherwise, the classic product-first path: pick a
+    // logo for this product via the 'logos' step.
+    if (selectedLogo) {
+      setOrderView('placement');
+    } else {
+      setOrderView('logos');
+    }
   };
   const startPlacementWithLogo = (logo) => {
     setSelectedLogo(logo);
-    setOrderView('placement');
+    // No product chosen yet (logo-first entry) — browse the catalog next;
+    // a product already in hand (product-first, or "change logo" mid-flow) —
+    // go straight to placement.
+    setOrderView(selectedProduct ? 'placement' : 'catalog');
   };
   const finishPlacement = (spec) => {
     const added = addLine(lineFromProduct(selectedProduct, [spec]));
     setConfirmedLine({ product: selectedProduct, logo: selectedLogo, line: added });
+    // Consume the one-shot logo-first carry-over — subsequent products go
+    // through the 'logos' step again, same as the product-first path always has.
+    setSelectedLogo(null);
     setOrderView('confirmed');
   };
   // "Add blank" on a catalog card (Stage 5) — a coach can add a garment to the
@@ -145,7 +188,7 @@ export default function TeamShopApp() {
               <button
                 className="nts-navlink"
                 aria-label={`Cart, ${cartLines.length} items`}
-                onClick={() => { setRoute('order'); setOrderView('cart'); }}
+                onClick={goCart}
                 style={{ position: 'relative', color: NAVY, display: 'flex', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
               >
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 8h12l-1 12H7z" /><path d="M9 8V6a3 3 0 0 1 6 0v2" /></svg>
@@ -153,7 +196,7 @@ export default function TeamShopApp() {
               </button>
               <button
                 className="nts-cta-navy"
-                onClick={() => setRoute('order')}
+                onClick={goStartWithLogo}
                 style={{ fontFamily: 'inherit', fontWeight: 600, fontSize: 14, background: NAVY, color: '#fff', border: 'none', padding: '10px 18px', borderRadius: 8, whiteSpace: 'nowrap', cursor: 'pointer' }}
               >
                 Start with your logo
@@ -165,12 +208,20 @@ export default function TeamShopApp() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route === 'landing' && (
-          <Home onStartOrder={() => setRoute('order')} onBrowseCatalog={() => setRoute('catalog')} />
+          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={() => setRoute('catalog')} />
         )}
 
         {route === 'catalog' && <Catalog />}
 
-        {route === 'order' && (
+        {route === 'order' && !enteredShop && (
+          <StartWithLogo
+            customer={orderCustomer}
+            onCustomerSelect={setOrderCustomer}
+            onLogoChosen={(logo) => { setEnteredShop(true); startPlacementWithLogo(logo); }}
+          />
+        )}
+
+        {route === 'order' && enteredShop && (
           <CoachGate>
             {!orderCustomer ? (
               <TeamPicker onSelect={setOrderCustomer} />
@@ -263,7 +314,7 @@ export default function TeamShopApp() {
               </p>
               <button
                 className="nts-cta-red"
-                onClick={() => setRoute('order')}
+                onClick={goStartWithLogo}
                 style={{ display: 'inline-block', fontFamily: 'inherit', fontWeight: 600, fontSize: 14, background: RED, color: '#fff', border: 'none', padding: '11px 20px', borderRadius: 8, cursor: 'pointer' }}
               >
                 Start with your logo
