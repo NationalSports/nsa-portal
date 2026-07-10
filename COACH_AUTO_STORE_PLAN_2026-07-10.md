@@ -40,13 +40,15 @@ that a wrong auto-picked color way is "the most expensive mistake in this whole 
 automate everything up to the publish button, not past it.
 
 ```
-lead in (CSV / manual / Claude-enriched)
-  → coach_leads row
-  → [review card: confirm logo, colors, sport, store name]  ← the only human step
-  → one click: customer record + coach invite + draft store from sport template,
-    branded with logo + extracted colors
-  → staff publish (existing flow)
-  → congrats email fires (new template, existing notifyCoachPublished hook)
+lead in (CSV / manual / Claude-enriched)          rep in Webstores admin
+  → coach_leads row                                 → "Quick Build": pick/enter
+  → [review card: confirm logo, colors,               customer, pick sport,
+     sport, store name]  ← the only human step        drop logo
+        └──────────────┬──────────────────────────────────┘
+  → one click: store-quick-build → customer record + coach invite
+    + draft store from sport template, branded with logo + extracted colors
+  → staff publish (existing flow; rep path can "Build & publish" in one click)
+  → congrats/launch email fires (new template, existing notifyCoachPublished hook)
 ```
 
 ### Phase 1 — Foundation (mechanical; Sonnet-tier implementation)
@@ -64,11 +66,22 @@ lead in (CSV / manual / Claude-enriched)
 4. **"New Coaches" admin screen** (new tab or section in Webstores admin): paste/import CSV of
    hires, see the lead funnel, and per-lead a **review card**: logo preview, extracted colors
    (editable hex), sport picker, proposed store name + slug. One button: **Build store**.
-5. **`coach-lead-build` server function** (service role, mirrors `coach-store-submit` patterns):
-   creates the `customers` record (name, `alpha_tag`, `logo_url`, `school_colors`), calls the
-   template-clone path to make a `status:'draft'` store with `created_via:'auto'` (new value),
-   threads logo + colors into store branding, links everything back onto the lead. Idempotent
-   per lead.
+5. **`store-quick-build` server function** (service role, mirrors `coach-store-submit`
+   patterns) — one shared capability with **two entry points**:
+   creates or links the `customers` record (name, `alpha_tag`, `logo_url`, `school_colors`),
+   calls the template-clone path to make a store with `created_via:'auto'` (new value), threads
+   logo + colors into store branding, and links everything back onto the lead when one exists.
+   Idempotent per lead / per customer+sport.
+   - **Lead entry point:** the New Coaches review card (above) → builds a `status:'draft'`
+     store; staff publish is the human gate.
+   - **Rep entry point ("Quick Build"):** a button in the Webstores admin. Rep picks an
+     existing customer (or types a new school name), picks sport, drops a logo — one click
+     builds the whole store. Because the rep *is* the human gate, this path offers
+     **"Build & publish"**: create, open the store, fire the launch/congrats email and coach
+     invite in the same click. Default stays "build as draft" with publish one click away;
+     the checkbox makes it a true single action when the rep is confident. Logo cutout +
+     color extraction (Phase 2) apply identically here — in Phase 1 the rep's dropped logo
+     and picked colors thread straight into store branding.
 6. **Congrats email template.** New Brevo-sent HTML alongside `launchEmailHtml` — personal tone
    ("Congrats on the new job at {school}!"), coach portal link (`/coach?portal=<alpha_tag>`),
    parent store link (`/shop/<slug>`), the existing QR + PDF flyer. `notifyCoachPublished`
@@ -125,5 +138,5 @@ lead in (CSV / manual / Claude-enriched)
   edge function (Haiku for the search/extract steps).
 - Phase 3: ~2 sessions + Brevo dashboard setup.
 
-Phase 1 alone already delivers the ask: select sport, drop logo, click build → store + portal +
-congrats email.
+Phase 1 alone already delivers the ask, from either seat: a lead card or a rep's Quick Build —
+select sport, drop logo, one click → store + portal + congrats email.
