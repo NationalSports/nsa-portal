@@ -54,6 +54,12 @@ const CSS = `
 .nts-input:focus { border-color: ${NAVY} !important; outline: none; box-shadow: 0 0 0 3px rgba(25,40,83,0.12); }
 .nts-listing { display: grid; grid-template-columns: 270px 1fr; gap: clamp(24px, 3vw, 40px); align-items: start; }
 .nts-sidebar { position: sticky; top: 150px; display: flex; flex-direction: column; gap: 20px; }
+/* Product grid: 4 across on desktop, stepping down responsively. minmax(0,1fr)
+   keeps cards from overflowing on long names. */
+.nts-product-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; }
+@media (max-width: 1024px) { .nts-product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .nts-product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .nts-product-grid { grid-template-columns: 1fr; } }
 @media (max-width: 920px) {
   .nts-listing { grid-template-columns: 1fr; }
   .nts-sidebar { position: static; }

@@ -308,7 +308,7 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
             </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 22 }}>
+          <div className="nts-product-grid">
             {sorted.map((p) => (
               <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
             ))}
