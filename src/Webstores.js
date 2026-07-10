@@ -1071,6 +1071,8 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
   const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
   const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
+  const [templateFor, setTemplateFor] = useState(null);         // store being saved as a template → SaveAsTemplateModal
+  const [tplAfterEdit, setTplAfterEdit] = useState(null);       // { storeId, tpl } — color picker queued to open after the settings save (Start Store from a store template)
 
   // "Create from OMG" — the single unified entry point for turning an OMG report link into a
   // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
@@ -1594,6 +1596,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
   const setStoreStatus = useCallback(async (store, status, opts = {}) => {
+    // Templates are reusable starting points, never live stores: launching one would put
+    // it in the public team-stores directory and make it purchasable.
+    if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     const patch = { status, updated_at: new Date().toISOString() };
     // A coach email typed in the launch dialog is saved to the store so it's on file.
     const coachEmail = (opts.coachEmail || '').trim();
@@ -1610,51 +1615,100 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
-    if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
-    // Unique slug: <slug>-copy, then -copy-2, -copy-3…
+    if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
+    const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
+    // Unique slug: <base>-copy (or -template), then -2, -3…
     const taken = new Set(stores.map((s) => s.slug));
-    let slug = slugify(src.name) + '-copy';
+    let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
     const { id, created_at, updated_at, ...rest } = src;
-    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false, ...(opts.rebrand ? { logo_url: null } : {}) };
-    flash('Duplicating store…');
+    // A template is a separate is_template store carrying the ITEMS and packages only —
+    // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
+    // codes from the source team). is_template makes it show in the Templates tab and
+    // stay available to the coach store builder's item pool.
+    // Clone hygiene — never carry from the source:
+    //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
+    //     nothing in the clone, which hides the hero collage instead of the auto default.
+    //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
+    //     store's close never creates the rep to-do/breakdown email.
+    //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
+    //     would prefill and email the wrong person.
+    // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
+    // over — every trace of the source team's branding strips, and the new team's colors
+    // and logos are applied fresh. So template paths also drop the banner, hero blurb and
+    // the curated store_art library (the source team's logos).
+    const tplPath = opts.asTemplate || opts.startFromTemplate;
+    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}), ...(tplPath ? { banner_url: null, hero_blurb: null, store_art: [] } : {}) };
+    flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return; }
+    if (error) { flash('Could not duplicate: ' + error.message); return null; }
 
-    const { data: srcProducts } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
+    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
+    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
+    let srcProducts = [];
+    if (!opts.itemIds || opts.itemIds.length) {
+      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+      if (opts.itemIds) q = q.in('id', opts.itemIds);
+      srcProducts = (await q).data || [];
+    }
     const idMap = {}; // old webstore_product id -> new id
     for (const p of (srcProducts || [])) {
       const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
-      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...prest, store_id: store.id }).select('id').single();
+      // Template paths carry the ITEM, not the source team's branding: custom mockups
+      // (which show the old team's logo on the garment), art placements and transfer
+      // links strip; the new team decorates fresh. Plain Duplicate keeps everything.
+      const row = tplPath ? { ...prest, image_url: null, image_back_url: null, decorations: [], transfer_codes: [], num_transfer_sets: [] } : prest;
+      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...row, store_id: store.id }).select('id').single();
       if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
       idMap[pid] = np.id;
     }
     const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
     if (bundleIds.length) {
       const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id] }; }).filter((r) => r.bundle_id);
+      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
+      // row id makes the package show (and the storefront fetch) another store's item.
+      // Null when the linked single wasn't copied: components then resolve by product_id.
+      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null, ...(tplPath ? { decoration_id: null } : {}) }; }).filter((r) => r.bundle_id);
       if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
     }
-    const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
-    if ((srcTransfers || []).length) {
-      const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
-      const { error: te } = await supabase.from('webstore_transfers').insert(trows);
-      if (te) flash('Transfer setup copy failed: ' + te.message);
+    // Transfer setup (heat-press codes: the team's names/numbers/logos) is source-team
+    // branding — it copies on plain Duplicate / Clone & Rebrand but never on template
+    // paths, where the new team's transfers get set up fresh.
+    if (!tplPath) {
+      const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
+      if ((srcTransfers || []).length) {
+        const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
+        const { error: te } = await supabase.from('webstore_transfers').insert(trows);
+        if (te) flash('Transfer setup copy failed: ' + te.message);
+      }
     }
     setStores((prev) => [store, ...prev]);
-    flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
+    flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    if (opts.rebrand) setEditing(store);
+    // Templates skip that; start-from-template goes to the color picker instead.
+    if (opts.rebrand && !opts.asTemplate && !opts.startFromTemplate) setEditing(store);
+    return store;
   }, [stores, flash]);
 
-  // Mark / unmark a store as a reusable template — the starting point for
-  // "New from template", which clones it into a fresh draft via duplicateStore.
+  // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
+  // catalog only, no logo). The source store is left untouched and stays in the store list;
+  // the template appears in the Templates tab and the coach store builder's item pool.
+  const saveAsTemplate = useCallback((store) => setTemplateFor(store), []);
+  // Confirmed from the modal: clone the store into a template carrying only the picked items.
+  const confirmSaveAsTemplate = useCallback(async (name, itemIds) => {
+    if (templateFor) await duplicateStore(templateFor, { asTemplate: true, name, itemIds });
+    setTemplateFor(null);
+  }, [templateFor, duplicateStore]);
+
+  // Remove a template: un-flags it (is_template=false) so it's no longer a template and
+  // returns to the normal store list as a draft. Non-destructive — never deletes a store.
   const toggleTemplate = useCallback(async (store) => {
     const next = !store.is_template;
     const { error } = await supabase.from('webstores').update({ is_template: next, updated_at: new Date().toISOString() }).eq('id', store.id);
     if (error) { flash('Error: ' + error.message); return; }
     setStores((prev) => prev.map((s) => s.id === store.id ? { ...s, is_template: next } : s));
-    flash(next ? 'Saved as a template' : 'Removed from templates');
+    flash(next ? 'Saved as a template' : 'Removed from templates — it\'s back in the store list');
   }, [flash]);
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
@@ -1911,6 +1965,25 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setTplColorFlow({ tpl, storeId: store.id, existingPids, store, startSort: (data || []).length });
   }, []);
   const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
+  // Start a new store from a STORE template ("Start Store" on a Templates-tab card).
+  // Clones the template's store settings and packages (brand-free — templates carry
+  // items only), then opens SETTINGS FIRST — the rep sets the real name, customer and
+  // colors (the clone still carries the template's) — and on save the color picker
+  // opens for the template's pickable items, so palette matching uses the NEW team's
+  // colors. The new team's logos/art get applied fresh on the Art & Logos tab.
+  // Pickable = active, SKU'd singles (the picker resolves by SKU and inserts as live).
+  // Everything else — packages, custom/no-SKU items, archived rows — copies verbatim
+  // with all its fields, so nothing is dropped and archived items stay archived.
+  const startStoreFromStoreTemplate = useCallback(async (t) => {
+    const { data: rows } = await supabase.from('webstore_products').select('id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').eq('store_id', t.id).order('sort_order');
+    const all = rows || [];
+    const pickable = (r) => r.kind === 'single' && r.sku && r.active !== false;
+    const store = await duplicateStore(t, { suffix: '', rebrand: true, startFromTemplate: true, itemIds: all.filter((r) => !pickable(r)).map((r) => r.id) });
+    if (!store) return;
+    const singles = all.filter(pickable);
+    if (singles.length) setTplAfterEdit({ storeId: store.id, tpl: { name: t.name, items: singles.map(wpRowToTplItem) } });
+    setEditing(store);
+  }, [duplicateStore]);
   const finishTplColorFlow = useCallback(async (plan) => {
     const flow = tplColorFlow; if (!flow) return;
     const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
@@ -2982,12 +3055,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
       {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta); }} />}
 
-      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
+      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
+      {templateFor && <SaveAsTemplateModal store={templateFor} onClose={() => setTemplateFor(null)} onConfirm={confirmSaveAsTemplate} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
-          onCancel={() => { setPendingStartTpl(null); setEditing(null); omgResetStaged(); }}
+          onCancel={() => { setPendingStartTpl(null); if (tplAfterEdit) { setTplAfterEdit(null); flash('Store saved as a draft — bring the template\'s items in any time via Add items → Add template'); } setEditing(null); omgResetStaged(); }}
           onSave={async (form) => {
             const isNew = editing === 'new';
             const r = await saveStore(form, isNew ? null : editing.id);
@@ -2997,6 +3071,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // in-house art now that the store exists with every setting the rep just configured.
             if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
             if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); return r; }
+            // Start-Store-from-template: settings are saved, so the store now has the real
+            // team's name/customer/colors — open the color picker with THAT palette.
+            if (!isNew && tplAfterEdit && r.data && r.data.id === tplAfterEdit.storeId) { const q = tplAfterEdit; setTplAfterEdit(null); beginTplColorFlow(q.tpl, r.data); return r; }
             // A brand-new team store (not from OMG or a template): open it straight to the
             // Art & Logos page so the rep keeps building — add artwork next — instead of
             // bouncing back to the store list. Club stores stay on the list (product-first).
@@ -3017,7 +3094,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '', rebrand: true })} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -3442,7 +3519,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3758,7 +3835,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                         </td>
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                            {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            {onSaveAsTemplate && <button title="Save as template — copies this store's items into a reusable template (the store stays here)" onClick={(e) => { e.stopPropagation(); onSaveAsTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#D1D5DE' }}>☆</button>}
                             <button
                               title="Copy store link"
                               onClick={(e) => {
@@ -4053,9 +4130,10 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
               const nums = t.number_enabled ? (t.number_unique ? 'Unique #s' : 'On') : 'Off';
               return (
                 <div key={t.id} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden' }}>
+                  <div onClick={() => onOpen && onOpen(t)} title="View / edit this template's items" style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden', cursor: onOpen ? 'pointer' : 'default' }}>
                     <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(-55deg,rgba(255,255,255,0.05) 0 1px,transparent 1px 9px)' }} />
                     <div style={{ position: 'relative', ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 20, letterSpacing: '.5px', color: '#fff', lineHeight: 1 }}>{t.name}</div>
+                    {onOpen && <div style={{ position: 'relative', fontSize: 11, color: 'rgba(255,255,255,.6)', marginTop: 5 }}>View / edit items →</div>}
                   </div>
                   <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid #EEF1F6' }}>
@@ -4067,6 +4145,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
                       ))}
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                      {onOpen && <button className="btn btn-sm btn-secondary" onClick={() => onOpen(t)}>View items</button>}
                       {onNewFromTemplate && <button className="btn btn-sm btn-primary" onClick={() => onNewFromTemplate(t)} style={{ flex: 1 }}>Start Store</button>}
                       {onToggleTemplate && <button className="btn btn-sm btn-secondary" onClick={() => onToggleTemplate(t)}>Remove Template</button>}
                     </div>
@@ -4075,7 +4154,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
               );
             })}
             {templates.length === 0 && (
-              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
+              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Hit the ☆ Save as template button on any store in the Stores list to copy its items into a reusable template here.</div>
             )}
           </div>
         </>
@@ -4880,7 +4959,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
-          {onSetStatus && (s.status !== 'open'
+          {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
+          {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
@@ -4933,7 +5013,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
@@ -5035,7 +5115,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -5298,7 +5378,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
       {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
-      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
@@ -7203,6 +7283,10 @@ function TemplateEditor({ template, onClose, onSaved }) {
 // ALL-CAPS color code (optionally slash-joined, e.g. ROYBLU/WHITE) so the colorways of a
 // style collapse into one card. Mixed-case names (most of the catalog) keep their color in
 // the color field and are left untouched.
+// The ONE webstore_products row → color-picker template item mapping, shared by
+// Start-Store-from-template and the Add-template gallery so the shape can't drift.
+const wpRowToTplItem = (r) => ({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required });
+
 const styleKey = (name) => {
   const n = String(name || '').trim();
   const base = n.replace(/\s+[A-Z]{4,}(?:\/[A-Z0-9]{2,})*$/, '').trim();
@@ -7287,11 +7371,13 @@ function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtr
   );
 }
 
-function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
+function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const forcedCategory = (tpl && tpl.kind === 'section') ? (tpl.section || tpl.name || null) : null;
+  // Stable dep for the destination store's colors (inline arrays change identity per render).
+  const teamKey = (teamHexes || []).filter(Boolean).join(',');
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -7303,11 +7389,22 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
       const matched = items.map((it) => ({ product: bySku.get(String(it.sku || '').trim().toUpperCase()), meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required } })).filter((m) => m.product);
-      const built = await buildStyleRows(matched);
+      let built = await buildStyleRows(matched);
+      // Default each style's picked colors to the DESTINATION store's palette (same
+      // color-word matching as the product picker's school-colors filter). The colors
+      // saved in the template only remain the default when no colorway matches the
+      // store's colors. The rep still adjusts everything before adding.
+      const words = storeColorWords(teamKey.split(',').filter(Boolean).map((hex) => ({ hex })));
+      if (words.length) {
+        built = built.map((r) => {
+          const team = r.colors.filter((c) => productMatchesColors(c.color, words)).map((c) => c.id);
+          return team.length ? { ...r, picked: new Set(team), defaults: new Set(team) } : r;
+        });
+      }
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [tpl]);
+  }, [tpl, teamKey]);
   const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
   const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
   const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
@@ -7321,7 +7418,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors.{teamKey ? " Colors matching this store's palette come pre-selected." : ''} No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
         {!loading && rows.length > 0 && (
@@ -7347,7 +7444,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   );
 }
 
-function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), onApply, onApplyColors, onClose }) {
+function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), teamHexes = [], onApply, onApplyColors, onClose }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [myEmail, setMyEmail] = useState('');
@@ -7363,8 +7460,28 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name');
-    setTemplates(data || []); setLoading(false);
+    const [{ data }, { data: tplStores }] = await Promise.all([
+      supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name'),
+      supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+    ]);
+    // Store templates (Templates tab / "Save as template") join the gallery too: each
+    // becomes a pseudo item-template — its active, SKU'd single items as wpRowToTplItem
+    // entries — so the same "Add to store" color-picker flow applies them. Packages and
+    // custom/no-SKU items don't carry here; archived rows are excluded so a discontinued
+    // item can't be revived (the picker inserts everything as live).
+    let storeTpls = [];
+    const ids = (tplStores || []).map((s) => s.id);
+    if (ids.length) {
+      const { data: rows } = await supabase.from('webstore_products').select('store_id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').in('store_id', ids).order('sort_order');
+      const byStore = new Map();
+      (rows || []).forEach((r) => {
+        if (r.kind !== 'single' || !r.sku || r.active === false) return;
+        if (!byStore.has(r.store_id)) byStore.set(r.store_id, []);
+        byStore.get(r.store_id).push(wpRowToTplItem(r));
+      });
+      storeTpls = (tplStores || []).map((s) => ({ id: 'ws:' + s.id, name: s.name, sport: null, brand_focus: null, gender: null, items: byStore.get(s.id) || [], _storeTpl: true })).filter((t) => t.items.length);
+    }
+    setTemplates([...storeTpls, ...(data || [])]); setLoading(false);
   }, []);
   useEffect(() => { (async () => { try { const { data } = await supabase.auth.getUser(); setMyEmail(data?.user?.email || ''); } catch (e) { /* */ } })(); load(); }, [load]);
 
@@ -7389,7 +7506,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
   return (
     <>
-    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
+    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} teamHexes={teamHexes} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
@@ -7450,6 +7567,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                          {t._storeTpl && chip('Store template', '#fefce8', '#a16207')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
@@ -7457,8 +7575,8 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                         <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
                           <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
-                          {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
-                          {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                          {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
+                          {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
                       </div>
                     ))}
@@ -7797,6 +7915,110 @@ function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
 
 // Pick an existing store to bolt a template onto (used by the Templates-page "Add to a
 // store" action). Lists live (non-template) stores, searchable by store or club name.
+// "Save as template" dialog: name the template and pick which catalog items carry over
+// (all selected by default). Confirming clones the store into a separate is_template store
+// with only the chosen items — the source store is untouched and stays in the store list.
+function SaveAsTemplateModal({ store, onClose, onConfirm }) {
+  const [name, setName] = useState(`${store?.name || ''} Template`);
+  const [items, setItems] = useState([]);
+  const [sel, setSel] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const { data: prods } = await supabase.from('webstore_products').select('id,kind,product_id,sku,display_name,retail_price,sort_order,active,variant_group_id').eq('store_id', store.id).order('sort_order');
+      const rows = prods || [];
+      const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+      const imgByPid = {}; const nameByPid = {};
+      if (pids.length) {
+        const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
+        (pr || []).forEach((p) => { imgByPid[p.id] = p.image_front_url; nameByPid[p.id] = p.name; });
+      }
+      // One entry per garment STYLE, not per color: colors of the same style (shared
+      // variant_group_id, or same name once any baked-in colorway code is stripped) fold
+      // into one row. Selecting the row carries all of its colors into the template —
+      // they become the picker's default colors when the template is used.
+      const groups = new Map();
+      rows.forEach((r) => {
+        const dispName = r.display_name || nameByPid[r.product_id] || r.sku || '(unnamed item)';
+        const key = r.kind === 'bundle' ? 'b:' + r.id : (r.variant_group_id ? 'g:' + r.variant_group_id : 's:' + styleKey(dispName).toLowerCase());
+        if (!groups.has(key)) groups.set(key, { key, kind: r.kind, name: r.kind === 'bundle' ? dispName : styleKey(dispName), image: null, ids: [], skus: [], prices: [], anyActive: false });
+        const g = groups.get(key);
+        g.ids.push(r.id);
+        if (r.sku) g.skus.push(r.sku);
+        if (r.retail_price != null) g.prices.push(Number(r.retail_price));
+        if (!g.image && r.kind !== 'bundle') g.image = imgByPid[r.product_id] || null;
+        if (r.active !== false) g.anyActive = true;
+      });
+      const built = [...groups.values()];
+      if (!cancelled) { setItems(built); setSel(new Set(built.map((b) => b.key))); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [store]);
+  const toggle = (key) => setSel((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const setAll = (on) => setSel(on ? new Set(items.map((i) => i.key)) : new Set());
+  const trimmed = name.trim();
+  const canSave = !!trimmed && sel.size > 0 && !busy && !loading;
+  const confirm = async () => { if (!canSave) return; setBusy(true); await onConfirm(trimmed, items.filter((i) => sel.has(i.key)).flatMap((i) => i.ids)); };
+  return (
+    <div onClick={busy ? undefined : onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 620, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Save as template</div>
+            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, maxWidth: 470 }}>Copies the selected items into a reusable template — one entry per style, no logos. Whoever uses the template picks each item's colors then. “{store?.name}” stays in your store list.</div>
+          </div>
+          <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: busy ? 'default' : 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '16px 18px 10px' }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px', color: '#64748b', marginBottom: 6 }}>Template name</label>
+          <input className="form-input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Women's Volleyball Team Store" style={{ width: '100%' }} />
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shoppers never see this — it labels the template in the Templates tab and the coach store builder.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderTop: '1px solid #eef0f3', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>{loading ? 'Loading items…' : `Including ${sel.size} of ${items.length} item${items.length === 1 ? '' : 's'}`}</span>
+          <span style={{ marginLeft: 'auto' }} />
+          {!loading && items.length > 0 && <>
+            <button type="button" onClick={() => setAll(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAll(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </>}
+        </div>
+        <div style={{ padding: 12, maxHeight: '44vh', overflowY: 'auto' }}>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading items…</div>
+            : items.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>This store has no catalog items to template.</div>
+            : items.map((it) => {
+              const on = sel.has(it.key);
+              const lo = it.prices.length ? Math.min(...it.prices) : null;
+              const hi = it.prices.length ? Math.max(...it.prices) : null;
+              const price = lo == null ? '' : (lo === hi ? '$' + lo.toFixed(2) : `$${lo.toFixed(2)}–$${hi.toFixed(2)}`);
+              return (
+                <button key={it.key} type="button" onClick={() => toggle(it.key)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, border: `1px solid ${on ? '#c7d7fb' : '#eef1f5'}`, borderRadius: 10, padding: '8px 12px', background: on ? '#f5f8ff' : '#fff', cursor: 'pointer', fontFamily: 'inherit', marginBottom: 6 }}>
+                  <input type="checkbox" readOnly checked={on} style={{ width: 16, height: 16, flexShrink: 0, accentColor: '#1d4ed8' }} />
+                  <div style={{ width: 38, height: 38, borderRadius: 7, background: '#f1f5f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    {it.image ? <img src={it.image} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 15 }}>{it.kind === 'bundle' ? '📦' : '👕'}</span>}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}{it.kind === 'bundle' ? ' · Package' : ''}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{it.skus[0] ? it.skus[0] + (it.skus.length > 1 ? ` +${it.skus.length - 1}` : '') + ' · ' : ''}{price}{!it.anyActive ? ' · archived' : ''}</div>
+                  </div>
+                  {it.kind !== 'bundle' && it.ids.length > 1 && <span style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: '#eef4ff', borderRadius: 999, padding: '3px 9px', flexShrink: 0 }}>{it.ids.length} colors</span>}
+                </button>
+              );
+            })}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={!canSave} onClick={confirm}>{busy ? 'Saving…' : `Save template${!loading && sel.size ? ` (${sel.size} item${sel.size === 1 ? '' : 's'})` : ''}`}</button>
+          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          {!loading && !busy && !trimmed && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Name required</span>}
+          {!loading && !busy && trimmed && sel.size === 0 && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Pick at least one item</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StorePickerModal({ stores = [], custName = () => '', title = 'Pick a store', onPick, onClose }) {
   const [q, setQ] = useState('');
   const ql = q.trim().toLowerCase();
