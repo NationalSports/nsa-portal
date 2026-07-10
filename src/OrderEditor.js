@@ -2664,6 +2664,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
     // live deco behind it (SO-1057 JOB-1057-01 after line art was wiped).
     const _jobHasLiveDeco=j=>jobHasLiveDecorations(j,o);
+    // A frozen job's items[] snapshot must still track the live line's IDENTITY: swapping a
+    // line's product (stock sub) or color leaves the snapshot's sku/color/name describing a
+    // garment that is no longer on the order — the Jobs tab and coach portal then show the
+    // phantom garment (SO-1480: job read KD5416 while the line was JM5228), and the split
+    // parent-dedup below (keyed item_idx+'-'+sku) stops matching. Quantities, allocations,
+    // and deco ownership stay frozen — only sku/color/name refresh; a deleted line (no live
+    // item at item_idx) keeps the snapshot so nothing goes blank.
+    const _refreshGarmentIdentity=gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;
+      const nName=safeStr(it.name)||gi.name;
+      if((gi.sku||'')===(it.sku||'')&&(gi.color||'')===(it.color||'')&&(gi.name||'')===nName)return gi;
+      return{...gi,sku:it.sku,color:it.color||'',name:nName}};
     const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
@@ -2905,7 +2916,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id));
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
+      .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)}));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
@@ -2953,7 +2965,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // ALSO split (parent keeps _merged after a slice is carved off) owns only its slice of the
       // line, so re-deriving from the full line inflated it back to the whole quantity — the split
       // modal then offered to "split off" phantom units that were really on the sibling slice.
-      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
+      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return _refreshGarmentIdentity({...gi,units:u,fulfilled:f});});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
@@ -2963,13 +2975,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // department already committed to printing that many. Zero-total snapshots (legacy jobs released
     // before the est_qty fallback existed) are always healed up.
     const recalcedReleased=releasedJobs.map(j=>{
+      // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
+      // the frozen thing is the quantity commitment, not which product the line now is.
+      const _snapItems=(j.items||[]).map(_refreshGarmentIdentity);
+      const _idCh=_snapItems.some((gi,ix)=>gi!==(j.items||[])[ix]);
       let total=0,fulfilled=0;
-      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
-      if(total===0)return j;// no real units anywhere — leave the (empty) snapshot as-is
+      _snapItems.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
+      if(total===0)return _idCh?{...j,items:_snapItems}:j;// no real units anywhere — leave the (empty) snapshot as-is
       const frozenTotal=safeNum(j.total_units);
-      if(frozenTotal>0&&total<frozenTotal)return j;// fewer units than snapshot — keep frozen
+      if(frozenTotal>0&&total<frozenTotal)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-      return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
+      return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
     // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
     // could have been approved, so a completed-ish art status must never survive — it read
@@ -3037,7 +3053,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Per-item units/fulfilled are part of the signature too: a heal that only fixes a stale
     // gi.units (e.g. a split parent's item still carrying the full line quantity while the
     // job totals were already correct) must still land, or the item rows keep showing "56/90".
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
+    // Garment identity (sku|color) is included so a _refreshGarmentIdentity heal (line product
+    // swapped after release — SO-1480's phantom KD5416) also lands; the refresh converges on
+    // the live line, so this can't ping-pong either.
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>{
         const next={...e,jobs:synced};
