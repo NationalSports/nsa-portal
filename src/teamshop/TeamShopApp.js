@@ -4,6 +4,8 @@ import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
+import CartPage from './CartPage';
+import { useCart } from './cart';
 
 // Team Shop storefront chunk root — nationalteamshop.com lands here (and
 // /teamshop on any host, for deploy previews / e2e), routed by src/index.js
@@ -26,7 +28,12 @@ import PlacementPicker from './PlacementPicker';
 // decoSpec engine + DecoOverlay preview) for that product/logo pair, and
 // confirming there stores the resulting decoSpec as an in-memory "draft line"
 // and shows a placeholder confirmation.
-// TODO(stage-5): draftLine becomes a real cart line (persistence + checkout).
+//
+// Stage 5 replaces that in-memory draft line with a real cart (src/teamshop/cart.js,
+// localStorage, keyed per customer) and a live-priced CartPage — a garment can
+// also be added straight to the cart without decoration ("Add blank" on a
+// catalog card, or "Also add without decoration" once a line is decorated).
+// TODO(stage-6): checkout (consuming the quote_hash CartPage keeps in state).
 //
 // TODO(teamshop-landing): replace the hero placeholder below with the designed
 // landing page once the approved design concept lands. Product/cart/checkout
@@ -38,7 +45,18 @@ export default function TeamShopApp() {
   const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed (within the order flow)
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedLogo, setSelectedLogo] = useState(null);
-  const [draftLine, setDraftLine] = useState(null); // TODO(stage-5): replace with a real cart line
+  const [confirmedLine, setConfirmedLine] = useState(null); // { product, logo, line } for the confirmation view text
+
+  const { lines: cartLines, addLine } = useCart(orderCustomer && orderCustomer.id);
+
+  const lineFromProduct = (product, decorations) => ({
+    product_id: product && product.id,
+    product_name: (product && (product.name || product.sku)) || '',
+    image_url: (product && (product.image_front_url || product.image_url)) || '',
+    sku: product && product.sku,
+    qty: 1,
+    decorations,
+  });
 
   const startPlacement = (product) => {
     setSelectedProduct(product);
@@ -50,8 +68,14 @@ export default function TeamShopApp() {
     setOrderView('placement');
   };
   const finishPlacement = (spec) => {
-    setDraftLine({ product: selectedProduct, logo: selectedLogo, spec });
+    const added = addLine(lineFromProduct(selectedProduct, [spec]));
+    setConfirmedLine({ product: selectedProduct, logo: selectedLogo, line: added });
     setOrderView('confirmed');
+  };
+  // "Add blank" on a catalog card (Stage 5) — a coach can add a garment to the
+  // cart with no decoration at all, skipping the logo/placement pickers.
+  const addBlank = (product) => {
+    addLine(lineFromProduct(product, []));
   };
 
   return (
@@ -107,7 +131,7 @@ export default function TeamShopApp() {
             ) : (
               <>
                 <nav style={{ display: 'flex', gap: 16, justifyContent: 'center', padding: '14px 32px 0' }}>
-                  {[['catalog', 'Catalog'], ['logos', 'Logos']].map(([key, label]) => (
+                  {[['catalog', 'Catalog'], ['logos', 'Logos'], ['cart', `Cart${cartLines.length ? ` (${cartLines.length})` : ''}`]].map(([key, label]) => (
                     <button
                       key={key}
                       onClick={() => setOrderView(key)}
@@ -117,7 +141,7 @@ export default function TeamShopApp() {
                     </button>
                   ))}
                 </nav>
-                {orderView === 'catalog' && <Catalog onSelectProduct={startPlacement} />}
+                {orderView === 'catalog' && <Catalog onSelectProduct={startPlacement} onAddBlank={addBlank} />}
                 {orderView === 'logos' && (
                   <LogoPicker
                     customer={orderCustomer}
@@ -132,20 +156,30 @@ export default function TeamShopApp() {
                     onBack={() => setOrderView('logos')}
                   />
                 )}
-                {orderView === 'confirmed' && draftLine && (
+                {orderView === 'confirmed' && confirmedLine && (
                   <div style={{ padding: '48px 32px', textAlign: 'center' }}>
-                    <h1 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 8px' }}>Added to design — cart coming soon</h1>
+                    <h1 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 8px' }}>Added to your cart</h1>
                     <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px' }}>
-                      {(draftLine.product && (draftLine.product.name || draftLine.product.sku)) || 'Garment'} with {(draftLine.logo && draftLine.logo.name) || 'your logo'}.
+                      {(confirmedLine.product && (confirmedLine.product.name || confirmedLine.product.sku)) || 'Garment'} with {(confirmedLine.logo && confirmedLine.logo.name) || 'your logo'}.
                     </p>
-                    {/* TODO(stage-5): show the draft line in a real cart instead of this placeholder. */}
-                    <button
-                      onClick={() => setOrderView('catalog')}
-                      style={{ background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
-                    >
-                      Back to catalog
-                    </button>
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
+                      <button
+                        onClick={() => setOrderView('cart')}
+                        style={{ background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                      >
+                        View cart
+                      </button>
+                      <button
+                        onClick={() => setOrderView('catalog')}
+                        style={{ background: '#fff', color: '#0f172a', border: '1px solid #cbd5e1', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                      >
+                        Keep shopping
+                      </button>
+                    </div>
                   </div>
+                )}
+                {orderView === 'cart' && (
+                  <CartPage customer={orderCustomer} onKeepShopping={() => setOrderView('catalog')} />
                 )}
               </>
             )}

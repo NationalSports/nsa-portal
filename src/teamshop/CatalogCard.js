@@ -9,7 +9,12 @@ import React from 'react';
 // Stage 4: clicking a card opens the garment → logo placement flow (see
 // TeamShopApp's order view) via onSelect(product); anonymous browsing (no
 // onSelect passed) leaves the card inert.
-export default function CatalogCard({ product, stock, onSelect }) {
+//
+// Stage 5: when the coach order flow is active, TeamShopApp also passes
+// onAddBlank so a coach can add the garment straight to their cart with no
+// decoration (decorations: []) — the retail-mixing case cart.js/quickorder-quote.js
+// already support — without going through the logo/placement pickers.
+export default function CatalogCard({ product, stock, onSelect, onAddBlank }) {
   const img = (product && (product.image_front_url || product.image_url)) || '';
   const inStock = !!(stock && stock.units > 0);
 
@@ -36,6 +41,15 @@ export default function CatalogCard({ product, stock, onSelect }) {
           <span style={{ fontSize: 13, color: '#64748b' }}>from —</span>
           {inStock && <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>In stock</span>}
         </div>
+        {onAddBlank && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onAddBlank(product); }}
+            style={{ marginTop: 8, width: '100%', background: '#fff', border: '1px solid #cbd5e1', color: '#0f172a', borderRadius: 6, padding: '6px 8px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' }}
+          >
+            Add blank
+          </button>
+        )}
       </div>
     </div>
   );

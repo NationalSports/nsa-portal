@@ -22,7 +22,7 @@ function useDebounced(value, ms) {
 // (supabase/migrations/00151_search_products_exclude_api_vendors.sql), and the
 // isolated supabaseCoach client (same one CoachGate/AdidasInventory use) so
 // browsing works whether or not a coach happens to be signed in.
-export default function Catalog({ onSelectProduct }) {
+export default function Catalog({ onSelectProduct, onAddBlank }) {
   const [search, setSearch] = useState('');
   const debounced = useDebounced(search, 300);
   const [brand, setBrand] = useState('All');
@@ -92,7 +92,7 @@ export default function Catalog({ onSelectProduct }) {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 18 }}>
         {visible.map((p) => (
-          <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} />
+          <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
         ))}
       </div>
     </div>
