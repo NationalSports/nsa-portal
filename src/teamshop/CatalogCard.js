@@ -6,16 +6,17 @@ import React from 'react';
 // this card deliberately never computes or imports pricing tables; it renders
 // a placeholder until a later stage wires up a real quote.
 //
-// TODO(stage-4): clicking a card does nothing yet — wire up the product detail
-// / customization flow once team-priced quoting lands in the Team Shop chunk.
-export default function CatalogCard({ product, stock }) {
+// Stage 4: clicking a card opens the garment → logo placement flow (see
+// TeamShopApp's order view) via onSelect(product); anonymous browsing (no
+// onSelect passed) leaves the card inert.
+export default function CatalogCard({ product, stock, onSelect }) {
   const img = (product && (product.image_front_url || product.image_url)) || '';
   const inStock = !!(stock && stock.units > 0);
 
   return (
     <div
-      onClick={() => { /* TODO(stage-4): open product detail / customization flow */ }}
-      style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff' }}
+      onClick={() => onSelect && onSelect(product)}
+      style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#fff', cursor: onSelect ? 'pointer' : 'default' }}
     >
       <div style={{ aspectRatio: '1 / 1', background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         {img ? (

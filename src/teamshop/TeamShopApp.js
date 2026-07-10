@@ -3,6 +3,7 @@ import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
 import LogoPicker from './LogoPicker';
+import PlacementPicker from './PlacementPicker';
 
 // Team Shop storefront chunk root — nationalteamshop.com lands here (and
 // /teamshop on any host, for deploy previews / e2e), routed by src/index.js
@@ -19,9 +20,13 @@ import LogoPicker from './LogoPicker';
 //
 // Stage 3 adds the team logo library (LogoPicker) as a 'logos' view inside the
 // signed-in order flow — Catalog stays the default after TeamPicker.
-// TODO(stage-4): the real garment → logo placement flow replaces this simple
-// Catalog|Logos toggle (a selected garment leads into LogoPicker and consumes
-// its onSelect).
+//
+// Stage 4 wires the real garment → logo placement flow: a catalog card click
+// opens LogoPicker in select mode, choosing a logo opens PlacementPicker (the
+// decoSpec engine + DecoOverlay preview) for that product/logo pair, and
+// confirming there stores the resulting decoSpec as an in-memory "draft line"
+// and shows a placeholder confirmation.
+// TODO(stage-5): draftLine becomes a real cart line (persistence + checkout).
 //
 // TODO(teamshop-landing): replace the hero placeholder below with the designed
 // landing page once the approved design concept lands. Product/cart/checkout
@@ -30,7 +35,24 @@ import LogoPicker from './LogoPicker';
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
   const [orderCustomer, setOrderCustomer] = useState(null);
-  const [orderView, setOrderView] = useState('catalog'); // catalog|logos (within the order flow)
+  const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed (within the order flow)
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [selectedLogo, setSelectedLogo] = useState(null);
+  const [draftLine, setDraftLine] = useState(null); // TODO(stage-5): replace with a real cart line
+
+  const startPlacement = (product) => {
+    setSelectedProduct(product);
+    setSelectedLogo(null);
+    setOrderView('logos');
+  };
+  const startPlacementWithLogo = (logo) => {
+    setSelectedLogo(logo);
+    setOrderView('placement');
+  };
+  const finishPlacement = (spec) => {
+    setDraftLine({ product: selectedProduct, logo: selectedLogo, spec });
+    setOrderView('confirmed');
+  };
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#0f172a', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
@@ -95,12 +117,35 @@ export default function TeamShopApp() {
                     </button>
                   ))}
                 </nav>
-                {orderView === 'catalog' && <Catalog />}
+                {orderView === 'catalog' && <Catalog onSelectProduct={startPlacement} />}
                 {orderView === 'logos' && (
                   <LogoPicker
                     customer={orderCustomer}
-                    onSelect={() => { /* TODO(stage-4): apply the chosen logo to the selected garment */ }}
+                    onSelect={startPlacementWithLogo}
                   />
+                )}
+                {orderView === 'placement' && selectedProduct && selectedLogo && (
+                  <PlacementPicker
+                    product={selectedProduct}
+                    logo={selectedLogo}
+                    onDone={finishPlacement}
+                    onBack={() => setOrderView('logos')}
+                  />
+                )}
+                {orderView === 'confirmed' && draftLine && (
+                  <div style={{ padding: '48px 32px', textAlign: 'center' }}>
+                    <h1 style={{ fontSize: 20, fontWeight: 800, margin: '0 0 8px' }}>Added to design — cart coming soon</h1>
+                    <p style={{ fontSize: 14, color: '#64748b', margin: '0 0 20px' }}>
+                      {(draftLine.product && (draftLine.product.name || draftLine.product.sku)) || 'Garment'} with {(draftLine.logo && draftLine.logo.name) || 'your logo'}.
+                    </p>
+                    {/* TODO(stage-5): show the draft line in a real cart instead of this placeholder. */}
+                    <button
+                      onClick={() => setOrderView('catalog')}
+                      style={{ background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8, padding: '10px 20px', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
+                    >
+                      Back to catalog
+                    </button>
+                  </div>
                 )}
               </>
             )}
