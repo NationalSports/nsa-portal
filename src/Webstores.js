@@ -1072,6 +1072,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
   const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
   const [templateFor, setTemplateFor] = useState(null);         // store being saved as a template → SaveAsTemplateModal
+  const [tplAfterEdit, setTplAfterEdit] = useState(null);       // { storeId, tpl } — color picker queued to open after the settings save (Start Store from a store template)
 
   // "Create from OMG" — the single unified entry point for turning an OMG report link into a
   // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
@@ -1595,6 +1596,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
   const setStoreStatus = useCallback(async (store, status, opts = {}) => {
+    // Templates are reusable starting points, never live stores: launching one would put
+    // it in the public team-stores directory and make it purchasable.
+    if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     const patch = { status, updated_at: new Date().toISOString() };
     // A coach email typed in the launch dialog is saved to the store so it's on file.
     const coachEmail = (opts.coachEmail || '').trim();
@@ -1621,16 +1625,27 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // A template is a separate is_template store carrying the catalog/packages/transfers
     // only — never the source's logo (it starts brand-free). is_template makes it show in
     // the Templates tab and stay available to the coach store builder's item pool.
-    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null } : {}) };
+    // Clone hygiene — never carry from the source:
+    //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
+    //     nothing in the clone, which hides the hero collage instead of the auto default.
+    //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
+    //     store's close never creates the rep to-do/breakdown email.
+    //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
+    //     would prefill and email the wrong person.
+    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}) };
     flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
     if (error) { flash('Could not duplicate: ' + error.message); return null; }
 
-    const { data: srcProductsAll } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
-    // opts.itemIds (from "Save as template") limits the copy to the picked catalog items;
-    // absent = copy the whole catalog (plain Duplicate / Clone & Rebrand / Start Store).
-    const wantIds = opts.itemIds ? new Set(opts.itemIds) : null;
-    const srcProducts = wantIds ? (srcProductsAll || []).filter((p) => wantIds.has(p.id)) : (srcProductsAll || []);
+    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
+    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
+    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
+    let srcProducts = [];
+    if (!opts.itemIds || opts.itemIds.length) {
+      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+      if (opts.itemIds) q = q.in('id', opts.itemIds);
+      srcProducts = (await q).data || [];
+    }
     const idMap = {}; // old webstore_product id -> new id
     for (const p of (srcProducts || [])) {
       const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
@@ -1641,7 +1656,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
     if (bundleIds.length) {
       const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id] }; }).filter((r) => r.bundle_id);
+      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
+      // row id makes the package show (and the storefront fetch) another store's item.
+      // Null when the linked single wasn't copied: components then resolve by product_id.
+      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null }; }).filter((r) => r.bundle_id);
       if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
     }
     const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
@@ -1933,20 +1951,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, []);
   const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
   // Start a new store from a STORE template ("Start Store" on a Templates-tab card).
-  // Clones the template's settings, packages and transfer setup (no logo), then opens the
-  // color picker for the template's items — one row per garment style, defaulting to the
-  // color(s) saved on the template — so the rep picks the new team's colors before
-  // anything lands in the catalog. Packages copy as-is; the picker covers single items.
+  // Clones the template's settings, packages and transfer setup (no logo), then opens
+  // SETTINGS FIRST — the rep sets the real name, customer and colors (the clone still
+  // carries the template's) — and on save the color picker opens for the template's
+  // pickable items, so its palette matching uses the NEW team's colors.
+  // Pickable = active, SKU'd singles (the picker resolves by SKU and inserts as live).
+  // Everything else — packages, custom/no-SKU items, archived rows — copies verbatim
+  // with all its fields, so nothing is dropped and archived items stay archived.
   const startStoreFromStoreTemplate = useCallback(async (t) => {
-    const { data: rows } = await supabase.from('webstore_products').select('id,kind,sku,retail_price,fundraise_amount,category,kit_name,required').eq('store_id', t.id).order('sort_order');
+    const { data: rows } = await supabase.from('webstore_products').select('id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').eq('store_id', t.id).order('sort_order');
     const all = rows || [];
-    const store = await duplicateStore(t, { suffix: '', rebrand: true, startFromTemplate: true, itemIds: all.filter((r) => r.kind === 'bundle').map((r) => r.id) });
+    const pickable = (r) => r.kind === 'single' && r.sku && r.active !== false;
+    const store = await duplicateStore(t, { suffix: '', rebrand: true, startFromTemplate: true, itemIds: all.filter((r) => !pickable(r)).map((r) => r.id) });
     if (!store) return;
-    const singles = all.filter((r) => r.kind === 'single' && r.sku);
-    if (!singles.length) { openStore(store); return; }
-    const pseudoTpl = { name: t.name, items: singles.map((r) => ({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required })) };
-    beginTplColorFlow(pseudoTpl, store);
-  }, [duplicateStore, beginTplColorFlow, openStore]);
+    const singles = all.filter(pickable);
+    if (singles.length) setTplAfterEdit({ storeId: store.id, tpl: { name: t.name, items: singles.map(wpRowToTplItem) } });
+    setEditing(store);
+  }, [duplicateStore]);
   const finishTplColorFlow = useCallback(async (plan) => {
     const flow = tplColorFlow; if (!flow) return;
     const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
@@ -3024,7 +3045,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
-          onCancel={() => { setPendingStartTpl(null); setEditing(null); omgResetStaged(); }}
+          onCancel={() => { setPendingStartTpl(null); if (tplAfterEdit) { setTplAfterEdit(null); flash('Store saved as a draft — bring the template\'s items in any time via Add items → Add template'); } setEditing(null); omgResetStaged(); }}
           onSave={async (form) => {
             const isNew = editing === 'new';
             const r = await saveStore(form, isNew ? null : editing.id);
@@ -3034,6 +3055,9 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // in-house art now that the store exists with every setting the rep just configured.
             if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
             if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); return r; }
+            // Start-Store-from-template: settings are saved, so the store now has the real
+            // team's name/customer/colors — open the color picker with THAT palette.
+            if (!isNew && tplAfterEdit && r.data && r.data.id === tplAfterEdit.storeId) { const q = tplAfterEdit; setTplAfterEdit(null); beginTplColorFlow(q.tpl, r.data); return r; }
             // A brand-new team store (not from OMG or a template): open it straight to the
             // Art & Logos page so the rep keeps building — add artwork next — instead of
             // bouncing back to the store list. Club stores stay on the list (product-first).
@@ -4919,7 +4943,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
-          {onSetStatus && (s.status !== 'open'
+          {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
+          {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
@@ -7242,6 +7267,10 @@ function TemplateEditor({ template, onClose, onSaved }) {
 // ALL-CAPS color code (optionally slash-joined, e.g. ROYBLU/WHITE) so the colorways of a
 // style collapse into one card. Mixed-case names (most of the catalog) keep their color in
 // the color field and are left untouched.
+// The ONE webstore_products row → color-picker template item mapping, shared by
+// Start-Store-from-template and the Add-template gallery so the shape can't drift.
+const wpRowToTplItem = (r) => ({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required });
+
 const styleKey = (name) => {
   const n = String(name || '').trim();
   const base = n.replace(/\s+[A-Z]{4,}(?:\/[A-Z0-9]{2,})*$/, '').trim();
@@ -7420,17 +7449,19 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
       supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
     ]);
     // Store templates (Templates tab / "Save as template") join the gallery too: each
-    // becomes a pseudo item-template — its single items as {sku, price, …} entries — so
-    // the same "Add to store" color-picker flow applies them. Packages don't carry here.
+    // becomes a pseudo item-template — its active, SKU'd single items as wpRowToTplItem
+    // entries — so the same "Add to store" color-picker flow applies them. Packages and
+    // custom/no-SKU items don't carry here; archived rows are excluded so a discontinued
+    // item can't be revived (the picker inserts everything as live).
     let storeTpls = [];
     const ids = (tplStores || []).map((s) => s.id);
     if (ids.length) {
-      const { data: rows } = await supabase.from('webstore_products').select('store_id,kind,sku,retail_price,fundraise_amount,category,kit_name,required').in('store_id', ids).order('sort_order');
+      const { data: rows } = await supabase.from('webstore_products').select('store_id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').in('store_id', ids).order('sort_order');
       const byStore = new Map();
       (rows || []).forEach((r) => {
-        if (r.kind !== 'single' || !r.sku) return;
+        if (r.kind !== 'single' || !r.sku || r.active === false) return;
         if (!byStore.has(r.store_id)) byStore.set(r.store_id, []);
-        byStore.get(r.store_id).push({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required });
+        byStore.get(r.store_id).push(wpRowToTplItem(r));
       });
       storeTpls = (tplStores || []).map((s) => ({ id: 'ws:' + s.id, name: s.name, sport: null, brand_focus: null, gender: null, items: byStore.get(s.id) || [], _storeTpl: true })).filter((t) => t.items.length);
     }
