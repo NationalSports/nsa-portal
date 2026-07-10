@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
+import LogoPicker from './LogoPicker';
 
 // Team Shop storefront chunk root — nationalteamshop.com lands here (and
 // /teamshop on any host, for deploy previews / e2e), routed by src/index.js
@@ -16,6 +17,12 @@ import Catalog from './Catalog';
 // internal route switch below — no router library, just local state, per the
 // "lightweight internal routing" scope for this stage.
 //
+// Stage 3 adds the team logo library (LogoPicker) as a 'logos' view inside the
+// signed-in order flow — Catalog stays the default after TeamPicker.
+// TODO(stage-4): the real garment → logo placement flow replaces this simple
+// Catalog|Logos toggle (a selected garment leads into LogoPicker and consumes
+// its onSelect).
+//
 // TODO(teamshop-landing): replace the hero placeholder below with the designed
 // landing page once the approved design concept lands. Product/cart/checkout
 // also mount from here in later stages.
@@ -23,6 +30,7 @@ import Catalog from './Catalog';
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
   const [orderCustomer, setOrderCustomer] = useState(null);
+  const [orderView, setOrderView] = useState('catalog'); // catalog|logos (within the order flow)
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#0f172a', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
@@ -72,7 +80,30 @@ export default function TeamShopApp() {
 
         {route === 'order' && (
           <CoachGate>
-            {!orderCustomer ? <TeamPicker onSelect={setOrderCustomer} /> : <Catalog />}
+            {!orderCustomer ? (
+              <TeamPicker onSelect={setOrderCustomer} />
+            ) : (
+              <>
+                <nav style={{ display: 'flex', gap: 16, justifyContent: 'center', padding: '14px 32px 0' }}>
+                  {[['catalog', 'Catalog'], ['logos', 'Logos']].map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setOrderView(key)}
+                      style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontSize: 14, fontWeight: 600, fontFamily: 'inherit', color: orderView === key ? '#0f172a' : '#64748b' }}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </nav>
+                {orderView === 'catalog' && <Catalog />}
+                {orderView === 'logos' && (
+                  <LogoPicker
+                    customer={orderCustomer}
+                    onSelect={() => { /* TODO(stage-4): apply the chosen logo to the selected garment */ }}
+                  />
+                )}
+              </>
+            )}
           </CoachGate>
         )}
       </main>
