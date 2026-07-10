@@ -155,6 +155,14 @@ export default function TeamShopApp() {
       setOrderView('logos');
     }
   };
+  // Signed-in catalog card click: the logo-first one-shot carryover (see the
+  // Stage-7 comment) still skips straight to the existing PlacementPicker for
+  // this one product — the builder below does NOT reimplement that path.
+  // Otherwise (the normal product-first click), open the builder inline.
+  const selectProductFromCatalog = (product) => {
+    if (selectedLogo) startPlacement(product);
+    else setPreviewProduct(product);
+  };
   const startPlacementWithLogo = (logo) => {
     setSelectedLogo(logo);
     // No product chosen yet (logo-first entry) — browse the catalog next;
@@ -281,11 +289,14 @@ export default function TeamShopApp() {
         {route === 'catalog' && previewProduct && (
           <ProductPage
             product={previewProduct}
+            customer={null}
             onBack={() => setPreviewProduct(null)}
             onCustomize={previewCustomize}
-            // No onAddBlank here — anonymous browsing has never offered
-            // "Add blank" (no cart to add to without a signed-in customer);
-            // unchanged from the pre-existing anonymous Catalog's behavior.
+            // No onAddBlank/onAddToOrder here — anonymous browsing has never
+            // offered a way to add to a cart without a signed-in customer;
+            // the builder renders in read/preview mode and gates "Add to
+            // order" (and any logo pick/upload) to previewCustomize's
+            // sign-in hand-off, same as every other "Start with your logo" CTA.
           />
         )}
 
@@ -324,14 +335,26 @@ export default function TeamShopApp() {
                   ))}
                 </nav>
                 {orderView === 'catalog' && !previewProduct && (
-                  <Catalog onSelectProduct={setPreviewProduct} onAddBlank={addBlank} />
+                  <Catalog onSelectProduct={selectProductFromCatalog} onAddBlank={addBlank} />
                 )}
                 {orderView === 'catalog' && previewProduct && (
                   <ProductPage
                     product={previewProduct}
+                    customer={orderCustomer}
                     onBack={() => setPreviewProduct(null)}
-                    onCustomize={(product) => { setPreviewProduct(null); startPlacement(product); }}
                     onAddBlank={(product) => { addBlank(product); setPreviewProduct(null); }}
+                    // The builder now does logo pick + placement + size-run
+                    // inline (replacing the old hand-off to 'logos'/'placement'
+                    // for the product-first path) — "Add to order" hands back
+                    // ready-to-add cart lines (one per sized quantity, each
+                    // carrying the same validated decoSpec) for us to add and
+                    // then jump straight to the cart, reusing the existing
+                    // goCart() transition.
+                    onAddToOrder={(lines) => {
+                      lines.forEach((line) => addLine(line));
+                      setPreviewProduct(null);
+                      goCart();
+                    }}
                   />
                 )}
                 {orderView === 'logos' && (
