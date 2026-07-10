@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
+import ProductPage from './ProductPage';
 import Home from './Home';
 import StartWithLogo from './StartWithLogo';
 import LogoPicker from './LogoPicker';
@@ -71,6 +72,26 @@ import {
 // carried-over logo is a one-shot convenience for the very next product only
 // (cleared in finishPlacement): every product after that goes through the
 // 'logos' step again, same as the pre-existing product-first path.
+//
+// Stage 8 adds ProductPage.js — the approved "Product - Performance Polo"
+// Claude Design mockup — as a detail stage BETWEEN a catalog card click and
+// the logo/placement flow, in both places a card can be clicked:
+//   - the anonymous top-level catalog (route === 'catalog'): a card now opens
+//     the product page (previously inert with no onSelectProduct at all);
+//     anonymous browsing stays anonymous — "Add blank" is still unavailable
+//     there (matches the pre-existing behavior of that route), and
+//     "Customize with your logo" gates to sign-in via the existing
+//     goStartWithLogo() -> StartWithLogo -> CoachGate/TeamPicker path, same
+//     as every other "Start with your logo" CTA.
+//   - the signed-in order flow's catalog (orderView === 'catalog'): a card
+//     opens the product page instead of jumping straight to 'logos'/
+//     'placement'; "Customize" there calls the existing startPlacement()
+//     unchanged (logo carry included), and "Add blank" calls the existing
+//     addBlank() unchanged.
+// previewProduct is the one piece of state for this: which product (if any)
+// is showing on the product page, in whichever catalog context the coach is
+// currently in. Setting it back to null (onBack) returns to that catalog's
+// grid.
 
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
@@ -81,6 +102,7 @@ export default function TeamShopApp() {
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedLogo, setSelectedLogo] = useState(null);
   const [confirmedLine, setConfirmedLine] = useState(null); // { product, logo, line } for the confirmation view text
+  const [previewProduct, setPreviewProduct] = useState(null); // product shown on ProductPage, in either catalog context
 
   const { lines: cartLines, addLine } = useCart(orderCustomer && orderCustomer.id);
 
@@ -91,7 +113,10 @@ export default function TeamShopApp() {
   // entry chrome. The cart icon is the one path into 'order' that is NOT a
   // "Start with your logo" CTA — it jumps straight to the existing cart view.
   const goStartWithLogo = () => { setRoute('order'); setEnteredShop(false); };
-  const goCart = () => { setRoute('order'); setEnteredShop(true); setOrderView('cart'); };
+  const goCart = () => { setRoute('order'); setEnteredShop(true); setOrderView('cart'); setPreviewProduct(null); };
+  // Entering the top-level catalog fresh (nav/header/Home CTAs) always starts
+  // at the grid, never mid-way through a stale product-page preview.
+  const goCatalog = () => { setRoute('catalog'); setPreviewProduct(null); };
 
   const lineFromProduct = (product, decorations) => ({
     product_id: product && product.id,
@@ -135,6 +160,20 @@ export default function TeamShopApp() {
     addLine(lineFromProduct(product, []));
   };
 
+  // "Customize with your logo" from the anonymous top-level catalog's product
+  // page: there's no order flow to continue yet (no coach signed in, maybe
+  // no product picked before now), so this stashes the product as the
+  // logo-first path already does with selectedLogo (see the Stage-7 comment)
+  // and hands off to the same goStartWithLogo() every other CTA uses. Once
+  // the coach reaches the order flow's catalog with this product already in
+  // selectedProduct, startPlacementWithLogo/startPlacement pick it up exactly
+  // like the pre-existing product-first and logo-first paths do.
+  const previewCustomize = (product) => {
+    setSelectedProduct(product);
+    setPreviewProduct(null);
+    goStartWithLogo();
+  };
+
   // Header/footer visual design per the approved "Shop - Polos" Claude Design
   // mockup. View routing logic is unchanged — nav items map onto the existing
   // route/orderView state; mockup destinations that don't exist yet render as
@@ -170,8 +209,8 @@ export default function TeamShopApp() {
           </div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '14px 0', flexWrap: 'wrap' }}>
             <nav style={{ display: 'flex', alignItems: 'center', gap: 30, flexWrap: 'wrap', margin: '0 auto' }}>
-              <button className="nts-navlink" onClick={() => setRoute('catalog')} style={navLinkStyle(route === 'catalog')}>Shop</button>
-              <button className="nts-navlink" onClick={() => setRoute('catalog')} style={navLinkStyle(false)}>Apparel</button>
+              <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(route === 'catalog')}>Shop</button>
+              <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(false)}>Apparel</button>
               <span style={inertNavStyle}>Decoration</span>
               <span style={inertNavStyle}>Team Stores</span>
               <span style={inertNavStyle}>Swift Ship</span>
@@ -208,10 +247,22 @@ export default function TeamShopApp() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route === 'landing' && (
-          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={() => setRoute('catalog')} />
+          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} />
         )}
 
-        {route === 'catalog' && <Catalog />}
+        {route === 'catalog' && !previewProduct && (
+          <Catalog onSelectProduct={setPreviewProduct} />
+        )}
+        {route === 'catalog' && previewProduct && (
+          <ProductPage
+            product={previewProduct}
+            onBack={() => setPreviewProduct(null)}
+            onCustomize={previewCustomize}
+            // No onAddBlank here — anonymous browsing has never offered
+            // "Add blank" (no cart to add to without a signed-in customer);
+            // unchanged from the pre-existing anonymous Catalog's behavior.
+          />
+        )}
 
         {route === 'order' && !enteredShop && (
           <StartWithLogo
@@ -232,14 +283,24 @@ export default function TeamShopApp() {
                     <button
                       key={key}
                       className="nts-navlink"
-                      onClick={() => setOrderView(key)}
+                      onClick={() => { setOrderView(key); setPreviewProduct(null); }}
                       style={{ ...displayType(15, { letterSpacing: '0.07em' }), background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: orderView === key ? RED : NAVY }}
                     >
                       {label}
                     </button>
                   ))}
                 </nav>
-                {orderView === 'catalog' && <Catalog onSelectProduct={startPlacement} onAddBlank={addBlank} />}
+                {orderView === 'catalog' && !previewProduct && (
+                  <Catalog onSelectProduct={setPreviewProduct} onAddBlank={addBlank} />
+                )}
+                {orderView === 'catalog' && previewProduct && (
+                  <ProductPage
+                    product={previewProduct}
+                    onBack={() => setPreviewProduct(null)}
+                    onCustomize={(product) => { setPreviewProduct(null); startPlacement(product); }}
+                    onAddBlank={(product) => { addBlank(product); setPreviewProduct(null); }}
+                  />
+                )}
                 {orderView === 'logos' && (
                   <LogoPicker
                     customer={orderCustomer}
