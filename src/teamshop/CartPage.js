@@ -9,9 +9,10 @@ import { placementById } from '../lib/artPlacements';
 // price itself — unit_sell/line_total/subtotal are exactly what the server
 // returned, rendered as-is.
 //
-// TODO(stage-6): quote_hash + quote.lines (kept in state below) feed the
-// order-placement call; the Checkout button below is a disabled placeholder
-// until that stage.
+// Stage 6: the Checkout button hands the server quote (quote_hash +
+// quote.lines, kept in state below) to CheckoutPage via onCheckout — the
+// order-placement endpoint re-verifies that hash per the normalizeAndHash
+// contract in quickorder-quote.js.
 
 const METHOD_LABELS = { screen_print: 'Screen Print', embroidery: 'Embroidery', dtf: 'DTF Print' };
 const DEBOUNCE_MS = 500;
@@ -27,7 +28,7 @@ function decoChips(decorations) {
   }));
 }
 
-export default function CartPage({ customer, onKeepShopping }) {
+export default function CartPage({ customer, onKeepShopping, onCheckout }) {
   const { accessToken, signOut } = useCoachSession();
   const customerId = customer && customer.id;
   const { lines, updateQty, setSize, removeLine, addLine } = useCart(customerId);
@@ -224,15 +225,14 @@ export default function CartPage({ customer, onKeepShopping }) {
         </div>
         <button
           type="button"
-          disabled
-          title="Checkout coming soon"
-          style={{ background: '#e2e8f0', color: '#94a3b8', border: 'none', borderRadius: 8, padding: '12px 24px', fontSize: 15, fontWeight: 700, cursor: 'not-allowed', fontFamily: 'inherit' }}
+          disabled={quoteState !== 'ready' || !quote}
+          onClick={() => { if (quote && onCheckout) onCheckout(quote); }}
+          style={quoteState === 'ready' && quote
+            ? { background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8, padding: '12px 24px', fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }
+            : { background: '#e2e8f0', color: '#94a3b8', border: 'none', borderRadius: 8, padding: '12px 24px', fontSize: 15, fontWeight: 700, cursor: 'not-allowed', fontFamily: 'inherit' }}
         >
-          Checkout coming soon
+          Checkout
         </button>
-        {/* TODO(stage-6): enable Checkout, sending quote.quote_hash + quote.lines
-            (both kept in this component's `quote` state) to the order-placement
-            endpoint per the normalizeAndHash contract in quickorder-quote.js. */}
       </div>
     </div>
   );

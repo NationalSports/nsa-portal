@@ -5,6 +5,7 @@ import Catalog from './Catalog';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
 import CartPage from './CartPage';
+import CheckoutPage from './CheckoutPage';
 import { useCart } from './cart';
 
 // Team Shop storefront chunk root — nationalteamshop.com lands here (and
@@ -33,7 +34,11 @@ import { useCart } from './cart';
 // localStorage, keyed per customer) and a live-priced CartPage — a garment can
 // also be added straight to the cart without decoration ("Add blank" on a
 // catalog card, or "Also add without decoration" once a line is decorated).
-// TODO(stage-6): checkout (consuming the quote_hash CartPage keeps in state).
+//
+// Stage 6 adds checkout (CheckoutPage): CartPage hands its server quote
+// (lines + quote_hash) to onCheckout, CheckoutPage collects contact/shipping,
+// places the order through netlify/functions/teamshop-checkout.js, and takes
+// card payment via Stripe Elements (finalized by webstore-checkout).
 //
 // TODO(teamshop-landing): replace the hero placeholder below with the designed
 // landing page once the approved design concept lands. Product/cart/checkout
@@ -42,7 +47,8 @@ import { useCart } from './cart';
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
   const [orderCustomer, setOrderCustomer] = useState(null);
-  const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed (within the order flow)
+  const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed|cart|checkout (within the order flow)
+  const [checkoutQuote, setCheckoutQuote] = useState(null); // server quote (lines + quote_hash) handed from CartPage
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [selectedLogo, setSelectedLogo] = useState(null);
   const [confirmedLine, setConfirmedLine] = useState(null); // { product, logo, line } for the confirmation view text
@@ -179,7 +185,18 @@ export default function TeamShopApp() {
                   </div>
                 )}
                 {orderView === 'cart' && (
-                  <CartPage customer={orderCustomer} onKeepShopping={() => setOrderView('catalog')} />
+                  <CartPage
+                    customer={orderCustomer}
+                    onKeepShopping={() => setOrderView('catalog')}
+                    onCheckout={(quote) => { setCheckoutQuote(quote); setOrderView('checkout'); }}
+                  />
+                )}
+                {orderView === 'checkout' && (
+                  <CheckoutPage
+                    customer={orderCustomer}
+                    quote={checkoutQuote}
+                    onBack={() => setOrderView('cart')}
+                  />
                 )}
               </>
             )}

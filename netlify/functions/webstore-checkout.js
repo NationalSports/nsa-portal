@@ -894,3 +894,13 @@ module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;
 module.exports.r2 = r2;
+
+// ── Team Shop checkout reuse (Stage 6) ───────────────────────────────
+// teamshop-checkout.js REQUIRES these instead of forking the tax math,
+// rollback compensation, or clientRef idempotency — one implementation for
+// both order sources. Export-only additions: no behavior change here.
+module.exports.calcTax = calcTax;
+module.exports.rollbackOrder = rollbackOrder;
+module.exports.validClientRef = validClientRef;
+module.exports.findOrderByClientRef = findOrderByClientRef;
+module.exports.replayOrder = replayOrder;
