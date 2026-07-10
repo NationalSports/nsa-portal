@@ -115,6 +115,39 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
     prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]
   ));
 
+  // Sort. search_products returns rows in relevance/DB order, which reads as
+  // arbitrary on an all-products view — so we impose a stable default (Featured,
+  // then A–Z) and let the shopper re-sort. Applied client-side over the loaded
+  // page, same as the brand filter. Choice persists across visits.
+  const [sortBy, setSortBy] = useState(() => {
+    try { return localStorage.getItem('nts_sort') || 'featured'; } catch { return 'featured'; }
+  });
+  const changeSort = (v) => { setSortBy(v); try { localStorage.setItem('nts_sort', v); } catch { /* ignore */ } };
+
+  // List-price basis for ORDERING ONLY (never displayed) — mirrors the server's
+  // standard-sell fallback (catalog_sell_price → cost×1.65 → retail) so the
+  // Price sort lines up with what shoppers actually pay.
+  const listPrice = (p) => {
+    if (p.catalog_sell_price != null) return Number(p.catalog_sell_price) || 0;
+    const cost = p.is_clearance && p.clearance_cost != null ? p.clearance_cost : p.nsa_cost;
+    if (cost != null) return (Number(cost) || 0) * 1.65;
+    return Number(p.retail_price) || 0;
+  };
+
+  const sorted = useMemo(() => {
+    const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
+    const arr = [...visible];
+    switch (sortBy) {
+      case 'name': arr.sort(byName); break;
+      case 'brand': arr.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || byName(a, b)); break;
+      case 'price_asc': arr.sort((a, b) => listPrice(a) - listPrice(b) || byName(a, b)); break;
+      case 'price_desc': arr.sort((a, b) => listPrice(b) - listPrice(a) || byName(a, b)); break;
+      case 'featured':
+      default: arr.sort((a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || byName(a, b)); break;
+    }
+    return arr;
+  }, [visible, sortBy]);
+
   const setSize = (size, delta) => setRoster((prev) => {
     const next = { ...prev, [size]: Math.max(0, (prev[size] || 0) + delta) };
     saveRoster(next);
@@ -248,14 +281,21 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
               <strong style={{ color: NAVY, fontWeight: 600 }}>{visible.length}</strong> products
               {rosterTotal > 0 ? ` · sized for your roster of ${rosterTotal}` : ''}
             </span>
-            {/* TODO(sort): the mockup's sort control is visual-only; wire to a
-                real sort param on search_products when one exists. */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} aria-hidden="true">
-              <span style={{ fontSize: 13, color: TEXT_MUTED }}>Sort</span>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600, color: NAVY, border: `1px solid ${BORDER_DARK}`, borderRadius: 8, padding: '8px 14px' }}>
-                Featured
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
-              </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <label htmlFor="nts-sort" style={{ fontSize: 13, color: TEXT_MUTED }}>Sort</label>
+              <select
+                id="nts-sort"
+                value={sortBy}
+                onChange={(e) => changeSort(e.target.value)}
+                className="nts-navlink"
+                style={{ fontSize: 14, fontWeight: 600, color: NAVY, border: `1px solid ${BORDER_DARK}`, borderRadius: 8, padding: '8px 14px', background: '#fff', fontFamily: 'inherit', cursor: 'pointer' }}
+              >
+                <option value="featured">Featured</option>
+                <option value="name">Name: A–Z</option>
+                <option value="brand">Brand: A–Z</option>
+                <option value="price_asc">Price: Low to High</option>
+                <option value="price_desc">Price: High to Low</option>
+              </select>
             </div>
           </div>
 
@@ -269,7 +309,7 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
           )}
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 22 }}>
-            {visible.map((p) => (
+            {sorted.map((p) => (
               <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
             ))}
           </div>
