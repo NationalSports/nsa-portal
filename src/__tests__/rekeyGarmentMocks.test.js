@@ -68,6 +68,14 @@ describe('rekeyGarmentMocks — in-place sku/color edit moves the garment keys',
     expect(out[0].item_mockups['NEW|Red'][0].sku).toBe('NEW');
   });
 
+  test('moveBareSku:false leaves the legacy bare-sku bucket (another line still carries the SKU)', () => {
+    const arts = [{ id: 'af1', item_mockups: { 'OLD|Red': [mk('http://x/1.png')], OLD: [mk('http://x/legacy.png')] } }];
+    const out = rekeyGarmentMocks(arts, 'OLD', 'Red', 'NEW', 'Red', { moveBareSku: false });
+    expect(out[0].item_mockups['NEW|Red']).toHaveLength(1);
+    expect(out[0].item_mockups.OLD).toHaveLength(1); // bare bucket stays for the sibling line
+    expect(out[0].item_mockups.NEW).toBeUndefined();
+  });
+
   test('no-op returns the same reference (callers can skip a save)', () => {
     const arts = [{ id: 'af1', item_mockups: { 'OTHER|Blue': [mk('http://x/o.png')] } }];
     expect(rekeyGarmentMocks(arts, 'JM5228', 'Royal/White', 'KD5416', 'Royal/White')).toBe(arts);

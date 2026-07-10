@@ -9,7 +9,10 @@
 -- server side: a decision on an un-sent job raises NSA_NOT_SENT (portal-action maps
 -- it to a 409 "not ready for review yet").
 --
--- Identical to 00172's function otherwise (locked read, waiting_approval guard,
+-- Beyond the new send guard, this also differs from 00172 in one way: the reject
+-- write set now clears coach_approved_at atomically (00172 left that to a guarded
+-- follow-up UPDATE in portal-action.js, which becomes a harmless no-op once this
+-- is applied). Everything else matches 00172 (locked read, waiting_approval guard,
 -- seen-mocks pinning, complete atomic write sets).
 
 create or replace function apply_coach_art_decision(

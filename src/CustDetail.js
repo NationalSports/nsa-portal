@@ -1833,33 +1833,44 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
-                if(!onSaveSO||!customer?.alpha_tag)return;
-                const jArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                {/* Re-derive the LIVE SO: `so` was captured when the row was clicked, and the
+                    await below leaves a real window for other saves to land — mirroring a stale
+                    snapshot would silently revert them (the F5 class). */}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
                 if(!jArtIds.length)return;
-                const _mm=skusMissingMockups(j,so);
+                const _mm=skusMissingMockups(liveJob,liveSO);
                 if(_mm.length>0){alert('No mockup yet for: '+_mm.join(', ')+' — complete the proof before approving.');return}
                 {/* Deco-specific prod-files stage (dtf→transfers, embroidery→emb files); confirmed
                     seps (checkbox / approved-art .dst) skip straight to art_complete — matches the
                     coach portal's derivation. */}
-                const _apArts=jArtIds.map(id=>(so.art_files||[]).find(af3=>af3.id===id)).filter(Boolean);
-                const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apArts[0]?.deco_type||j.deco_type);
-                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:so.id,job_id:j.id,decision:'approve',comment:portalComment.trim()||null,art_ids:jArtIds,approved_status:_apSt}});
+                const _apArts=jArtIds.map(id=>(liveSO.art_files||[]).find(af3=>af3.id===id)).filter(Boolean);
+                const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apArts[0]?.deco_type||liveJob.deco_type);
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'approve',comment:portalComment.trim()||null,art_ids:jArtIds,approved_status:_apSt}});
                 if(!_res.ok){alert(_res.error||'Could not record the approval — please refresh and try again.');return}
-                const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:portalComment.trim()||jj.coach_approval_comment,coach_rejected:false}:jj);
-                const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:portalComment.trim()||jj.coach_approval_comment,coach_rejected:false}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
                 onSaveSO(updatedSO);
                 setPortalComment('');setPortalJobView(null)}}>✅ Approve</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
                 if(!portalComment.trim()){alert('Please add a comment explaining what needs to change.');return}
-                if(!onSaveSO||!customer?.alpha_tag)return;
-                const jArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
                 const _fb=portalComment.trim();
-                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:so.id,job_id:j.id,decision:'reject',comment:_fb,art_ids:jArtIds}});
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'reject',comment:_fb,art_ids:jArtIds}});
                 if(!_res.ok){alert(_res.error||'Could not record the change request — please refresh and try again.');return}
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
                 const _rejAt=new Date().toISOString();
                 const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
-                const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
-                const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
                 onSaveSO(updatedSO);
                 setPortalComment('');setPortalJobView(null)
               }}>❌ Request Changes</button>

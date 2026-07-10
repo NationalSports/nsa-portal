@@ -230,14 +230,18 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
 // when something changed, else the same reference (callers can skip a save on no-op).
 // Callers must ensure no OTHER live line still uses the old sku|color before moving —
 // two identical lines share one key by design.
-export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor) => {
+// opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
+// SKU, so callers must pass false when another live line still carries the old SKU in a
+// different color — moving the bare bucket would steal that line's legacy fallback.
+export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, opts) => {
+  const moveBareSku = !opts || opts.moveBareSku !== false;
   const fromKey = mockLinkKeyOf(fromSku, fromColor);
   const toKey = mockLinkKeyOf(toSku, toColor);
   if (fromKey === toKey) return artFiles;
   const mapKey = (k) => {
     if (k === fromKey) return toKey;
     if (k.startsWith(fromKey + '|')) return toKey + k.slice(fromKey.length);
-    if (fromSku && k === fromSku) return toSku || k; // legacy bare-sku bucket
+    if (moveBareSku && fromSku && k === fromSku) return toSku || k; // legacy bare-sku bucket
     return k;
   };
   const entryUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
@@ -272,6 +276,14 @@ export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor) 
   });
   return anyChanged ? next : artFiles;
 };
+
+// One shared message for the per-garment mock gate. The gate itself (skusMissingMockups)
+// is enforced at six surfaces — OrderEditor's Approve Artwork / Send-to-Coach button /
+// openCoachSend / Skip-Artist release, CoachPortal's Approve, CustDetail's preview
+// Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
+// what the rep is told to do about it.
+export const missingMockupsMsg = (action, missing) =>
+  'Cannot ' + action + ' — no mockup yet for: ' + missing.join(', ') + '. Upload a mockup or link one ("use the same mockup as…") first.';
 
 // ── Auto-link a copy-swapped garment to its source's mockup ──
 // The style-swap flows clone a line to a NEW sku ("copy decorations from JM5228 →

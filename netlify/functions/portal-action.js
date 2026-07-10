@@ -55,7 +55,9 @@ async function applyArtDecision(admin, d, touchTs) {
   if (!error) {
     // M4: a reject also clears the stale approval timestamp. The 00172 RPC predates
     // this clear, so it runs as a follow-up write — guarded on the state the RPC
-    // just committed so it can never clobber a subsequent transition.
+    // just committed so it can never clobber a subsequent transition. Migration 00187
+    // folds the clear into the RPC itself; once applied, this re-writes the same null
+    // (harmless). Keep it until 00187 is confirmed applied everywhere.
     if (d.decision === 'reject') {
       await admin.from('so_jobs').update({ coach_approved_at: null })
         .eq('so_id', d.so_id).eq('id', d.job_id).eq('art_status', 'art_requested');

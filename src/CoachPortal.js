@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, soLineKey, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -1342,8 +1342,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _liveJob=(safeJobs(_liveSO)).find(jj=>jj.id===jobView.job.id)||jobView.job;
     const j=_liveJob;const so=_liveSO;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
+    // Scoped to the decorations THIS JOB OWNS (deco_idxs), mirroring jobLiveArtIds in
+    // businessLogic.js: an unscoped union pulled a sibling job's art into this job's view
+    // on shared garment lines (mixed-deco items always split into two jobs), so the coach
+    // saw the OTHER job's mocks here — and, worse, those URLs entered seen_mocks while
+    // art_ids stayed narrow, making every approve 409 with NSA_MOCKS_CHANGED (audit follow-up).
+    // The decision payloads below use this same set, so what's shown, what's pinned, and
+    // what gets approved/reset are one set. Legacy items without deco_idxs keep the
+    // unscoped fallback, matching businessLogic.
     const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
     const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
     // Mock links: a garment the rep linked to another garment shows a "same mockup as X"
     // note instead of repeating the image; the source garment shows it once with an
@@ -1539,7 +1547,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _liveJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id)||j;
                 const _mmC=skusMissingMockups(_liveJob,liveSO);
                 if(_mmC.length>0){alert('This proof is missing a mockup for: '+_mmC.join(', ')+'.\n\nPlease ask your rep to complete the proof — you can also use "Request Changes" below to send them a note.');return}
-                const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+                // The SAME scoped set the view renders (_jobArtIds): seen_mocks are collected
+                // from these files, so the RPC's pinning pools must be built from the same ids —
+                // a narrower art_ids made every mixed-deco approval conflict (NSA_MOCKS_CHANGED).
+                const jArtIds=[..._jobArtIds];
                 const coachComment=comment.trim();
                 // Folder already carries a confirmed production separation (checkbox, or an
                 // embroidery .dst)? Approval sends it straight to art_complete instead of the

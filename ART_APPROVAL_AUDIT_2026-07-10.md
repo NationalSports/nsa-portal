@@ -115,6 +115,22 @@ branch on `af.status==='approved'`. Do not simply revert 93401d1 — that re-bre
 
 ---
 
+### A1b — Portal job view mixed sibling jobs' art into display and `seen_mocks` *(found in verification, initially omitted from this report — fixed same day)*
+
+`CoachPortal.js` built each job's art set as an **unscoped** union: the job's `_art_ids` plus
+*every* art decoration on its items — ignoring `deco_idxs`, the field that says which
+decorations the job owns. Mixed-deco garment lines always split into two jobs (buildJobs
+buckets by deco type), so on a shared line the coach saw the SIBLING job's mocks on this
+job's card and detail view — a concrete mechanism for the "coach decided while looking at
+the wrong artwork" class left open by SO-1159. Worse: those sibling URLs entered
+`seen_mocks` while the decision payload's `art_ids` stayed narrow (`j._art_ids` only), so
+the 00172 RPC's pinning check (`seen ⊄ pools → NSA_MOCKS_CHANGED`) made **every approval
+on such a job 409 permanently**. Live data at audit time: 3 of 23 waiting jobs shared a
+line with a sibling. **Fix applied:** the union is now scoped by `deco_idxs` (mirroring
+`businessLogic.jobLiveArtIds`, legacy fallback preserved) and the same scoped set feeds
+the view, `seen_mocks`, and the decision's `art_ids`, so what's shown, pinned, and
+approved/reset are one set.
+
 ## 2. MEDIUM findings
 
 ### A3 — "Sent to Coach" is stamped on a mail draft, or on nothing *(July-2 M9, open)*
