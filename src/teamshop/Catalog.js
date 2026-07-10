@@ -2,6 +2,10 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabaseCoach } from '../lib/supabaseCoach';
 import { fetchStockMap } from '../lib/storeInventory';
 import CatalogCard from './CatalogCard';
+import {
+  ensureTeamShopStyles, NAVY, NAVY_DARK, RED, RED_SOFT, OFF_WHITE, BORDER,
+  BORDER_DARK, TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
+} from './theme';
 
 const PAGE_SIZE = 24;
 
@@ -16,20 +20,54 @@ function useDebounced(value, ms) {
   return debounced;
 }
 
+// ---- Roster sizes widget state (from the approved mockup's sidebar) --------
+// Display/persistence ONLY at this stage: quantities save to localStorage
+// 'nts_roster' and surface in the results line, but do NOT feed the cart or
+// ordering yet. TODO(roster-prefill): when the size-level order flow lands,
+// prefill each product's size quantities from this roster.
+const ROSTER_KEY = 'nts_roster';
+const SIZES = ['XS', 'S', 'M', 'L', 'XL', '2XL'];
+const emptyRoster = () => SIZES.reduce((acc, s) => ({ ...acc, [s]: 0 }), {});
+
+function loadRoster() {
+  try {
+    const raw = JSON.parse(window.localStorage.getItem(ROSTER_KEY) || '{}');
+    const roster = emptyRoster();
+    SIZES.forEach((s) => {
+      const n = Number(raw[s]);
+      if (Number.isFinite(n) && n > 0) roster[s] = Math.floor(n);
+    });
+    return roster;
+  } catch { return emptyRoster(); }
+}
+
+function saveRoster(roster) {
+  try { window.localStorage.setItem(ROSTER_KEY, JSON.stringify(roster)); } catch { /* best-effort */ }
+}
+
 // Anonymous garment catalog browse — no sign-in required. Reuses the
 // `search_products` RPC (see src/lib/dbEngine.js _searchProductsServer for the
 // staff-side call shape), which is GRANTed to the `anon` role
 // (supabase/migrations/00151_search_products_exclude_api_vendors.sql), and the
 // isolated supabaseCoach client (same one CoachGate/AdidasInventory use) so
 // browsing works whether or not a coach happens to be signed in.
+//
+// Visual design: the approved "Shop - Polos" Claude Design mockup — page-head
+// band with breadcrumb/eyebrow/title, filter sidebar (roster sizes, brand,
+// decoration), results toolbar (count + sort), 3:4 product-card grid. The
+// mockup's category page is implemented generically: the head/breadcrumb are
+// driven by the current search, defaulting to an all-products view.
 export default function Catalog({ onSelectProduct, onAddBlank }) {
   const [search, setSearch] = useState('');
   const debounced = useDebounced(search, 300);
-  const [brand, setBrand] = useState('All');
+  const [selectedBrands, setSelectedBrands] = useState([]); // multi-select; empty = all
   const [products, setProducts] = useState([]);
   const [stock, setStock] = useState(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [roster, setRoster] = useState(loadRoster);
+
+  useEffect(() => { ensureTeamShopStyles(); }, []);
 
   useEffect(() => {
     let alive = true;
@@ -60,41 +98,183 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
     return () => { alive = false; };
   }, [debounced]);
 
-  const brands = useMemo(() => [...new Set(products.map((p) => p.brand).filter(Boolean))].sort(), [products]);
-  const visible = useMemo(() => (brand === 'All' ? products : products.filter((p) => p.brand === brand)), [products, brand]);
+  // Per-brand counts come from the currently loaded result page.
+  // TODO(brand-counts): real whole-catalog counts need a server aggregate.
+  const brandCounts = useMemo(() => {
+    const counts = new Map();
+    products.forEach((p) => { if (p.brand) counts.set(p.brand, (counts.get(p.brand) || 0) + 1); });
+    return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  }, [products]);
+
+  const visible = useMemo(
+    () => (selectedBrands.length ? products.filter((p) => selectedBrands.includes(p.brand)) : products),
+    [products, selectedBrands],
+  );
+
+  const toggleBrand = (b) => setSelectedBrands((prev) => (
+    prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]
+  ));
+
+  const setSize = (size, delta) => setRoster((prev) => {
+    const next = { ...prev, [size]: Math.max(0, (prev[size] || 0) + delta) };
+    saveRoster(next);
+    return next;
+  });
+  const clearRoster = () => { const next = emptyRoster(); saveRoster(next); setRoster(next); };
+  const rosterTotal = SIZES.reduce((sum, s) => sum + (roster[s] || 0), 0);
+
+  // Generic category head: the mockup is a "Polos & Performance" category page;
+  // we keep that title only when the search is polo-scoped, else all products.
+  const isPolos = /polo/i.test(debounced);
+  const title = isPolos ? 'Polos & Performance' : 'All Products';
+  const subhead = isPolos
+    ? 'Decoration-ready polos from the brands teams trust. Set your roster sizes once — they carry to every product and prefill your order.'
+    : 'Decoration-ready gear from the brands teams trust. Set your roster sizes once — they carry to every product and prefill your order.';
 
   return (
-    <div style={{ padding: '24px 32px', maxWidth: 1200, margin: '0 auto', width: '100%' }}>
-      <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 16px' }}>Browse Garments</h1>
-
-      <div style={{ display: 'flex', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name, SKU, or brand"
-          style={{ flex: '1 1 260px', padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14 }}
-        />
-        {brands.length > 1 && (
-          <select
-            value={brand}
-            onChange={(e) => setBrand(e.target.value)}
-            style={{ padding: '10px 14px', border: '1px solid #cbd5e1', borderRadius: 8, fontSize: 14 }}
-          >
-            <option value="All">All brands</option>
-            {brands.map((b) => <option key={b} value={b}>{b}</option>)}
-          </select>
-        )}
+    <div className="nts-root" style={{ width: '100%' }}>
+      {/* ---- Page head band ---- */}
+      <div style={{ background: OFF_WHITE, borderBottom: `1px solid ${BORDER}` }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', padding: 'clamp(28px, 4vw, 48px) 24px' }}>
+          <div style={{ fontSize: 13, color: TEXT_MUTED, marginBottom: 12 }}>
+            <span>Home</span>
+            <span style={{ margin: '0 8px', color: BORDER_DARK }}>/</span>
+            <span>Apparel</span>
+            <span style={{ margin: '0 8px', color: BORDER_DARK }}>/</span>
+            <span style={{ color: NAVY, fontWeight: 600 }}>{title}</span>
+          </div>
+          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 6px' })}>Team apparel</p>
+          <h1 style={displayType('clamp(2.2rem, 4vw, 3rem)', { color: NAVY, margin: '0 0 10px', letterSpacing: '0.01em' })}>{title}</h1>
+          <p style={{ fontSize: 'clamp(15px, 1.4vw, 17px)', color: TEXT_MUTED, margin: 0, maxWidth: 600, lineHeight: 1.6 }}>{subhead}</p>
+        </div>
       </div>
 
-      {loading && <p style={{ color: '#64748b' }}>Loading…</p>}
-      {!loading && error && <p style={{ color: '#dc2626' }}>{error}</p>}
-      {!loading && !error && !visible.length && <p style={{ color: '#64748b' }}>No garments found.</p>}
+      {/* ---- Listing: filter sidebar + product grid ---- */}
+      <section className="nts-listing" style={{ maxWidth: 1280, margin: '0 auto', padding: 'clamp(28px, 3.5vw, 44px) 24px clamp(48px, 6vw, 80px)' }}>
+        <aside className="nts-sidebar">
+          {/* Search (existing behavior; the mockup's header search icon is inert) */}
+          <div style={{ border: `1px solid ${BORDER}`, borderRadius: 14, padding: 20 }}>
+            <label htmlFor="nts-catalog-search" style={displayType(15, { letterSpacing: '0.08em', color: NAVY, display: 'block', marginBottom: 14 })}>Search</label>
+            <input
+              id="nts-catalog-search"
+              className="nts-input"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Name, SKU, or brand"
+              style={{ width: '100%', padding: '10px 14px', border: `1px solid ${BORDER_DARK}`, borderRadius: 8, fontSize: 14, fontFamily: 'inherit', color: TEXT }}
+            />
+          </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 18 }}>
-        {visible.map((p) => (
-          <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
-        ))}
-      </div>
+          {/* Roster sizes (hero filter from the mockup — display/persist only) */}
+          <div style={{ background: `linear-gradient(160deg, #1c2d4f, ${NAVY} 65%, ${NAVY_DARK})`, borderRadius: 14, padding: 18, color: '#fff', position: 'relative', overflow: 'hidden' }}>
+            <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: RED_SOFT }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={RED_SOFT} strokeWidth="1.9" aria-hidden="true"><path d="M4 5h16M4 12h16M4 19h10" /></svg>
+              <span style={displayType(16, { letterSpacing: '0.08em' })}>Your roster sizes</span>
+            </div>
+            <p style={{ margin: '0 0 16px', fontSize: 13, color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>
+              Enter how many of each size your team needs. It saves and prefills every product.
+            </p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 9 }}>
+              {SIZES.map((s) => (
+                <div key={s} style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 9, padding: '7px 8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 4, minWidth: 0 }}>
+                  <span style={displayType(12, { color: 'rgba(255,255,255,0.85)' })}>{s}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flex: 'none' }}>
+                    <button type="button" onClick={() => setSize(s, -1)} aria-label={`Decrease ${s}`} style={{ width: 22, height: 22, borderRadius: 6, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', fontSize: 14, lineHeight: 1, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>–</button>
+                    <span style={{ minWidth: 14, textAlign: 'center', fontSize: 13, fontWeight: 600, color: roster[s] > 0 ? '#fff' : 'rgba(255,255,255,0.4)' }}>{roster[s] || 0}</span>
+                    <button type="button" onClick={() => setSize(s, 1)} aria-label={`Increase ${s}`} style={{ width: 22, height: 22, borderRadius: 6, border: '1px solid rgba(255,255,255,0.25)', background: 'transparent', color: '#fff', fontSize: 13, lineHeight: 1, cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}>+</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 14, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.12)' }}>
+              <span style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)' }}>Roster total</span>
+              <span style={{ fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 22, color: '#fff' }}>
+                {rosterTotal} <span style={{ fontSize: 13, fontWeight: 500, color: 'rgba(255,255,255,0.7)' }}>pcs</span>
+              </span>
+            </div>
+            <button type="button" onClick={clearRoster} className="nts-ghost" style={{ marginTop: 12, width: '100%', background: 'rgba(255,255,255,0.1)', color: '#fff', border: 'none', borderRadius: 8, padding: 9, fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' }}>
+              Clear list
+            </button>
+          </div>
+
+          {/* Brand filter (multi-select; drives the existing client-side brand filter) */}
+          {brandCounts.length > 0 && (
+            <div style={{ border: `1px solid ${BORDER}`, borderRadius: 14, padding: 20 }}>
+              <span style={displayType(15, { letterSpacing: '0.08em', color: NAVY, display: 'block', marginBottom: 14 })}>Brand</span>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+                {brandCounts.map(([b, count]) => {
+                  const active = selectedBrands.includes(b);
+                  return (
+                    <button
+                      key={b}
+                      type="button"
+                      onClick={() => toggleBrand(b)}
+                      aria-pressed={active}
+                      style={{ display: 'flex', alignItems: 'center', gap: 11, background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}
+                    >
+                      <span style={{ width: 20, height: 20, borderRadius: 6, border: active ? `1.5px solid ${NAVY}` : `1.5px solid ${BORDER_DARK}`, background: active ? NAVY : 'transparent', flex: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="3" style={{ opacity: active ? 1 : 0 }} aria-hidden="true"><path d="M5 12l5 5L20 6" /></svg>
+                      </span>
+                      <span style={{ fontSize: 14, fontWeight: active ? 600 : 400, color: TEXT }}>{b}</span>
+                      <span style={{ marginLeft: 'auto', fontSize: 12, color: TEXT_FAINT }}>{count}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Decoration filter — VISUAL ONLY per the mockup's spec.
+              TODO(decoration-filter): wire to a real decoration-capability
+              facet when one exists on products. */}
+          <div style={{ border: `1px solid ${BORDER}`, borderRadius: 14, padding: 20 }} aria-hidden="true">
+            <span style={displayType(15, { letterSpacing: '0.08em', color: NAVY, display: 'block', marginBottom: 14 })}>Decoration</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {['Embroidery', 'DTF Print', 'Heat Press'].map((d) => (
+                <span key={d} style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
+                  <span style={{ width: 20, height: 20, borderRadius: 6, border: `1.5px solid ${BORDER_DARK}`, flex: 'none' }} />
+                  <span style={{ fontSize: 14, color: TEXT }}>{d}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        <div>
+          {/* Results toolbar: count + roster hint + (inert) sort */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 22 }}>
+            <span style={{ fontSize: 14, color: TEXT_MUTED }}>
+              <strong style={{ color: NAVY, fontWeight: 600 }}>{visible.length}</strong> products
+              {rosterTotal > 0 ? ` · sized for your roster of ${rosterTotal}` : ''}
+            </span>
+            {/* TODO(sort): the mockup's sort control is visual-only; wire to a
+                real sort param on search_products when one exists. */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} aria-hidden="true">
+              <span style={{ fontSize: 13, color: TEXT_MUTED }}>Sort</span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 600, color: NAVY, border: `1px solid ${BORDER_DARK}`, borderRadius: 8, padding: '8px 14px' }}>
+                Featured
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6" /></svg>
+              </span>
+            </div>
+          </div>
+
+          {loading && <p style={{ color: TEXT_MUTED, fontSize: 14 }}>Loading…</p>}
+          {!loading && error && <p style={{ color: '#dc2626', fontSize: 14 }}>{error}</p>}
+          {!loading && !error && !visible.length && (
+            <div style={{ border: `1px dashed ${BORDER_DARK}`, borderRadius: 12, padding: '48px 24px', textAlign: 'center' }}>
+              <p style={displayType(18, { color: NAVY, margin: '0 0 6px' })}>No garments found</p>
+              <p style={{ color: TEXT_MUTED, fontSize: 14, margin: 0 }}>Try a different search or clear the brand filter.</p>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(230px, 1fr))', gap: 22 }}>
+            {visible.map((p) => (
+              <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
+            ))}
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
