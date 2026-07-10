@@ -115,8 +115,11 @@ export default function TeamShopApp() {
               onClick={() => setRoute('landing')}
               style={{ display: 'flex', alignItems: 'center', gap: 13, justifySelf: 'center', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
             >
-              <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 9, background: NAVY, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 21, letterSpacing: '0.02em' }}>NT</span>
-              <span style={displayType('clamp(20px, 2.4vw, 26px)', { letterSpacing: '0.1em', color: NAVY, lineHeight: 1 })}>National Team Shop</span>
+              {/* Real National Sports Apparel logo (public/), light-bg treatment
+                  per CoachPortal.js — size by height, never stretched. The
+                  "Team Shop" sub-brand rides alongside it. */}
+              <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{ height: 44, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
+              <span style={displayType('clamp(15px, 1.7vw, 19px)', { letterSpacing: '0.18em', color: NAVY, lineHeight: 1, borderLeft: `1px solid ${BORDER}`, paddingLeft: 13 })}>Team Shop</span>
             </button>
             <span className="nts-header-tagline" style={{ justifySelf: 'end', textAlign: 'right', fontSize: 13.5, fontWeight: 500, color: TEXT_MUTED, maxWidth: 280, lineHeight: 1.45 }}>
               Free decoration setup* · Saved logos · Fast turnaround, days not weeks*
@@ -250,8 +253,10 @@ export default function TeamShopApp() {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 40, paddingBottom: 40, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
             <div style={{ minWidth: 220 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                <span aria-hidden="true" style={{ width: 34, height: 34, borderRadius: 8, background: '#fff', color: NAVY, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 18 }}>NT</span>
-                <span style={displayType(19, { letterSpacing: '0.08em', color: '#fff' })}>National Team Shop</span>
+                {/* Dark-footer treatment: navy+red logo rendered white via the
+                    same filter CoachPortal.js uses, so it reads on the navy. */}
+                <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{ height: 32, width: 'auto', objectFit: 'contain', filter: 'brightness(0) invert(1)', opacity: 0.95, flexShrink: 0 }} />
+                <span style={displayType(16, { letterSpacing: '0.16em', color: '#fff', borderLeft: '1px solid rgba(255,255,255,0.25)', paddingLeft: 12 })}>Team Shop</span>
               </div>
               <p style={{ margin: '0 0 20px', fontSize: 14, lineHeight: 1.6, color: 'rgba(255,255,255,0.6)', maxWidth: 280 }}>
                 Quick-turn team gear, decorated in-house and shipped in days.
