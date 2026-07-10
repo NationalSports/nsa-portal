@@ -277,6 +277,15 @@ export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, 
   return anyChanged ? next : artFiles;
 };
 
+// Legacy ink_colors placeholder lines ('Color 1'…'Color 5') are a COUNT artifact — the
+// Art-TBD pricing dropdown writes them so screen-print pricing can count colors before
+// the design exists, and they survive on the row after the art becomes real. They are
+// not ink names: spec displays must skip them so the chips fall through to the art's
+// real color-way inks instead of rendering blank "Color 1/2/3" swatches (SO-1496).
+// Pricing keeps counting the raw lines — only displays should use this.
+// Shared by the deco-spec renderers in OrderEditor (two copies) and CoachPortal.
+export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.trim()).filter(Boolean).filter((c) => !/^color\s*\d+$/i.test(c));
+
 // One shared message for the per-garment mock gate. The gate itself (skusMissingMockups)
 // is enforced at six surfaces — OrderEditor's Approve Artwork / Send-to-Coach button /
 // openCoachSend / Skip-Artist release, CoachPortal's Approve, CustDetail's preview

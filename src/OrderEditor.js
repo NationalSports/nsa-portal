@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -1855,7 +1855,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // other line carries the old SKU in ANY color.
     const skuStillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||''));
     const arts=rekeyGarmentMocks(safeArr(e.art_files),fromSku,fromColor,cur.sku,cur.color,{moveBareSku:!skuStillUsed});
-    return arts===e.art_files?e:{...e,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
+    return arts===e.art_files?e:{...e,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}
+    // Jobs and deco POs reference lines by INDEX; deleting a middle line shifts every later
+    // line down. Auto jobs rebuild from lines, but FROZEN jobs (released/merged/split) carry
+    // item_idx verbatim — without remapping, their rows silently point at the WRONG line,
+    // so jobHasLiveDecorations could retire a live released job (its so_jobs row + fulfillment
+    // history deleted on the next save) or misattribute its garments (2026-07-10 audit).
+    // Mirrors applyItemOrder's remap, plus dropping rows for the deleted line itself.
+    const _frozenRefs=safeJobs(o).filter(j=>(j._released||j.key?.startsWith('released_')||j._merged||j.split_from)&&(j.items||[]).some(gi=>gi.item_idx===i));
+    if(_frozenRefs.length&&!window.confirm('This line is part of released/merged job(s) '+_frozenRefs.map(j=>j.id).join(', ')+' — deleting it removes the garment from those jobs. Delete anyway?'))return;
+    const _ri=ii=>ii>i?ii-1:ii;
+    setO(e=>({...e,
+      items:safeItems(e).filter((_,x)=>x!==i),
+      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).filter(gi=>gi.item_idx!==i).map(gi=>({...gi,item_idx:_ri(gi.item_idx)}))})),
+      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).filter(ii=>ii!==i).map(_ri)})),
+      updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Reassign which vendor a line item is ordered from (e.g. OMG parsed an S&S item as
   // Adidas). vendor_id is the key the PO builder groups on (see resolveVendor), so this
   // moves the item onto the right vendor's PO. Clear any session-only "live" flags so
@@ -9054,7 +9068,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           const _gc2=dAf?.garment_colors?.[_gk2]||{};
                           const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
                           const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
-                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _fbCols=dAf?realInkLines(dAf.ink_colors||dAf.thread_colors):[];// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                           const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                           const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                           const cwLabel=cwObj?.garment_color||'';
@@ -9298,7 +9312,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           const _gc2=dAf?.garment_colors?.[_gk2]||{};
                           const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
                           const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
-                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _fbCols=dAf?realInkLines(dAf.ink_colors||dAf.thread_colors):[];// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                           const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                           const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                           const cwLabel=cwObj?.garment_color||'';

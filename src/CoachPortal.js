@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -1442,7 +1442,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
                     const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
                     const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
-                    const _fbCols=(_aF?.ink_colors||_aF?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                    const _fbCols=realInkLines(_aF?.ink_colors||_aF?.thread_colors);// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                     const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                     const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ')||'—';
