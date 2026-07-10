@@ -7,6 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
+import { isTeamShopHost } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -65,6 +66,13 @@ const AdidasInventory = React.lazy(() => import('./storefront/AdidasInventory'))
 // open, publicly-listed club stores. Surfaced at nationalsportsapparel.com/team-stores
 // via the same marketing-site proxy rewrite used for /livelook.
 const TeamStores = React.lazy(() => import('./storefront/TeamStores'));
+// Public Team Shop retail storefront — nationalteamshop.com is a domain alias
+// on this app, and visitors arriving on it must land here, never the portal
+// login. Also reachable at /teamshop on any host (deploy previews, e2e). See
+// src/lib/hostRouting.js. NOTE: this hostname check is applied LAST in the
+// branch chain below, so existing path prefixes (/shop/*, /adidas,
+// /team-stores, auth flows, …) still win on the alias hostname.
+const TeamShopApp = React.lazy(() => import('./teamshop/TeamShopApp'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
@@ -93,6 +101,12 @@ const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // with no staff session) hits.
 const _portalParam = (() => { try { return new URLSearchParams(window.location.search).get('portal'); } catch { return null; } })();
 const isCoachPortal = (_path === '/' || _path === '') && !!_portalParam;
+// Team Shop retail storefront — matched by hostname (nationalteamshop.com) or
+// /teamshop path. Checked AFTER every path-prefix branch above (see the render
+// chain), so /shop/foo, /adidas, /team-stores, auth flows, and the coach portal
+// all still work on the alias hostname.
+const _host = typeof window !== 'undefined' ? window.location.hostname : '';
+const isTeamShop = isTeamShopHost(_host, _path);
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -222,6 +236,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
         : isAuthFlow || isCoachPortal || isOnboarding
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
+        : isTeamShop
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopApp /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>
   </React.StrictMode>

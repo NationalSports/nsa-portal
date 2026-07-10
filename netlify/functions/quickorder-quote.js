@@ -26,6 +26,7 @@
 // function never writes anything.
 const crypto = require('crypto');
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
+const { verifyCoach, coachHasCustomerAccess } = require('./_coachAuth');
 const DECO = require('../../src/lib/decoPricing');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -34,39 +35,9 @@ const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeader
 const MAX_LINES = 100;
 const MAX_QTY = 10000;
 
-// Resolve the bearer token to an active coach account. Returns { coach } or { status, error }.
-async function verifyCoach(admin, event) {
-  const auth = event.headers?.authorization || event.headers?.Authorization;
-  if (!auth || !auth.startsWith('Bearer ')) return { status: 401, error: 'Missing bearer token' };
-  const { data: userData, error } = await admin.auth.getUser(auth.substring(7));
-  if (error || !userData?.user) return { status: 401, error: 'Invalid token' };
-  const u = userData.user;
-  let { data: coach, error: cErr } = await admin.from('coach_accounts')
-    .select('id,email,name,status,customer_id,auth_user_id')
-    .eq('auth_user_id', u.id).maybeSingle();
-  if (cErr) return { status: 500, error: cErr.message };
-  if (!coach && u.email) {
-    // Not claimed yet — match by the signed-in email (same rule as the coach RLS policies).
-    const res = await admin.from('coach_accounts')
-      .select('id,email,name,status,customer_id,auth_user_id')
-      .ilike('email', String(u.email).replace(/([%_\\])/g, '\\$1')).maybeSingle();
-    if (res.error) return { status: 500, error: res.error.message };
-    coach = res.data;
-  }
-  if (!coach) return { status: 403, error: 'No coach account for this sign-in' };
-  if (coach.status && coach.status !== 'active' && coach.status !== 'invited') return { status: 403, error: 'Coach account is disabled' };
-  return { coach };
-}
-
-// May this coach quote for customerId? coach_customer_access is the source of truth;
-// the account's own customer_id is the legacy single-customer link.
-async function coachHasCustomerAccess(admin, coach, customerId) {
-  if (coach.customer_id && String(coach.customer_id) === String(customerId)) return { ok: true };
-  const { data, error } = await admin.from('coach_customer_access')
-    .select('customer_id').eq('coach_id', coach.id).eq('customer_id', customerId).maybeSingle();
-  if (error) return { error: error.message };
-  return { ok: !!data };
-}
+// Coach auth (verifyCoach / coachHasCustomerAccess) lives in ./_coachAuth so
+// other coach-facing endpoints share one implementation. Re-exported below for
+// the existing tests.
 
 // Unit sell for one product at this customer's pricing (mirrors App.js newE()).
 function unitSell(p, cust) {

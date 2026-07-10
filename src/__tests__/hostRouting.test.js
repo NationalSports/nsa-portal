@@ -1,0 +1,93 @@
+/* Exhaustive unit tests for src/lib/hostRouting.js — the pure predicate
+ * src/index.js uses to send nationalteamshop.com visitors (and /teamshop paths
+ * on any host) to the Team Shop chunk instead of the portal login. */
+
+const { isTeamShopHost } = require('../lib/hostRouting');
+
+describe('isTeamShopHost', () => {
+  // ── Hostname matches (any path) ────────────────────────────────────────────
+  test.each([
+    ['nationalteamshop.com', '/'],
+    ['nationalteamshop.com', ''],
+    ['nationalteamshop.com', '/anything/else'],
+    ['www.nationalteamshop.com', '/'],
+    ['www.nationalteamshop.com', '/checkout'],
+  ])('true for team-shop host %s with path %s', (host, path) => {
+    expect(isTeamShopHost(host, path)).toBe(true);
+  });
+
+  test('hostname matching is case-insensitive', () => {
+    expect(isTeamShopHost('NationalTeamShop.com', '/')).toBe(true);
+    expect(isTeamShopHost('WWW.NATIONALTEAMSHOP.COM', '/')).toBe(true);
+  });
+
+  test('tolerates a trailing FQDN dot', () => {
+    expect(isTeamShopHost('nationalteamshop.com.', '/')).toBe(true);
+    expect(isTeamShopHost('www.nationalteamshop.com.', '/')).toBe(true);
+  });
+
+  test('tolerates a stray :port on the hostname', () => {
+    expect(isTeamShopHost('nationalteamshop.com:443', '/')).toBe(true);
+    expect(isTeamShopHost('www.nationalteamshop.com:8888', '/')).toBe(true);
+  });
+
+  // ── Hostname NON-matches ───────────────────────────────────────────────────
+  test.each([
+    'nsa-portal.netlify.app',
+    'nationalsportsapparel.com',
+    'www.nationalsportsapparel.com',
+    'localhost',
+    '127.0.0.1',
+    // Lookalikes / suffix attacks must NOT match:
+    'evilnationalteamshop.com',
+    'nationalteamshop.com.evil.com',
+    'shop.nationalteamshop.com', // only apex + www are aliased
+    'nationalteamshop.net',
+    'nationalteamshop',
+  ])('false for non-team-shop host %s at /', (host) => {
+    expect(isTeamShopHost(host, '/')).toBe(false);
+  });
+
+  // ── /teamshop path on any host ─────────────────────────────────────────────
+  test.each([
+    ['localhost', '/teamshop'],
+    ['nsa-portal.netlify.app', '/teamshop'],
+    ['deploy-preview-123--nsa-portal.netlify.app', '/teamshop/'],
+    ['nationalsportsapparel.com', '/teamshop/cart'],
+    ['localhost', '/teamshop/products/123'],
+  ])('true for host %s with path %s', (host, path) => {
+    expect(isTeamShopHost(host, path)).toBe(true);
+  });
+
+  // ── Path NON-matches ───────────────────────────────────────────────────────
+  test.each([
+    '/',
+    '',
+    '/shop/some-store', // club storefront, not team shop
+    '/team-stores',
+    '/adidas',
+    '/teamshopping', // prefix-only lookalike segment
+    '/teamshop2',
+    '/x/teamshop', // not at the path root
+    '/TEAMSHOP', // paths are case-sensitive, like all index.js path checks
+    '/TeamShop/',
+  ])('false for portal host with path %s', (path) => {
+    expect(isTeamShopHost('nsa-portal.netlify.app', path)).toBe(false);
+  });
+
+  // ── Degenerate inputs never throw and never match ──────────────────────────
+  test.each([
+    [null, null],
+    [undefined, undefined],
+    ['', ''],
+    [null, '/'],
+    ['nsa-portal.netlify.app', null],
+  ])('safe on degenerate input (%s, %s)', (host, path) => {
+    expect(isTeamShopHost(host, path)).toBe(false);
+  });
+
+  test('team-shop hostname still wins with degenerate path', () => {
+    expect(isTeamShopHost('nationalteamshop.com', null)).toBe(true);
+    expect(isTeamShopHost('nationalteamshop.com', undefined)).toBe(true);
+  });
+});
