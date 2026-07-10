@@ -85,14 +85,16 @@ let _fetchErrorLoggedAt=0;// throttle fetch error logging to once per 30s
 // handlers never read them, so routine reloads exclude them rather than drag ~1.1 MB of JSON
 // (so_history 662kB + est_history 371kB + qb_config 82kB + …) on every fetch.
 const _APPSTATE_INIT_ONLY_KEYS=['so_history','est_history','qb_config','change_log','wh_recent_actions','job_time_logs'];
-// Momentec (v8), S&S Activewear (v4), and SanMar (v3) are large API-sourced ("drop-ship") catalogs:
-// server-side Netlify sync functions keep their rows in the DB products table for order history and
-// server-side search, but at ~41k rows they pushed the in-memory `prod` array past the 20k load cap
-// (hiding later-alphabet SKUs like JY6033 from client-side search) and bloated the Products page. We
-// exclude them from the LOCAL catalog load only — the rows stay in the DB untouched (no delete path
-// exists), line items carry their own sku/name/color snapshots, and the PO modal + global search query
-// these vendors server-side. Null-vendor products (Artwork, Wilson balls) are explicitly preserved.
-const API_CATALOG_VENDOR_IDS=['v8','v4','v3'];
+// Momentec (v8), S&S Activewear (v4), SanMar (v3) and Richardson (v5) are large API-sourced
+// ("drop-ship") catalogs: server-side Netlify sync functions keep their rows in the DB products table
+// for order history and server-side search, but they pushed the in-memory `prod` array past the 20k
+// load cap (hiding later-alphabet SKUs like JY6033 from client-side search) and bloated the Products
+// page. Each is also reachable through its own live API search (order editor + webstore builder), so a
+// catalog copy is redundant on the sales order. We exclude them from the LOCAL catalog load only — the
+// rows stay in the DB untouched (no delete path exists), line items carry their own sku/name/color
+// snapshots, and the PO modal + global search query these vendors server-side. Null-vendor products
+// (Artwork, Wilson balls) are explicitly preserved.
+const API_CATALOG_VENDOR_IDS=['v8','v4','v3','v5'];
 const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_VENDOR_IDS.join(',')+')';
 // Catalog-load column allowlist: every products column EXCEPT description / description_ai. Those two
 // text columns are ~51% of the row width (483B + 257B of ~1460B) yet are never read off the in-memory
