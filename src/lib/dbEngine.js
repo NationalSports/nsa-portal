@@ -1411,7 +1411,28 @@ const _dbSaveSOInner = async (so) => {
       // timed-out so_jobs load can't delete real rows. Previously we left DB jobs untouched on empty
       // arrays, which is why JOB-1057-01 survived after decorations were wiped (syncJobs→[] never
       // reached the delete branch).
-      await supabase.from('so_jobs').delete().eq('so_id',so.id);
+      // WIPE GUARD (SO-1487, 2026-07-10): a client whose in-memory decorations are transiently
+      // stale/empty computes syncJobs()→[] and lands here, blanket-deleting jobs that were just
+      // released for art (5 SOs lost their jobs this way in 2 days). Released/submitted jobs carry
+      // irreplaceable state (art requests, approvals, artist assignment), so they may only be
+      // deleted here when the payload names them explicitly (so._deleteJobIds — set by the admin
+      // Delete Job button). Auto needs_art placeholders still delete freely: that is the JOB-1057
+      // retirement case, and syncJobs regenerates them from live decorations anyway.
+      const _explicitDel=new Set(Array.isArray(so._deleteJobIds)?so._deleteJobIds:[]);
+      const{data:_dbJobRows,error:_dbJobErr}=await supabase.from('so_jobs').select('id,key,art_status').eq('so_id',so.id);
+      if(_dbJobErr){
+        console.error('[DB] SAFETY: skipping so_jobs wipe for',so.id,'— could not read existing jobs:',_dbJobErr.message);
+      }else{
+        const _isProtectedJob=r=>!_explicitDel.has(r.id)&&((r.key||'').startsWith('released_')||(r.art_status&&r.art_status!=='needs_art'));
+        const _blocked=(_dbJobRows||[]).filter(_isProtectedJob);
+        const _delIds=(_dbJobRows||[]).filter(r=>!_isProtectedJob(r)).map(r=>r.id);
+        if(_delIds.length)await supabase.from('so_jobs').delete().eq('so_id',so.id).in('id',_delIds);
+        if(_blocked.length){
+          console.error('[DB] SAFETY: blocked wipe of',_blocked.length,'released/submitted job(s) on',so.id,'from an empty jobs save:',_blocked.map(r=>r.id).join(', '));
+          if(_dbNotify)_dbNotify('Blocked deletion of '+_blocked.length+' submitted job(s) on '+so.id+' — your view may be out of date. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'jobs_wipe_blocked',soId:so.id,blocked:_blocked.map(r=>r.id)});
+        }
+      }
     }
     // If jobs is undefined/null (not hydrated / not present on the payload), leave existing DB jobs
     // untouched. Orphaned jobs from a recycled SO number are cleaned at order creation (new-SO purge)

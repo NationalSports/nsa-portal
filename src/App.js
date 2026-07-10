@@ -9844,7 +9844,9 @@ export default function App(){
               if(!window.confirm('Delete '+jm.id+' ('+(jm.art_name||'unnamed')+')?\n\nThis removes the job from '+jm.soId+' and deletes the so_jobs row from the database. The SO itself stays.'))return;
               const so2=sos.find(s=>s.id===jm.soId);
               if(!so2){nf(jm.soId+' not found','error');return}
-              const updated={...so2,jobs:safeJobs(so2).filter(jj=>jj.id!==jm.id),updated_at:new Date().toLocaleString()};
+              // _deleteJobIds: explicit-intent tag read by dbEngine's so_jobs wipe guard — without it,
+              // deleting the LAST job (empty jobs[] save) would be blocked for released/submitted jobs.
+              const updated={...so2,jobs:safeJobs(so2).filter(jj=>jj.id!==jm.id),_deleteJobIds:[jm.id],updated_at:new Date().toLocaleString()};
               setSOs(prev=>prev.map(s=>s.id===so2.id?updated:s));
               _dbSaveSO(updated);
               nf('Deleted '+jm.id);setJobTrackModal(null);
