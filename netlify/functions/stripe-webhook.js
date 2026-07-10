@@ -72,6 +72,23 @@ exports.handler = async (event) => {
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
 
+        // Team Shop order → production conversion (Stage 7, migration 00192).
+        // Best-effort and STRICTLY guarded: webhook processing must never fail
+        // because of conversion — the RPC is idempotent (so_id replay + paid
+        // re-guard), and CheckoutPage's convert_order call / a staff batch can
+        // pick it up later. Only fires for paid, unconverted teamshop orders.
+        try {
+          const { data: _ts } = await sb.from('webstore_orders')
+            .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
+          const _tso = _ts && _ts[0];
+          if (_tso && _tso.order_source === 'teamshop' && !_tso.so_id && _tso.status === 'paid') {
+            const { error: convErr } = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: _tso.id });
+            if (convErr) console.error('[stripe-webhook] teamshop conversion failed (order stays paid; convert_order/staff batch will retry):', convErr.message);
+          }
+        } catch (e) {
+          console.error('[stripe-webhook] teamshop conversion error:', e.message);
+        }
+
         // Coach-portal invoice payments: mark the referenced invoice(s) paid. The portal also calls
         // this server-side right after paying (stripe-payment → finalize_invoice); this webhook is the
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,

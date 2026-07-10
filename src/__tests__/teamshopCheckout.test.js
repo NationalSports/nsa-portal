@@ -287,3 +287,69 @@ describe('place_order', () => {
     expect(JSON.parse(res.body).error).toMatch(/00191/);
   });
 });
+
+// Stage 7 — convert_order → create_teamshop_sales_order RPC (migration 00192).
+// The RPC re-guards everything inside its transaction; these tests pin the
+// function-level pre-guards (paid + teamshop + replay) and the retry contract.
+describe('convert_order', () => {
+  const PAID = { id: 'ord1', status: 'paid', order_source: 'teamshop', so_id: null };
+
+  test('unpaid order → 409 rejected, RPC never invoked', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, status: 'pending_payment' }], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    expect(res.statusCode).toBe(409);
+    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('non-teamshop (storefront) order → 409 rejected, RPC never invoked', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, order_source: null }], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    expect(res.statusCode).toBe(409);
+    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('paid teamshop order → RPC invoked with the order id; result echoed', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [PAID], error: null }],
+      'rpc.create_teamshop_sales_order': [{ data: { so_id: 'SO-1001', replayed: false, jobs: 1 }, error: null }],
+    });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    expect(res.statusCode).toBe(200);
+    const out = JSON.parse(res.body);
+    expect(out.so_id).toBe('SO-1001');
+    expect(out.replayed).toBe(false);
+    const rpcCall = sb.calls.find((c) => c.op === 'rpc');
+    expect(rpcCall.table).toBe('create_teamshop_sales_order');
+    expect(rpcCall.payload).toEqual({ p_webstore_order_id: 'ord1' });
+  });
+
+  test('already converted (so_id set) → replayed:true without invoking the RPC', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PAID, so_id: 'SO-1001' }], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    expect(res.statusCode).toBe(200);
+    const out = JSON.parse(res.body);
+    expect(out.so_id).toBe('SO-1001');
+    expect(out.replayed).toBe(true);
+    expect(sb.calls.filter((c) => c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('RPC error → 502; the order stays paid so a retry (client, webhook, or staff) replays idempotently', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [PAID], error: null }],
+      'rpc.create_teamshop_sales_order': [{ data: null, error: { message: 'boom' } }],
+    });
+    const res = await ts.convertOrder(sb, { order_id: 'ord1' });
+    expect(res.statusCode).toBe(502);
+    expect(JSON.parse(res.body).error).toMatch(/boom/);
+    // No compensation writes: convert is read + rpc only — nothing to roll back,
+    // so the SAME call can be retried and the RPC's so_id guard makes it a no-op
+    // once any retry has succeeded.
+    expect(sb.calls.filter((c) => c.op === 'update' || c.op === 'insert' || c.op === 'delete')).toHaveLength(0);
+  });
+
+  test('unknown order → 404', async () => {
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [], error: null }] });
+    const res = await ts.convertOrder(sb, { order_id: 'nope' });
+    expect(res.statusCode).toBe(404);
+  });
+});

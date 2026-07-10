@@ -154,6 +154,17 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
         body: JSON.stringify({ action: 'finalize', orderId: order.id, stripePiId: paymentIntentId || order.stripe_pi_id }),
       });
     } catch (_) { /* webhook fallback finalizes */ }
+    // Stage 7: kick off the order → production conversion (idempotent RPC
+    // behind convert_order). Best-effort on purpose — the order is already
+    // paid, and the stripe-webhook path (or a staff batch) converts it if
+    // this call is lost, so a failure here is never shown to the coach.
+    try {
+      await fetch('/.netlify/functions/teamshop-checkout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+        body: JSON.stringify({ action: 'convert_order', order_id: order.id }),
+      });
+    } catch (_) { /* webhook / staff queue converts */ }
     refState.current = { key: '', ref: '' };
     clearCart(customerId);
     setDoneOrder(order);

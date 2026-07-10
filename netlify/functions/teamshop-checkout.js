@@ -253,6 +253,37 @@ async function placeOrder(sb, body, coach) {
   return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id });
 }
 
+// ── convert_order (Stage 7) ──────────────────────────────────────────
+// Best-effort post-payment trigger for the create_teamshop_sales_order RPC
+// (migration 00192): CheckoutPage calls this right after webstore-checkout's
+// finalize succeeds. Coach JWT is sufficient here because nothing is trusted
+// from the client beyond the order id — this function re-reads the order and
+// verifies it is a PAID Team Shop order before invoking the RPC, and the RPC
+// re-guards both (plus so_id replay) inside its own transaction, so a replay,
+// a race with the stripe-webhook caller, or a hostile order_id is a no-op.
+// A failure here is recoverable: the order is already paid, and the webhook
+// (or a staff batch) converts it later — hence 502, never data loss.
+async function convertOrder(sb, body) {
+  const orderId = String(body.order_id || '').trim();
+  if (!orderId) return bad(400, 'order_id required');
+  const { data, error } = await sb.from('webstore_orders')
+    .select('id,status,order_source,so_id').eq('id', orderId).limit(1);
+  if (error) return bad(500, error.message);
+  const order = data && data[0];
+  if (!order) return bad(404, 'Order not found');
+  if (order.order_source !== 'teamshop') return bad(409, 'Not a Team Shop order.');
+  if (order.so_id) return ok({ ok: true, so_id: order.so_id, replayed: true });
+  if (order.status !== 'paid') return bad(409, 'Order is not paid yet.');
+  const rpc = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: order.id });
+  if (rpc.error) {
+    // Idempotent by RPC design: the caller may simply retry (or leave it to the
+    // stripe-webhook / staff fallback) — a replay returns the existing so_id.
+    console.error('[teamshop-checkout] convert_order failed:', rpc.error.message);
+    return bad(502, 'Could not create the production order: ' + rpc.error.message);
+  }
+  return ok({ ok: true, ...(rpc.data || {}) });
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
@@ -269,6 +300,7 @@ exports.handler = async (event) => {
 
     if (body.action === 'quote_totals') return await quoteTotals(admin, body, v.coach);
     if (body.action === 'place_order') return await placeOrder(admin, body, v.coach);
+    if (body.action === 'convert_order') return await convertOrder(admin, body);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[teamshop-checkout] error:', e);
@@ -281,4 +313,5 @@ exports.handler = async (event) => {
 // webstore-checkout / quickorder-quote). Netlify invokes `handler`.
 module.exports.quoteTotals = quoteTotals;
 module.exports.placeOrder = placeOrder;
+module.exports.convertOrder = convertOrder;
 module.exports.TEAMSHOP_SLUG = TEAMSHOP_SLUG;
