@@ -1,0 +1,429 @@
+import React, { useEffect, useRef, useState } from 'react';
+import { supabaseCoach } from '../lib/supabaseCoach';
+import CatalogCard from './CatalogCard';
+import {
+  NAVY, NAVY_DARK, RED, RED_SOFT, OFF_WHITE, BORDER, BORDER_DARK,
+  TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
+} from './theme';
+
+// Team Shop landing page — the approved "National Team Shop - Home" Claude
+// Design mockup, translated section-by-section. Replaces the Stage-1 hero
+// placeholder that used to live inline in TeamShopApp (see the
+// TODO(teamshop-landing) this component resolves).
+//
+// Header/footer are NOT reproduced here — TeamShopApp already renders the
+// shared header/footer (styled from the sibling "Shop - Polos" mockup) around
+// every view, landing included. This component is content-only.
+//
+// Wiring:
+//   onStartOrder     — 'Start with your logo' / hero + how-it-works CTAs.
+//                       Same handler the old placeholder's "Start an order"
+//                       button used (TeamShopApp's setRoute('order')).
+//   onBrowseCatalog  — 'Shop'/browse CTAs (New Drops panel, category tiles,
+//                       "Shop all products"). TeamShopApp's setRoute('catalog').
+//
+// Team-stores links use a plain href to the portal's real, already-shipped
+// /team-stores directory (src/index.js `isTeamStores` path check, checked
+// BEFORE the Team-Shop-host branch, so it resolves correctly even on the
+// nationalteamshop.com host — see src/lib/hostRouting.js).
+//
+// Photography: every photo/macro-photo block in the mockup is a labeled
+// placeholder (no real photography yet) and stays that way here, clearly
+// labeled, per the design brief — owner supplies real photography at launch.
+//
+// Featured products: a small real fetch (search_products RPC, same call
+// shape as Catalog.js) rendered with the existing CatalogCard, reused
+// anonymously (no onSelect/onAddBlank) — identical to how the anonymous
+// /teamshop "Shop" tab already renders cards, so a card here behaves exactly
+// like a card there. No client-side pricing is introduced; CatalogCard's
+// existing "from —" placeholder stands in for the mockup's illustrative
+// "from $28*" figures.
+const FEATURED_LIMIT = 8;
+
+const CATEGORY_TILES = [
+  { label: 'Polos', gradient: 'linear-gradient(150deg,#1c2d4f,#192853)' },
+  { label: 'Hoodies & Fleece', gradient: 'linear-gradient(150deg,#243a66,#192853)' },
+  { label: 'Caps', gradient: 'linear-gradient(150deg,#1c2d4f,#0F1A38)' },
+  { label: 'Uniforms', gradient: 'linear-gradient(150deg,#243a66,#1c2d4f)' },
+  { label: 'Outerwear', gradient: 'linear-gradient(150deg,#1c2d4f,#192853)' },
+  { label: 'Drinkware', gradient: 'linear-gradient(150deg,#243a66,#192853)' },
+];
+
+const VALUE_PROPS = [
+  { label: 'Free Decoration Setup*', icon: <path d="M12 2v6M12 12v8M9 20h6" /> },
+  { label: 'Fast Turnaround*', icon: <><rect x="1" y="6" width="14" height="10" rx="1" /><path d="M15 9h4l3 3v4h-7z" /><circle cx="6" cy="18" r="1.8" /><circle cx="18" cy="18" r="1.8" /></> },
+  { label: 'We Meet Expectations', icon: <><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z" /><path d="M9 12l2 2 4-4" /></> },
+  { label: 'Your Logos, Saved', icon: <path d="M6 3h12a1 1 0 0 1 1 1v17l-7-4-7 4V4a1 1 0 0 1 1-1z" /> },
+  { label: 'Low Minimums*', icon: <><path d="M20.6 13.4l-7.2 7.2a2 2 0 0 1-2.8 0l-7-7A2 2 0 0 1 3 12.2V5a2 2 0 0 1 2-2h7.2a2 2 0 0 1 1.4.6l7 7a2 2 0 0 1 0 2.8z" /><circle cx="8" cy="8" r="1.4" /></> },
+];
+
+const HOW_IT_WORKS = [
+  {
+    n: '01',
+    title: 'Pick your gear',
+    body: 'Browse polos, hoodies, caps, and uniforms from the brands you already trust.',
+    icon: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M8 4v5" /></>,
+  },
+  {
+    n: '02',
+    title: 'Place your logo',
+    body: 'Drop on a saved logo or upload a new one. Preview it on the garment instantly.',
+    icon: <><path d="M12 3v12m0 0l-4-4m4 4l4-4" /><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" /></>,
+  },
+  {
+    n: '03',
+    title: 'We decorate & ship',
+    body: 'Decorated in-house and shipped in days — with your art saved for the reorder.',
+    icon: <><rect x="1" y="7" width="15" height="10" rx="1" /><path d="M16 10h4l3 3v4h-7z" /><circle cx="6" cy="19" r="1.8" /><circle cx="18" cy="19" r="1.8" /></>,
+  },
+];
+
+const DECORATION_METHODS = [
+  { n: '01', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", photoLabel: 'Macro Photo — Embroidery stitching', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
+  { n: '02', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', photoLabel: 'Macro Photo — DTF detail', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
+  { n: '03', title: 'Heat Press', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat press detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
+];
+
+const BRAND_STRIP = ['adidas', 'Augusta · Holloway', 'Richardson', 'Nike', 'Under Armour'];
+
+const SOCIAL_LOGOS = ['Team Logo', 'School Logo', 'Team Logo', 'School Logo', 'Team Logo'];
+
+function PhotoLabel({ children, style }) {
+  return (
+    <span style={{ ...displayType(11, { letterSpacing: '0.14em', color: TEXT_FAINT }), ...style }}>{children}</span>
+  );
+}
+
+export default function Home({ onStartOrder, onBrowseCatalog }) {
+  const [products, setProducts] = useState([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  // Welcome popup / chat bubble, per the mockup's <script type="text/x-dc">
+  // DCLogic component: opens once, 1.6s after mount, unless already
+  // dismissed; the chat bubble toggles it. Pure local UI state, no backend —
+  // there is no live chat behind it yet.
+  const [popupOpen, setPopupOpen] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+  const dismissedRef = useRef(false);
+  useEffect(() => { dismissedRef.current = dismissed; }, [dismissed]);
+
+  useEffect(() => {
+    let alive = true;
+    setProductsLoading(true);
+    (async () => {
+      const { data, error } = await supabaseCoach.rpc('search_products', {
+        p_query: null,
+        p_category: null,
+        p_vendor_id: null,
+        p_color_category: null,
+        p_in_stock: false,
+        p_limit: FEATURED_LIMIT,
+        p_offset: 0,
+      });
+      if (!alive) return;
+      setProducts(error ? [] : (data || []));
+      setProductsLoading(false);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    // Intentionally mount-only (matches the mockup's componentDidMount
+    // timer) — `dismissed` is read via a ref-like closure check inside the
+    // callback, not re-subscribed on every change.
+    const t = setTimeout(() => { setPopupOpen((open) => (dismissedRef.current ? open : true)); }, 1600);
+    return () => clearTimeout(t);
+  }, []);
+
+  const dismissPopup = () => { setPopupOpen(false); setDismissed(true); };
+  const toggleChat = () => { setPopupOpen((v) => !v); setDismissed(true); };
+
+  return (
+    <div style={{ width: '100%', overflowX: 'hidden', background: '#fff', position: 'relative' }}>
+
+      {/* ============ HERO ============ */}
+      <section style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
+        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg,#0F1A38 0%,#192853 52%,#1c2d4f 100%)' }} />
+        <span aria-hidden="true" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 'clamp(90px, 18%, 300px)', background: '#22335c' }} />
+        {/* Photo placeholder — real lifestyle photography arrives at launch. */}
+        <PhotoLabel style={{ position: 'absolute', top: 0, left: 0, padding: '22px 26px', letterSpacing: '0.18em', color: 'rgba(255,255,255,0.34)', pointerEvents: 'none' }}>
+          Lifestyle Photo — Athlete in logo&apos;d gear
+        </PhotoLabel>
+        <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
+          <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
+        </span>
+        <div style={{ position: 'relative', width: '100%', marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', padding: '0 clamp(16px, 2.5vw, 36px) clamp(30px, 4vw, 56px)' }}>
+          <p style={{ margin: '0 0 10px', textAlign: 'right', color: 'rgba(255,255,255,0.82)', fontSize: 'clamp(15px, 1.5vw, 19px)', fontWeight: 500 }}>Your logo. Team-quality gear.</p>
+          <h1 style={{ ...displayType('clamp(3.2rem, 9vw, 7rem)', { fontWeight: 700, lineHeight: 0.9, letterSpacing: '0.01em', color: '#fff' }), margin: '0 0 26px', textAlign: 'right' }}>Days, not weeks.</h1>
+          <div style={{ width: 'min(660px, 100%)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <button
+              type="button"
+              onClick={onStartOrder}
+              className="nts-cta-red"
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: RED, color: '#fff', fontWeight: 600, fontSize: 'clamp(16px, 1.6vw, 19px)', letterSpacing: '0.02em', padding: '18px 32px', borderRadius: 6, textTransform: 'uppercase', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              Start with your logo
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </button>
+            <a href="/team-stores" className="nts-footlink" style={{ alignSelf: 'flex-end', display: 'inline-flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.85)', fontWeight: 600, fontSize: 15 }}>
+              or shop team stores
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ BRAND STRIP ============ */}
+      <section style={{ background: '#fff', padding: 'clamp(26px, 3.2vw, 42px) 24px', borderBottom: `1px solid ${BORDER}` }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', display: 'flex', alignItems: 'center', gap: 16 }}>
+          {/* Prev/next controls are visual-only in the mockup itself (no
+              behavior wired there either) — a static brand strip, not a
+              functioning carousel. TODO(teamshop-nav): wire real
+              pagination if/when the brand list grows past one row. */}
+          <button type="button" aria-label="Previous brands" disabled className="nts-ghost" style={{ flex: 'none', width: 44, height: 44, borderRadius: 8, border: 'none', background: NAVY, color: '#fff', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M15 6l-6 6 6 6" /></svg>
+          </button>
+          <div style={{ flex: 1, display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-around', gap: 'clamp(18px, 3.5vw, 44px)' }}>
+            {BRAND_STRIP.map((b) => (
+              <span key={b} style={{ ...displayType('clamp(19px, 2.2vw, 26px)', { letterSpacing: '0.04em', color: NAVY }), opacity: 0.55 }}>{b}</span>
+            ))}
+          </div>
+          <button type="button" aria-label="Next brands" disabled className="nts-ghost" style={{ flex: 'none', width: 44, height: 44, borderRadius: 8, border: 'none', background: NAVY, color: '#fff', cursor: 'default', display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: 0.5 }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+        </div>
+      </section>
+
+      {/* ============ BIG CATEGORY PANELS ============ */}
+      <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 0 }}>
+        <a href="/team-stores" style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#1c2d4f,#192853 60%,#0F1A38)', overflow: 'hidden', textDecoration: 'none' }}>
+          <PhotoLabel style={{ position: 'absolute', top: 20, right: 24, color: 'rgba(255,255,255,0.35)' }}>Photo — Team store hero</PhotoLabel>
+          <div>
+            <div style={{ ...displayType('clamp(2.6rem, 4.2vw, 3.6rem)', { fontWeight: 700, lineHeight: 0.96, color: '#fff' }), marginBottom: 14, letterSpacing: '0.01em' }}>Team Stores</div>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 16, color: '#fff' }}>
+              Shop now <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </span>
+          </div>
+        </a>
+        <button type="button" onClick={onBrowseCatalog} style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#F7F8FB,#EEF1F6 60%,#E4E8F0)', overflow: 'hidden', textAlign: 'left', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+          <PhotoLabel style={{ position: 'absolute', top: 20, right: 24, color: BORDER_DARK }}>Photo — New arrivals flat-lay</PhotoLabel>
+          <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: RED }} />
+          <div>
+            <div style={{ ...displayType('clamp(2.6rem, 4.2vw, 3.6rem)', { fontWeight: 700, lineHeight: 0.96, color: NAVY }), marginBottom: 14, letterSpacing: '0.01em' }}>New Drops</div>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 16, color: NAVY }}>
+              Shop now <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+            </span>
+          </div>
+        </button>
+      </section>
+
+      {/* ============ CATEGORY TILES ============ */}
+      <section style={{ background: '#fff', padding: 'clamp(48px, 6vw, 80px) 24px' }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', marginBottom: 28 }}>
+            <div>
+              <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 6px' })}>Shop by category</p>
+              <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.2rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Everything the roster needs</h2>
+            </div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
+            {CATEGORY_TILES.map((tile) => (
+              <button
+                key={tile.label}
+                type="button"
+                onClick={onBrowseCatalog}
+                style={{ position: 'relative', aspectRatio: '1 / 1', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'flex-end', padding: 18, background: tile.gradient, border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}
+              >
+                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(15,26,56,0.55), transparent 55%)' }} />
+                <span style={{ position: 'relative', ...displayType(19, { letterSpacing: '0.04em', color: '#fff' }) }}>{tile.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ============ VALUE-PROP ICON ROW ============ */}
+      <section style={{ background: OFF_WHITE, padding: 'clamp(40px, 5vw, 64px) 24px', borderTop: `1px solid ${BORDER}`, borderBottom: `1px solid ${BORDER}` }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 32 }}>
+          {VALUE_PROPS.map((vp) => (
+            <div key={vp.label} style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke={NAVY} strokeWidth="1.5" aria-hidden="true">{vp.icon}</svg>
+              <span style={{ ...displayType(15, { letterSpacing: '0.06em', color: NAVY }), lineHeight: 1.2 }}>{vp.label}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ============ HOW IT WORKS ============ */}
+      <section style={{ background: NAVY_DARK, padding: 'clamp(56px, 7vw, 96px) 24px', position: 'relative' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', maxWidth: 620, margin: '0 auto 56px' }}>
+            <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>How it works</p>
+            <h2 style={displayType('clamp(2rem, 3.6vw, 2.5rem)', { color: '#fff', margin: '0 0 14px', lineHeight: 1.06, letterSpacing: '0.01em' })}>Three steps. No back-and-forth.</h2>
+            <p style={{ color: 'rgba(255,255,255,0.7)', margin: 0, fontSize: 'clamp(15px, 1.3vw, 17px)', lineHeight: 1.6 }}>
+              Pick your gear, drop on your logo, and we handle the rest. Your account remembers everything for next season.
+            </p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 24 }}>
+            {HOW_IT_WORKS.map((step) => (
+              <div key={step.n} style={{ background: NAVY, border: '1px solid #1c2d4f', borderRadius: 12, padding: '36px 32px', position: 'relative' }}>
+                <span aria-hidden="true" style={{ position: 'absolute', top: 24, right: 28, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 44, color: 'rgba(255,255,255,0.08)', lineHeight: 1 }}>{step.n}</span>
+                <div style={{ width: 46, height: 46, borderRadius: 10, background: 'rgba(217,74,82,0.14)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: RED_SOFT, marginBottom: 22 }}>
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">{step.icon}</svg>
+                </div>
+                <h3 style={displayType(22, { color: '#fff', margin: '0 0 10px', letterSpacing: '0.02em' })}>{step.title}</h3>
+                <p style={{ margin: 0, fontSize: 15, color: 'rgba(255,255,255,0.68)', lineHeight: 1.6 }}>{step.body}</p>
+              </div>
+            ))}
+          </div>
+          <div style={{ textAlign: 'center', marginTop: 44 }}>
+            <button
+              type="button"
+              onClick={onStartOrder}
+              style={{ display: 'inline-block', fontWeight: 600, fontSize: 16, padding: '15px 30px', borderRadius: 8, background: '#fff', color: NAVY, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              Start with your logo
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ DECORATION STYLES ============ */}
+      <section id="decoration" style={{ background: '#fff', padding: 'clamp(56px, 7vw, 96px) 24px' }}>
+        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', maxWidth: 580, margin: '0 auto 44px' }}>
+            <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 10px' })}>How we decorate</p>
+            <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.15rem)', { color: NAVY, margin: '0 0 12px', lineHeight: 1.06 })}>The right method for the garment</h2>
+            <p style={{ color: TEXT_MUTED, margin: 0, lineHeight: 1.6, fontSize: 'clamp(15px, 1.3vw, 17px)' }}>Every job is matched to the fabric and the design. Here&apos;s when each one is the right call.</p>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 24 }}>
+            {DECORATION_METHODS.map((m) => (
+              <div key={m.n} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 2px rgba(15,26,56,0.06)' }}>
+                <div style={{ aspectRatio: '4 / 3', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: m.gradient, color: TEXT_MUTED }}>
+                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 16l-5-5-9 8" /></svg>
+                  <PhotoLabel>{m.photoLabel}</PhotoLabel>
+                </div>
+                <div style={{ padding: '22px 24px 26px' }}>
+                  <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 600, letterSpacing: '0.1em', color: RED, marginBottom: 6 }}>{m.n}</div>
+                  <h3 style={displayType(22, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.01em' })}>{m.title}</h3>
+                  <p style={{ margin: 0, color: TEXT_MUTED, fontSize: 15, lineHeight: 1.55 }}>{m.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* ============ FEATURED PRODUCTS ============ */}
+      <section id="products" style={{ background: OFF_WHITE, padding: 'clamp(56px, 7vw, 96px) 24px' }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap', marginBottom: 36 }}>
+            <div>
+              <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 6px' })}>Featured &amp; on deal</p>
+              <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.15rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Ready to decorate</h2>
+            </div>
+            <button
+              type="button"
+              onClick={onBrowseCatalog}
+              className="nts-navlink"
+              style={{ fontWeight: 600, fontSize: 15, color: NAVY, borderBottom: `1.5px solid ${BORDER_DARK}`, paddingBottom: 3, background: 'none', borderTop: 'none', borderLeft: 'none', borderRight: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              Shop all products →
+            </button>
+          </div>
+
+          {productsLoading && <p style={{ color: TEXT_MUTED, fontSize: 14 }}>Loading…</p>}
+          {!productsLoading && !products.length && (
+            // TODO(featured-products): search_products returned nothing (or the
+            // RPC failed) — falls back to an empty state rather than fake tiles,
+            // so we never show garments that don't exist.
+            <p style={{ color: TEXT_MUTED, fontSize: 14 }}>Featured products are on their way.</p>
+          )}
+          {!productsLoading && !!products.length && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 24 }}>
+              {products.map((p) => (
+                <CatalogCard key={p.id} product={p} />
+              ))}
+            </div>
+          )}
+          <p style={{ textAlign: 'center', margin: '28px 0 0', fontSize: 12, color: TEXT_MUTED, letterSpacing: '0.02em' }}>* Placeholder pricing — final pricing set at build time.</p>
+        </div>
+      </section>
+
+      {/* ============ SOCIAL PROOF ============ */}
+      <section style={{ background: OFF_WHITE, padding: 'clamp(56px, 7vw, 96px) 24px' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto', textAlign: 'center' }}>
+          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 10px' })}>Trusted on the sideline</p>
+          <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.15rem)', { color: NAVY, margin: '0 0 40px', letterSpacing: '0.01em' })}>Trusted by programs across California</h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 16 }}>
+            {SOCIAL_LOGOS.map((label, i) => (
+              // eslint-disable-next-line react/no-array-index-key
+              <div key={`${label}-${i}`} style={{ aspectRatio: '16 / 9', border: `1px solid ${BORDER}`, borderRadius: 12, background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 6, color: BORDER_DARK }}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z" /></svg>
+                <PhotoLabel style={{ fontSize: 10, letterSpacing: '0.12em' }}>{label}</PhotoLabel>
+              </div>
+            ))}
+          </div>
+          <p style={{ margin: '36px auto 0', fontSize: 'clamp(16px, 1.5vw, 19px)', color: TEXT_MUTED, maxWidth: 560, lineHeight: 1.6, fontStyle: 'italic' }}>
+            &quot;Uploaded our crest once and now every reorder takes about two minutes. The gear looks the part.&quot;*
+          </p>
+          <p style={{ margin: '14px 0 0', ...displayType(13, { letterSpacing: '0.1em', color: NAVY }) }}>— Placeholder coach quote</p>
+        </div>
+      </section>
+
+      {/* ============ WELCOME POPUP ============ */}
+      {popupOpen && (
+        <div style={{ position: 'fixed', right: 24, bottom: 96, zIndex: 70, width: 'min(348px, calc(100vw - 32px))', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 16, boxShadow: '0 24px 60px rgba(15,26,56,0.28)', overflow: 'hidden' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '16px 18px', borderBottom: `1px solid ${BORDER}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span aria-hidden="true" style={{ width: 34, height: 34, borderRadius: 999, background: NAVY, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700, fontSize: 15 }}>AR</span>
+              <div style={{ lineHeight: 1.1 }}>
+                <div style={{ fontWeight: 600, fontSize: 15, color: NAVY }}>Alex, National Team Shop</div>
+                <div style={{ fontSize: 12, color: TEXT_MUTED }}>Typically replies in minutes</div>
+              </div>
+            </div>
+            <button type="button" onClick={dismissPopup} aria-label="Close" style={{ flex: 'none', width: 30, height: 30, borderRadius: 999, border: 'none', background: 'transparent', color: TEXT_MUTED, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 6l12 12M18 6L6 18" /></svg>
+            </button>
+          </div>
+          <div style={{ padding: 18 }}>
+            <p style={{ margin: '0 0 14px', fontSize: 15, color: TEXT, lineHeight: 1.5 }}>Welcome! New here? Drop your logo and we&apos;ll build your team store.</p>
+            <div style={{ position: 'relative', borderRadius: 12, overflow: 'hidden', background: 'linear-gradient(150deg,#1c2d4f,#192853 60%,#0F1A38)', padding: 20, display: 'flex', flexDirection: 'column', gap: 9 }}>
+              <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: RED_SOFT }} />
+              <span style={{ ...displayType(15, { letterSpacing: '0.08em', color: '#fff' }), fontWeight: 700 }}>National Team Shop</span>
+              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>+ Top brands</span>
+              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>+ Your logos, saved</span>
+              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>+ Free decoration setup*</span>
+              <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.9)', fontWeight: 600 }}>+ Fast turnaround*</span>
+            </div>
+            <p style={{ margin: '14px 0 16px', fontSize: 13, color: TEXT_MUTED, lineHeight: 1.55 }}>Elevate your program&apos;s look — pair your logo with top-tier brands and let our in-house team handle the rest.</p>
+            <button
+              type="button"
+              onClick={() => { dismissPopup(); onStartOrder(); }}
+              className="nts-cta-red"
+              style={{ display: 'block', width: '100%', textAlign: 'center', fontWeight: 600, fontSize: 15, background: RED, color: '#fff', padding: 13, borderRadius: 10, border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+            >
+              Start with your logo
+            </button>
+            {/* TODO(teamshop-nav): no live chat backend yet — this input is a
+                visual affordance from the mockup only. */}
+            <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 10, border: `1px solid ${BORDER}`, borderRadius: 999, padding: '11px 16px', color: TEXT_MUTED, fontSize: 14, background: OFF_WHITE }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M4 5h16v12H7l-3 3z" /></svg>
+              Click to reply…
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============ CHAT BUBBLE ============ */}
+      <button
+        type="button"
+        onClick={toggleChat}
+        aria-label="Open chat"
+        className="nts-cta-navy"
+        style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 71, width: 58, height: 58, borderRadius: 999, border: 'none', background: NAVY, color: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 12px 30px rgba(15,26,56,0.35)' }}
+      >
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 20l1-4.5A8 8 0 1 1 21 12z" /><circle cx="9" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" /><circle cx="15" cy="12" r="1" fill="currentColor" stroke="none" /></svg>
+      </button>
+    </div>
+  );
+}

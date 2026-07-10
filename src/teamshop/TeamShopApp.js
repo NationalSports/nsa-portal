@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
+import Home from './Home';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
 import CartPage from './CartPage';
@@ -43,9 +44,11 @@ import {
 // places the order through netlify/functions/teamshop-checkout.js, and takes
 // card payment via Stripe Elements (finalized by webstore-checkout).
 //
-// TODO(teamshop-landing): replace the hero placeholder below with the designed
-// landing page once the approved design concept lands. Product/cart/checkout
-// also mount from here in later stages.
+// The landing view renders Home.js — the approved "National Team Shop - Home"
+// Claude Design mockup, translated section-by-section (hero, brand strip,
+// category panels/tiles, value props, how-it-works, decoration styles,
+// featured products, social proof). Header/footer below are shared across
+// every view, landing included, so Home.js is content-only.
 
 export default function TeamShopApp() {
   const [route, setRoute] = useState('landing'); // landing|catalog|order
@@ -159,21 +162,7 @@ export default function TeamShopApp() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route === 'landing' && (
-          <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center' }}>
-            {/* Hero placeholder — swapped for the approved landing design (see TODO above). */}
-            <div>
-              <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0 }}>Your logo. Team-quality gear.</h1>
-              <p style={{ fontSize: 15, color: '#64748b', marginTop: 12 }}>
-                The National Team Shop storefront is coming soon.
-              </p>
-              <button
-                onClick={() => setRoute('order')}
-                style={{ marginTop: 20, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 8, padding: '12px 24px', fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}
-              >
-                Start an order
-              </button>
-            </div>
-          </div>
+          <Home onStartOrder={() => setRoute('order')} onBrowseCatalog={() => setRoute('catalog')} />
         )}
 
         {route === 'catalog' && <Catalog />}
