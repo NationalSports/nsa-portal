@@ -611,6 +611,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
+  const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
@@ -5234,8 +5235,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PREVIOUS ARTWORK PICKER MODAL */}
     {showPrevArt&&(()=>{
       const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
-      // Only cross-pollinate art from the parent account; sibling sub-accounts are segmented (e.g. OLu Basketball shouldn't see OLu Football art).
-      const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId];
+      // Default: only cross-pollinate art from the parent account; sibling sub-accounts are
+      // segmented (e.g. OLu Basketball shouldn't see OLu Football art — the SO-1057 class).
+      // In practice many programs never promote art to the parent library, so the shared
+      // school logos live on ONE team's orders and are unreachable from siblings. The
+      // family toggle below makes that reachable EXPLICITLY: every card is labeled with its
+      // source team, nothing is merged silently, and adding is still a deliberate rep act.
+      const _famParentId=parentCust2?.parent_id||( (allCustomers||[]).some(c=>c.parent_id===custId)?custId:null );
+      const _famIds=_famParentId?[_famParentId,...(allCustomers||[]).filter(c=>c.parent_id===_famParentId).map(c=>c.id)]:[custId];
+      const custIds2=prevArtFamily&&_famParentId?[...new Set(_famIds)]:(parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId]);
+      const _famParentName=_famParentId?(allCustomers.find(c=>c.id===_famParentId)?.name||'program'):null;
+      const _teamLabel=cid=>{if(cid===custId)return'';const c=allCustomers.find(cc=>cc.id===cid);return c?(c.name||c.alpha_tag||''):''};
       const prevArtList=[];
       const _byKey=new Map();
       const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
@@ -5243,7 +5253,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
-      const _pushArt=(art,meta)=>{if(art.archived)return;const k=_dedupKey(art);
+      // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
+      // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
+      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -5255,7 +5267,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Pull from estimates + sales orders (artSourceOrders) so a new estimate also surfaces art created
       // on prior estimates; fall back to allOrders for any caller that doesn't supply the combined list.
       (artSourceOrders||allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
-        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:so.memo||''}));
+        const _tl=_teamLabel(so.customer_id);
+        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:(_tl?_tl+' · ':'')+(so.memo||'')}));
       });
       // Bucket every deco_type into one of three groups; "heat transfer" is the catch-all (incl. DTF, sublimation, vinyl), matching the 🔥 icon used elsewhere.
       const _artCat=dt=>dt==='screen_print'?'screen_print':dt==='embroidery'?'embroidery':'heat_transfer';
@@ -5271,26 +5284,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12,alignItems:'center'}}>
               {PREV_TABS.map(t=>{const cnt=t.id==='all'?prevArtList.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
                 return<button key={t.id} style={{fontSize:11,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?col:'#e2e8f0'),background:active?col+'15':'white',color:active?col:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setPrevArtFilter(t.id)}>{t.label} ({cnt})</button>})}
+              {_famParentId&&<label style={{fontSize:11,display:'inline-flex',alignItems:'center',gap:5,marginLeft:'auto',padding:'3px 10px',borderRadius:12,border:'1px solid '+(prevArtFamily?'#7c3aed':'#e2e8f0'),background:prevArtFamily?'#f5f3ff':'white',color:prevArtFamily?'#6d28d9':'#64748b',cursor:'pointer',fontWeight:600}} title="Show artwork from every team under this program — each card is labeled with its source team. Reusing another team's art is an explicit choice; double-check it's the right design for this team.">
+                <input type="checkbox" checked={prevArtFamily} onChange={e=>setPrevArtFamily(e.target.checked)} style={{margin:0}}/> All {_famParentName} teams</label>}
             </div>
             {visibleArt.length===0?<div className="empty">No {prevArtFilter.replace(/_/g,' ')} artwork for this customer</div>:
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {visibleArt.map((art,i)=>{
               const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
-              // Only include actual mockup sources (not prod seps/AIs) and filter to files tagged for this art when art_file_id is present.
+              // Only include actual mockup sources (not prod seps/AIs) and prefer files tagged for
+              // this art when art_file_id is present — but library/promoted COPIES carry entries
+              // still tagged with the SOURCE art's id, which used to filter out every mock and
+              // blank the card. If nothing matches the tag, fall back to all files.
               const _artId=art.id;
               const _tagMatches=f=>{const fid=typeof f==='object'&&f?.art_file_id;return!fid||fid===_artId};
-              const _rawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f&&_tagMatches(f));
+              const _allRawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(Boolean);
+              const _tagged=_allRawMocks.filter(_tagMatches);
+              const _rawMocks=_tagged.length>0?_tagged:_allRawMocks;
               const _urlOf=f=>typeof f==='string'?f:(f?.url||'');
               const _seenUrls=new Set();
               const mockups=_rawMocks.filter(f=>{const u=_urlOf(f);if(!u||_seenUrls.has(u))return false;_seenUrls.add(u);return true});
-              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?_urlOf(firstMockup):'');
+              // Thumbnail cascade: explicit preview → store/web logo cutout → first image mock →
+              // first PDF mock via its Cloudinary page-1 render → generic deco icon.
+              const _webLogo=art.web_logo_url||((art.web_logos||[]).find(w=>w&&w.url)?.url)||'';
+              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];
+              let imgUrl=previewImg||_webLogo||(firstMockup?_urlOf(firstMockup):'');
+              // A Cloudinary pg_1 render keeps the .pdf filename, so _isImgUrl stays false —
+              // track it explicitly for the render gate (mirrors CoachPortal's pdfThumb branch).
+              let _pdfThumbed=false;
+              if(imgUrl&&!_isImgUrl(imgUrl)&&_isPdfUrl(imgUrl)){const _pt=_cloudinaryPdfThumb(imgUrl);if(_pt){imgUrl=_pt;_pdfThumbed=true;}}
               return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-                  {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
+                  {imgUrl&&(_isImgUrl(imgUrl)||_pdfThumbed)?<img src={imgUrl} alt="" onError={e=>{e.target.style.display='none'}} style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
                     <div style={{width:80,height:80,borderRadius:8,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
                   <div style={{flex:1}}>
                     <div style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</div>
