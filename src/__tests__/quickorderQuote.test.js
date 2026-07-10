@@ -144,14 +144,103 @@ describe('quote pricing', () => {
   });
 });
 
-describe('quote hash', () => {
-  test('is deterministic for the same lines and changes when the cart changes', async () => {
-    const body = { customer_id: 'cust1', lines: [{ product_id: 'p1', qty: 12 }] };
-    const h1 = JSON.parse((await call(body)).body).quote.hash;
-    const h2 = JSON.parse((await call(body)).body).quote.hash;
-    const h3 = JSON.parse((await call({ customer_id: 'cust1', lines: [{ product_id: 'p1', qty: 13 }] })).body).quote.hash;
-    expect(h1).toMatch(/^[0-9a-f]{64}$/);
-    expect(h1).toBe(h2);
-    expect(h1).not.toBe(h3);
+// A canonical Stage-4 decoSpec-shaped decoration (overlay + provenance + pricing
+// fields) — the exact JSON the cart UI will send per line.
+const SPEC = {
+  art_url: 'https://cdn.example/logo.png', side: 'front', x: 24, y: 28, w: 22,
+  placement: 'left_chest', logo_source: 'art_library', art_file_id: 'art1',
+  type: 'screen_print', colors: 2, underbase: false,
+};
+const cartLine = (over = {}) => ({ product_id: 'p2', size: 'L', qty: 24, decorations: [{ ...SPEC }], ...over });
+const getQuote = async (lines) => {
+  const r = await call({ customer_id: 'cust1', lines });
+  expect(r.statusCode).toBe(200);
+  return JSON.parse(r.body).quote;
+};
+
+describe('cart line shape (Stage 5)', () => {
+  test('a non-decorated retail line (decorations: []) prices garment-only', async () => {
+    const q = await getQuote([{ product_id: 'p2', size: 'M', qty: 10, decorations: [] }]);
+    const unit = DECO.rQ(4 * 1.65);
+    expect(q.lines[0].unit_sell).toBe(unit);
+    expect(q.lines[0].decorations).toEqual([]);
+    expect(q.lines[0].size).toBe('M');
+    expect(q.lines[0].line_total).toBe(Math.round(unit * 10 * 100) / 100);
+    expect(q.subtotal).toBe(q.lines[0].line_total);
+  });
+
+  test('a mixed cart (decorated + plain) totals to the sum of its lines', async () => {
+    const q = await getQuote([cartLine(), { product_id: 'p1', size: 'XL', qty: 12, decorations: [] }]);
+    const unit2 = DECO.rQ(4 * 1.65);
+    const deco = Math.round(DECO.dP(DECO.DEFAULTS, { type: 'screen_print', colors: 2 }, 24).sell * 100) / 100;
+    expect(q.lines).toHaveLength(2);
+    expect(q.lines[0].line_total).toBe(Math.round((unit2 + deco) * 24 * 100) / 100);
+    expect(q.lines[1].line_total).toBe(24 * 12); // adidas tier A: 40 × 0.6 × 12
+    expect(q.subtotal).toBe(Math.round((q.lines[0].line_total + q.lines[1].line_total) * 100) / 100);
+  });
+
+  test('multi-line carts keep per-line size/qty (same product, two sizes)', async () => {
+    const q = await getQuote([
+      { product_id: 'p2', size: 'S', qty: 3, decorations: [] },
+      { product_id: 'p2', size: 'XXL', qty: 5, decorations: [] },
+    ]);
+    expect(q.lines.map((l) => l.size)).toEqual(['S', 'XXL']);
+    expect(q.lines.map((l) => l.qty)).toEqual([3, 5]);
+  });
+
+  test('echoes placement/logo metadata on priced decorations, still stripping price fields', async () => {
+    const q = await getQuote([cartLine({ decorations: [{ ...SPEC, sell_override: 0.01, unit_sell: 0.01 }] })]);
+    const d = q.lines[0].decorations[0];
+    expect(d).toMatchObject({
+      type: 'screen_print', colors: 2, underbase: false,
+      placement: 'left_chest', logo_source: 'art_library', art_file_id: 'art1',
+      side: 'front', x: 24, y: 28, w: 22, art_url: SPEC.art_url,
+    });
+    expect(d.sell_override).toBeUndefined();
+    // unit_sell is the server-priced value, never the client's
+    expect(d.unit_sell).toBe(Math.round(DECO.dP(DECO.DEFAULTS, { type: 'screen_print', colors: 2 }, 24).sell * 100) / 100);
+  });
+});
+
+describe('quote hash (v2)', () => {
+  const hashOf = async (lines) => (await getQuote(lines)).quote_hash;
+
+  test('response carries quote_hash + hash_version v2 (hash kept as alias)', async () => {
+    const q = await getQuote([cartLine()]);
+    expect(q.hash_version).toBe('v2');
+    expect(q.quote_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(q.hash).toBe(q.quote_hash);
+  });
+
+  test('same cart → same hash', async () => {
+    expect(await hashOf([cartLine()])).toBe(await hashOf([cartLine()]));
+  });
+
+  test.each([
+    ['qty change', cartLine({ qty: 25 })],
+    ['size change', cartLine({ size: 'XL' })],
+    ['color-count change', cartLine({ decorations: [{ ...SPEC, colors: 3 }] })],
+    ['placement x nudge', cartLine({ decorations: [{ ...SPEC, x: 25 }] })],
+    ['different logo id', cartLine({ decorations: [{ ...SPEC, art_file_id: 'art2' }] })],
+    ['zone change', cartLine({ decorations: [{ ...SPEC, placement: 'full_front', x: 50, y: 38, w: 68 }] })],
+  ])('%s → different hash', async (_name, changed) => {
+    expect(await hashOf([changed])).not.toBe(await hashOf([cartLine()]));
+  });
+
+  test('teamshop vs art_library logo references hash differently even with the same id', async () => {
+    const a = await hashOf([cartLine()]);
+    const b = await hashOf([cartLine({ decorations: [{ ...SPEC, art_file_id: undefined, logo_source: 'teamshop', teamshop_logo_id: 'art1' }] })]);
+    expect(a).not.toBe(b);
+  });
+
+  test('normalizeAndHash is exported, deterministic, and recomputes the quote hash from the echoed lines (Stage 6 contract)', async () => {
+    expect(typeof quote.normalizeAndHash).toBe('function');
+    const q = await getQuote([cartLine(), { product_id: 'p1', size: 'M', qty: 6, decorations: [] }]);
+    const totals = { customer_id: q.customer_id, tier: q.tier, subtotal: q.subtotal };
+    const r1 = quote.normalizeAndHash(q.lines, totals);
+    const r2 = quote.normalizeAndHash(JSON.parse(JSON.stringify(q.lines)), { ...totals });
+    expect(r1.hash_version).toBe('v2');
+    expect(r1.quote_hash).toBe(r2.quote_hash);
+    expect(r1.quote_hash).toBe(q.quote_hash);
   });
 });

@@ -1,6 +1,6 @@
 // Coach-facing server-side quick-order quote — the browser never decides a price.
 //
-// POST { customer_id, lines: [{ product_id, qty, decorations?: [...] }] }
+// POST { customer_id, lines: [{ product_id, sku?, size?, qty, color?, decorations?: [...] }] }
 //   Authorization: Bearer <coach Supabase session JWT>
 //
 // Auth: the bearer token must resolve (admin.auth.getUser) to an ACTIVE
@@ -64,6 +64,88 @@ function cleanDeco(d) {
   return null;
 }
 
+// Placement/logo metadata carried through (NOT priced) so the client renders
+// exactly what was quoted and checkout can persist it. Whitelist only — any
+// client-supplied price field (sell_override, unit_sell, ...) never survives.
+// Keys are disjoint from cleanDeco's pricing fields by construction.
+function decoMeta(d) {
+  if (!d || typeof d !== 'object') return {};
+  const out = {};
+  if (d.placement != null && String(d.placement).trim()) out.placement = String(d.placement).trim();
+  if (d.side === 'front' || d.side === 'back') out.side = d.side;
+  for (const k of ['x', 'y', 'w']) {
+    const n = Number(d[k]);
+    if (d[k] != null && d[k] !== '' && Number.isFinite(n)) out[k] = n;
+  }
+  if (d.logo_source != null && String(d.logo_source).trim()) out.logo_source = String(d.logo_source).trim();
+  if (d.teamshop_logo_id != null) out.teamshop_logo_id = d.teamshop_logo_id;
+  else if (d.art_file_id != null) out.art_file_id = d.art_file_id;
+  if (d.art_url && typeof d.art_url === 'string') out.art_url = d.art_url;
+  return out;
+}
+
+// ── Quote hash (v2) — THE single normalization + hash implementation ─────────
+//
+// CONTRACT (Stage 6 checkout): the order-placement function MUST NOT reimplement
+// this. It requires this module and recomputes the hash from the quote lines the
+// client echoes back:
+//
+//   const { normalizeAndHash } = require('./quickorder-quote');
+//   const { quote_hash } = normalizeAndHash(quote.lines,
+//     { customer_id, tier, subtotal });
+//   if (quote_hash !== clientSuppliedHash) reject; // quote drifted → re-quote
+//
+// `lines` is the priced/echoed quote line shape this function produces:
+//   { product_id, sku, size, qty, unit_sell, decorations: [{ type,
+//     colors/underbase | stitches | dtf_size, placement?, side?, x?, y?, w?,
+//     teamshop_logo_id? | art_file_id? }] }
+// `totals` is { customer_id, tier, subtotal }.
+//
+// Hashed per normalized line: product_id, sku, size, qty, unit garment sell,
+// and per decoration the full pricing-relevant set (type + colors/underbase |
+// stitches | dtf_size) PLUS placement identity (placement zone id, logo
+// reference, side, x, y, w) — so a placement nudge, zone change, or logo swap
+// invalidates the quote. The version string is inside the hashed payload.
+const HASH_VERSION = 'v2';
+function normalizeAndHash(lines, totals) {
+  const t = totals || {};
+  const str = (v) => (v == null || String(v) === '' ? null : String(v));
+  const num = (v) => {
+    const n = Number(v);
+    return v == null || v === '' || !Number.isFinite(n) ? null : n;
+  };
+  const normalized = {
+    v: HASH_VERSION,
+    customer_id: str(t.customer_id),
+    tier: str(t.tier) || 'B',
+    lines: (Array.isArray(lines) ? lines : []).map((l) => ({
+      p: str(l.product_id),
+      s: str(l.sku),
+      z: str(l.size),
+      q: Number(l.qty) || 0,
+      u: Number(l.unit_sell) || 0,
+      d: (Array.isArray(l.decorations) ? l.decorations : []).map((d) => ({
+        t: str(d.type),
+        // full pricing-relevant set for the type
+        pr: d.type === 'screen_print' ? [Number(d.colors) || 1, d.underbase ? 1 : 0]
+          : d.type === 'embroidery' ? [Number(d.stitches) || 0]
+            : [Number(d.dtf_size) || 0],
+        // placement identity
+        pl: str(d.placement),
+        lg: d.teamshop_logo_id != null ? `teamshop:${d.teamshop_logo_id}`
+          : d.art_file_id != null ? `art:${d.art_file_id}` : null,
+        sd: str(d.side),
+        x: num(d.x),
+        y: num(d.y),
+        w: num(d.w),
+      })),
+    })),
+    subtotal: Number(t.subtotal) || 0,
+  };
+  const quote_hash = crypto.createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+  return { normalized, quote_hash, hash_version: HASH_VERSION };
+}
+
 // Price the request. Pure given the loaded rows. Returns { quote } or { status, error }.
 async function buildQuote(admin, { customerId, lines }) {
   if (!customerId) return { status: 400, error: 'customer_id required' };
@@ -91,32 +173,33 @@ async function buildQuote(admin, { customerId, lines }) {
     const p = l && byId[l.product_id];
     if (!p) return { status: 409, error: `Product not found: ${(l && l.product_id) || '(missing)'}` };
     const qty = Math.min(MAX_QTY, Math.max(1, parseInt(l.qty, 10) || 1));
+    const size = l.size != null && String(l.size).trim() ? String(l.size).trim() : null;
+    const color = l.color != null && String(l.color).trim() ? String(l.color).trim() : null;
     const unit = unitSell(p, cust);
     const decos = [];
     let decoEach = 0;
+    // decorations: [] (or absent) is a plain retail line — garment-only price.
     for (const rawDeco of (Array.isArray(l.decorations) ? l.decorations : [])) {
       const d = cleanDeco(rawDeco);
       if (!d) return { status: 400, error: 'Unsupported decoration type — use screen_print, embroidery, or dtf' };
       const dp = DECO.dP(T, d, qty);
       const sell = r2(dp.sell);
       decoEach = r2(decoEach + sell);
-      decos.push({ ...d, unit_sell: sell });
+      // pricing fields (cleanDeco) + priced sell + placement/logo metadata echo.
+      decos.push({ ...d, unit_sell: sell, ...decoMeta(rawDeco) });
     }
     const lineTotal = r2((unit + decoEach) * qty);
     subtotal = r2(subtotal + lineTotal);
-    outLines.push({ product_id: p.id, sku: p.sku, name: p.name, qty, unit_sell: unit, decorations: decos, line_total: lineTotal });
+    outLines.push({ product_id: p.id, sku: p.sku, name: p.name, size, color, qty, unit_sell: unit, decorations: decos, line_total: lineTotal });
   }
 
-  // Deterministic hash over the normalized line set + totals. Order placement
-  // echoes it so the server can detect any drift between quote and order.
-  const norm = {
-    v: 1,
+  // Deterministic v2 hash over the normalized line set + totals (see
+  // normalizeAndHash above). Order placement recomputes it via the same export.
+  const { quote_hash, hash_version } = normalizeAndHash(outLines, {
     customer_id: cust.id,
     tier: cust.adidas_ua_tier || 'B',
-    lines: outLines.map((l) => ({ p: l.product_id, q: l.qty, u: l.unit_sell, d: l.decorations.map((d) => [d.type, d.unit_sell]) })),
     subtotal,
-  };
-  const hash = crypto.createHash('sha256').update(JSON.stringify(norm)).digest('hex');
+  });
 
   return {
     quote: {
@@ -126,7 +209,9 @@ async function buildQuote(admin, { customerId, lines }) {
       lines: outLines,
       subtotal,
       total: subtotal, // goods + deco only; tax/shipping are applied at order placement
-      hash,
+      hash: quote_hash, // legacy alias of quote_hash (kept for response-shape compat)
+      quote_hash,
+      hash_version,
       generated_at: new Date().toISOString(),
     },
   };
@@ -166,3 +251,7 @@ module.exports.coachHasCustomerAccess = coachHasCustomerAccess;
 module.exports.buildQuote = buildQuote;
 module.exports.unitSell = unitSell;
 module.exports.cleanDeco = cleanDeco;
+// Stage 6 checkout requires this to recompute the identical quote hash — see
+// the contract comment on normalizeAndHash.
+module.exports.normalizeAndHash = normalizeAndHash;
+module.exports.HASH_VERSION = HASH_VERSION;
