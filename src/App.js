@@ -21206,21 +21206,26 @@ export default function App(){
     return out;
   };
   // Triage one queue row → {bucket, parsed, match, reason}. Buckets: captured|outside|grab|approve|review.
-  // "Outside of Portal" means *confirmed* pre-portal, by either (a) the no-space "PO####" format or
-  // (b) the PO core matching our NetSuite pre-portal PO export. The NetSuite list NEVER overrides the
-  // space rule (≈113 old cores collide with real portal PO numbers), so a spaced "PO 6403" stays a
-  // portal order even though core 6403 is also in the export — it only confirms formats with no signal.
+  // Order matters: a HIGH-confidence portal match (PO core + customer tag both align) is definitive and
+  // wins over everything — the bill IS that portal order even when the buyer dropped the space
+  // (e.g. "PO3116RHV" → portal "PO 3116 RHV"). Only when there's no such match does the space rule
+  // apply: a no-space "PO####" (or a core in the NetSuite pre-portal export) → Outside of Portal.
+  // Collision-safe: a genuinely old bill shares only the core with a portal PO (→ medium at most), so
+  // it never trips the high-confidence override; the ≈113 core collisions stay correctly Outside.
   const _siTriage=(row,cands)=>{
     const parsed=mapSportsLinkDocToBill(row.raw||{});
     if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
-    const origin=siPoOrigin(row.po_number);// portal (spaced) | old (no space) | unknown (no "PO")
-    if(origin==='old')return{bucket:'outside',parsed,match:null,reason:'No space after “PO” — pre-portal (NetSuite/QuickBooks).'};
-    if(row.source_type!=='edi')return{bucket:'grab',parsed,match:null};// scanned/OCR → grab the PDF
+    const isEdi=row.source_type==='edi';
     const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
-    if(best&&(best.confidence==='high'||best.confidence==='medium'))return{bucket:'approve',parsed,match:best};
-    // No confident portal match. A spaced PO is a portal PO → keep for review (likely a PO line that
-    // was never entered — a real gap, e.g. the Reedley PO 3281 case). For non-spaced/unknown formats,
-    // confirm against the NetSuite export before calling it old.
+    // Definitive portal match beats the space rule. EDI → approve; a scanned/OCR match still needs its
+    // PDF pulled before it can apply, so it lands in Grab (with the matched order shown alongside).
+    if(best&&best.confidence==='high')return{bucket:isEdi?'approve':'grab',parsed,match:best};
+    const origin=siPoOrigin(row.po_number);// portal (spaced) | old (no space) | unknown (no "PO")
+    if(origin==='old')return{bucket:'outside',parsed,match:null,reason:'No space after “PO” and no confident portal match — pre-portal (NetSuite/QuickBooks).'};
+    if(!isEdi)return{bucket:'grab',parsed,match:best};// scanned/OCR → grab the PDF
+    if(best&&best.confidence==='medium')return{bucket:'approve',parsed,match:best};
+    // Weak/no match. A spaced PO is a portal PO → keep for review (likely a PO line never entered —
+    // the Reedley PO 3281 case). For non-spaced/unknown formats, confirm against the NetSuite export.
     const core=parseSiPoString(row.po_number).core;
     if(origin!=='portal'&&isPrePortalNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches pre-portal NetSuite PO #'+core+' — bill via NetSuite/QuickBooks.'};
     const reason=origin==='portal'
