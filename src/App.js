@@ -291,7 +291,8 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
-import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates } from './sportsLink';
+import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
+import { isPrePortalNetsuitePo } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -21206,15 +21207,33 @@ export default function App(){
     }
     return out;
   };
-  // Triage one queue row → {bucket, parsed, match}. Buckets: captured|outside|grab|approve|review.
+  // Triage one queue row → {bucket, parsed, match, reason}. Buckets: captured|outside|grab|approve|review.
+  // Order matters: a HIGH-confidence portal match (PO core + customer tag both align) is definitive and
+  // wins over everything — the bill IS that portal order even when the buyer dropped the space
+  // (e.g. "PO3116RHV" → portal "PO 3116 RHV"). Only when there's no such match does the space rule
+  // apply: a no-space "PO####" (or a core in the NetSuite pre-portal export) → Outside of Portal.
+  // Collision-safe: a genuinely old bill shares only the core with a portal PO (→ medium at most), so
+  // it never trips the high-confidence override; the ≈113 core collisions stay correctly Outside.
   const _siTriage=(row,cands)=>{
     const parsed=mapSportsLinkDocToBill(row.raw||{});
     if(['approved','manual_done','outside_portal','ignored'].includes(row.status))return{bucket:'captured',parsed,match:null};
-    if(siPoOrigin(row.po_number)==='old')return{bucket:'outside',parsed,match:null};// no-space PO = old system
-    if(row.source_type!=='edi')return{bucket:'grab',parsed,match:null};// scanned/OCR → grab the PDF
+    const isEdi=row.source_type==='edi';
     const best=(rankSiPoCandidates(parsed,cands)||[])[0]||null;
-    if(best&&(best.confidence==='high'||best.confidence==='medium'))return{bucket:'approve',parsed,match:best};
-    return{bucket:'review',parsed,match:best};
+    // Definitive portal match beats the space rule. EDI → approve; a scanned/OCR match still needs its
+    // PDF pulled before it can apply, so it lands in Grab (with the matched order shown alongside).
+    if(best&&best.confidence==='high')return{bucket:isEdi?'approve':'grab',parsed,match:best};
+    const origin=siPoOrigin(row.po_number);// portal (spaced) | old (no space) | unknown (no "PO")
+    if(origin==='old')return{bucket:'outside',parsed,match:null,reason:'No space after “PO” and no confident portal match — pre-portal (NetSuite/QuickBooks).'};
+    if(!isEdi)return{bucket:'grab',parsed,match:best};// scanned/OCR → grab the PDF
+    if(best&&best.confidence==='medium')return{bucket:'approve',parsed,match:best};
+    // Weak/no match. A spaced PO is a portal PO → keep for review (likely a PO line never entered —
+    // the Reedley PO 3281 case). For non-spaced/unknown formats, confirm against the NetSuite export.
+    const core=parseSiPoString(row.po_number).core;
+    if(origin!=='portal'&&isPrePortalNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches pre-portal NetSuite PO #'+core+' — bill via NetSuite/QuickBooks.'};
+    const reason=origin==='portal'
+      ?(best?'Weak match — verify the order before approving.':'Portal PO (spaced) not found — the PO line may need to be created.')
+      :(best?'Weak match, and no NetSuite record — verify.':'No portal match and not in the NetSuite export — verify (may be old or a data gap).');
+    return{bucket:'review',parsed,match:best,reason};
   };
   const loadSiQueue=async()=>{
     if(!supabase){nf('Database not connected','error');return}
@@ -22882,7 +22901,11 @@ export default function App(){
     const _siUpsertDocs=async(docs)=>{
       if(!supabase)return 0;
       const dateOnly=v=>(String(v||'').match(/^\d{4}-\d{2}-\d{2}/)||[null])[0];
-      const rows=(docs||[]).filter(d=>d&&d.siDocNumber!=null).map(d=>{const b=mapSportsLinkDocToBill(d);return{
+      // Dedupe by siDocNumber first: the API pages by date order, so a doc that shifts pages
+      // mid-pull arrives twice — and Postgres rejects an upsert batch that hits the same key
+      // twice ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+      const seen=new Map();(docs||[]).forEach(d=>{if(d&&d.siDocNumber!=null)seen.set(d.siDocNumber,d)});
+      const rows=[...seen.values()].map(d=>{const b=mapSportsLinkDocToBill(d);return{
         si_doc_number:d.siDocNumber,supplier_doc_number:b.supplier_doc_number||null,po_number:b.po_number||null,supplier:b.supplier||null,
         si_doc_date:dateOnly(d.siDocDate),supplier_doc_date:dateOnly(d.supplierDocDate),ship_date:dateOnly(d.shipDate),due_date:dateOnly(d.dueDate),
         tracking_number:b.tracking||null,merchandise_total:b.merchandise_total,freight_amount:b.freight,si_upcharge:b.si_upcharge,doc_total:b.doc_total,
@@ -26440,6 +26463,7 @@ export default function App(){
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontFamily:FD,fontWeight:700,fontSize:16,textTransform:'uppercase',letterSpacing:.2,color:NAVY}}>{r.supplier||'—'} <span style={{fontFamily:"'Source Sans 3',sans-serif",fontWeight:400,color:TXTL,fontSize:12,textTransform:'none',letterSpacing:0}}>· Inv {r.supplier_doc_number||r.si_doc_number}</span></div>
                   <div style={{fontSize:12,color:TXTL,marginTop:2}}>{r.po_number||'(no PO)'}{t.match?.candidate?' → '+(t.match.candidate.customer_name||t.match.candidate.po_id):''}{r.is_credit?' · ↩️ credit':''}</div>
+                  {t.reason&&<div style={{fontSize:10,color:(t.bucket==='outside'?'#1d4ed8':'#b45309'),marginTop:1}}>{t.reason}</div>}
                 </div>
                 {t.match&&opts.showConf!==false&&confPill(t.match.confidence)}
                 <div style={{fontFamily:FD,fontWeight:800,fontSize:18,color:NAVY,minWidth:90,textAlign:'right',fontVariantNumeric:'tabular-nums'}}>{money(r.doc_total)}</div>
@@ -26463,7 +26487,7 @@ export default function App(){
               <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,flexWrap:'wrap',marginBottom:16}}>
                 <div>
                   <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:RED_LT}}>Sports Inc · Invoice Center</div>
-                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>documents captured</span></div>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{approve.length+review.length+grab.length+outside.length} <span style={{color:'rgba(255,255,255,.55)'}}>to work</span> <span style={{color:'rgba(255,255,255,.35)'}}>·</span> {captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>captured</span></div>
                 </div>
                 <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh'})}
@@ -26473,17 +26497,23 @@ export default function App(){
                 </div>
               </div>
               {siQueue.length>0&&<div style={{display:'flex',height:9,borderRadius:5,overflow:'hidden',background:'rgba(255,255,255,.14)'}}>
-                {[[captured.length,GREEN],[grab.length,GOLD],[outside.length,'#8790a3'],[approve.length+review.length,RED]].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
+                {[[captured.length,GREEN],[approve.length,'#6FD59A'],[review.length,RED],[grab.length,GOLD],[outside.length,'#8790a3']].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
               </div>}
-              <div style={{display:'flex',gap:24,marginTop:14,flexWrap:'wrap'}}>
-                {[['captured',captured.length,GREEN],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3'],['ready',approve.length,'#6FD59A'],['needs you',review.length,RED_LT]].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
+              {/* Legend spells out the arithmetic the header implies: done on the left; on the right,
+                  "to work" (the number on the Sports Inc tab badge) = the four open buckets. */}
+              <div style={{display:'flex',gap:14,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
+                <div style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:GREEN}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{captured.length}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>captured · done</span></div>
+                <span style={{width:1,height:20,background:'rgba(255,255,255,.25)'}}/>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{approve.length+review.length+grab.length+outside.length}</span>
+                <span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>to work =</span>
+                {[['ready to review',approve.length,'#6FD59A'],['needs you',review.length,RED_LT],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3']].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}>{i>0&&<span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'rgba(255,255,255,.4)'}}>+</span>}<span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
               </div>
             </div>
             {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
             {Section(GREEN,'Matched — ready to review & push',approve,'Matched to a portal PO (PO# + customer tag + SKUs). “→ Review” loads them into Import & Review — the same screen as every other bill — where you can see exactly what a push will write before pushing. Nothing applies from this tab.',revBtn)}
             {Section(RED,'Needs review',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Send to Review to match manually or with AI, or mark Outside of Portal.',(r)=>[revBtn(r),outBtn(r)])}
             {Section(GOLD,'Grab from Sports Inc',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=>siBtn('g','Mark grabbed','#fff',NAVY,()=>markSiStatus(r,'manual_done','Marked grabbed'),null,'1.5px solid '+MGRAY),false)}
-            {Section('#8790a3','Outside of Portal',outside,'Old-system POs (no space after “PO”) — billed through NetSuite/QuickBooks, not here. Confirm and clear; these never touch the Billed tracking.',(r)=>outBtn(r,'Mark outside'),false)}
+            {Section('#8790a3','Outside of Portal',outside,'Confirmed pre-portal — either a no-space “PO####” or a PO core matched in the NetSuite export. Billed through NetSuite/QuickBooks, not here; these never touch the Billed tracking. Confirm and clear.',(r)=>outBtn(r,'Mark outside'),false)}
             {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,cursor:'pointer',textTransform:'uppercase',letterSpacing:.4}}>Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:10}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false,stripe:GREEN}))}</div></details>}
           </div>;
         })()}
