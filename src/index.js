@@ -73,7 +73,14 @@ const TeamStores = React.lazy(() => import('./storefront/TeamStores'));
 // branch chain below, so existing path prefixes (/shop/*, /adidas,
 // /team-stores, auth flows, …) still win on the alias hostname.
 const TeamShopApp = React.lazy(() => import('./teamshop/TeamShopApp'));
+// Staff-only Team Shop production board (fast-turn queue for order_source
+// 'teamshop' jobs) — separate from both the consumer TeamShopApp above and the
+// main warehouse jobs board in App.js. Matched by path so it works on any
+// host; checked (below) BEFORE the isTeamShop hostname/path check so it wins
+// over the consumer storefront's own /teamshop path match.
+const TeamShopQueue = React.lazy(() => import('./teamshopqueue/TeamShopQueue'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
+const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/';
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 // /adidas is the canonical path. /livelook is the same catalog, served at
@@ -236,6 +243,8 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
         : isAuthFlow || isCoachPortal || isOnboarding
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
+        : isTeamShopQueue
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>
         : isTeamShop
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopApp /></React.Suspense>
         : <MainApp />}
