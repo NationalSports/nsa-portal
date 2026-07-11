@@ -38,6 +38,43 @@ const isAbbrevOf = (code, name) => {
   for (const ch of name) { if (ch === code[i]) i++; if (i === code.length) return true; }
   return false;
 };
+// Character-bigram Dice coefficient (0..1) — a spelling-similarity score that
+// tolerates SanMar's occasional typos/variants ("Blust Frost" vs our "Blush
+// Frost") without the false matches a loose substring test would cause.
+const dice = (a, b) => {
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const bg = (s) => { const m = new Map(); for (let i = 0; i < s.length - 1; i++) { const g = s.slice(i, i + 2); m.set(g, (m.get(g) || 0) + 1); } return m; };
+  const A = bg(a), B = bg(b); let inter = 0;
+  for (const [g, n] of A) if (B.has(g)) inter += Math.min(n, B.get(g));
+  return (2 * inter) / ((a.length - 1) + (b.length - 1));
+};
+// Pick the SanMar variant color code that best matches one of our product's
+// color keys (its sku suffix + its color name, both normalized). Exact and
+// abbreviation matches win outright; otherwise the closest spelling, but only
+// when it clears a high bar AND clearly beats the runner-up — a wrong-color
+// photo is worse than falling back to the model shot, so ambiguity → no match.
+const bestColorMatch = (targets, candidates) => {
+  const score = (cand) => {
+    let best = 0;
+    for (const t of targets) {
+      if (!t) continue;
+      if (t === cand) return 1;
+      if (isAbbrevOf(cand, t) || isAbbrevOf(t, cand)) best = Math.max(best, 0.9);
+      else best = Math.max(best, dice(t, cand));
+    }
+    return best;
+  };
+  let top = null, topScore = 0, second = 0;
+  for (const c of candidates) {
+    const s = score(c);
+    if (s > topScore) { second = topScore; topScore = s; top = c; }
+    else if (s > second) { second = s; }
+  }
+  if (topScore >= 0.999 || (topScore >= 0.74 && topScore - second >= 0.08)) return top;
+  return null;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
@@ -77,47 +114,81 @@ async function findProductPath({ token, orgId }, style) {
   return { path: f.clickableuri, groupId: String(f.ec_item_group_id || String(f.clickableuri).split('/p/')[1].split('_')[0]) };
 }
 
-// Pull the 624Wx724H "mainImage" gallery URLs for one color's product page.
-// mediaCodes look like "4349_TrueRoyal-12-ST350TrueRoyalFormFront4_624Wx724H";
-// accept Form or Flat naming. Only this variant's own media counts (the page
-// also embeds a sibling color's lifestyle shot).
-function extractFormImages(html, variantId) {
-  const out = { front: null, back: null };
+// Pull the garment-only 624Wx724H gallery URLs for a color from its product page.
+// SanMar names its shots two ways: apparel gets a model shot ("...ModelFront4")
+// plus a garment-only "...FormFront"/"...FlatFront"; accessories shot only as a
+// flat lay (beanies, bags) get a plain "...front" with no qualifier. We take the
+// Form/Flat when present; otherwise the plain shot ONLY when the color has no
+// model image at all (so a plain name can never be a disguised model shot).
+//
+// A page embeds media for several colors (its own + a sibling lifestyle shot),
+// and the media's color token can differ from the URL's variant id
+// ("4947_CharcoalHt" in the URL vs "4947_CharcoalHthr" in the media code), so we
+// group media by color token and select the token that best matches `targets`.
+function extractGarmentImages(html, groupId, targets) {
   const re = /"url":"([^"]+)"[^{}]*?"mediaCode":"([^"]+_624Wx724H)"/g;
+  const byToken = {};
+  const codeRe = new RegExp('^' + groupId + '_([A-Za-z0-9]+)-\\d+-(.+?)_624Wx724H$');
   let m;
   while ((m = re.exec(html))) {
-    const code = m[2];
-    if (!code.startsWith(variantId + '-')) continue;
+    const cm = m[2].match(codeRe);
+    if (!cm) continue;
+    const token = norm(cm[1]); const tag = cm[2];
+    const side = /back/i.test(tag) ? 'back' : /front/i.test(tag) ? 'front' : null;
+    if (!side) continue; // skip side / lifestyle / detail shots
     let url = m[1].replace(/\\u003d/gi, '=').replace(/\\u0026/gi, '&').replace(/\\\//g, '/');
     if (url.startsWith('//')) url = 'https:' + url;
-    if (/(form|flat)front/i.test(code)) out.front = out.front || url;
-    else if (/(form|flat)back/i.test(code)) out.back = out.back || url;
+    (byToken[token] = byToken[token] || []).push({ side, url, kind: /form|flat/i.test(tag) ? 'flat' : /model/i.test(tag) ? 'model' : 'plain' });
   }
-  return out;
+  const token = bestColorMatch(targets, Object.keys(byToken));
+  const entries = (token && byToken[token]) || [];
+  const pick = (side) => {
+    const s = entries.filter((e) => e.side === side);
+    const flat = s.find((e) => e.kind === 'flat');
+    if (flat) return flat.url;
+    if (!s.some((e) => e.kind === 'model')) { const plain = s.find((e) => e.kind === 'plain'); if (plain) return plain.url; }
+    return null;
+  };
+  return { front: pick('front'), back: pick('back') };
 }
 
-// Scrape one style's color variants. Returns { normColorCode: {front, back} }.
-// wantedColors (Set of normalized color codes/names) limits page fetches to the
-// colors we actually carry — sanmar.com often lists 3× more colors than we do.
-async function scrapeStyle(coveo, style, log = console.log, wantedColors = null) {
+// Scrape one style and map each of OUR products (passed in, [{id,sku,color}]) to
+// its garment-only front/back. Returns { [productId]: {front, back} } for the
+// products that got a flat. Matching each product to a sanmar variant up front
+// (exact → abbreviation → closest spelling) means we fetch only the color pages
+// we carry and never mis-assign a color.
+async function scrapeStyle(coveo, style, products = [], log = console.log) {
   const found = await findProductPath(coveo, style);
-  if (!found) return null;
+  if (!found) return null; // style not on sanmar.com
   const baseHtml = await fetchText('https://www.sanmar.com' + found.path);
-  let variantIds = [...new Set(baseHtml.match(new RegExp(found.groupId + '_[A-Za-z0-9]+', 'g')) || [])].slice(0, MAX_COLORS_PER_STYLE);
-  if (wantedColors) variantIds = variantIds.filter((vid) => {
-    const code = norm(vid.slice(found.groupId.length + 1));
-    return wantedColors.has(code) || [...wantedColors].some((w) => isAbbrevOf(code, w));
-  });
-  const byColor = {};
-  for (const vid of variantIds) {
+  // Take fetch ids from the color swatch page-links ("/p/4947_CharcoalHt") only —
+  // a raw groupId_X scan also picks up media-code color tokens ("4947_CharcoalHthr")
+  // that 404 as page URLs. The media token is matched separately in the extractor.
+  const variantIds = [...new Set((baseHtml.match(new RegExp('/p/' + found.groupId + '_[A-Za-z0-9]+', 'g')) || []).map((s) => s.slice(3)))].slice(0, MAX_COLORS_PER_STYLE);
+  const codeOf = (vid) => norm(vid.slice(found.groupId.length + 1));
+  const byCode = {}; variantIds.forEach((v) => { byCode[codeOf(v)] = v; });
+  const codes = Object.keys(byCode);
+  // product → { targets, vid } (only colors we carry get fetched)
+  const pick = {}; const htmlByVid = {};
+  for (const p of products) {
+    const targets = [norm(String(p.sku || '').split('-').slice(1).join('-')), norm(p.color)].filter(Boolean);
+    const code = bestColorMatch(targets, codes);
+    if (code) { pick[p.id] = { targets, vid: byCode[code] }; htmlByVid[byCode[code]] = null; }
+  }
+  for (const vid of Object.keys(htmlByVid)) {
     await sleep(PAGE_DELAY_MS);
     try {
-      const html = vid === found.path.split('/p/')[1] ? baseHtml : await fetchText('https://www.sanmar.com/p/' + vid);
-      const imgs = extractFormImages(html, vid);
-      if (imgs.front) byColor[norm(vid.slice(found.groupId.length + 1))] = imgs;
+      htmlByVid[vid] = vid === found.path.split('/p/')[1] ? baseHtml : await fetchText('https://www.sanmar.com/p/' + vid);
     } catch (e) { log('[sanmar-flat-images] variant ' + vid + ': ' + e.message); }
   }
-  return byColor;
+  const out = {};
+  for (const p of products) {
+    const sel = pick[p.id]; const html = sel && htmlByVid[sel.vid];
+    if (!html) continue;
+    const imgs = extractGarmentImages(html, found.groupId, sel.targets);
+    if (imgs.front) out[p.id] = imgs;
+  }
+  return out;
 }
 
 exports.handler = async (event) => {
@@ -171,27 +242,12 @@ exports.handler = async (event) => {
     for (const style of styles) {
       if (Date.now() - started > BUDGET_MS) break;
       try {
-        const wanted = new Set();
-        for (const p of byStyle[style] || []) {
-          const c1 = norm(String(p.sku || '').split('-').slice(1).join('-')); if (c1) wanted.add(c1);
-          const c2 = norm(p.color); if (c2) wanted.add(c2);
-        }
-        const byColor = await scrapeStyle(coveo, style, console.log, wanted.size ? wanted : null);
+        const imgsByProduct = await scrapeStyle(coveo, style, byStyle[style] || []);
         let matched = 0;
-        const colorsFound = byColor ? Object.keys(byColor).length : 0;
-        if (byColor) {
+        const colorsFound = imgsByProduct ? Object.keys(imgsByProduct).length : 0;
+        if (imgsByProduct) {
           for (const p of byStyle[style] || []) {
-            // Our sku suffix ("TrueRoyal", "WHITE") and color name ("True Royal")
-            // both normalize onto sanmar.com's variant color code — exactly, or as
-            // its abbreviation. When several codes abbreviate the same name (rare:
-            // "HthrdRed" vs "HthrdDpRed"), the longest code is the specific one.
-            const codeFromSku = norm(String(p.sku || '').split('-').slice(1).join('-'));
-            const nameNorm = norm(p.color);
-            let imgs = byColor[codeFromSku] || byColor[nameNorm];
-            if (!imgs) {
-              const cands = Object.keys(byColor).filter((c) => isAbbrevOf(c, codeFromSku) || isAbbrevOf(c, nameNorm));
-              if (cands.length) imgs = byColor[cands.sort((a, b) => b.length - a.length)[0]];
-            }
+            const imgs = imgsByProduct[p.id];
             if (!imgs || !imgs.front) continue;
             const body = { image_flat_front_url: imgs.front };
             if (imgs.back) body.image_flat_back_url = imgs.back;
@@ -207,7 +263,7 @@ exports.handler = async (event) => {
           method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
           body: JSON.stringify([{
             style, checked_at: new Date().toISOString(), colors_found: colorsFound, products_updated: matched,
-            note: byColor ? null : 'not found on sanmar.com',
+            note: imgsByProduct ? null : 'not found on sanmar.com',
           }]),
         });
       } catch (e) {
@@ -226,4 +282,4 @@ exports.handler = async (event) => {
 };
 
 // Exported for the one-off local backfill / tests.
-exports._internal = { extractFormImages, scrapeStyle, coveoConfig, norm };
+exports._internal = { extractGarmentImages, scrapeStyle, coveoConfig, norm, bestColorMatch, dice, isAbbrevOf };
