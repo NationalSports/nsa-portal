@@ -1434,15 +1434,22 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
               </div>
               {/* click-away layer closes the Change Design dropdown */}
               {changeOpen && <div onClick={() => setChangeOpen(false)} style={{ position: 'absolute', inset: 0, zIndex: 20, pointerEvents: 'auto' }} />}
-              {/* floating shorts chip — bottom left */}
-              {bottom.enabled && (
-                <div style={{ position: 'absolute', left: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 10 }}>
-                  <div style={{ width: narrow ? 42 : 52, height: narrow ? 42 : 52, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, boxShadow: '0 1px 5px rgba(15,23,42,.08)' }}>
+              {/* floating shorts toggle — bottom left. Clickable: adds matching
+                  shorts when off, removes them when on (the full shorts design
+                  controls still live on the Jersey step). */}
+              <button onClick={toggleBottomEnabled} title={bottom.enabled ? 'Remove matching shorts' : 'Add matching shorts'}
+                style={{ position: 'absolute', left: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', pointerEvents: 'auto',
+                  background: bottom.enabled ? 'rgba(255,255,255,0.92)' : 'rgba(255,255,255,0.8)',
+                  border: '1.5px ' + (bottom.enabled ? 'solid ' + C.navy : 'dashed ' + C.mid), borderRadius: 8, padding: bottom.enabled ? '6px 12px 6px 6px' : '10px 14px', boxShadow: '0 1px 6px rgba(15,23,42,.1)' }}>
+                {bottom.enabled && (
+                  <span style={{ width: narrow ? 38 : 46, height: narrow ? 38 : 46, borderRadius: 6, border: '1px solid ' + C.light, overflow: 'hidden', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
                     {bottomPreview ? <img src={bottomPreview} alt="shorts" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9, color: C.textLight }}>…</span>}
-                  </div>
-                  {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>+ Matching Shorts{bottom.linked ? '' : ' (custom)'}</span>}
-                </div>
-              )}
+                  </span>
+                )}
+                <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.6, color: bottom.enabled ? C.navy : C.textLight, whiteSpace: 'nowrap' }}>
+                  {bottom.enabled ? <>Matching Shorts{bottom.linked ? '' : ' · Custom'} <span style={{ color: C.red, fontWeight: 700 }}>✕</span></> : '+ Add Matching Shorts'}
+                </span>
+              </button>
               {/* floating viewer controls — bottom right */}
               <div style={{ position: 'absolute', right: narrow ? 14 : 22, bottom: narrow ? 10 : 16, display: 'flex', alignItems: 'center', gap: 12 }}>
                 {!narrow && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Drag to rotate · scroll to zoom</span>}
