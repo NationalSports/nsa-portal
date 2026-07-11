@@ -512,7 +512,7 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
 
   if (!open) {
     return (
-      <div style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 200, display: 'flex', alignItems: 'center', gap: 10 }}>
+      <div className="nts-chat-dock" style={{ position: 'fixed', right: 24, bottom: 24, zIndex: 200, display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ ...displayType(12, { color: NAVY, letterSpacing: '0.02em', textTransform: 'none' }), background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 999, padding: '9px 16px', boxShadow: '0 8px 24px rgba(15,26,56,0.12)' }}>
           Need a hand? Ask away
         </span>
@@ -536,7 +536,7 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
     <div
       role="dialog"
       aria-label="Team Shop Assistant"
-      className="nts-chat-panel"
+      className="nts-chat-panel nts-chat-dock"
       style={{
         position: 'fixed', right: 20, bottom: 20, zIndex: 200,
         width: 404, maxWidth: 'calc(100% - 40px)', height: 648, maxHeight: 'calc(100% - 40px)',

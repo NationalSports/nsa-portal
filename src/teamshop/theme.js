@@ -56,8 +56,9 @@ const CSS = `
    keeps cards from overflowing on long names. */
 .nts-product-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; }
 @media (max-width: 1024px) { .nts-product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 760px) { .nts-product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 480px) { .nts-product-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .nts-product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; } }
+/* Phones stay 2-up (not 1) — a single stretched column reads oversized and
+   wastes the "Ready to decorate" grid's whole point of easy comparison. */
 /* Home "Shop by category" grid: 4 across on desktop, same step-down
    breakpoints as .nts-product-grid above. */
 .nts-category-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
@@ -89,6 +90,42 @@ const CSS = `
   .nts-header-row2 { grid-template-columns: 1fr !important; justify-items: center; gap: 10px !important; }
   .nts-header-row2 > span:empty { display: none; }
   .nts-header-row2 > div { justify-self: center !important; }
+}
+/* Mobile tab bar (TabBar.js) — Home / Shop / Stores / Account, fixed to the
+   viewport bottom on phones only. .nts-root (TeamShopApp.js's outer div)
+   gets matching bottom padding at the same breakpoint so the last bit of
+   footer content is never hidden underneath it. */
+.nts-tabbar { display: none; }
+@media (max-width: 640px) {
+  .nts-tabbar {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    background: #fff; border-top: 1px solid ${BORDER};
+    padding: 8px 6px calc(8px + env(safe-area-inset-bottom));
+    box-shadow: 0 -4px 16px rgba(15,26,56,0.06);
+  }
+  .nts-root { padding-bottom: 66px; }
+}
+.nts-tabbar-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  min-height: 44px; padding: 4px 0; border: none; background: transparent; cursor: pointer;
+  font-family: ${FONT_BODY};
+}
+.nts-tabbar-btn span { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; }
+@media (max-width: 640px) {
+  /* Header: collapse to logo + search/account/cart icons only — the nav
+     links and "Start with your logo" CTA are redundant with the tab bar
+     (Home/Shop/Stores/Account) and the footer, and were the cramped part of
+     the header at phone widths. */
+  .nts-header-nav { display: none !important; }
+  .nts-header-cta { display: none !important; }
+  .nts-signin-label { display: none !important; }
+  /* Chat launcher/panel dock above the tab bar instead of the viewport
+     edge, so neither covers the other. */
+  .nts-chat-dock { bottom: calc(78px + env(safe-area-inset-bottom)) !important; }
+  /* Home hero: the desktop clamp's 460px floor eats over half of a phone
+     screen — give phones a shorter floor of their own. */
+  .nts-hero { min-height: clamp(320px, 78vw, 460px) !important; }
 }
 `;
 

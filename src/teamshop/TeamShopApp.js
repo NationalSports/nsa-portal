@@ -15,6 +15,7 @@ import CartPage from './CartPage';
 import CheckoutPage from './CheckoutPage';
 import AccountPage from './AccountPage';
 import ChatWidget from './ChatWidget';
+import TabBar from './TabBar';
 import { useCart } from './cart';
 import useCoachSession from './useCoachSession';
 import { STORAGE_KEY as NTS_CUSTOMER_KEY } from './TeamPicker';
@@ -391,7 +392,7 @@ export default function TeamShopApp() {
                 ← Back to Connect
               </a>
             ) : <span />}
-            <nav style={{ display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <nav className="nts-header-nav" style={{ display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(route === 'catalog')}>Shop</button>
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(false)}>Apparel</button>
               <button className="nts-navlink" onClick={() => goDecoration()} style={navLinkStyle(route === 'decoration')}>Decoration</button>
@@ -432,7 +433,7 @@ export default function TeamShopApp() {
                 <span style={{ position: 'absolute', top: -7, right: -9, minWidth: 17, height: 17, padding: '0 4px', borderRadius: 999, background: RED, color: '#fff', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{cartLines.length}</span>
               </button>
               <button
-                className="nts-cta-navy"
+                className="nts-cta-navy nts-header-cta"
                 onClick={goStartWithLogo}
                 style={{ fontFamily: 'inherit', fontWeight: 600, fontSize: 14, background: NAVY, color: '#fff', border: 'none', padding: '10px 18px', borderRadius: 8, whiteSpace: 'nowrap', cursor: 'pointer' }}
               >
@@ -699,6 +700,18 @@ export default function TeamShopApp() {
           </div>
         </div>
       </footer>
+
+      {/* Mobile bottom tab bar (Home/Shop/Stores/Account) — hidden on
+          desktop, see `.nts-tabbar` in theme.js. Mounted outside the route
+          switch, same convention as ChatWidget below, so it survives
+          navigation. */}
+      <TabBar
+        active={route === 'landing' ? 'home' : route === 'catalog' ? 'shop' : route === 'stores' ? 'stores' : route === 'account' ? 'account' : null}
+        onHome={() => setRoute('landing')}
+        onShop={() => goCatalog()}
+        onStores={goTeamStores}
+        onAccount={() => goAccount()}
+      />
 
       {/* Team Shop Assistant — floating chat widget, available on every
           storefront view (mounted here, outside the route switch, so it

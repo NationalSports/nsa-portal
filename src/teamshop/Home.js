@@ -167,7 +167,7 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
     <div style={{ width: '100%', overflowX: 'hidden', background: '#fff', position: 'relative' }}>
 
       {/* ============ HERO ============ */}
-      <section style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
+      <section className="nts-hero" style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
         {/* Generated hero loop (owner-approved) over the sideline photo,
             under a navy gradient so the headline/CTAs stay legible. The photo
             stays mounted underneath and doubles as the poster — if the video
