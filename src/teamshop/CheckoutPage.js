@@ -59,6 +59,35 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   const [stripePromise, setStripePromise] = useState(null);
   useEffect(() => { getStripePromise().then((p) => setStripePromise(p || null)); }, []);
 
+  // School-PO option (rep-gated per program, 00196/00197). The flag is fetched
+  // fresh from teamshop-context — never trusted from the possibly-stale
+  // localStorage customer object — and is COSMETIC only: place_order_po
+  // re-verifies eligibility server-side on every attempt. Default hidden
+  // (flag absent, fetch failure, pre-migration server) — the card flow is
+  // always available.
+  const [poAllowed, setPoAllowed] = useState(false);
+  const [payMethod, setPayMethod] = useState('card'); // 'card' | 'po'
+  const [poNumber, setPoNumber] = useState('');
+  const [poFile, setPoFile] = useState(null);
+  useEffect(() => {
+    if (!accessToken || !customerId) return undefined;
+    let alive = true;
+    (async () => {
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: '{}',
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!alive || !res.ok) return;
+        const mine = (Array.isArray(json.customers) ? json.customers : []).find((c) => String(c.id) === String(customerId));
+        if (mine && mine.teamshop_po_allowed === true) setPoAllowed(true);
+      } catch (_) { /* default hidden */ }
+    })();
+    return () => { alive = false; };
+  }, [accessToken, customerId]);
+
   // Inputs freeze once the PaymentIntent exists — the charge amount is fixed
   // server-side, so nothing that changes the price may move (same rule as the
   // storefront's `locked`).
@@ -111,7 +140,10 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   // orderRefFor: any change to the quote or coach details mints a fresh ref.
   const refState = useRef({ key: '', ref: '' });
   const orderRef = () => {
-    const key = JSON.stringify([customerId, quote && quote.quote_hash, contact.email, ship.street1, ship.city, ship.state, ship.zip]);
+    // payMethod is part of the key: a card attempt and a PO attempt are
+    // different orders — replaying a pending card order into the PO path
+    // (or vice versa) must never happen.
+    const key = JSON.stringify([customerId, quote && quote.quote_hash, contact.email, ship.street1, ship.city, ship.state, ship.zip, payMethod]);
     if (refState.current.key !== key) {
       const uuid = (window.crypto && window.crypto.randomUUID)
         ? window.crypto.randomUUID()
@@ -142,6 +174,46 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
     if (r.totals) setTotals(r.totals);
     setPendingOrder(r.order);
     setClientSecret(r.clientSecret);
+  };
+
+  // School-PO submit: NO Stripe, NO client money — the server re-prices
+  // through the same quote-hash chain as place_order, stores the PDF in the
+  // private po-docs bucket, and the order awaits manual staff verification.
+  const submitPo = async () => {
+    setErr(''); setPriceNotice(false);
+    if (!validInfo) { setErr('Please complete your contact info and shipping address.'); return; }
+    if (!poNumber.trim()) { setErr('Please enter the school PO number.'); return; }
+    if (!poFile) { setErr('Please attach a PDF of the purchase order.'); return; }
+    if (poFile.size > 10 * 1024 * 1024) { setErr('The PO PDF is too large — 10 MB max.'); return; }
+    setBusy(true);
+    let b64;
+    try {
+      b64 = await new Promise((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result || '').replace(/^data:[^;]*;base64,/, ''));
+        fr.onerror = () => reject(new Error('read failed'));
+        fr.readAsDataURL(poFile);
+      });
+    } catch (_) {
+      setBusy(false);
+      setErr('Could not read the PO file — please re-attach it.');
+      return;
+    }
+    const r = await call({
+      action: 'place_order_po', customer_id: customerId,
+      lines: quote.lines, quote_hash: quote.quote_hash,
+      contact, ship: { ...ship, name: ship.name || contact.name },
+      client_ref: orderRef(),
+      po_number: poNumber.trim(),
+      po_pdf_base64: b64,
+    });
+    setBusy(false);
+    if (r.status === 409 && r.code === 'totals_changed') { adoptFresh(r); return; }
+    if (r.error) { setErr(r.error); return; }
+    if (!r.order) { setErr('Could not place the order.'); return; }
+    refState.current = { key: '', ref: '' };
+    clearCart(customerId);
+    setDoneOrder({ ...r.order, __poPending: true });
   };
 
   // After Stripe confirms: webstore-checkout's finalize verifies the intent
@@ -181,6 +253,25 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
 
   if (doneOrder) {
     const num = doneOrder.order_number || String(doneOrder.id || '').slice(0, 8);
+    if (doneOrder.__poPending) {
+      return (
+        <div style={{ padding: '48px 32px', textAlign: 'center', maxWidth: 560, margin: '0 auto' }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 8px' }}>Order received — PO under review</h1>
+          <p style={{ fontSize: 15, color: '#0f172a', margin: '0 0 6px' }}>Your order number is <b>#{num}</b>.</p>
+          <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 6px' }}>
+            No payment was collected. Our team verifies school purchase orders by hand — production starts as soon as PO #{doneOrder.po_number || poNumber} is approved.
+          </p>
+          <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 20px' }}>
+            If we can’t verify the PO, we’ll email {doneOrder.buyer_email} with the reason and the order will be cancelled.
+          </p>
+          {doneOrder.status_token && (
+            <a href={`/shop/order/${doneOrder.status_token}`} style={{ ...btnDark, display: 'inline-block', textDecoration: 'none' }}>
+              Track your order
+            </a>
+          )}
+        </div>
+      );
+    }
     return (
       <div style={{ padding: '48px 32px', textAlign: 'center', maxWidth: 560, margin: '0 auto' }}>
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 8px' }}>Order placed — thank you!</h1>
@@ -234,7 +325,45 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
         <Field l="ZIP"><input style={inp} value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
       </div>
 
-      {clientSecret && stripePromise ? (
+      {/* Payment method — the School PO option appears ONLY for rep-approved
+          programs (poAllowed); everyone else sees the card flow unchanged. */}
+      {poAllowed && !clientSecret && (
+        <div style={{ margin: '12px 0 4px' }}>
+          <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', marginBottom: 8 }}>Payment</div>
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="radio" name="nts-pay-method" checked={payMethod === 'card'} onChange={() => setPayMethod('card')} />
+              Pay by card
+            </label>
+            <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="radio" name="nts-pay-method" checked={payMethod === 'po'} onChange={() => setPayMethod('po')} />
+              School purchase order
+            </label>
+          </div>
+        </div>
+      )}
+
+      {poAllowed && payMethod === 'po' && !clientSecret ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#475569', marginBottom: 12 }}>
+            Attach the school’s purchase order as a PDF. Our team verifies every PO by hand — production starts after approval, and no card is charged.
+          </div>
+          <Field l="School PO number">
+            <input style={inp} value={poNumber} maxLength={64} onChange={(e) => setPoNumber(e.target.value)} aria-label="po-number" />
+          </Field>
+          <Field l="PO document (PDF, 10 MB max)">
+            <input type="file" accept="application/pdf,.pdf" aria-label="po-pdf" style={{ fontSize: 13, fontFamily: 'inherit' }}
+              onChange={(e) => setPoFile((e.target.files && e.target.files[0]) || null)} />
+          </Field>
+          <button
+            onClick={submitPo}
+            disabled={busy || !validInfo || !totals || !poNumber.trim() || !poFile}
+            style={{ ...btnDark, width: '100%', marginTop: 8, opacity: busy || !validInfo || !totals || !poNumber.trim() || !poFile ? 0.5 : 1 }}
+          >
+            {busy ? 'Placing order…' : 'Place order with PO'}
+          </button>
+        </div>
+      ) : clientSecret && stripePromise ? (
         <>
           <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
             <CardForm onPaid={(piId) => finalizeOrder(pendingOrder, piId)} />

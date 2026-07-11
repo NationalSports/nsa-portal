@@ -18,7 +18,12 @@ function fakeSb(tables, user) {
   return {
     auth: { getUser: async () => (user ? { data: { user }, error: null } : { data: { user: null }, error: { message: 'bad token' } }) },
     from(table) {
-      const result = tables[table] || { data: [], error: null };
+      // A table scripted as an ARRAY is a per-call queue (consumed in order,
+      // last entry sticky) — used to script a failing first read + a retry.
+      const q = tables[table];
+      const result = Array.isArray(q)
+        ? (q.length > 1 ? q.shift() : q[0]) || { data: [], error: null }
+        : (q || { data: [], error: null });
       const chain = {
         select: () => chain, eq: () => chain, in: () => chain, order: () => chain,
         ilike: () => chain, limit: () => chain,
@@ -81,7 +86,22 @@ describe('customer resolution', () => {
     expect(r.statusCode).toBe(200);
     const body = JSON.parse(r.body);
     expect(body.coach).toEqual({ id: 'coach1', email: 'coach@team.com', name: 'Coach' });
-    expect(body.customers).toEqual([{ id: 'custA', name: 'Central High' }]);
+    // teamshop_po_allowed rides along (00196; false when unset) — it gates the
+    // School-PO checkout option in CheckoutPage.js, cosmetically only.
+    expect(body.customers).toEqual([{ id: 'custA', name: 'Central High', teamshop_po_allowed: false }]);
+  });
+
+  test('pre-00196 backend: teamshop_po_allowed column missing → retries without it, flag reads false', async () => {
+    const r = await call({
+      tables: baseTables({
+        customers: [
+          { data: null, error: { message: 'column customers.teamshop_po_allowed does not exist' } },
+          { data: [CUST_A], error: null },
+        ],
+      }),
+    });
+    expect(r.statusCode).toBe(200);
+    expect(JSON.parse(r.body).customers).toEqual([{ id: 'custA', name: 'Central High', teamshop_po_allowed: false }]);
   });
 
   test('unions and dedupes the account customer_id with coach_customer_access rows', async () => {

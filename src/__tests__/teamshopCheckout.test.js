@@ -44,6 +44,22 @@ function fakeSb(script) {
   };
   return {
     calls,
+    storage: {
+      from(bucket) {
+        return {
+          upload: (path, buf, opts) => {
+            const call = { table: 'storage.' + bucket, op: 'upload', payload: { path, bytes: buf && buf.length, opts } };
+            calls.push(call);
+            return Promise.resolve(nextResult('storage.' + bucket + '.upload', call));
+          },
+          remove: (paths) => {
+            const call = { table: 'storage.' + bucket, op: 'remove', payload: { paths } };
+            calls.push(call);
+            return Promise.resolve(nextResult('storage.' + bucket + '.remove', call));
+          },
+        };
+      },
+    },
     rpc(fn, args) {
       const call = { table: fn, op: 'rpc', payload: args };
       calls.push(call);
@@ -285,6 +301,155 @@ describe('place_order', () => {
     const res = await ts.placeOrder(sb, placeBody({ quote_hash: 'x' }), COACH);
     expect(res.statusCode).toBe(500);
     expect(JSON.parse(res.body).error).toMatch(/00191/);
+  });
+});
+
+// School-PO checkout (00196/00197) — place_order_po. Same verification chain
+// as place_order (auth → replay → store → quote hash), plus the rep-gated
+// eligibility read, PDF magic-byte/size validation, and the po-docs upload —
+// and NO Stripe anywhere on the path.
+describe('place_order_po', () => {
+  const PDF_B64 = Buffer.from('%PDF-1.4\nfake po document').toString('base64');
+  const PO_ORDER = { id: 'ordpo1', store_id: 'st-ts', status: 'unpaid', buyer_email: CONTACT.email, total: TOTAL, status_token: 'tokpo', order_number: 1010002 };
+  const ELIGIBLE = { data: [{ id: 'custA', teamshop_po_allowed: true }], error: null };
+  const poScript = (overrides) => ({
+    'webstores.select': [{ data: [STORE], error: null }],
+    'webstore_orders.select': [{ data: [], error: null }], // clientRef dup check
+    // customers is read TWICE: eligibility gate first, then buildQuote's pricing read.
+    'customers.select': [ELIGIBLE, { data: CUST, error: null }],
+    'products.select': [{ data: [PROD], error: null }],
+    'rpc.place_webstore_order': [{ data: { order: PO_ORDER }, error: null }],
+    'storage.po-docs.upload': [{ data: { path: 'ordpo1/po.pdf' }, error: null }],
+    'webstore_orders.update': [{ data: null, error: null }],
+    ...(overrides || {}),
+  });
+  const poBody = (extra) => placeBody({ po_number: 'PO-2026-0042', po_pdf_base64: PDF_B64, ...extra });
+
+  test('happy path: unpaid order with PO fields, PDF stored at an order-scoped path, Stripe never touched', async () => {
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript());
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(200);
+    const out = JSON.parse(res.body);
+    expect(out.poPending).toBe(true);
+    expect(out.order.id).toBe('ordpo1');
+    expect(out.order.po_doc_path).toBe('ordpo1/po.pdf');
+    expect(out.totals.total).toBe(TOTAL);
+
+    const rpcCall = sb.calls.find((c) => c.op === 'rpc');
+    const o = rpcCall.payload.p_order;
+    expect(o.status).toBe('unpaid');          // pending staff verification; 00195 refuses to convert it
+    expect(o.payment_mode).toBe('unpaid');    // no card collected
+    expect(o.po_number).toBe('PO-2026-0042');
+    expect(o.order_source).toBe('teamshop');
+    expect(o.coach_id).toBe('coach1');
+    expect(o.customer_id).toBe('custA');
+    expect(o.quote_hash).toBe(quote_hash);
+    expect(o.total).toBe(TOTAL);              // server money, same recomputation as card
+    expect(o.stripe_pi_id).toBeUndefined();
+
+    const upload = sb.calls.find((c) => c.op === 'upload');
+    expect(upload.payload.path).toBe('ordpo1/po.pdf');
+    expect(upload.payload.opts).toMatchObject({ contentType: 'application/pdf' });
+    const upd = sb.calls.find((c) => c.op === 'update');
+    expect(upd.payload).toEqual({ po_doc_path: 'ordpo1/po.pdf' });
+
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
+  test('program not approved (teamshop_po_allowed false) → 403 po_not_allowed, nothing written', async () => {
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript({ 'customers.select': [{ data: [{ id: 'custA', teamshop_po_allowed: false }], error: null }] }));
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(403);
+    expect(JSON.parse(res.body).code).toBe('po_not_allowed');
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'insert' || c.op === 'upload')).toHaveLength(0);
+  });
+
+  test('pre-00196 (teamshop_po_allowed column missing) → 422 po_not_enabled, never a fallback to allowed', async () => {
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript({
+      'customers.select': [{ data: null, error: { message: 'column customers.teamshop_po_allowed does not exist' } }],
+    }));
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(422);
+    expect(JSON.parse(res.body).code).toBe('po_not_enabled');
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
+  });
+
+  test('PDF validation: missing file, wrong magic bytes, and over-10MB all 400 before any write', async () => {
+    for (const bad of [
+      { po_pdf_base64: undefined },
+      { po_pdf_base64: Buffer.from('<html>not a pdf</html>').toString('base64') },
+      { po_pdf_base64: Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(10 * 1024 * 1024 + 1)]).toString('base64') },
+    ]) {
+      const sb = fakeSb(poScript());
+      const res = await ts.placeOrderPo(sb, poBody({ quote_hash: 'x', ...bad }), COACH);
+      expect(res.statusCode).toBe(400);
+      expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
+    }
+  });
+
+  test('missing PO number → 400 before any write', async () => {
+    const sb = fakeSb(poScript());
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash: 'x', po_number: '  ' }), COACH);
+    expect(res.statusCode).toBe(400);
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
+  });
+
+  test('quote drift (stale hash) → 409 totals_changed with a fresh quote, nothing written', async () => {
+    const sb = fakeSb(poScript());
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash: 'stale-hash' }), COACH);
+    expect(res.statusCode).toBe(409);
+    const out = JSON.parse(res.body);
+    expect(out.code).toBe('totals_changed');
+    expect(out.quote.quote_hash).toBeTruthy();
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
+  });
+
+  test('replaying the same client_ref returns the SAME unpaid order without re-pricing, uploading, or Stripe', async () => {
+    const existing = { ...PO_ORDER, id: 'ordpo-existing', client_ref: REF, subtotal: SUBTOTAL, fundraise_amt: 0, shipping_fee: 5, processing_fee: 0, discount_amt: 0, tax: TAX.tax };
+    const sb = fakeSb({
+      'webstores.select': [{ data: [STORE], error: null }],
+      'webstore_orders.select': [{ data: [existing], error: null }], // dup check hits
+    });
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash: 'anything' }), COACH);
+    expect(res.statusCode).toBe(200);
+    const out = JSON.parse(res.body);
+    expect(out.replayed).toBe(true);
+    expect(out.order.id).toBe('ordpo-existing');
+    expect(out.clientSecret).toBeUndefined(); // unpaid replay = the plain branch, no PaymentIntent leg
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
+    expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
+  test('PDF upload failure rolls the committed order back', async () => {
+    const rollbackSpy = jest.spyOn(ws, 'rollbackOrder').mockResolvedValue(undefined);
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript({ 'storage.po-docs.upload': [{ data: null, error: { message: 'bucket missing' } }] }));
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(502);
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.anything(), 'ordpo1');
+    rollbackSpy.mockRestore();
+  });
+
+  test('po_doc_path link failure removes the uploaded PDF and rolls back', async () => {
+    const rollbackSpy = jest.spyOn(ws, 'rollbackOrder').mockResolvedValue(undefined);
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript({ 'webstore_orders.update': [{ data: null, error: { message: 'update failed' } }] }));
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(502);
+    expect(sb.calls.find((c) => c.op === 'remove').payload.paths).toEqual(['ordpo1/po.pdf']);
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.anything(), 'ordpo1');
+    rollbackSpy.mockRestore();
+  });
+
+  test('coach without access to the customer → 403, nothing written', async () => {
+    const outsider = { ...COACH, id: 'coach2', customer_id: 'someOtherTeam' };
+    const sb = fakeSb({ 'coach_customer_access.select': [{ data: null, error: null }] });
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash: 'x' }), outsider);
+    expect(res.statusCode).toBe(403);
+    expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
   });
 });
 

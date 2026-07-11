@@ -919,6 +919,165 @@ function TeamShopSettings() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// PO review — pending School-PO orders (place_order_po in teamshop-checkout:
+// order_source='teamshop', status='unpaid', po_number set). All reads/writes
+// go through netlify/functions/teamshop-po-review.js with the staff JWT — the
+// PDF lives in the PRIVATE po-docs bucket and only that function (service
+// role) can mint the short-lived signed URL. Approve flips the order to
+// 'po_verified' and converts it through create_teamshop_sales_order (00195's
+// open-invoice branch); Reject records a reason, cancels the order, and
+// emails the coach. Degrades gracefully pre-00197: the function reports
+// enabled:false and this section shows a banner, never a blank page.
+function PoReviewSection() {
+  const [state, setState] = useState({ loading: true, enabled: true, orders: [], error: null });
+  const [busyId, setBusyId] = useState(null);
+  const [rejecting, setRejecting] = useState(null); // order id with the reason form open
+  const [reason, setReason] = useState('');
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 5000);
+  };
+
+  const callFn = useCallback(async (payload) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    const res = await fetch('/.netlify/functions/teamshop-po-review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json().catch(() => ({}));
+    return { status: res.status, ...json };
+  }, []);
+
+  const load = useCallback(() => {
+    callFn({ action: 'list' })
+      .then((r) => {
+        if (r.error) { setState({ loading: false, enabled: true, orders: [], error: r.error }); return; }
+        setState({ loading: false, enabled: r.enabled !== false, orders: r.orders || [], error: null });
+      })
+      .catch((e) => setState({ loading: false, enabled: true, orders: [], error: e.message || String(e) }));
+  }, [callFn]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const approve = (order) => {
+    setBusyId(order.id);
+    callFn({ action: 'approve', order_id: order.id }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Approve failed: ' + r.error); load(); return; }
+      showToast('PO approved — production order ' + (r.so_id || 'created'));
+      load();
+    });
+  };
+
+  const confirmReject = (order) => {
+    const why = reason.trim();
+    if (!why) { showToast('A rejection reason is required'); return; }
+    setBusyId(order.id);
+    callFn({ action: 'reject', order_id: order.id, reason: why }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Reject failed: ' + r.error); load(); return; }
+      showToast(r.emailed ? 'PO rejected — coach emailed' : 'PO rejected — reason recorded (email not sent)');
+      setRejecting(null); setReason('');
+      load();
+    });
+  };
+
+  if (state.loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading PO queue…</div>;
+
+  return (
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
+      <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: '0 0 16px' }}>Team Shop — PO review</h1>
+      {!state.enabled && (
+        <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+          School-PO checkout migration (00197) not applied yet — nothing to review.
+        </div>
+      )}
+      {state.error && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+          Failed to load: {state.error}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+          {toast}
+        </div>
+      )}
+      {state.enabled && !state.error && state.orders.length === 0 && (
+        <div style={{ fontSize: 13, color: '#94a3b8' }}>No purchase orders awaiting review.</div>
+      )}
+      {state.orders.map((o) => (
+        <div key={o.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 14, marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'baseline' }}>
+            <span style={{ fontWeight: 700, fontSize: 13 }}>#{o.order_number || String(o.id).slice(0, 8)}</span>
+            <span style={{ fontSize: 13, color: '#334155' }}>{o.customer_name || '—'}</span>
+            <span style={{ fontSize: 13, color: '#334155' }}>{o.coach_name || '—'}</span>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(o.total)}</span>
+            <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(o.created_at)}</span>
+          </div>
+          <div style={{ fontSize: 13, color: '#0f172a', marginTop: 6 }}>
+            PO #<b>{o.po_number}</b>
+            {o.pdf_url ? (
+              <a href={o.pdf_url} target="_blank" rel="noreferrer" style={{ marginLeft: 12, color: '#1d4ed8', fontWeight: 700 }}>View PDF</a>
+            ) : (
+              <span style={{ marginLeft: 12, color: '#94a3b8' }}>PDF unavailable</span>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button
+              type="button"
+              aria-label={'approve-po-' + o.id}
+              disabled={busyId === o.id}
+              onClick={() => approve(o)}
+              style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#15803d', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+            >
+              {busyId === o.id ? 'Working…' : 'Approve'}
+            </button>
+            {rejecting === o.id ? (
+              <>
+                <input
+                  type="text"
+                  aria-label={'reject-reason-' + o.id}
+                  placeholder="Reason (sent to the coach)"
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  style={{ padding: '6px 10px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 6, minWidth: 240 }}
+                />
+                <button
+                  type="button"
+                  aria-label={'confirm-reject-po-' + o.id}
+                  disabled={busyId === o.id || !reason.trim()}
+                  onClick={() => confirmReject(o)}
+                  style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+                >
+                  Confirm reject
+                </button>
+                <button type="button" onClick={() => { setRejecting(null); setReason(''); }} style={{ padding: '6px 10px', fontSize: 12, background: 'none', border: 'none', color: '#64748b', cursor: 'pointer' }}>
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                aria-label={'reject-po-' + o.id}
+                disabled={busyId === o.id}
+                onClick={() => { setRejecting(o.id); setReason(''); }}
+                style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#fff', color: '#b91c1c', border: '1px solid #fca5a5', borderRadius: 6, cursor: 'pointer' }}
+              >
+                Reject
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function TeamShopQueueTabs({ email }) {
   const [tab, setTab] = useState('queue');
 
@@ -941,9 +1100,10 @@ function TeamShopQueueTabs({ email }) {
     <div>
       <div style={{ display: 'flex', gap: 8, padding: '12px 20px 0', background: '#f8fafc' }}>
         {tabBtn('queue', 'Queue')}
+        {tabBtn('po', 'PO review')}
         {tabBtn('settings', 'Settings')}
       </div>
-      {tab === 'queue' ? <TeamShopQueueBoard email={email} /> : <TeamShopSettings />}
+      {tab === 'queue' ? <TeamShopQueueBoard email={email} /> : tab === 'po' ? <PoReviewSection /> : <TeamShopSettings />}
     </div>
   );
 }

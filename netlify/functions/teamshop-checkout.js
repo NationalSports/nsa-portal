@@ -14,6 +14,10 @@
 //     (idempotencyKey 'wsorder_'+order.id, same as webstore-checkout), and
 //     returns the clientSecret. clientRef idempotency, replay, and rollback
 //     compensation are webstore-checkout's own exported implementations.
+//   place_order_po — School-PO checkout for rep-approved programs
+//     (customers.teamshop_po_allowed, 00196/00197): same verification chain
+//     as place_order, PO number + PDF instead of Stripe, order lands 'unpaid'
+//     pending staff verification (teamshop-po-review.js).
 //
 // NO finalize action here — deliberately. After Stripe confirms in the
 // browser, the client calls webstore-checkout's `finalize` with
@@ -253,6 +257,187 @@ async function placeOrder(sb, body, coach) {
   return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id });
 }
 
+// ── place_order_po (School-PO checkout, 00196/00197) ─────────────────
+// Card checkout's verification chain (auth → replay → store open → contact/
+// ship → quote-hash re-price) verbatim, with the Stripe leg replaced by:
+// an eligibility gate (customers.teamshop_po_allowed, rep-gated), a PO number
+// + PDF upload into the PRIVATE po-docs bucket, and status 'unpaid' — the
+// existing "no card collected" value, which 00195's convert guard refuses
+// until staff approval flips it to 'po_verified' (teamshop-po-review.js).
+// NO Stripe involvement anywhere on this path.
+const PO_MAX_PDF_BYTES = 10 * 1024 * 1024; // bucket cap (00197) mirrored here for a clean 4xx
+const PO_NUMBER_MAX = 64;
+
+// The teamshop_po_allowed column ships in 00196; before that migration the
+// select fails with 42703/schema-cache — a "feature not enabled" state, not
+// an eligible one. Same detection shape as webstore-checkout's
+// isMissingColumnErr.
+const isMissingPoColumnErr = (e) => !!e
+  && /teamshop_po_allowed|po_number|po_doc_path/.test(e.message || '')
+  && /(column|schema)/i.test(e.message || '');
+
+// Decode + validate the client's base64 PDF: real base64, %PDF magic bytes,
+// hard size cap. Returns { buf } or { error }.
+function decodePoPdf(b64) {
+  if (typeof b64 !== 'string' || !b64.trim()) return { error: 'Please attach a PDF of the purchase order.' };
+  const raw = b64.replace(/^data:application\/pdf;base64,/, '').trim();
+  // Cheap pre-decode guard: base64 inflates ~4/3, so anything longer than
+  // this can't decode under the cap — reject before allocating the buffer.
+  if (raw.length > Math.ceil(PO_MAX_PDF_BYTES * 4 / 3) + 4) return { error: 'The PO PDF is too large — 10 MB max.' };
+  if (!/^[A-Za-z0-9+/=\s]+$/.test(raw)) return { error: 'The PO file could not be read — please re-attach the PDF.' };
+  let buf;
+  try { buf = Buffer.from(raw, 'base64'); } catch { return { error: 'The PO file could not be read — please re-attach the PDF.' }; }
+  if (!buf || buf.length < 5) return { error: 'The PO file could not be read — please re-attach the PDF.' };
+  if (buf.length > PO_MAX_PDF_BYTES) return { error: 'The PO PDF is too large — 10 MB max.' };
+  if (buf.slice(0, 4).toString('latin1') !== '%PDF') return { error: 'That file isn’t a PDF — please attach the purchase order as a PDF.' };
+  return { buf };
+}
+
+async function placeOrderPo(sb, body, coach) {
+  const customerId = String(body.customer_id || '').trim();
+  if (!customerId) return bad(400, 'customer_id required');
+  const acc = await coachHasCustomerAccess(sb, coach, customerId);
+  if (acc.error) return bad(500, acc.error);
+  if (!acc.ok) return bad(403, 'Not authorized for this customer');
+
+  const st = await loadStore(sb);
+  if (st.error) return bad(500, st.error);
+  const store = st.store;
+
+  // Same-attempt replay FIRST — identical to place_order. A replayed PO order
+  // is 'unpaid' with no stripe_pi_id, so ws.replayOrder returns the plain
+  // { order, totals, replayed: true } branch (no PaymentIntent leg).
+  const clientRef = ws.validClientRef(body.client_ref);
+  const dup = await ws.findOrderByClientRef(sb, clientRef);
+  if (dup) return ws.replayOrder(dup);
+
+  if (store.status !== 'open') return bad(409, 'The Team Shop isn’t open for orders right now.');
+
+  const contact = body.contact || {};
+  if (!String(contact.name || '').trim() || !/.+@.+\..+/.test(String(contact.email || ''))) {
+    return bad(400, 'Please provide your name and a valid email.');
+  }
+  const ship = body.ship || {};
+  if (!(ship.street1 && ship.city && ship.state && ship.zip)) {
+    return bad(400, 'Please complete your shipping address.');
+  }
+  if (!body.quote_hash) return bad(400, 'quote_hash required — get a quote first.');
+
+  // PO inputs — validated BEFORE any pricing work or writes.
+  const poNumber = String(body.po_number || '').trim();
+  if (!poNumber) return bad(400, 'Please enter the school PO number.');
+  if (poNumber.length > PO_NUMBER_MAX) return bad(400, `PO number is too long (${PO_NUMBER_MAX} characters max).`);
+  const pdf = decodePoPdf(body.po_pdf_base64);
+  if (pdf.error) return bad(400, pdf.error);
+
+  // Eligibility gate — rep-controlled per customer (00196), re-read server-
+  // side on every attempt; the UI flag is cosmetic only. Read defensively:
+  // pre-00196 the column doesn't exist, which means the feature isn't enabled
+  // anywhere yet — a distinct, non-retryable code, never a fallback to allowed.
+  const { data: custRows, error: custErr } = await sb.from('customers')
+    .select('id,teamshop_po_allowed').eq('id', customerId).limit(1);
+  if (custErr) {
+    if (isMissingPoColumnErr(custErr)) return bad(422, 'School PO checkout isn’t enabled yet.', { code: 'po_not_enabled' });
+    return bad(500, custErr.message);
+  }
+  const cust = custRows && custRows[0];
+  if (!cust) return bad(404, 'Customer not found');
+  if (cust.teamshop_po_allowed !== true) {
+    return bad(403, 'This program isn’t approved for School PO checkout — contact your rep.', { code: 'po_not_allowed' });
+  }
+
+  // Re-price + re-verify the hash — the exact chain place_order runs. The
+  // order records exactly the server's recomputation; client money is never read.
+  const rq = await requoteAndVerify(sb, customerId, body);
+  if (rq.resp) return rq.resp;
+  const quote = rq.quote;
+  const totals = await computeTotals(store, quote, ship);
+
+  // Order row — place_order's field set with the card-specific values swapped:
+  // status 'unpaid' (pending staff PO verification; 00195 refuses to convert
+  // it), payment_mode 'unpaid' (no card collected), po_number carried into the
+  // same 00171 transaction. po_doc_path is written AFTER the upload below —
+  // the storage path is scoped by the order id, which doesn't exist yet.
+  const orderRow = {
+    store_id: store.id,
+    status: 'unpaid',
+    payment_mode: 'unpaid',
+    order_kind: 'individual',
+    buyer_name: String(contact.name).trim().slice(0, 120),
+    buyer_email: String(contact.email).trim().slice(0, 160),
+    buyer_phone: contact.phone ? String(contact.phone).slice(0, 40) : null,
+    ship_address: {
+      name: String(ship.name || contact.name || '').slice(0, 120),
+      street1: ship.street1, street2: ship.street2 || '', city: ship.city, state: ship.state, zip: ship.zip,
+    },
+    ship_method: store.delivery_mode,
+    subtotal: totals.subtotal,
+    fundraise_amt: 0,
+    shipping_fee: totals.shipping,
+    processing_fee: 0,
+    tax: totals.tax,
+    total: totals.total,
+    coupon_code: null,
+    discount_amt: 0,
+    order_source: 'teamshop',
+    coach_id: coach.id,
+    customer_id: customerId,
+    quote_hash: quote.quote_hash,
+    po_number: poNumber,
+  };
+  const items = quote.lines.map((l) => ({
+    product_id: l.product_id,
+    sku: l.sku,
+    size: l.size,
+    qty: l.qty,
+    unit_price: l.unit_sell,
+    unit_fundraise: 0,
+    unit_deco_price: r2((Array.isArray(l.decorations) ? l.decorations : []).reduce((s, d) => s + (Number(d.unit_sell) || 0), 0)),
+    decorations: Array.isArray(l.decorations) ? l.decorations : [],
+    name: l.name || null,
+    color: l.color || null,
+    line_status: 'pending',
+  }));
+
+  const rpc = await sb.rpc('place_webstore_order', {
+    p_order: clientRef ? { ...orderRow, client_ref: clientRef } : orderRow,
+    p_items: items, p_claims: [], p_holds: [], p_hold_minutes: 30,
+  });
+  if (rpc.error) {
+    const msg = rpc.error.message || '';
+    if (clientRef && /duplicate|unique/i.test(msg) && /client_ref/.test(msg)) {
+      const winner = await ws.findOrderByClientRef(sb, clientRef);
+      if (winner) return ws.replayOrder(winner);
+    }
+    // 00196 applied but 00197 not: the po_number column is missing — same
+    // "feature not enabled" state as the eligibility read above.
+    if (isMissingPoColumnErr(rpc.error)) return bad(422, 'School PO checkout isn’t enabled yet.', { code: 'po_not_enabled' });
+    return bad(502, 'Could not create the order: ' + msg);
+  }
+  const order = rpc.data && rpc.data.order;
+  if (!order) return bad(502, 'Could not create the order.');
+
+  // PDF into the PRIVATE po-docs bucket (00197), service-role write, path
+  // scoped by order. upsert so a retried attempt for the same order can't
+  // fail on "already exists". Any failure past order creation compensates
+  // with webstore-checkout's own rollback delete — same contract as the
+  // Stripe leg of place_order.
+  const docPath = `${order.id}/po.pdf`;
+  const up = await sb.storage.from('po-docs').upload(docPath, pdf.buf, { contentType: 'application/pdf', upsert: true });
+  if (up.error) {
+    await ws.rollbackOrder(sb, order.id);
+    return bad(502, 'Could not store the PO document: ' + up.error.message);
+  }
+  const { error: docErr } = await sb.from('webstore_orders').update({ po_doc_path: docPath }).eq('id', order.id);
+  if (docErr) {
+    try { await sb.storage.from('po-docs').remove([docPath]); } catch (e) { console.error('[teamshop-checkout] po doc cleanup failed:', e.message); }
+    await ws.rollbackOrder(sb, order.id);
+    return bad(502, 'Could not link the PO document: ' + docErr.message);
+  }
+
+  return ok({ order: { ...order, po_doc_path: docPath }, totals, poPending: true });
+}
+
 // ── convert_order (Stage 7) ──────────────────────────────────────────
 // Best-effort post-payment trigger for the create_teamshop_sales_order RPC
 // (migration 00192): CheckoutPage calls this right after webstore-checkout's
@@ -300,6 +485,7 @@ exports.handler = async (event) => {
 
     if (body.action === 'quote_totals') return await quoteTotals(admin, body, v.coach);
     if (body.action === 'place_order') return await placeOrder(admin, body, v.coach);
+    if (body.action === 'place_order_po') return await placeOrderPo(admin, body, v.coach);
     if (body.action === 'convert_order') return await convertOrder(admin, body);
     return bad(400, 'Unknown action.');
   } catch (e) {
@@ -313,5 +499,7 @@ exports.handler = async (event) => {
 // webstore-checkout / quickorder-quote). Netlify invokes `handler`.
 module.exports.quoteTotals = quoteTotals;
 module.exports.placeOrder = placeOrder;
+module.exports.placeOrderPo = placeOrderPo;
+module.exports.decodePoPdf = decodePoPdf;
 module.exports.convertOrder = convertOrder;
 module.exports.TEAMSHOP_SLUG = TEAMSHOP_SLUG;

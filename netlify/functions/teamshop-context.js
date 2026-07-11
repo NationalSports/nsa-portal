@@ -61,9 +61,16 @@ exports.handler = async (event) => {
 
     let customers = [];
     if (allowedIds.length) {
-      const { data, error } = await admin.from('customers').select('id,name').in('id', allowedIds);
+      // teamshop_po_allowed (00196) gates the School-PO checkout option in
+      // CheckoutPage.js — cosmetic only; place_order_po re-reads it server-
+      // side. Read defensively: pre-00196 the column doesn't exist (42703 /
+      // schema-cache miss), so retry without it and report false.
+      let { data, error } = await admin.from('customers').select('id,name,teamshop_po_allowed').in('id', allowedIds);
+      if (error && /teamshop_po_allowed/.test(error.message || '') && /(column|schema)/i.test(error.message || '')) {
+        ({ data, error } = await admin.from('customers').select('id,name').in('id', allowedIds));
+      }
       if (error) return bad(500, error.message);
-      customers = (data || []).map((c) => ({ id: c.id, name: c.name || '' }));
+      customers = (data || []).map((c) => ({ id: c.id, name: c.name || '', teamshop_po_allowed: c.teamshop_po_allowed === true }));
     }
 
     return {
