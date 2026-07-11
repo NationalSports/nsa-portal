@@ -45,6 +45,30 @@ function matchZone(name) {
   return null;
 }
 
+// Sample a normal map at low res and report whether it's essentially neutral
+// everywhere (no baked detail). Cached per texture so we only pay once.
+function isFlatNormalTexture(tex) {
+  if (tex._nsaFlatChecked !== undefined) return tex._nsaFlatChecked;
+  let flat = false;
+  try {
+    const img = tex.image;
+    if (img && (img.width || img.videoWidth)) {
+      const c = document.createElement('canvas'); c.width = c.height = 64;
+      const x = c.getContext('2d');
+      x.drawImage(img, 0, 0, 64, 64);
+      const d = x.getImageData(0, 0, 64, 64).data;
+      let dev = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const dr = Math.abs(d[i] - 128), dg = Math.abs(d[i + 1] - 128);
+        if (dr > dev) dev = dr; if (dg > dev) dev = dg;
+      }
+      flat = dev < 10;
+    }
+  } catch (_e) { /* cross-origin or compressed — assume it's real */ }
+  tex._nsaFlatChecked = flat;
+  return flat;
+}
+
 // ── Fabric surface library ──────────────────────────────────────────────────
 // Each fabric option gets its own procedurally generated surface (normal map,
 // and for heather a color fleck), so "Mesh" actually shows perforations and
@@ -222,14 +246,21 @@ function zoneUvSpan(mesh) {
   const span = Math.max(uMax - uMin, vMax - vMin);
   return span > 1e-4 ? span : null;
 }
-function zoneRepeat(mesh, targetTiles, fallback) {
-  const span = zoneUvSpan(mesh);
+function zoneRepeat(span, targetTiles, fallback) {
   if (!span) return fallback;
   return Math.max(2, Math.min(60, targetTiles / span));
 }
 
 function applyDesign(st, rawSpec) {
   const spec = ds.normalizeSpec(rawSpec);
+  // One repeat per ZONE, not per mesh: garments cut into several panels per zone
+  // (e.g. an upper + lower body panel) must show the same stripe width across
+  // the seam, so every panel in a zone uses the zone's dominant UV span.
+  const spanByZone = {};
+  for (const e of st.meshes) {
+    const s = zoneUvSpan(e.mesh);
+    if (s && (!spanByZone[e.zone] || s > spanByZone[e.zone])) spanByZone[e.zone] = s;
+  }
   for (const entry of st.meshes) {
     const zone = entry.zone;
     const zs = (zone && spec.zones[zone]) || spec.zones.body || ds.DEFAULT_ZONE;
@@ -254,7 +285,7 @@ function applyDesign(st, rawSpec) {
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         // Same tile-count logic as the built-ins: ~2.5 print repeats across each
         // panel so a print never balloons on the sleeves.
-        const rep = zoneRepeat(entry.mesh, 2.5, 4);
+        const rep = zoneRepeat(spanByZone[entry.zone], 2.5, 4);
         tex.repeat.set(rep, rep);
         tex.anisotropy = 8;
         tex.colorSpace = THREE.SRGBColorSpace;
@@ -287,7 +318,7 @@ function applyDesign(st, rawSpec) {
         // calibrated so the density matches the good V-neck look and the crew
         // model (whose sleeves pack into a much smaller UV span) no longer blows
         // the pattern up.
-        const rep = zoneRepeat(entry.mesh, fine ? 6 : 2.6, entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 10 : 6));
+        const rep = zoneRepeat(spanByZone[entry.zone], fine ? 6 : 2.6, entry.zone === 'body' ? (fine ? 10 : 5) : (fine ? 10 : 6));
         tex.repeat.set(rep, rep);
         tex.anisotropy = 8; // crisp the pattern at grazing angles (was blurry/blown up)
         tex.colorSpace = THREE.SRGBColorSpace;
@@ -582,16 +613,20 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
           // catch the lights and wash tinted colors toward pastel. Keep the
           // original name: matchZone falls back to it for zone matching.
           const srcMat = o.material;
+          // A vendor normal only counts if it actually carries detail — some
+          // exports ship an all-neutral (128,128,255) map, which would both look
+          // like flat plastic AND block our per-fabric surface system.
+          const vendorNormal = !!srcMat.normalMap && !isFlatNormalTexture(srcMat.normalMap);
           o.material = new THREE.MeshPhysicalMaterial({
             name: srcMat.name,
             color: srcMat.color ? srcMat.color.clone() : 0xffffff,
             side: THREE.FrontSide,
             envMapIntensity: studioRef.current.env,
-            // Keep a baked normal map when the vendor supplied one (that's the
-            // cloth-wrinkle detail); otherwise fall back to our knit bump so
+            // Keep a baked normal map when the vendor supplied a REAL one (that's
+            // the cloth-wrinkle detail); otherwise fall back to our knit bump so
             // solid colors still read as fabric, not plastic.
-            normalMap: srcMat.normalMap || fabricNormalTexture('sublimated'),
-            normalScale: srcMat.normalMap ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.45, 0.45),
+            normalMap: vendorNormal ? srcMat.normalMap : fabricNormalTexture('sublimated'),
+            normalScale: vendorNormal ? (srcMat.normalScale || new THREE.Vector2(1, 1)) : new THREE.Vector2(0.45, 0.45),
             // Fabric sheen (the soft edge glow cloth has at grazing angles) is
             // what separates "jersey" from "painted plastic" at arm's length.
             sheen: studioRef.current.sheen,
@@ -599,7 +634,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
             sheenColor: new THREE.Color(0xffffff),
           });
           const zone = matchZone(o.name) || matchZone(o.material && o.material.name);
-          st.meshes.push({ mesh: o, zone, vendorNormal: !!srcMat.normalMap });
+          st.meshes.push({ mesh: o, zone, vendorNormal });
         }
       });
       scene.add(rootObj);
