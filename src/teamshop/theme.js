@@ -58,6 +58,14 @@ const CSS = `
 @media (max-width: 1024px) { .nts-product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .nts-product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 480px) { .nts-product-grid { grid-template-columns: 1fr; } }
+/* Home "Shop by category" grid: 4 across on desktop, same step-down
+   breakpoints as .nts-product-grid above. */
+.nts-category-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 1024px) { .nts-category-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .nts-category-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 480px) { .nts-category-grid { grid-template-columns: 1fr; } }
+.nts-category-tile { transition: box-shadow 180ms ease, transform 180ms ease; }
+.nts-category-tile:hover { box-shadow: 0 18px 48px rgba(15,26,56,0.16); transform: translateY(-2px); }
 @media (max-width: 920px) {
   .nts-header-tagline { display: none; }
   /* Stack the menu bar centered on small screens: nav on top, utilities below,

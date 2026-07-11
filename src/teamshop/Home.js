@@ -6,6 +6,7 @@ import {
   TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
 import { LAUNCH_CATEGORIES } from './categories';
+import { fetchCategoryHeroes, pickHeroForCategory } from './categoryHeroes';
 
 // Team Shop landing page — the approved "National Team Shop - Home" Claude
 // Design mockup, translated section-by-section. Replaces the Stage-1 hero
@@ -59,11 +60,6 @@ const TILE_GRADIENTS = [
   'linear-gradient(150deg,#1c2d4f,#0F1A38)',
   'linear-gradient(150deg,#243a66,#1c2d4f)',
 ];
-const CATEGORY_TILES = LAUNCH_CATEGORIES.map((cat, i) => ({
-  key: cat.key,
-  label: cat.label,
-  gradient: TILE_GRADIENTS[i % TILE_GRADIENTS.length],
-}));
 
 const VALUE_PROPS = [
   { label: 'Free Decoration Setup*', icon: <path d="M12 2v6M12 12v8M9 20h6" /> },
@@ -113,6 +109,11 @@ function PhotoLabel({ children, style }) {
 export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }) {
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
+  // Category-tile hero photos (categoryHeroes.js) — a small anon fetch of the
+  // 9 owner-picked SKUs, one per launch category. Never blocks the grid:
+  // starts empty (gradient tiles), and pickHeroForCategory falls back to the
+  // gradient tile per-category if a row/image is missing.
+  const [categoryHeroes, setCategoryHeroes] = useState([]);
   // Welcome popup / chat bubble, per the mockup's <script type="text/x-dc">
   // DCLogic component: opens once, 1.6s after mount, unless already
   // dismissed; the chat bubble toggles it. Pure local UI state, no backend —
@@ -138,6 +139,15 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
       if (!alive) return;
       setProducts(error ? [] : (data || []));
       setProductsLoading(false);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const rows = await fetchCategoryHeroes();
+      if (alive) setCategoryHeroes(rows);
     })();
     return () => { alive = false; };
   }, []);
@@ -241,18 +251,48 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
               <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.2rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Everything the roster needs</h2>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
-            {CATEGORY_TILES.map((tile) => (
-              <button
-                key={tile.key}
-                type="button"
-                onClick={() => onBrowseCatalog(tile.key)}
-                style={{ position: 'relative', aspectRatio: '1 / 1', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'flex-end', padding: 18, background: tile.gradient, border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}
-              >
-                <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(15,26,56,0.55), transparent 55%)' }} />
-                <span style={{ position: 'relative', ...displayType(19, { letterSpacing: '0.04em', color: '#fff' }) }}>{tile.label}</span>
-              </button>
-            ))}
+          <div className="nts-category-grid">
+            {LAUNCH_CATEGORIES.map((cat, i) => {
+              const hero = pickHeroForCategory(categoryHeroes, cat);
+              const gradient = TILE_GRADIENTS[i % TILE_GRADIENTS.length];
+              return (
+                <button
+                  key={cat.key}
+                  type="button"
+                  onClick={() => onBrowseCatalog(cat.key)}
+                  aria-label={`Shop ${cat.label}`}
+                  className="nts-category-tile"
+                  style={{
+                    position: 'relative', aspectRatio: '1 / 1', borderRadius: 12, overflow: 'hidden',
+                    display: 'flex', flexDirection: 'column', padding: 0, background: hero ? 'linear-gradient(150deg,#F7F8FB,#E4E8F0)' : gradient,
+                    border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
+                  }}
+                >
+                  {hero ? (
+                    <>
+                      <span style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '18px 18px 6px', minHeight: 0 }}>
+                        <img
+                          src={hero.image_front_url}
+                          alt=""
+                          aria-hidden="true"
+                          loading="lazy"
+                          style={{ width: '100%', height: '100%', objectFit: 'contain', mixBlendMode: 'multiply' }}
+                        />
+                      </span>
+                      <span style={{ position: 'relative', flex: 'none', background: NAVY, padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={displayType(16, { letterSpacing: '0.04em', color: '#fff' })}>{cat.label}</span>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ position: 'relative', flex: 1, display: 'flex', alignItems: 'flex-end', padding: 18 }}>
+                      <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(15,26,56,0.55), transparent 55%)' }} />
+                      <span style={{ position: 'relative', ...displayType(19, { letterSpacing: '0.04em', color: '#fff' }) }}>{cat.label}</span>
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </section>

@@ -127,10 +127,10 @@ describe('Home.js — category tiles', () => {
     const onBrowseCatalog = jest.fn();
     render(<Home onStartOrder={() => {}} onBrowseCatalog={onBrowseCatalog} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Polos' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Shop Polos' }));
     expect(onBrowseCatalog).toHaveBeenCalledWith('polos');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Hoodies & Fleece' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Shop Hoodies & Fleece' }));
     expect(onBrowseCatalog).toHaveBeenCalledWith('hoodies');
   });
 
