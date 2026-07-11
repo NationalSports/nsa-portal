@@ -5,6 +5,8 @@ import Catalog from './Catalog';
 import ProductPage from './ProductPage';
 import Home from './Home';
 import DecorationPage from './DecorationPage';
+import FAQPage from './FAQPage';
+import Search from './Search';
 import StartWithLogo from './StartWithLogo';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
@@ -106,11 +108,21 @@ import {
 // orderCustomer/setOrderCustomer with the rest of the app — same
 // 'nts_customer' localStorage key, one team context everywhere — via
 // AccountPage's customer/onCustomerSelect props. accountSection tells it
-// which section to scroll to (see goAccount below); "Order help*" stays
-// inert, there's nowhere for it to go yet.
+// which section to scroll to (see goAccount below); "Order help" now routes
+// to FAQPage — see goFAQ below.
+//
+// Stage 10 adds FAQPage.js ('faq' route) and Search.js ('search' route) —
+// the approved "Help Center" and "Search" Claude Design mocks, both
+// content-only components rendered inside this shared header/footer, same
+// convention as every other view. FAQPage's copy is grounded in real system
+// facts (see faqData.js), not the mock's placeholder numbers. Search reuses
+// the exact same search_products RPC + CatalogCard + colorway grouping the
+// top-level catalog already uses (see Search.js) — no forked search or card
+// logic. The header's search icon (previously an inert TODO(teamshop-nav)
+// placeholder) now opens 'search' via goSearch below.
 
 export default function TeamShopApp() {
-  const [route, setRoute] = useState('landing'); // landing|catalog|order|account|decoration
+  const [route, setRoute] = useState('landing'); // landing|catalog|order|account|decoration|faq|search
   const [decorationMethod, setDecorationMethod] = useState('embroidery'); // embroidery|dtf|heat — DecorationPage's variant
   const [enteredShop, setEnteredShop] = useState(false); // false while StartWithLogo owns the 'order' route
   const [orderCustomer, setOrderCustomer] = useState(null);
@@ -231,6 +243,23 @@ export default function TeamShopApp() {
   const goDecoration = (method) => {
     setRoute('decoration');
     if (method) setDecorationMethod(method);
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+  };
+
+  // Footer "FAQ" link (Help column) and the Account column's "Order help*"
+  // link (previously inert — see FOOTER_ACCOUNT_ACTIONS below) both land
+  // here. Header search icon opens 'search' — see goSearch below.
+  const goFAQ = () => {
+    setRoute('faq');
+    setPreviewProduct(null);
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+  };
+  // Header search icon — the one TODO(teamshop-nav) placeholder this build
+  // resolves. Reuses the same previewProduct/ProductPage flow the top-level
+  // catalog uses for a result card click (see the 'search' route below).
+  const goSearch = () => {
+    setRoute('search');
+    setPreviewProduct(null);
     if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
   };
 
@@ -359,10 +388,14 @@ export default function TeamShopApp() {
               <span style={inertNavStyle}>Swift Ship</span>
             </nav>
             <div style={{ display: 'flex', alignItems: 'center', gap: 18, justifySelf: 'end' }}>
-              {/* TODO(teamshop-nav): search overlay — inert per mockup; catalog search lives in the sidebar. */}
-              <span aria-hidden="true" style={{ color: NAVY, display: 'flex' }}>
+              <button
+                className="nts-navlink"
+                aria-label="Search"
+                onClick={goSearch}
+                style={{ color: route === 'search' ? RED : NAVY, display: 'flex', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+              >
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
-              </span>
+              </button>
               {/* Coach sign-in must be VISIBLE, not an unlabeled icon — signing in
                   unlocks team pricing, so the label sells the reason to do it. */}
               <button
@@ -426,6 +459,22 @@ export default function TeamShopApp() {
             // the builder renders in read/preview mode and gates "Add to
             // order" (and any logo pick/upload) to previewCustomize's
             // sign-in hand-off, same as every other "Start with your logo" CTA.
+          />
+        )}
+
+        {route === 'faq' && <FAQPage />}
+
+        {route === 'search' && !previewProduct && (
+          <Search onSelectProduct={setPreviewProduct} onBrowseCatalog={goCatalog} />
+        )}
+        {route === 'search' && previewProduct && (
+          <ProductPage
+            product={previewProduct}
+            customer={null}
+            onBack={() => setPreviewProduct(null)}
+            onCustomize={previewCustomize}
+            // Same anonymous-preview mode as the top-level catalog's
+            // ProductPage (route === 'catalog') — see that block's comment.
           />
         )}
 
@@ -545,9 +594,9 @@ export default function TeamShopApp() {
 
       {/* Footer per the mockup. Column links are inert placeholders —
           TODO(teamshop-footer): point at real category/decoration
-          destinations as those views land. (Account's "My logos"/"Reorder"
-          now route to AccountPage — see FOOTER_ACCOUNT_ACTIONS below;
-          "Order help*" stays inert, there's nowhere for it to go yet.) */}
+          destinations as those views land. (Account's "My logos"/"Reorder"/
+          "Order help" and the Help column's "FAQ" now route to real
+          destinations — see FOOTER_ACCOUNT_ACTIONS below.) */}
       <footer style={{ background: NAVY_DARK, color: 'rgba(255,255,255,0.72)', padding: 'clamp(48px, 6vw, 72px) 24px 40px' }}>
         <div style={{ maxWidth: 1200, margin: '0 auto' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 40, paddingBottom: 40, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
@@ -576,31 +625,35 @@ export default function TeamShopApp() {
               // isn't a launch category at all, so it's replaced with Tees.
               ['Shop', ['Polos', 'Hoodies & Fleece', 'Hats', 'Tees']],
               ['Decoration', ['Embroidery', 'DTF Print', 'Heat Applications', 'Saved Logos']],
-              ['Account', ['My logos', 'Reorder', 'Order help*']],
+              ['Account', ['My logos', 'Reorder', 'Order help']],
+              ['Help', ['FAQ']],
             ].map(([heading, items]) => (
               <div key={heading}>
                 <p style={displayType(13, { letterSpacing: '0.12em', color: '#fff', margin: '0 0 16px' })}>{heading}</p>
                 <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 11 }}>
                   {items.map((item) => {
                     // FOOTER_ACCOUNT_ACTIONS: the Account column's "My
-                    // logos"/"Reorder" route to AccountPage; the Shop
-                    // column's category links route to the catalog
-                    // pre-filtered to that launch category; the Decoration
-                    // column's method links (renamed "Heat Applications" per
-                    // the approved design) route to DecorationPage with the
-                    // matching method. "Saved Logos" and "Order help*" stay
-                    // inert TODO(teamshop-footer) placeholders — no
-                    // destination exists for either yet.
+                    // logos"/"Reorder"/"Order help" route to AccountPage/
+                    // FAQPage; the Shop column's category links route to the
+                    // catalog pre-filtered to that launch category; the
+                    // Decoration column's method links (renamed "Heat
+                    // Applications" per the approved design) route to
+                    // DecorationPage with the matching method; the Help
+                    // column's "FAQ" routes to FAQPage. "Saved Logos" stays
+                    // an inert TODO(teamshop-footer) placeholder — no
+                    // destination exists for it yet.
                     const action = heading === 'Account' && item === 'My logos' ? () => goAccount('logos')
                       : heading === 'Account' && item === 'Reorder' ? () => goAccount('orders')
-                        : heading === 'Shop' && item === 'Polos' ? () => goCatalog('polos')
-                          : heading === 'Shop' && item === 'Hoodies & Fleece' ? () => goCatalog('hoodies')
-                            : heading === 'Shop' && item === 'Hats' ? () => goCatalog('hats')
-                              : heading === 'Shop' && item === 'Tees' ? () => goCatalog('tees')
-                                : heading === 'Decoration' && item === 'Embroidery' ? () => goDecoration('embroidery')
-                                  : heading === 'Decoration' && item === 'DTF Print' ? () => goDecoration('dtf')
-                                    : heading === 'Decoration' && item === 'Heat Applications' ? () => goDecoration('heat')
-                                      : null;
+                        : heading === 'Account' && item === 'Order help' ? () => goFAQ()
+                          : heading === 'Help' && item === 'FAQ' ? () => goFAQ()
+                            : heading === 'Shop' && item === 'Polos' ? () => goCatalog('polos')
+                              : heading === 'Shop' && item === 'Hoodies & Fleece' ? () => goCatalog('hoodies')
+                                : heading === 'Shop' && item === 'Hats' ? () => goCatalog('hats')
+                                  : heading === 'Shop' && item === 'Tees' ? () => goCatalog('tees')
+                                    : heading === 'Decoration' && item === 'Embroidery' ? () => goDecoration('embroidery')
+                                      : heading === 'Decoration' && item === 'DTF Print' ? () => goDecoration('dtf')
+                                        : heading === 'Decoration' && item === 'Heat Applications' ? () => goDecoration('heat')
+                                          : null;
                     return (
                       <li key={item}>
                         {action ? (
