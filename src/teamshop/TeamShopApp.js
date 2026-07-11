@@ -13,6 +13,8 @@ import CheckoutPage from './CheckoutPage';
 import AccountPage from './AccountPage';
 import { useCart } from './cart';
 import useCoachSession from './useCoachSession';
+import { STORAGE_KEY as NTS_CUSTOMER_KEY } from './TeamPicker';
+import { supabaseCoach } from '../lib/supabaseCoach';
 import {
   ensureTeamShopStyles, NAVY, NAVY_DARK, RED, BORDER, TEXT_MUTED, FONT_BODY, displayType,
 } from './theme';
@@ -125,6 +127,68 @@ export default function TeamShopApp() {
 
   useEffect(() => { ensureTeamShopStyles(); }, []);
 
+  // ── Connect → Team Shop handoff arrival (Coach Crossover, Workstream 1) ──
+  // A ?handoff=<code> in the URL is a one-time server-minted code from the
+  // Connect portal (netlify/functions/teamshop-handoff.js). Exchange it for a
+  // { token_hash, email } pair and finish sign-in with verifyOtp — the sign-in
+  // credential itself never appears in the URL, only the opaque single-use
+  // code, which is stripped from the address bar either way. ANY failure
+  // (expired code, network, verifyOtp) falls through silently to normal
+  // anonymous browsing — CoachGate appears where it always does, never an
+  // error wall.
+  const [handoffBusy, setHandoffBusy] = useState(() => {
+    try { return new URLSearchParams(window.location.search).has('handoff'); } catch { return false; }
+  });
+  // alpha_tag of the Connect portal the coach came from — persisted for the
+  // tab session so the header's "← Back to Connect" link survives navigation.
+  const [connectTag, setConnectTag] = useState(() => {
+    try { return window.sessionStorage.getItem('nts_connect_return') || null; } catch { return null; }
+  });
+  useEffect(() => {
+    if (!handoffBusy) return undefined;
+    let alive = true;
+    (async () => {
+      let code = null;
+      try { code = new URLSearchParams(window.location.search).get('handoff'); } catch { /* no URL API — fall through */ }
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-handoff', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'exchange', code }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok || !json.token_hash || !json.email) throw new Error('handoff exchange failed');
+        const { error } = await supabaseCoach.auth.verifyOtp({ type: 'email', email: json.email, token_hash: json.token_hash });
+        if (error) throw error;
+        if (json.alpha_tag) {
+          try { window.sessionStorage.setItem('nts_connect_return', json.alpha_tag); } catch { /* sessionStorage unavailable */ }
+          if (alive) setConnectTag(json.alpha_tag);
+        }
+        if (json.customer_id) {
+          // Preselect the handed-off team through the existing mechanism:
+          // the same 'nts_customer' localStorage key TeamPicker/AccountPage
+          // persist to, plus the live orderCustomer state for this render.
+          const cust = { id: json.customer_id, name: json.customer_name || '' };
+          try { window.localStorage.setItem(NTS_CUSTOMER_KEY, JSON.stringify(cust)); } catch { /* selection just won't persist */ }
+          if (alive) setOrderCustomer(cust);
+        }
+      } catch (e) {
+        // Silent fall-through to anonymous browsing (see comment above).
+      } finally {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          params.delete('handoff');
+          const qs = params.toString();
+          window.history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : '') + window.location.hash);
+        } catch { /* leave the URL as-is */ }
+        if (alive) setHandoffBusy(false);
+      }
+    })();
+    return () => { alive = false; };
+    // Run-once on mount; handoffBusy's initial value decides whether there's anything to do.
+    // eslint-disable-next-line
+  }, []);
+
   // Every "Start with your logo" CTA (hero, header, footer, popup,
   // how-it-works) shares this handler — it (re)enters the StartWithLogo
   // entry chrome. The cart icon is the one path into 'order' that is NOT a
@@ -235,6 +299,9 @@ export default function TeamShopApp() {
 
   return (
     <div className="nts-root" style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: '#fff', color: '#2A2F3E', fontFamily: FONT_BODY }}>
+      {handoffBusy && (
+        <div style={{ background: NAVY, color: '#fff', textAlign: 'center', fontSize: 13, fontWeight: 600, padding: '6px 12px' }}>Signing you in…</div>
+      )}
       <header style={{ position: 'sticky', top: 0, zIndex: 50, background: 'rgba(255,255,255,0.97)', backdropFilter: 'saturate(180%) blur(8px)', borderBottom: `1px solid ${BORDER}` }}>
         <div style={{ maxWidth: 1200, margin: '0 auto', padding: '12px 24px 4px' }}>
           {/* Centered brand lockup — logo dead-center, thin tagline balanced
@@ -257,7 +324,17 @@ export default function TeamShopApp() {
           {/* Menu bar: nav centered, utilities pinned right via a balanced
               1fr / auto / 1fr track so the nav stays optically centered. */}
           <div className="nts-header-row2" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 16, padding: '8px 0 4px' }}>
-            <span />
+            {/* Left spacer doubles as the reverse handoff link — only shown
+                when this tab arrived via a Connect handoff with a known
+                portal alpha_tag (set in the arrival effect above). */}
+            {connectTag ? (
+              <a
+                href={`https://nationalsportsapparel.com/?portal=${encodeURIComponent(connectTag)}`}
+                style={{ justifySelf: 'start', fontSize: 13, fontWeight: 600, color: TEXT_MUTED, textDecoration: 'none', whiteSpace: 'nowrap' }}
+              >
+                ← Back to Connect
+              </a>
+            ) : <span />}
             <nav style={{ display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(route === 'catalog')}>Shop</button>
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(false)}>Apparel</button>

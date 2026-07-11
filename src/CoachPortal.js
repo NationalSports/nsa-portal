@@ -8,6 +8,7 @@ import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinar
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
+import { supabaseCoach } from './lib/supabaseCoach';
 import Papa from 'papaparse';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
@@ -706,6 +707,48 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
   // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
   const hasRoster=!!customer.coach_roster;
+  // ── National Team Shop crossover (Coach Crossover, Workstream 1) ──
+  // Connect itself has no coach sign-in (the portal is alpha-tag gated), so the
+  // one-click handoff keys off a supabaseCoach session — the same isolated
+  // coach auth client the Team Shop / Live Look use. undefined = not checked yet.
+  const[ntsSession,setNtsSession]=useState(undefined);
+  useEffect(()=>{let dead=false;
+    supabaseCoach.auth.getSession().then(({data})=>{if(!dead)setNtsSession((data&&data.session)||null);}).catch(()=>{if(!dead)setNtsSession(null);});
+    const{data:_ntsSub}=supabaseCoach.auth.onAuthStateChange((_e,s)=>{if(!dead)setNtsSession(s||null);});
+    return()=>{dead=true;if(_ntsSub&&_ntsSub.subscription)_ntsSub.subscription.unsubscribe();};
+  },[]);
+  const[ntsBannerHidden,setNtsBannerHidden]=useState(()=>{try{return localStorage.getItem('cp_nts_banner_dismissed')==='1';}catch{return true;}});
+  const[ntsEmail,setNtsEmail]=useState('');
+  const[ntsOtpState,setNtsOtpState]=useState('idle');// idle|sending|sent|error
+  // Same signInWithOtp pattern as src/teamshop/CoachGate.js / storefront/AdidasInventory.js:
+  // isolated supabaseCoach client, emailRedirectTo back to THIS portal URL
+  // (incl. ?portal= param — must be allow-listed in Supabase Auth redirects).
+  const ntsSendOtp=async()=>{
+    const em=ntsEmail.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)||ntsOtpState==='sending')return;
+    setNtsOtpState('sending');
+    const{error}=await supabaseCoach.auth.signInWithOtp({email:em,options:{emailRedirectTo:window.location.origin+window.location.pathname+window.location.search}});
+    setNtsOtpState(error?'error':'sent');
+  };
+  // Tile click: with a coach session, mint a one-time handoff code (the URL
+  // carries ONLY this opaque single-use 60s code — never a session credential)
+  // and open the Team Shop signed in; otherwise a plain link. Minting happens
+  // inside the click gesture; if window.open comes back blocked, same-tab.
+  const openTeamShop=async()=>{
+    let href='https://nationalteamshop.com';
+    try{
+      const{data}=await supabaseCoach.auth.getSession();
+      const sess=data&&data.session;
+      if(sess){
+        const _mint=(withCust)=>fetch('/.netlify/functions/teamshop-handoff',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+sess.access_token},body:JSON.stringify(withCust?{action:'mint',customer_id:customer.id}:{action:'mint'})});
+        let r=await _mint(true);
+        if(r.status===403)r=await _mint(false);// this coach sign-in may not be linked to this portal's customer — hand off without a team preselect
+        const b=await r.json().catch(()=>null);
+        if(r.ok&&b&&b.code)href='https://nationalteamshop.com/?handoff='+b.code;
+      }
+    }catch(e){/* fall through to the plain link */}
+    try{const w=window.open(href,CP_LINK_TARGET,'noopener');if(!w)window.location.assign(href);}catch(e){window.location.assign(href);}
+  };
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -2482,6 +2525,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>}
 
         {page==='shop'&&<div>
+          {/* National Team Shop sign-in nudge — only when NO coach session exists.
+              Verifying once creates the supabaseCoach session that turns the
+              National Team Shop tile below into a one-click signed-in handoff. */}
+          {ntsSession===null&&!ntsBannerHidden&&<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#F7F8FB',border:'1px solid #EEF1F6',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:13,color:'#2A2F3E'}}>
+            <span style={{fontWeight:600}}>Verify your email once to enable one-click shopping on National Team Shop</span>
+            {ntsOtpState==='sent'?<span style={{color:'#1F7A43',fontWeight:600}}>Check your email for the sign-in link.</span>:<>
+              <input type="email" value={ntsEmail} onChange={e=>setNtsEmail(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')ntsSendOtp();}} placeholder="coach@school.org" style={{flex:'1 1 180px',minWidth:150,padding:'6px 10px',border:'1px solid #D1D5DE',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              <button onClick={ntsSendOtp} disabled={ntsOtpState==='sending'} style={{background:tPrimary,color:'#fff',border:'none',borderRadius:6,padding:'7px 14px',fontSize:12.5,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>{ntsOtpState==='sending'?'Sending…':'Email me a link'}</button>
+              {ntsOtpState==='error'&&<span style={{color:'#962C32',fontSize:12}}>Couldn't send — try again.</span>}
+            </>}
+            <button onClick={()=>{setNtsBannerHidden(true);try{localStorage.setItem('cp_nts_banner_dismissed','1');}catch{/* won't persist */}}} aria-label="Dismiss" style={{marginLeft:'auto',background:'none',border:'none',color:'#94A0B0',fontSize:16,cursor:'pointer',lineHeight:1,padding:0}}>×</button>
+          </div>}
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
             <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
@@ -2508,6 +2563,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
           {/* Shop & Order section */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
+
+          {/* National Team Shop tile — one-click handoff (Coach Crossover) */}
+          <button onClick={openTeamShop} className="nsa-tile" style={{width:'100%',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14,fontFamily:'inherit'}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',width:58,height:58,flexShrink:0,borderRadius:8,background:tAccent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>🛍️</div>
+            <div style={{position:'relative',flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:24,textTransform:'uppercase',color:'#fff',lineHeight:1}}>National Team Shop</div>
+                <span style={{display:'inline-flex',alignItems:'center',background:'rgba(150,44,50,.25)',border:`1px solid ${tAccentLight}`,color:tAccentLight,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:11,letterSpacing:'1px',textTransform:'uppercase',padding:'3px 9px',borderRadius:999}}>New</span>
+              </div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:5}}>Quick-turn custom gear — your logos, your pricing</div>
+            </div>
+            <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
+          </button>
 
           {/* Live Look tile — the highlight */}
           <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>
