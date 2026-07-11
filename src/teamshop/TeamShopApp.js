@@ -7,6 +7,7 @@ import Home from './Home';
 import DecorationPage from './DecorationPage';
 import FAQPage from './FAQPage';
 import Search from './Search';
+import TeamStoresPage from './TeamStoresPage';
 import StartWithLogo from './StartWithLogo';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
@@ -123,7 +124,7 @@ import {
 // placeholder) now opens 'search' via goSearch below.
 
 export default function TeamShopApp() {
-  const [route, setRoute] = useState('landing'); // landing|catalog|order|account|decoration|faq|search
+  const [route, setRoute] = useState('landing'); // landing|catalog|order|account|decoration|faq|search|stores
   const [decorationMethod, setDecorationMethod] = useState('embroidery'); // embroidery|dtf|heat — DecorationPage's variant
   const [enteredShop, setEnteredShop] = useState(false); // false while StartWithLogo owns the 'order' route
   const [orderCustomer, setOrderCustomer] = useState(null);
@@ -263,6 +264,15 @@ export default function TeamShopApp() {
     setPreviewProduct(null);
     if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
   };
+  // Header "Team Stores" nav item and the footer's "Team Stores" link land
+  // here — TeamStoresPage, the approved "Team Stores" mock. Its store finder
+  // reuses the /team-stores directory's webstores_public query (see
+  // src/lib/publicTeamStores.js).
+  const goTeamStores = () => {
+    setRoute('stores');
+    setPreviewProduct(null);
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+  };
 
   const lineFromProduct = (product, decorations) => ({
     product_id: product && product.id,
@@ -337,10 +347,10 @@ export default function TeamShopApp() {
     background: 'none', border: 'none', padding: 0, cursor: 'pointer',
     color: active ? RED : NAVY,
   });
-  // TODO(teamshop-nav): Team Stores / Swift Ship / Search have no
-  // destinations yet — inert placeholders per the mockup. (Account routes to
-  // AccountPage — see goAccount above; Decoration now routes to
-  // DecorationPage — see goDecoration above.)
+  // TODO(teamshop-nav): Swift Ship has no destination yet — inert placeholder
+  // per the mockup. (Account routes to AccountPage — see goAccount above;
+  // Decoration routes to DecorationPage — see goDecoration above; Team Stores
+  // routes to TeamStoresPage — see goTeamStores above.)
   const inertNavStyle = { ...displayType(16, { letterSpacing: '0.07em' }), color: NAVY, cursor: 'default' };
 
   return (
@@ -385,7 +395,7 @@ export default function TeamShopApp() {
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(route === 'catalog')}>Shop</button>
               <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(false)}>Apparel</button>
               <button className="nts-navlink" onClick={() => goDecoration()} style={navLinkStyle(route === 'decoration')}>Decoration</button>
-              <span style={inertNavStyle}>Team Stores</span>
+              <button className="nts-navlink" onClick={goTeamStores} style={navLinkStyle(route === 'stores')}>Team Stores</button>
               <span style={inertNavStyle}>Swift Ship</span>
             </nav>
             <div style={{ display: 'flex', alignItems: 'center', gap: 18, justifySelf: 'end' }}>
@@ -464,6 +474,8 @@ export default function TeamShopApp() {
         )}
 
         {route === 'faq' && <FAQPage />}
+
+        {route === 'stores' && <TeamStoresPage />}
 
         {route === 'search' && !previewProduct && (
           <Search onSelectProduct={setPreviewProduct} onBrowseCatalog={goCatalog} />
@@ -627,7 +639,7 @@ export default function TeamShopApp() {
               ['Shop', ['Polos', 'Hoodies & Fleece', 'Hats', 'Tees']],
               ['Decoration', ['Embroidery', 'DTF Print', 'Heat Applications', 'Saved Logos']],
               ['Account', ['My logos', 'Reorder', 'Order help']],
-              ['Help', ['FAQ']],
+              ['Help', ['FAQ', 'Team Stores']],
             ].map(([heading, items]) => (
               <div key={heading}>
                 <p style={displayType(13, { letterSpacing: '0.12em', color: '#fff', margin: '0 0 16px' })}>{heading}</p>
@@ -647,6 +659,7 @@ export default function TeamShopApp() {
                       : heading === 'Account' && item === 'Reorder' ? () => goAccount('orders')
                         : heading === 'Account' && item === 'Order help' ? () => goFAQ()
                           : heading === 'Help' && item === 'FAQ' ? () => goFAQ()
+                            : heading === 'Help' && item === 'Team Stores' ? () => goTeamStores()
                             : heading === 'Shop' && item === 'Polos' ? () => goCatalog('polos')
                               : heading === 'Shop' && item === 'Hoodies & Fleece' ? () => goCatalog('hoodies')
                                 : heading === 'Shop' && item === 'Hats' ? () => goCatalog('hats')
