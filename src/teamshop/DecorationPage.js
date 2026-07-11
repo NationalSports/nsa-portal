@@ -42,7 +42,6 @@ const METHODS = {
     heroInk: '#5A6075',
     heroCaption: 'Macro Photo — Embroidery stitching detail',
     heroImage: '/teamshop/deco-embroidery-macro.jpg',
-    heroVideo: '/teamshop/hero-embroidery-loop.mp4',
     processHeading: 'Your art becomes a stitch file, then thread on fabric.',
     steps: [
       { n: '01', title: 'Digitize', body: 'We convert your logo into a stitch file — mapping every path, fill, and thread color.' },
