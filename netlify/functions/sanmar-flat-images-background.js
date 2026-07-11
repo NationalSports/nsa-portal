@@ -85,12 +85,15 @@ function extractFormImages(html, variantId) {
   return out;
 }
 
-// Scrape every color variant of one style. Returns { normColorCode: {front, back} }.
-async function scrapeStyle(coveo, style, log = console.log) {
+// Scrape one style's color variants. Returns { normColorCode: {front, back} }.
+// wantedColors (Set of normalized color codes/names) limits page fetches to the
+// colors we actually carry — sanmar.com often lists 3× more colors than we do.
+async function scrapeStyle(coveo, style, log = console.log, wantedColors = null) {
   const found = await findProductPath(coveo, style);
   if (!found) return null;
   const baseHtml = await fetchText('https://www.sanmar.com' + found.path);
-  const variantIds = [...new Set(baseHtml.match(new RegExp(found.groupId + '_[A-Za-z0-9]+', 'g')) || [])].slice(0, MAX_COLORS_PER_STYLE);
+  let variantIds = [...new Set(baseHtml.match(new RegExp(found.groupId + '_[A-Za-z0-9]+', 'g')) || [])].slice(0, MAX_COLORS_PER_STYLE);
+  if (wantedColors) variantIds = variantIds.filter((vid) => wantedColors.has(norm(vid.slice(found.groupId.length + 1))));
   const byColor = {};
   for (const vid of variantIds) {
     await sleep(PAGE_DELAY_MS);
@@ -143,7 +146,12 @@ exports.handler = async (event) => {
     for (const style of styles) {
       if (Date.now() - started > BUDGET_MS) break;
       try {
-        const byColor = await scrapeStyle(coveo, style);
+        const wanted = new Set();
+        for (const p of byStyle[style] || []) {
+          const c1 = norm(String(p.sku || '').split('-').slice(1).join('-')); if (c1) wanted.add(c1);
+          const c2 = norm(p.color); if (c2) wanted.add(c2);
+        }
+        const byColor = await scrapeStyle(coveo, style, console.log, wanted.size ? wanted : null);
         let matched = 0;
         const colorsFound = byColor ? Object.keys(byColor).length : 0;
         if (byColor) {
