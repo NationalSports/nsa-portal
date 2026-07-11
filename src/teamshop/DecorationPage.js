@@ -67,6 +67,7 @@ const METHODS = {
     heroInk: '#7A5C60',
     heroCaption: 'Macro Photo — DTF full-color detail',
     heroImage: '/teamshop/deco-dtf-macro.jpg',
+    heroVideo: '/teamshop/deco-dtf-loop.mp4',
     processHeading: 'Full-color art, printed to film, pressed to fabric.',
     steps: [
       { n: '01', title: 'Print', body: 'Your artwork is printed onto transfer film in full color, with a white ink base for opacity.' },
@@ -92,6 +93,7 @@ const METHODS = {
     heroInk: '#5A6075',
     heroCaption: 'Macro Photo — Heat application detail',
     heroImage: '/teamshop/deco-heat-macro.jpg',
+    heroVideo: '/teamshop/deco-heat-loop.mp4',
     processHeading: 'Precision-cut material, heat-sealed to the garment.',
     steps: [
       { n: '01', title: 'Cut', body: 'Names, numbers, and marks are precision-cut from premium heat-transfer material.' },
@@ -213,7 +215,24 @@ export default function DecorationPage({ method, onSelectMethod, onShopMethod })
             </button>
           </div>
           <div style={{ position: 'relative' }}>
-            <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} image={data.heroImage} style={{ aspectRatio: '4 / 3', borderRadius: 16 }} />
+            {/* Generated motion loop where one exists (dtf/heat); the macro
+                still is the poster + fallback, so a failed load shows exactly
+                the prior static hero. */}
+            {data.heroVideo ? (
+              <video
+                src={data.heroVideo}
+                poster={data.heroImage}
+                autoPlay
+                muted
+                loop
+                playsInline
+                preload="metadata"
+                aria-hidden="true"
+                style={{ display: 'block', width: '100%', aspectRatio: '4 / 3', objectFit: 'cover', borderRadius: 16 }}
+              />
+            ) : (
+              <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} image={data.heroImage} style={{ aspectRatio: '4 / 3', borderRadius: 16 }} />
+            )}
             <span aria-hidden="true" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 4, background: RED, borderRadius: '0 0 16px 16px' }} />
           </div>
         </div>

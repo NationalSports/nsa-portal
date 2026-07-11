@@ -168,9 +168,24 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
 
       {/* ============ HERO ============ */}
       <section style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
-        {/* Real hero photo (generated, owner-approved) under a navy gradient
-            so the headline/CTAs stay legible at every width. */}
+        {/* Generated hero loop (owner-approved) over the sideline photo,
+            under a navy gradient so the headline/CTAs stay legible. The photo
+            stays mounted underneath and doubles as the poster — if the video
+            can't load or autoplay (data saver, old browsers), the page looks
+            exactly as it did before. muted + playsInline are both required
+            for mobile autoplay. */}
         <img src="/teamshop/hero-sideline.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
+        <video
+          src="/teamshop/hero-embroidery-loop.mp4"
+          poster="/teamshop/hero-sideline.jpg"
+          autoPlay
+          muted
+          loop
+          playsInline
+          preload="metadata"
+          aria-hidden="true"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+        />
         <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg, rgba(15,26,56,0.88) 0%, rgba(25,40,83,0.55) 48%, rgba(15,26,56,0.35) 100%)' }} />
         <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
           <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
