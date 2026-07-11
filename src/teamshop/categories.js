@@ -1,10 +1,11 @@
-// Team Shop launch category taxonomy — single source of truth for the 8
+// Team Shop launch category taxonomy — single source of truth for the 9
 // categories the storefront browses at launch, mapped onto the REAL
 // products.category values (verified against the live table — see the task
 // that added this file; Shorts added after initial launch scoping, product.
-// category 'Shorts', ~6,972 live rows, verified). Everything not listed here
-// (Jersey, Socks, Pants, Crew, Footwear, accessories, '(none)', ...) stays
-// OUT of the Team Shop browse entirely.
+// category 'Shorts', ~6,972 live rows, verified; Footwear added per owner
+// request, product.category 'Footwear', 546 live rows, verified). Everything
+// not listed here (Jersey, Socks, Pants, Crew, accessories, '(none)', ...)
+// stays OUT of the Team Shop browse entirely.
 //
 // dbValues is an array because a couple of categories have a small number of
 // rows under an alternate/legacy spelling (~11 'Hood' singular rows besides
@@ -24,6 +25,7 @@ export const LAUNCH_CATEGORIES = [
   { key: 'tees', label: 'Tees', dbValues: ['Tees'] },
   { key: 'bags', label: 'Bags', dbValues: ['Bags'] },
   { key: 'shorts', label: 'Shorts', dbValues: ['Shorts'] },
+  { key: 'footwear', label: 'Footwear', dbValues: ['Footwear'] },
 ];
 
 const BY_KEY = new Map(LAUNCH_CATEGORIES.map((c) => [c.key, c]));

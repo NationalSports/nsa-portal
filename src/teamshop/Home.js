@@ -46,7 +46,7 @@ import { LAUNCH_CATEGORIES } from './categories';
 // "from $28*" figures.
 const FEATURED_LIMIT = 8;
 
-// The 8 real launch categories (categories.js), each paired with a tile
+// The 9 real launch categories (categories.js), each paired with a tile
 // gradient (cycled from the mockup's original palette — visual treatment
 // only, no meaning attached to which gradient lands on which category).
 const TILE_GRADIENTS = [
@@ -97,7 +97,7 @@ const HOW_IT_WORKS = [
 const DECORATION_METHODS = [
   { n: '01', method: 'embroidery', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", photoLabel: 'Macro Photo — Embroidery stitching', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
   { n: '02', method: 'dtf', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', photoLabel: 'Macro Photo — DTF detail', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
-  { n: '03', method: 'heat', title: 'Heat Press', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat press detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
+  { n: '03', method: 'heat', title: 'Heat Applications', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat application detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
 ];
 
 const BRAND_STRIP = ['adidas', 'Augusta · Holloway', 'Richardson', 'Nike', 'Under Armour'];
@@ -327,7 +327,11 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
                 <div style={{ padding: '22px 24px 26px' }}>
                   <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 600, letterSpacing: '0.1em', color: RED, marginBottom: 6 }}>{m.n}</div>
                   <h3 style={displayType(22, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.01em' })}>{m.title}</h3>
-                  <p style={{ margin: 0, color: TEXT_MUTED, fontSize: 15, lineHeight: 1.55 }}>{m.body}</p>
+                  <p style={{ margin: '0 0 14px', color: TEXT_MUTED, fontSize: 15, lineHeight: 1.55 }}>{m.body}</p>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600, fontSize: 14, color: RED }}>
+                    Learn more
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                  </span>
                 </div>
               </button>
             ))}

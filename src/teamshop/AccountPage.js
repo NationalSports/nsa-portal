@@ -37,7 +37,11 @@ import {
 //     TODO(account-orders): wire to a real list-my-orders API once one
 //     exists. A coach who already has an order confirmation email can still
 //     track it at its token-based /shop/order/<status_token> link — that's
-//     a different (already-shipped) webstore feature, not this one.
+//     a different (already-shipped) webstore feature, not this one. The v2
+//     mockup (Account.dc.html) now links each reorder row to
+//     "Product.dc.html?p={{ o.slug }}" — i.e. once the order-history API
+//     exists, "Reorder" is meant to route to ProductPage for that order's
+//     product(s), not invent its own re-add-to-cart flow.
 //   - Saved roster: the mockup's "Saved roster" size-run card is fictional
 //     design-tool state (a local `nts_roster` key that exists only in the
 //     .dc.html mockup's own script, nowhere in this codebase) — it is NOT
@@ -143,7 +147,7 @@ function AccountSignedIn({ section, customer, onCustomerSelect }) {
 
         <div style={{ gridColumn: '1 / -1' }}>
           <SectionShell eyebrow="Reorder" title="Reorder a past order">
-            <ComingSoon text="Reorder needs order history first — TODO(account-orders): this will let you re-add a past order's lines to your cart in one click once that API exists." />
+            <ComingSoon text="Reorder needs order history first — TODO(account-orders): once that API exists, each reorder routes to that order's product page to re-order, per the approved design." />
           </SectionShell>
         </div>
 

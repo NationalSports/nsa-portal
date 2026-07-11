@@ -12,9 +12,9 @@ import {
 } from '../teamshop/categories';
 
 describe('categories.js — taxonomy', () => {
-  test('has exactly the 8 launch categories', () => {
+  test('has exactly the 9 launch categories', () => {
     expect(LAUNCH_CATEGORIES.map((c) => c.key)).toEqual([
-      'quarter_zips', 'hoodies', 'polos', 'outerwear', 'hats', 'tees', 'bags', 'shorts',
+      'quarter_zips', 'hoodies', 'polos', 'outerwear', 'hats', 'tees', 'bags', 'shorts', 'footwear',
     ]);
   });
 
@@ -36,6 +36,7 @@ describe('categories.js — categoryForProduct / inLaunchCategories', () => {
     ['Tees', 'tees'],
     ['Bags', 'bags'],
     ['Shorts', 'shorts'],
+    ['Footwear', 'footwear'],
   ])('maps products.category %s -> launch key %s', (dbValue, expectedKey) => {
     const product = { id: 'p1', category: dbValue };
     expect(categoryForProduct(product).key).toBe(expectedKey);
@@ -47,7 +48,6 @@ describe('categories.js — categoryForProduct / inLaunchCategories', () => {
     ['Jersey'],
     ['Pants'],
     ['Crew'],
-    ['Footwear'],
     ['(none)'],
     [null],
     [undefined],

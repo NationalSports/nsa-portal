@@ -25,7 +25,11 @@ import {
 //     decoration method) has no home in the current flow — decoration method
 //     is already chosen per-garment later, in PlacementPicker — so it is
 //     intentionally NOT built here (would be a second, disconnected method
-//     picker). The mockup's Step 1 (upload/pick-saved) content maps onto the
+//     picker). (v2 mockup note: that Details step's method chip was relabeled
+//     "Heat Press" -> "Heat Apps" — the short form, used only in that one
+//     compact chip row. Confirmed: nothing to change here since the step
+//     itself is still intentionally not built.) The mockup's Step 1
+//     (upload/pick-saved) content maps onto the
 //     real LogoPicker; its Step 3 ("Done") maps onto DoneScreen below, reusing
 //     the same copy/art/CTAs.
 //   - CoachGate and TeamPicker are rendered exactly as TeamShopApp already
