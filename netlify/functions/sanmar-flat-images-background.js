@@ -123,13 +123,24 @@ exports.handler = async (event) => {
     const coveo = await coveoConfig();
 
     // Candidate styles: every active SanMar product, grouped by style (sku prefix).
-    const prods = await (await sb('products?inventory_source=eq.sanmar&is_active=eq.true&select=id,sku,color,image_flat_front_url&limit=20000')).json();
+    // PostgREST caps a single response at ~1000 rows regardless of `limit`, so
+    // page with Range headers or most of the catalog is silently invisible.
+    const pageAll = async (path) => {
+      const out = [];
+      for (let from = 0; ; from += 1000) {
+        const res = await sb(path, { headers: { Range: from + '-' + (from + 999), 'Range-Unit': 'items' } });
+        const page = arr(await res.json().catch(() => []));
+        out.push(...page);
+        if (page.length < 1000) return out;
+      }
+    };
+    const prods = await pageAll('products?inventory_source=eq.sanmar&is_active=eq.true&select=id,sku,color,image_flat_front_url&order=id');
     const byStyle = {};
     for (const p of arr(prods)) {
       const st = String(p.sku || '').split('-')[0].trim().toUpperCase();
       if (st) (byStyle[st] = byStyle[st] || []).push(p);
     }
-    const state = await (await sb('sanmar_flat_state?select=style,checked_at&limit=20000')).json();
+    const state = await pageAll('sanmar_flat_state?select=style,checked_at&order=style');
     const freshCutoff = Date.now() - RECHECK_DAYS * 24 * 3600e3;
     const fresh = new Set(arr(state).filter((r) => new Date(r.checked_at).getTime() > freshCutoff).map((r) => r.style));
     // Styles still missing a flat image go first so the budget always makes
