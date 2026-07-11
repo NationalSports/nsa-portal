@@ -68,6 +68,26 @@ const isFunctionMissing = (error) => {
 
 const isStaleState = (error) => !!error && /NSA_STALE_STATE/.test(error.message || '');
 
+// Postgres "relation does not exist" (42P01) or "column does not exist"
+// (42703) — both surface as PostgREST schema-cache misses too, for
+// migrations (00194 rates, 00196 teamshop_po_allowed) that may not be
+// applied yet to whatever DB this build points at.
+const isMissingRelation = (error) => {
+  if (!error) return false;
+  const code = error.code || '';
+  const msg = (error.message || '') + ' ' + (error.details || '') + ' ' + (error.hint || '');
+  return code === '42P01' || code === '42703' || /does not exist|could not find|schema cache/i.test(msg);
+};
+
+const DECO_TYPES = ['embroidery', 'dtf', 'vinyl', 'silicone_patch', 'screen_print'];
+const familyForType = (type) => (
+  type === 'embroidery' ? 'embroidery'
+    : type === 'screen_print' ? 'screen_print'
+    : 'heat' // dtf | vinyl | silicone_patch
+);
+
+const TEAMSHOP_STORE_SLUG = 'nationalteamshop';
+
 // Session tracker for the main staff client — mirrors
 // src/teamshop/useCoachSession.js, but against `supabase` (staff auth), not
 // the isolated supabaseCoach client.
@@ -383,6 +403,547 @@ function TeamShopQueueBoard({ email }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Settings — Team Shop money knobs a rep/manager can edit without an
+// engineering ticket: the deco rate card (00194), per-customer School-PO
+// eligibility (00196), and the flat shipping fee (webstores.flat_shipping,
+// read by teamshop-checkout.js's shipFee(), same helper webstore-checkout.js
+// uses). Each sub-section degrades independently if its migration hasn't
+// landed on this DB yet — a missing table/column never blanks the page.
+
+const NEW_RATE_ROW = { type: 'embroidery', option_key: 'standard', label: '', price: '', min_qty: 1 };
+
+function RateCardSection() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [edits, setEdits] = useState({}); // id -> partial field overrides
+  const [savingId, setSavingId] = useState(null);
+  const [newRow, setNewRow] = useState(NEW_RATE_ROW);
+  const [addBusy, setAddBusy] = useState(false);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const load = useCallback(() => {
+    setErr(null);
+    return supabase
+      .from('teamshop_deco_rates')
+      .select('*')
+      .order('family', { ascending: true })
+      .order('sort_order', { ascending: true })
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error) {
+          if (isMissingRelation(error)) { setMissing(true); return; }
+          setErr(error.message || String(error));
+          return;
+        }
+        setMissing(false);
+        setRows(data || []);
+      });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fieldFor = (row, key) => {
+    const e = edits[row.id];
+    return e && Object.prototype.hasOwnProperty.call(e, key) ? e[key] : row[key];
+  };
+
+  const setField = (row, key, value) => {
+    setEdits((prev) => ({ ...prev, [row.id]: { ...(prev[row.id] || {}), [key]: value } }));
+  };
+
+  const isDirty = (row) => !!edits[row.id] && Object.keys(edits[row.id]).length > 0;
+
+  const saveRow = (row) => {
+    const patch = edits[row.id];
+    if (!patch) return;
+    const priceVal = Object.prototype.hasOwnProperty.call(patch, 'price') ? patch.price : row.price;
+    const costRaw = Object.prototype.hasOwnProperty.call(patch, 'cost') ? patch.cost : row.cost;
+    const minQtyVal = Object.prototype.hasOwnProperty.call(patch, 'min_qty') ? patch.min_qty : row.min_qty;
+    const update = {
+      label: Object.prototype.hasOwnProperty.call(patch, 'label') ? patch.label : row.label,
+      price: Number(priceVal) || 0,
+      cost: costRaw === '' || costRaw === null || costRaw === undefined ? null : Number(costRaw),
+      min_qty: Math.max(1, parseInt(minQtyVal, 10) || 1),
+      active: Object.prototype.hasOwnProperty.call(patch, 'active') ? patch.active : row.active,
+    };
+    setSavingId(row.id);
+    // Optimistic update.
+    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...update } : r)));
+    supabase.from('teamshop_deco_rates').update(update).eq('id', row.id).then(({ error }) => {
+      setSavingId(null);
+      if (error) {
+        showToast('Rate save failed: ' + (error.message || 'unknown error'));
+        load();
+        return;
+      }
+      setEdits((prev) => { const n = { ...prev }; delete n[row.id]; return n; });
+    });
+  };
+
+  const toggleActive = (row) => {
+    setEdits((prev) => ({ ...prev, [row.id]: { ...(prev[row.id] || {}), active: !fieldFor(row, 'active') } }));
+    // Active is a simple flip — save immediately, no separate button state needed.
+    setTimeout(() => saveRow(row), 0);
+  };
+
+  const addOption = () => {
+    const type = newRow.type;
+    const family = familyForType(type);
+    const price = Number(newRow.price) || 0;
+    const min_qty = Math.max(1, parseInt(newRow.min_qty, 10) || 1);
+    const insertRow = {
+      family, type,
+      option_key: (newRow.option_key || 'standard').trim() || 'standard',
+      label: (newRow.label || '').trim(),
+      price, min_qty,
+      sort_order: rows.length,
+      active: true,
+    };
+    if (!insertRow.label) { showToast('Add option: label is required'); return; }
+    setAddBusy(true);
+    supabase.from('teamshop_deco_rates').insert(insertRow).then(({ error }) => {
+      setAddBusy(false);
+      if (error) {
+        showToast('Add option failed: ' + (error.message || 'unknown error'));
+        return;
+      }
+      setNewRow(NEW_RATE_ROW);
+      load();
+    });
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>Loading rate card…</div>;
+
+  if (missing) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        Rate card migration (00194) not applied yet.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Rate changes take effect on the next quote — carts re-quote automatically at checkout.
+      </div>
+      {err && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          Failed to load rates: {err}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#475569', fontSize: 11, textTransform: 'uppercase' }}>
+              <th style={{ padding: '4px 8px' }}>Family</th>
+              <th style={{ padding: '4px 8px' }}>Type / Option</th>
+              <th style={{ padding: '4px 8px' }}>Label</th>
+              <th style={{ padding: '4px 8px' }}>Price</th>
+              <th style={{ padding: '4px 8px' }}>Cost</th>
+              <th style={{ padding: '4px 8px' }}>Min qty</th>
+              <th style={{ padding: '4px 8px' }}>Active</th>
+              <th style={{ padding: '4px 8px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const costVal = fieldFor(row, 'cost');
+              const costEmpty = costVal === null || costVal === undefined || costVal === '';
+              return (
+                <tr key={row.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                  <td style={{ padding: '4px 8px' }}>{row.family}</td>
+                  <td style={{ padding: '4px 8px', color: '#64748b' }}>{row.type} / {row.option_key}</td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="text"
+                      aria-label={'label-' + row.id}
+                      value={fieldFor(row, 'label') || ''}
+                      onChange={(e) => setField(row, 'label', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 160 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      aria-label={'price-' + row.id}
+                      value={fieldFor(row, 'price')}
+                      onChange={(e) => setField(row, 'price', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 80 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      aria-label={'cost-' + row.id}
+                      value={costEmpty ? '' : costVal}
+                      onChange={(e) => setField(row, 'cost', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 80 }}
+                    />
+                    {costEmpty && <div style={{ fontSize: 10, color: '#94a3b8' }}>cost unset — GP will read 0</div>}
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      aria-label={'minqty-' + row.id}
+                      value={fieldFor(row, 'min_qty')}
+                      onChange={(e) => setField(row, 'min_qty', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 60 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="checkbox"
+                      aria-label={'active-' + row.id}
+                      checked={!!fieldFor(row, 'active')}
+                      onChange={() => toggleActive(row)}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <button
+                      type="button"
+                      aria-label={'save-rate-' + row.id}
+                      disabled={!isDirty(row) || savingId === row.id}
+                      onClick={() => saveRow(row)}
+                      style={{
+                        padding: '4px 10px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
+                        background: isDirty(row) ? '#1d4ed8' : '#e2e8f0', color: isDirty(row) ? '#fff' : '#94a3b8',
+                        cursor: isDirty(row) ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      {savingId === row.id ? 'Saving…' : 'Save'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 16, padding: 12, background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 8, textTransform: 'uppercase' }}>Add option</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <select
+            aria-label="new-rate-type"
+            value={newRow.type}
+            onChange={(e) => setNewRow((r) => ({ ...r, type: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4 }}
+          >
+            {DECO_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>family: {familyForType(newRow.type)}</span>
+          <input
+            type="text"
+            aria-label="new-rate-option-key"
+            placeholder="option_key (default: standard)"
+            value={newRow.option_key}
+            onChange={(e) => setNewRow((r) => ({ ...r, option_key: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 160 }}
+          />
+          <input
+            type="text"
+            aria-label="new-rate-label"
+            placeholder="Label"
+            value={newRow.label}
+            onChange={(e) => setNewRow((r) => ({ ...r, label: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 160 }}
+          />
+          <input
+            type="number"
+            aria-label="new-rate-price"
+            min="0"
+            step="0.01"
+            placeholder="Price"
+            value={newRow.price}
+            onChange={(e) => setNewRow((r) => ({ ...r, price: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 80 }}
+          />
+          <input
+            type="number"
+            aria-label="new-rate-minqty"
+            min="1"
+            step="1"
+            placeholder="Min qty"
+            value={newRow.min_qty}
+            onChange={(e) => setNewRow((r) => ({ ...r, min_qty: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 70 }}
+          />
+          <button
+            type="button"
+            aria-label="add-rate-option-submit"
+            disabled={addBusy}
+            onClick={addOption}
+            style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {addBusy ? 'Adding…' : 'Add option'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PoEligibilitySection() {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [hidden, setHidden] = useState(false);
+  const [toast, setToast] = useState(null);
+  const [savingId, setSavingId] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  // Proactive probe so the section hides itself before the migration if
+  // teamshop_po_allowed doesn't exist yet, rather than waiting for a search.
+  useEffect(() => {
+    supabase.from('customers').select('id,name,teamshop_po_allowed').limit(1).then(({ error }) => {
+      if (error && isMissingRelation(error)) setHidden(true);
+    });
+  }, []);
+
+  const runSearch = useCallback((term) => {
+    setLoading(true);
+    supabase
+      .from('customers')
+      .select('id,name,teamshop_po_allowed')
+      .ilike('name', '%' + term + '%')
+      .limit(20)
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error) {
+          if (isMissingRelation(error)) { setHidden(true); return; }
+          showToast('Search failed: ' + (error.message || 'unknown error'));
+          return;
+        }
+        setResults(data || []);
+      });
+  }, []);
+
+  useEffect(() => {
+    if (!q.trim()) { setResults([]); return; }
+    runSearch(q.trim());
+  }, [q, runSearch]);
+
+  const toggle = (row) => {
+    const next = !row.teamshop_po_allowed;
+    setSavingId(row.id);
+    setResults((prev) => prev.map((r) => (r.id === row.id ? { ...r, teamshop_po_allowed: next } : r)));
+    supabase.from('customers').update({ teamshop_po_allowed: next }).eq('id', row.id).then(({ error }) => {
+      setSavingId(null);
+      if (error) {
+        showToast('Update failed: ' + (error.message || 'unknown error'));
+        setResults((prev) => prev.map((r) => (r.id === row.id ? { ...r, teamshop_po_allowed: !next } : r)));
+      }
+    });
+  };
+
+  if (hidden) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        School-PO eligibility migration (00196) not applied yet — this section is hidden.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Programs allowed to check out with a School PO.
+      </div>
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <input
+        type="text"
+        placeholder="Search customer / program name"
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        style={{ padding: '6px 10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, minWidth: 260, marginBottom: 10 }}
+      />
+      {loading && <div style={{ fontSize: 12, color: '#94a3b8' }}>Searching…</div>}
+      {!loading && q.trim() && results.length === 0 && (
+        <div style={{ fontSize: 12, color: '#94a3b8' }}>No matches.</div>
+      )}
+      {results.map((row) => (
+        <div key={row.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', borderBottom: '1px solid #e2e8f0' }}>
+          <span style={{ fontSize: 13 }}>{row.name}</span>
+          <label style={{ fontSize: 12, color: '#334155', display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              aria-label={'po-allowed-' + row.id}
+              checked={!!row.teamshop_po_allowed}
+              disabled={savingId === row.id}
+              onChange={() => toggle(row)}
+            />
+            PO allowed
+          </label>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ShippingSection() {
+  const [store, setStore] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [hidden, setHidden] = useState(false);
+  const [value, setValue] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  useEffect(() => {
+    supabase
+      .from('webstores')
+      .select('id,flat_shipping')
+      .eq('slug', TEAMSHOP_STORE_SLUG)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error || !data) { setHidden(true); return; }
+        setStore(data);
+        setValue(String(data.flat_shipping != null ? data.flat_shipping : 0));
+      });
+  }, []);
+
+  const save = () => {
+    if (!store) return;
+    const flat_shipping = Number(value) || 0;
+    setSaving(true);
+    supabase.from('webstores').update({ flat_shipping }).eq('id', store.id).then(({ error }) => {
+      setSaving(false);
+      if (error) {
+        showToast('Save failed: ' + (error.message || 'unknown error'));
+        return;
+      }
+      setStore((s) => ({ ...s, flat_shipping }));
+      showToast('Shipping fee saved');
+    });
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>Loading shipping…</div>;
+
+  if (hidden) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        Team Shop store row (nationalteamshop, 00191) not found — shipping fee is hidden.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <label style={{ fontSize: 13, color: '#334155' }}>Flat shipping fee ($)</label>
+        <input
+          type="number"
+          min="0"
+          step="0.01"
+          aria-label="flat-shipping"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          style={{ padding: '6px 10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, width: 100 }}
+        />
+        <button
+          type="button"
+          disabled={saving}
+          onClick={save}
+          style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#1d4ed8', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+        >
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+        <span style={{ fontSize: 11, color: '#94a3b8' }}>(applies to new quotes immediately)</span>
+      </div>
+    </div>
+  );
+}
+
+function TeamShopSettings() {
+  return (
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
+      <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: '0 0 16px' }}>Team Shop — Settings</h1>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Deco rate card</h2>
+        <RateCardSection />
+      </section>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>School PO eligibility</h2>
+        <PoEligibilitySection />
+      </section>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Shipping</h2>
+        <ShippingSection />
+      </section>
+    </div>
+  );
+}
+
+function TeamShopQueueTabs({ email }) {
+  const [tab, setTab] = useState('queue');
+
+  const tabBtn = (key, label) => (
+    <button
+      type="button"
+      onClick={() => setTab(key)}
+      style={{
+        padding: '6px 14px', fontSize: 13, fontWeight: 700, borderRadius: 6, cursor: 'pointer',
+        border: tab === key ? '1px solid #1d4ed8' : '1px solid #cbd5e1',
+        background: tab === key ? '#1d4ed8' : '#fff',
+        color: tab === key ? '#fff' : '#334155',
+      }}
+    >
+      {label}
+    </button>
+  );
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, padding: '12px 20px 0', background: '#f8fafc' }}>
+        {tabBtn('queue', 'Queue')}
+        {tabBtn('settings', 'Settings')}
+      </div>
+      {tab === 'queue' ? <TeamShopQueueBoard email={email} /> : <TeamShopSettings />}
+    </div>
+  );
+}
+
 export default function TeamShopQueue() {
   const { loading, signedIn, email } = useStaffSession();
 
@@ -405,5 +966,5 @@ export default function TeamShopQueue() {
     );
   }
 
-  return <TeamShopQueueBoard email={email} />;
+  return <TeamShopQueueTabs email={email} />;
 }
