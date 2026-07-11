@@ -1073,6 +1073,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
   const [templateFor, setTemplateFor] = useState(null);         // store being saved as a template → SaveAsTemplateModal
   const [tplAfterEdit, setTplAfterEdit] = useState(null);       // { storeId, tpl } — color picker queued to open after the settings save (Start Store from a store template)
+  const [quickBuild, setQuickBuild] = useState(false);          // Quick Build modal — one-form store spin-up from a template + customer + branding
 
   // "Create from OMG" — the single unified entry point for turning an OMG report link into a
   // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
@@ -1300,6 +1301,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { flash('Launched (coach email failed: ' + (e.message || e) + ').'); }
   }, [coachPortalUrl, flash]);
 
+  // Quick Build completed server-side (store-quick-build). Refresh the list, surface any
+  // warnings, then either land the rep in Settings (draft) or fire the coach launch email
+  // (published) — the latter needs the full store row the flyer/email reads from.
+  const onQuickBuilt = useCallback(async (result, ctx) => {
+    setQuickBuild(false);
+    await loadStores();
+    let full = null;
+    try { const { data } = await supabase.from('webstores').select('*').eq('id', result.store.id).single(); full = data; } catch (_) { /* best-effort */ }
+    if (result.warnings && result.warnings.length) alert('Store built with warnings:\n\n• ' + result.warnings.join('\n• '));
+    if (ctx.publish) {
+      if (ctx.coachEmail && full) notifyCoachPublished(full);
+    } else if (full) {
+      setEditing(full);
+    }
+  }, [loadStores, notifyCoachPublished]);
+
   // On a manual close, trigger the server handler that creates a rep to-do and emails the
   // rep + assigned CSR a breakdown of the closed store. The scheduled webstore-close-sweep
   // does the same for stores that close automatically on their schedule; both are idempotent
@@ -1326,7 +1343,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (error) return { error };
       setStores((prev) => prev.map((s) => (s.id === existingId ? data : s)));
       if (sel?.id === existingId) setSel(data);
-      if (prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
+      if (prevStore && prevStore.status !== 'open' && data.status === 'open' && (data.created_via === 'coach' || data.created_via === 'auto')) notifyCoachPublished(data);
       flash('Store saved'); return { data };
     }
     // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
@@ -3063,6 +3080,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
       {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
       {templateFor && <SaveAsTemplateModal store={templateFor} onClose={() => setTemplateFor(null)} onConfirm={confirmSaveAsTemplate} />}
+      {quickBuild && <QuickBuildModal templates={stores.filter((s) => s.is_template)} cust={cust} onClose={() => setQuickBuild(false)} onDone={onQuickBuilt} />}
 
       {editing ? (
         <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
@@ -3099,7 +3117,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} onQuickBuild={() => setQuickBuild(true)} />
       )}
 
       {omgStep && <OmgImportWizard
@@ -3524,7 +3542,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg, onQuickBuild }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -3735,6 +3753,7 @@ function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, o
           </div>
           {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
           {onCreateFromOmg && <button className="btn btn-secondary" onClick={onCreateFromOmg} title="Turn a shared OMG report link into a new Club Webstore — review & fix SKUs, prices and names first" style={{ borderColor: '#bbf7d0', background: '#f0fdf4', color: '#166534' }}>📥 Create from OMG</button>}
+          {onQuickBuild && <button className="btn btn-secondary" onClick={onQuickBuild} title="Spin up a whole store in one form — pick a template, customer and branding, then build a draft or publish live" style={{ borderColor: '#fde68a', background: '#fffbeb', color: '#92400e' }}>⚡ Quick Build</button>}
           <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
         </div>
       </div>
@@ -4807,6 +4826,181 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
         <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !valid} style={{ background: '#166534' }} onClick={go}>{busy ? 'Launching…' : (emailCoach ? 'Launch & email coach' : 'Launch store')}</button>
           <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ⚡ Quick Build — spin up a whole store from one form. The heavy lifting (cloning the
+// template's catalog/packages, creating/linking the customer, branding, optional publish +
+// coach invite) happens server-side in store-quick-build; this modal just collects the
+// inputs and hands the result back to the parent for the list refresh + post-build routing.
+function QuickBuildModal({ templates = [], cust = [], onClose, onDone }) {
+  const fileRef = useRef();
+  const [templateId, setTemplateId] = useState('');
+  const [storeName, setStoreName] = useState('');
+  const [nameTouched, setNameTouched] = useState(false);
+  const [sport, setSport] = useState('');
+  const [customerName, setCustomerName] = useState('');
+  const [coachName, setCoachName] = useState('');
+  const [coachEmail, setCoachEmail] = useState('');
+  const [coachPhone, setCoachPhone] = useState('');
+  const [invite, setInvite] = useState(true);
+  const [logoUrl, setLogoUrl] = useState('');
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [primaryColor, setPrimaryColor] = useState('');
+  const [accentColor, setAccentColor] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const sortedCust = [...(cust || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const matchedCust = customerName.trim() ? sortedCust.find((c) => (c.name || '').trim().toLowerCase() === customerName.trim().toLowerCase()) : null;
+  const emailOk = !coachEmail.trim() || /.+@.+\..+/.test(coachEmail.trim());
+  const inviteOn = !!coachEmail.trim() && invite;
+  const noTemplates = !templates.length;
+
+  // Auto-suggest the store name from the customer + sport until the rep edits it themselves.
+  useEffect(() => {
+    if (!nameTouched && customerName.trim() && sport.trim()) setStoreName(`${customerName.trim()} ${sport.trim()}`);
+  }, [customerName, sport, nameTouched]);
+
+  const uploadLogo = async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { setError('Logo must be an image file.'); return; }
+    setLogoBusy(true); setError('');
+    try { const url = await cloudUpload(file, 'nsa-webstores'); setLogoUrl(url); }
+    catch (x) { setError(x.message || 'Logo upload failed.'); }
+    setLogoBusy(false);
+  };
+
+  const build = async (publish) => {
+    setError('');
+    if (!templateId) { setError('Pick a template store.'); return; }
+    if (!storeName.trim()) { setError('Enter a store name.'); return; }
+    if (!customerName.trim()) { setError('Enter a customer.'); return; }
+    if (!emailOk) { setError('Enter a valid coach email, or leave it blank.'); return; }
+    if (publish && !window.confirm(`Build & publish “${storeName.trim()}”?\n\nThis creates the store from the template and opens it live for shoppers${coachEmail.trim() ? ', then emails the coach the store link.' : '.'}`)) return;
+    setBusy(true);
+    const body = {
+      template_store_id: templateId,
+      store_name: storeName.trim(),
+      sport: sport.trim() || null,
+      logo_url: logoUrl || null,
+      primary_color: primaryColor || null,
+      accent_color: accentColor || null,
+      coach_name: coachName.trim() || null,
+      coach_email: coachEmail.trim() || null,
+      coach_phone: coachPhone.trim() || null,
+      lead_id: null,
+      publish,
+      invite_coach: inviteOn,
+    };
+    if (matchedCust) body.customer_id = matchedCust.id; else body.new_customer = { name: customerName.trim() };
+    try {
+      const r = await authFetch('/.netlify/functions/store-quick-build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { setError(j.error || `Build failed (${r.status}).`); setBusy(false); return; }
+      await onDone(j, { publish, coachEmail: coachEmail.trim() });
+      // Parent unmounts the modal on success — leave busy set so the buttons stay disabled.
+    } catch (e) { setError(e.message || 'Build failed.'); setBusy(false); }
+  };
+
+  const LBL = { display: 'block', fontSize: 11, fontWeight: 700, color: '#64748b', marginBottom: 4, textTransform: 'uppercase', letterSpacing: '.03em' };
+
+  return (
+    <div onClick={() => { if (!busy) onClose(); }} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '48px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 520, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>⚡ Quick Build</div>
+          <button onClick={() => { if (!busy) onClose(); }} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          {noTemplates ? (
+            <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.5 }}>No template stores yet. Mark an existing store as a template first (its <b>★ Template</b> action), then Quick Build can spin new stores from it.</div>
+          ) : (
+            <>
+              <div style={{ marginBottom: 12 }}>
+                <label style={LBL}>Template store</label>
+                <select className="form-input" value={templateId} onChange={(e) => setTemplateId(e.target.value)} style={{ width: '100%' }}>
+                  <option value="">Choose a template…</option>
+                  {templates.map((t) => <option key={t.id} value={t.id}>{t.name}{t.sport ? ` — ${t.sport}` : ''}</option>)}
+                </select>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={LBL}>Customer</label>
+                <input className="form-input" list="qb-customers" value={customerName} onChange={(e) => setCustomerName(e.target.value)} placeholder="Team / club name" style={{ width: '100%' }} />
+                <datalist id="qb-customers">{sortedCust.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+                {customerName.trim() && <div style={{ fontSize: 11, marginTop: 4, color: matchedCust ? '#166534' : '#a16207' }}>{matchedCust ? `Will link to existing: ${matchedCust.name}` : 'Will create a new customer'}</div>}
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={LBL}>Store name</label>
+                <input className="form-input" value={storeName} onChange={(e) => { setStoreName(e.target.value); setNameTouched(true); }} placeholder="e.g. Riverside Rockets Baseball" style={{ width: '100%' }} />
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={LBL}>Sport</label>
+                <input className="form-input" list="qb-sports" value={sport} onChange={(e) => setSport(e.target.value)} placeholder="Baseball" style={{ width: '100%' }} />
+                <datalist id="qb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 12 }}>
+                <div>
+                  <label style={LBL}>Coach name</label>
+                  <input className="form-input" value={coachName} onChange={(e) => setCoachName(e.target.value)} style={{ width: '100%' }} />
+                </div>
+                <div>
+                  <label style={LBL}>Coach phone</label>
+                  <input className="form-input" value={coachPhone} onChange={(e) => setCoachPhone(e.target.value)} style={{ width: '100%' }} />
+                </div>
+              </div>
+              <div style={{ marginBottom: 8 }}>
+                <label style={LBL}>Coach email</label>
+                <input className="form-input" type="email" value={coachEmail} onChange={(e) => setCoachEmail(e.target.value)} placeholder="coach@school.org" style={{ width: '100%' }} />
+                {!emailOk && <div style={{ fontSize: 11, color: '#b91c1c', marginTop: 4 }}>Enter a valid email, or leave it blank.</div>}
+              </div>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: coachEmail.trim() ? '#1e293b' : '#94a3b8', marginBottom: 14, cursor: coachEmail.trim() ? 'pointer' : 'not-allowed' }}>
+                <input type="checkbox" checked={inviteOn} disabled={!coachEmail.trim()} onChange={(e) => setInvite(e.target.checked)} />
+                Send coach portal invite
+              </label>
+              <div style={{ marginBottom: 12 }}>
+                <label style={LBL}>Logo</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  {logoUrl && <div style={{ width: 46, height: 46, borderRadius: 8, border: '1px solid #eef0f3', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}><img src={logoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /></div>}
+                  <button type="button" className="btn btn-secondary" disabled={logoBusy} onClick={() => fileRef.current?.click()}>{logoBusy ? 'Uploading…' : logoUrl ? 'Replace' : 'Upload'}</button>
+                  {logoUrl && <button type="button" onClick={() => setLogoUrl('')} style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Remove</button>}
+                  <input ref={fileRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadLogo(f); e.target.value = ''; }} />
+                </div>
+                <input className="form-input" value={logoUrl} onChange={(e) => setLogoUrl(e.target.value)} placeholder="…or paste a logo image URL" style={{ width: '100%', marginTop: 8 }} />
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 4 }}>
+                <div>
+                  <label style={LBL}>Primary color</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="color" value={primaryColor || '#192853'} onChange={(e) => setPrimaryColor(e.target.value)} style={{ width: 40, height: 32, padding: 0, border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }} />
+                    {primaryColor ? <button type="button" onClick={() => setPrimaryColor('')} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: 11, cursor: 'pointer' }}>inherit template</button> : <span style={{ fontSize: 11, color: '#94a3b8' }}>inherits template</span>}
+                  </div>
+                </div>
+                <div>
+                  <label style={LBL}>Accent color</label>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <input type="color" value={accentColor || '#962C32'} onChange={(e) => setAccentColor(e.target.value)} style={{ width: 40, height: 32, padding: 0, border: '1px solid #d1d5db', borderRadius: 6, cursor: 'pointer' }} />
+                    {accentColor ? <button type="button" onClick={() => setAccentColor('')} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: 11, cursor: 'pointer' }}>inherit template</button> : <span style={{ fontSize: 11, color: '#94a3b8' }}>inherits template</span>}
+                  </div>
+                </div>
+              </div>
+              {error && <div style={{ fontSize: 12.5, color: '#b91c1c', marginTop: 12, fontWeight: 600 }}>{error}</div>}
+            </>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          {noTemplates ? (
+            <button className="btn btn-secondary" onClick={onClose}>Close</button>
+          ) : (
+            <>
+              <button className="btn btn-primary" disabled={busy || logoBusy} onClick={() => build(false)}>{busy ? 'Building…' : 'Build draft'}</button>
+              <button className="btn btn-secondary" disabled={busy || logoBusy} style={{ borderColor: '#bbf7d0', background: '#f0fdf4', color: '#166534' }} onClick={() => build(true)}>{busy ? 'Building…' : 'Build & publish'}</button>
+              <button className="btn btn-secondary" disabled={busy} onClick={onClose} style={{ marginLeft: 'auto' }}>Cancel</button>
+            </>
+          )}
         </div>
       </div>
     </div>
