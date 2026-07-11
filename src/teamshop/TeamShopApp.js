@@ -13,6 +13,7 @@ import PlacementPicker from './PlacementPicker';
 import CartPage from './CartPage';
 import CheckoutPage from './CheckoutPage';
 import AccountPage from './AccountPage';
+import ChatWidget from './ChatWidget';
 import { useCart } from './cart';
 import useCoachSession from './useCoachSession';
 import { STORAGE_KEY as NTS_CUSTOMER_KEY } from './TeamPicker';
@@ -685,6 +686,12 @@ export default function TeamShopApp() {
           </div>
         </div>
       </footer>
+
+      {/* Team Shop Assistant — floating chat widget, available on every
+          storefront view (mounted here, outside the route switch, so it
+          survives navigation). v1 is a canned/rule-based bot, no AI
+          backend — see ChatWidget.js. */}
+      <ChatWidget customer={orderCustomer} onOpenAccount={() => goAccount()} onOpenDecoration={goDecoration} />
     </div>
   );
 }

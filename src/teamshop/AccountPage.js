@@ -4,6 +4,7 @@ import TeamPicker from './TeamPicker';
 import LogoPicker from './LogoPicker';
 import { statusChipLabel } from '../lib/teamshopOrderStatus';
 import useCoachSession from './useCoachSession';
+import { fetchTeamShopOrders } from './teamshopOrdersApi';
 import {
   NAVY, NAVY_DARK, RED, RED_SOFT, BORDER, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
@@ -100,15 +101,8 @@ function OrdersSection({ customer, onReorder, onOrdersChange }) {
     setState('loading');
     (async () => {
       try {
-        const res = await fetch('/.netlify/functions/teamshop-orders', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
-          body: JSON.stringify({ action: 'list', customer_id: customerId }),
-        });
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error || 'Request failed');
+        const rows = await fetchTeamShopOrders(accessToken, customerId);
         if (!alive) return;
-        const rows = Array.isArray(json.orders) ? json.orders : [];
         setOrders(rows);
         if (onOrdersChange) onOrdersChange(rows);
         setState('ready');
