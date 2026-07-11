@@ -206,6 +206,22 @@ export default function TeamShopApp() {
   // Account icon (header) and footer "My logos"/"Reorder" links all land
   // here; `section` scrolls AccountPage to the right part ('logos'|'orders').
   const goAccount = (section) => { setRoute('account'); setAccountSection(section || null); setPreviewProduct(null); };
+  // AccountPage's Reorder button (Stage 8): fetch the order's first item's
+  // product row — same anon `products` read categoryHeroes.js already relies
+  // on (RLS: products_select `for select using (true)`) — and open it on the
+  // top-level catalog's ProductPage, same destination the anonymous catalog
+  // card click uses (route === 'catalog' && previewProduct above).
+  const reorderProduct = async (productId) => {
+    if (!productId) return;
+    try {
+      const { data, error } = await supabaseCoach.from('products')
+        .select('id,sku,name,brand,image_front_url,category')
+        .eq('id', productId).limit(1);
+      if (error || !data || !data[0]) return;
+      setPreviewProduct(data[0]);
+      setRoute('catalog');
+    } catch { /* no-op — the coach stays on Account */ }
+  };
   // Header "Decoration" nav item, footer Decoration column links, and Home's
   // "How we decorate" cards all land here — `method` defaults to whatever's
   // already selected (nav item) or picks a specific variant (footer/Home
@@ -418,6 +434,7 @@ export default function TeamShopApp() {
             section={accountSection}
             customer={orderCustomer}
             onCustomerSelect={setOrderCustomer}
+            onReorder={reorderProduct}
           />
         )}
 

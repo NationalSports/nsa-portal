@@ -749,6 +749,39 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     }catch(e){/* fall through to the plain link */}
     try{const w=window.open(href,CP_LINK_TARGET,'noopener');if(!w)window.location.assign(href);}catch(e){window.location.assign(href);}
   };
+  // ── Team Shop orders card (Stage 8) — only once a coach session exists
+  // (ntsSession above); netlify/functions/teamshop-orders.js 'list' against
+  // THIS portal's customer.id, same auth model as the handoff mint. Fetched
+  // once per session+customer, not polled — this is a compact recent-orders
+  // peek, not a live order desk.
+  const[ntsOrders,setNtsOrders]=useState(null);// null = not loaded yet
+  useEffect(()=>{let dead=false;
+    if(!ntsSession||!customer?.id){setNtsOrders(null);return;}
+    (async()=>{
+      try{
+        const r=await fetch('/.netlify/functions/teamshop-orders',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+ntsSession.access_token},body:JSON.stringify({action:'list',customer_id:customer.id})});
+        const b=await r.json().catch(()=>null);
+        if(!dead)setNtsOrders(r.ok&&b&&Array.isArray(b.orders)?b.orders:[]);
+      }catch(e){if(!dead)setNtsOrders([]);}
+    })();
+    return()=>{dead=true;};
+  },[ntsSession,customer?.id]);
+  // Same friendly status vocabulary as src/teamshop/AccountPage.js's
+  // statusChipLabel — intentionally a small standalone copy (CoachPortal.js
+  // sits outside the teamshop chunk, no shared module between them).
+  const ntsStatusLabel=(o)=>{
+    if(o.status==='cancelled')return'Cancelled';
+    if(o.status==='refunded')return'Refunded';
+    if(o.status==='pending_payment')return'Awaiting payment';
+    if(o.status==='unpaid')return'PO review';
+    const stage=o.production&&o.production.stage;
+    if(stage==='shipped')return'Shipped';
+    if(stage==='decorated')return'Decorated';
+    if(stage==='in production')return'In production';
+    if(stage==='queued')return'Queued';
+    if(stage==='received')return'Received';
+    return'Processing';
+  };
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -2577,6 +2610,36 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
           </button>
+
+          {/* Team Shop orders — compact recent-orders peek (Stage 8). Only
+              renders once a coach session exists; the verify-email banner
+              above already invites sign-in when there's none. */}
+          {ntsSession&&ntsOrders&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:8,padding:'18px 22px',marginBottom:14,boxShadow:'0 2px 12px rgba(0,0,0,.06)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Team Shop orders</div>
+              <button onClick={openTeamShop} style={{background:'none',border:'none',color:tAccent,fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'inherit',padding:0}}>View all →</button>
+            </div>
+            {!ntsOrders.length&&<div style={{fontSize:13,color:'#64748b',padding:'6px 0'}}>No orders yet — browse National Team Shop to place your first one.</div>}
+            {ntsOrders.slice(0,3).map(o=>{
+              const first=o.items&&o.items[0];
+              const extra=o.items?o.items.length-1:0;
+              const label=first?(first.name||first.sku||'Item')+(extra>0?` + ${extra} more`:''):'Order';
+              return(
+                <div key={o.id} style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'9px 0',borderTop:'1px solid #F1F5F9'}}>
+                  <div style={{flex:'1 1 200px',minWidth:0}}>
+                    <div style={{fontSize:13.5,fontWeight:700,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{label}</div>
+                    <div style={{fontSize:11.5,color:'#64748b',marginTop:2}}>{o.created_at?new Date(o.created_at).toLocaleDateString():''}</div>
+                  </div>
+                  <span style={{display:'inline-block',fontSize:11,fontWeight:800,padding:'4px 9px',borderRadius:20,background:'#F1F5F9',color:'#475569',whiteSpace:'nowrap'}}>{ntsStatusLabel(o)}</span>
+                  {/* /shop/order/<token> is host-agnostic (src/index.js checks the
+                      PATH before any host routing — see OrderTrack.js's header
+                      comment), so a relative link works from this portal's own
+                      origin same as it would from nationalteamshop.com. */}
+                  {o.status_token&&<a href={'/shop/order/'+o.status_token} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{fontSize:11.5,fontWeight:700,color:tAccent,textDecoration:'none',whiteSpace:'nowrap'}}>Track ↗</a>}
+                </div>
+              );
+            })}
+          </div>}
 
           {/* Live Look tile — the highlight */}
           <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>

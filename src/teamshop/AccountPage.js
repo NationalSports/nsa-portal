@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import LogoPicker from './LogoPicker';
+import useCoachSession from './useCoachSession';
 import {
   NAVY, NAVY_DARK, RED, RED_SOFT, BORDER, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
@@ -31,17 +32,18 @@ import {
 //     The hero's "Saved logos" count reuses LogoPicker's real list via the
 //     small onLogosChange callback added to LogoPicker.js (still one fetch,
 //     just reported upward — see that file).
-//   - Recent orders / Reorder: there is NO order-history endpoint for
-//     coaches yet (see TeamShopApp.js's Stage comments) — rendered as an
-//     honest "coming soon" shell per the mockup's layout.
-//     TODO(account-orders): wire to a real list-my-orders API once one
-//     exists. A coach who already has an order confirmation email can still
-//     track it at its token-based /shop/order/<status_token> link — that's
-//     a different (already-shipped) webstore feature, not this one. The v2
-//     mockup (Account.dc.html) now links each reorder row to
-//     "Product.dc.html?p={{ o.slug }}" — i.e. once the order-history API
-//     exists, "Reorder" is meant to route to ProductPage for that order's
-//     product(s), not invent its own re-add-to-cart flow.
+//   - Recent orders / Reorder (Stage 8): netlify/functions/teamshop-orders.js
+//     'list' now backs both sections for real — fetched on mount once a coach
+//     session + customer are both known. Each row shows date, item count +
+//     first item name, total, a friendly STATUS chip (see statusChipLabel
+//     below), and a 'Track' link to the existing tokenless
+//     /shop/order/<status_token> tracker (OrderTrack.js — unchanged). Per the
+//     v2 mockup (Account.dc.html links each reorder row to
+//     "Product.dc.html?p={{ o.slug }}"): 'Reorder' calls the onReorder prop
+//     with the order's first item's product_id; TeamShopApp owns turning that
+//     into a ProductPage preview (fetches the product row, sets
+//     previewProduct + route 'catalog') — this component never fetches
+//     products or touches routing itself.
 //   - Saved roster: the mockup's "Saved roster" size-run card is fictional
 //     design-tool state (a local `nts_roster` key that exists only in the
 //     .dc.html mockup's own script, nowhere in this codebase) — it is NOT
@@ -57,6 +59,114 @@ import {
 //   customer         — the shared order-flow customer (or null)
 //   onCustomerSelect — TeamShopApp's setOrderCustomer, shared with the rest
 //                      of the app so switching teams here matches everywhere.
+//   onReorder        — optional (productId) => void. TeamShopApp opens that
+//                       product's ProductPage in the catalog route. Omitted
+//                       in contexts where reordering has nowhere to go.
+
+const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// order.status (webstore_orders) + order.production.stage (teamshop-orders.js,
+// derived from so_jobs/webstore_shipments) -> one friendly chip. Production
+// stage — once the order has converted to a Sales Order — takes priority over
+// the raw 'paid'/'batched' status, same as the tokenless tracker's story.
+function statusChipLabel(order) {
+  if (order.status === 'cancelled') return 'Cancelled';
+  if (order.status === 'refunded') return 'Refunded';
+  if (order.status === 'pending_payment') return 'Awaiting payment';
+  if (order.status === 'unpaid') return 'PO review';
+  const stage = order.production && order.production.stage;
+  if (stage === 'shipped') return 'Shipped';
+  if (stage === 'decorated') return 'Decorated';
+  if (stage === 'in production') return 'In production';
+  if (stage === 'queued') return 'Queued';
+  if (stage === 'received') return 'Received';
+  return 'Processing';
+}
+
+function StatusChip({ order }) {
+  const label = statusChipLabel(order);
+  const tone = {
+    'Cancelled': ['#FCE9EA', '#962C32'], 'Refunded': ['#F1F5F9', '#475569'],
+    'Awaiting payment': ['#FEF3C7', '#92400E'], 'PO review': ['#FEF3C7', '#92400E'],
+    'Shipped': ['#DCFCE7', '#166534'], 'Decorated': ['#FAE8FF', '#86198F'],
+    'In production': ['#FEF3C7', '#92400E'], 'Queued': ['#EEF2FF', '#3730A3'],
+    'Received': ['#EEF2FF', '#3730A3'], 'Processing': ['#F1F5F9', '#475569'],
+  }[label] || ['#F1F5F9', '#475569'];
+  return <span style={{ display: 'inline-block', fontSize: 11.5, fontWeight: 800, padding: '4px 10px', borderRadius: 20, background: tone[0], color: tone[1], whiteSpace: 'nowrap' }}>{label}</span>;
+}
+
+// Recent orders — netlify/functions/teamshop-orders.js 'list', coach-JWT
+// authed (useCoachSession's accessToken, same bearer pattern as LogoPicker).
+// onOrdersChange reports the list upward, same as LogoPicker's
+// onLogosChange, so the hero's "Orders placed" stat can show a real count.
+function OrdersSection({ customer, onReorder, onOrdersChange }) {
+  const { accessToken } = useCoachSession();
+  const [state, setState] = useState('loading'); // loading|ready|error
+  const [orders, setOrders] = useState([]);
+  const customerId = customer && customer.id;
+
+  useEffect(() => {
+    if (!accessToken || !customerId) return undefined;
+    let alive = true;
+    setState('loading');
+    (async () => {
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-orders', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+          body: JSON.stringify({ action: 'list', customer_id: customerId }),
+        });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(json.error || 'Request failed');
+        if (!alive) return;
+        const rows = Array.isArray(json.orders) ? json.orders : [];
+        setOrders(rows);
+        if (onOrdersChange) onOrdersChange(rows);
+        setState('ready');
+      } catch (e) {
+        if (alive) setState('error');
+      }
+    })();
+    return () => { alive = false; };
+  }, [accessToken, customerId, onOrdersChange]);
+
+  if (!customerId) return <ComingSoon text="Pick a team above to see its order history." />;
+  if (state === 'loading') return <p style={{ fontSize: 14, color: TEXT_MUTED, textAlign: 'center', padding: 24 }}>Loading your orders…</p>;
+  if (state === 'error') return <p style={{ fontSize: 14, color: '#962C32', textAlign: 'center', padding: 24 }}>Couldn't load your orders — try again in a moment.</p>;
+  if (!orders.length) return <ComingSoon text="No orders yet — orders you place will show up here." />;
+
+  return (
+    <div>
+      {orders.map((o) => {
+        const first = o.items && o.items[0];
+        const extra = o.items ? o.items.length - 1 : 0;
+        const itemLabel = first ? `${first.name || first.sku || 'Item'}${extra > 0 ? ` + ${extra} more` : ''}` : 'Order';
+        return (
+          <div key={o.id} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12, padding: '14px 0', borderBottom: `1px solid ${BORDER}` }}>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: NAVY }}>{itemLabel}</div>
+              <div style={{ fontSize: 12.5, color: TEXT_MUTED, marginTop: 3 }}>
+                {o.created_at ? new Date(o.created_at).toLocaleDateString() : ''} · {o.items ? o.items.length : 0} item{o.items && o.items.length === 1 ? '' : 's'} · {money(o.total)}
+              </div>
+            </div>
+            <StatusChip order={o} />
+            {o.status_token && (
+              <a href={`/shop/order/${o.status_token}`} style={{ fontSize: 12.5, fontWeight: 700, color: RED, textDecoration: 'none' }}>Track</a>
+            )}
+            {onReorder && first && first.product_id && (
+              <button
+                onClick={() => onReorder(first.product_id)}
+                style={{ fontSize: 12.5, fontWeight: 700, color: NAVY, background: 'none', border: `1px solid ${BORDER}`, borderRadius: 8, padding: '6px 12px', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Reorder
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function SectionShell({ eyebrow, title, children }) {
   return (
@@ -86,8 +196,9 @@ function StatTile({ value, label, note }) {
   );
 }
 
-function AccountSignedIn({ section, customer, onCustomerSelect }) {
+function AccountSignedIn({ section, customer, onCustomerSelect, onReorder }) {
   const [logos, setLogos] = useState(null); // null = not loaded yet
+  const [orders, setOrders] = useState(null); // null = not loaded yet
   const logosRef = useRef(null);
   const ordersRef = useRef(null);
 
@@ -107,7 +218,7 @@ function AccountSignedIn({ section, customer, onCustomerSelect }) {
         <p style={{ margin: '0 0 18px', fontSize: 14, color: 'rgba(255,255,255,0.72)' }}>Team Shop account</p>
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
           <StatTile value={logos === null ? '—' : logos.length} label="Saved logos" />
-          <StatTile value="—" label="Orders placed" note="Coming soon" />
+          <StatTile value={orders === null ? '—' : orders.length} label="Orders placed" />
           <StatTile value="—" label="Roster on file" note="Coming soon" />
         </div>
       </section>
@@ -141,13 +252,11 @@ function AccountSignedIn({ section, customer, onCustomerSelect }) {
 
         <div ref={ordersRef} style={{ gridColumn: '1 / -1' }}>
           <SectionShell eyebrow="History" title="Recent orders">
-            <ComingSoon text="Order history isn't wired up here yet — TODO(account-orders): there's no list-my-orders API for coaches yet. Already have an order? Use the tracking link from your confirmation email." />
-          </SectionShell>
-        </div>
-
-        <div style={{ gridColumn: '1 / -1' }}>
-          <SectionShell eyebrow="Reorder" title="Reorder a past order">
-            <ComingSoon text="Reorder needs order history first — TODO(account-orders): once that API exists, each reorder routes to that order's product page to re-order, per the approved design." />
+            {customer ? (
+              <OrdersSection customer={customer} onReorder={onReorder} onOrdersChange={setOrders} />
+            ) : (
+              <p style={{ fontSize: 14, color: TEXT_MUTED }}>Pick a team above to see its order history.</p>
+            )}
           </SectionShell>
         </div>
 
@@ -161,18 +270,18 @@ function AccountSignedIn({ section, customer, onCustomerSelect }) {
   );
 }
 
-export default function AccountPage({ section, customer, onCustomerSelect }) {
+export default function AccountPage({ section, customer, onCustomerSelect, onReorder }) {
   return (
     <div style={{ maxWidth: 1200, width: '100%', margin: '0 auto', padding: 'clamp(28px,4vw,56px) 24px clamp(48px,6vw,80px)' }}>
       <div style={{ textAlign: 'center', marginBottom: 'clamp(24px,3vw,36px)' }}>
         <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>Your account</p>
         <h1 style={displayType('clamp(1.8rem,3.6vw,2.4rem)', { color: NAVY, margin: '0 0 8px' })}>Coach sign-in &amp; saved gear</h1>
         <p style={{ fontSize: 14, color: TEXT_MUTED, margin: '0 auto', maxWidth: 480, lineHeight: 1.6 }}>
-          Sign in to see your saved logos and your team — order history is coming soon.
+          Sign in to see your saved logos, your team, and your order history.
         </p>
       </div>
       <CoachGate>
-        <AccountSignedIn section={section} customer={customer} onCustomerSelect={onCustomerSelect} />
+        <AccountSignedIn section={section} customer={customer} onCustomerSelect={onCustomerSelect} onReorder={onReorder} />
       </CoachGate>
     </div>
   );
