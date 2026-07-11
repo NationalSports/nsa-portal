@@ -754,7 +754,17 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
   // A preset replaces the design (colors/pattern/number color) but keeps the
   // coach's team name, players, logos, and roster.
   const pickDesign = (pz) => {
-    if (pz) set({ ...pz.config, designId: pz ? pz.id : null, ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}) });
+    // Picking a gallery design starts a CLEAN garment: no numbers, name or
+    // logos carried over from a previous session's autosave — only the team's
+    // identity (sport, name, palette, program) survives. "Start From Scratch"
+    // (pz == null) intentionally keeps the current setup, as its card says.
+    if (pz) setConfig((c) => ({
+      ...DEFAULT_CONFIG,
+      sport: c.sport, teamName: c.teamName, teamPalette: c.teamPalette, program: c.program,
+      ...pz.config,
+      designId: pz.id,
+      ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}),
+    }));
     setScreen('wizard'); setStep('team');
   };
 
