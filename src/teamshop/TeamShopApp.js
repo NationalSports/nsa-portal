@@ -4,6 +4,7 @@ import TeamPicker from './TeamPicker';
 import Catalog from './Catalog';
 import ProductPage from './ProductPage';
 import Home from './Home';
+import DecorationPage from './DecorationPage';
 import StartWithLogo from './StartWithLogo';
 import LogoPicker from './LogoPicker';
 import PlacementPicker from './PlacementPicker';
@@ -107,7 +108,8 @@ import {
 // inert, there's nowhere for it to go yet.
 
 export default function TeamShopApp() {
-  const [route, setRoute] = useState('landing'); // landing|catalog|order|account
+  const [route, setRoute] = useState('landing'); // landing|catalog|order|account|decoration
+  const [decorationMethod, setDecorationMethod] = useState('embroidery'); // embroidery|dtf|heat — DecorationPage's variant
   const [enteredShop, setEnteredShop] = useState(false); // false while StartWithLogo owns the 'order' route
   const [orderCustomer, setOrderCustomer] = useState(null);
   const [orderView, setOrderView] = useState('catalog'); // catalog|logos|placement|confirmed|cart|checkout (within the order flow)
@@ -131,10 +133,26 @@ export default function TeamShopApp() {
   const goCart = () => { setRoute('order'); setEnteredShop(true); setOrderView('cart'); setPreviewProduct(null); };
   // Entering the top-level catalog fresh (nav/header/Home CTAs) always starts
   // at the grid, never mid-way through a stale product-page preview.
-  const goCatalog = () => { setRoute('catalog'); setPreviewProduct(null); };
+  // `categoryKey` (optional) is a launch-category key from categories.js —
+  // Home's category tiles and the footer's Shop links pass one so the
+  // catalog opens pre-filtered to that category; every other caller (nav
+  // Shop/Apparel, Home's other CTAs) omits it and lands on 'All'.
+  const [catalogCategory, setCatalogCategory] = useState(null);
+  const goCatalog = (categoryKey) => { setRoute('catalog'); setPreviewProduct(null); setCatalogCategory(categoryKey || null); };
   // Account icon (header) and footer "My logos"/"Reorder" links all land
   // here; `section` scrolls AccountPage to the right part ('logos'|'orders').
   const goAccount = (section) => { setRoute('account'); setAccountSection(section || null); setPreviewProduct(null); };
+  // Header "Decoration" nav item, footer Decoration column links, and Home's
+  // "How we decorate" cards all land here — `method` defaults to whatever's
+  // already selected (nav item) or picks a specific variant (footer/Home
+  // links, and DecorationPage's own "Other methods" cards via onSelectMethod
+  // below). Scrolls to top so switching methods from "Other methods" reads
+  // as a fresh page, not a silent mid-scroll content swap.
+  const goDecoration = (method) => {
+    setRoute('decoration');
+    if (method) setDecorationMethod(method);
+    if (typeof window !== 'undefined' && window.scrollTo) window.scrollTo(0, 0);
+  };
 
   const lineFromProduct = (product, decorations) => ({
     product_id: product && product.id,
@@ -209,9 +227,10 @@ export default function TeamShopApp() {
     background: 'none', border: 'none', padding: 0, cursor: 'pointer',
     color: active ? RED : NAVY,
   });
-  // TODO(teamshop-nav): Decoration / Team Stores / Swift Ship / Search have
-  // no destinations yet — inert placeholders per the mockup. (Account now
-  // routes to AccountPage — see goAccount above.)
+  // TODO(teamshop-nav): Team Stores / Swift Ship / Search have no
+  // destinations yet — inert placeholders per the mockup. (Account routes to
+  // AccountPage — see goAccount above; Decoration now routes to
+  // DecorationPage — see goDecoration above.)
   const inertNavStyle = { ...displayType(16, { letterSpacing: '0.07em' }), color: NAVY, cursor: 'default' };
 
   return (
@@ -240,9 +259,9 @@ export default function TeamShopApp() {
           <div className="nts-header-row2" style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'center', gap: 16, padding: '8px 0 4px' }}>
             <span />
             <nav style={{ display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap', justifyContent: 'center' }}>
-              <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(route === 'catalog')}>Shop</button>
-              <button className="nts-navlink" onClick={goCatalog} style={navLinkStyle(false)}>Apparel</button>
-              <span style={inertNavStyle}>Decoration</span>
+              <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(route === 'catalog')}>Shop</button>
+              <button className="nts-navlink" onClick={() => goCatalog()} style={navLinkStyle(false)}>Apparel</button>
+              <button className="nts-navlink" onClick={() => goDecoration()} style={navLinkStyle(route === 'decoration')}>Decoration</button>
               <span style={inertNavStyle}>Team Stores</span>
               <span style={inertNavStyle}>Swift Ship</span>
             </nav>
@@ -289,11 +308,19 @@ export default function TeamShopApp() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route === 'landing' && (
-          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} />
+          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} onOpenDecoration={goDecoration} />
+        )}
+
+        {route === 'decoration' && (
+          <DecorationPage
+            method={decorationMethod}
+            onSelectMethod={goDecoration}
+            onShopMethod={goCatalog}
+          />
         )}
 
         {route === 'catalog' && !previewProduct && (
-          <Catalog onSelectProduct={setPreviewProduct} />
+          <Catalog onSelectProduct={setPreviewProduct} initialCategory={catalogCategory} />
         )}
         {route === 'catalog' && previewProduct && (
           <ProductPage
@@ -449,21 +476,37 @@ export default function TeamShopApp() {
               </button>
             </div>
             {[
-              ['Shop', ['Polos & Performance', 'Hoodies & Fleece', 'Caps & Headwear', 'Uniforms']],
-              ['Decoration', ['Embroidery', 'DTF Print', 'Heat Press', 'Saved Logos']],
+              // Shop column: relabeled to match the real launch categories
+              // (categories.js) instead of the mockup's original "Polos &
+              // Performance" / "Caps & Headwear" / "Uniforms" copy — Uniforms
+              // isn't a launch category at all, so it's replaced with Tees.
+              ['Shop', ['Polos', 'Hoodies & Fleece', 'Hats', 'Tees']],
+              ['Decoration', ['Embroidery', 'DTF Print', 'Heat Applications', 'Saved Logos']],
               ['Account', ['My logos', 'Reorder', 'Order help*']],
             ].map(([heading, items]) => (
               <div key={heading}>
                 <p style={displayType(13, { letterSpacing: '0.12em', color: '#fff', margin: '0 0 16px' })}>{heading}</p>
                 <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 11 }}>
                   {items.map((item) => {
-                    // FOOTER_ACCOUNT_ACTIONS: only the Account column's "My
-                    // logos"/"Reorder" have a real destination (AccountPage);
-                    // every other footer link, including "Order help*",
-                    // stays an inert TODO(teamshop-footer) placeholder.
+                    // FOOTER_ACCOUNT_ACTIONS: the Account column's "My
+                    // logos"/"Reorder" route to AccountPage; the Shop
+                    // column's category links route to the catalog
+                    // pre-filtered to that launch category; the Decoration
+                    // column's method links (renamed "Heat Applications" per
+                    // the approved design) route to DecorationPage with the
+                    // matching method. "Saved Logos" and "Order help*" stay
+                    // inert TODO(teamshop-footer) placeholders — no
+                    // destination exists for either yet.
                     const action = heading === 'Account' && item === 'My logos' ? () => goAccount('logos')
                       : heading === 'Account' && item === 'Reorder' ? () => goAccount('orders')
-                        : null;
+                        : heading === 'Shop' && item === 'Polos' ? () => goCatalog('polos')
+                          : heading === 'Shop' && item === 'Hoodies & Fleece' ? () => goCatalog('hoodies')
+                            : heading === 'Shop' && item === 'Hats' ? () => goCatalog('hats')
+                              : heading === 'Shop' && item === 'Tees' ? () => goCatalog('tees')
+                                : heading === 'Decoration' && item === 'Embroidery' ? () => goDecoration('embroidery')
+                                  : heading === 'Decoration' && item === 'DTF Print' ? () => goDecoration('dtf')
+                                    : heading === 'Decoration' && item === 'Heat Applications' ? () => goDecoration('heat')
+                                      : null;
                     return (
                       <li key={item}>
                         {action ? (

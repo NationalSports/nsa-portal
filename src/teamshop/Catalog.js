@@ -6,6 +6,7 @@ import {
   ensureTeamShopStyles, NAVY, NAVY_DARK, RED, RED_SOFT, OFF_WHITE, BORDER,
   BORDER_DARK, TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
+import { LAUNCH_CATEGORIES, categoryByKey, inLaunchCategories } from './categories';
 
 const PAGE_SIZE = 24;
 
@@ -57,10 +58,18 @@ function saveRoster(roster) {
 // decoration), results toolbar (count + sort), 3:4 product-card grid. The
 // mockup's category page is implemented generically: the head/breadcrumb are
 // driven by the current search, defaulting to an all-products view.
-export default function Catalog({ onSelectProduct, onAddBlank }) {
+//
+// Category chips (see categories.js) sit above the grid: 'All' + the launch
+// categories. Picking one drives a server-filtered fetch (see the effect
+// below); 'All' stays client-filtered to the launch set so non-launch
+// categories (socks, jerseys, ...) never show up here.
+export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }) {
   const [search, setSearch] = useState('');
   const debounced = useDebounced(search, 300);
   const [selectedBrands, setSelectedBrands] = useState([]); // multi-select; empty = all
+  // Category chip state — key into LAUNCH_CATEGORIES, or null for 'All'.
+  const [categoryKey, setCategoryKey] = useState(initialCategory || null);
+  const activeCategory = categoryKey ? categoryByKey(categoryKey) : null;
   const [products, setProducts] = useState([]);
   const [stock, setStock] = useState(new Map());
   const [loading, setLoading] = useState(true);
@@ -76,7 +85,18 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
     (async () => {
       const { data, error: rpcErr } = await supabaseCoach.rpc('search_products', {
         p_query: debounced || null,
-        p_category: null,
+        // Server-side filter uses the category's primary db value (exact
+        // match — see src/lib/dbEngine.js _searchProductsServer / the
+        // search_products RPC: `pr.category = p_category`). A handful of
+        // rows use an alternate spelling (e.g. 'Hood' vs 'Hoods') that this
+        // single value won't catch server-side.
+        // TODO(server-category-list): search_products only accepts one
+        // p_category value; a multi-category server param (e.g. p_categories
+        // text[]) would make a per-category fetch exactly right instead of
+        // "primary spelling only". The 'All' view below compensates by
+        // client-filtering the loaded page through inLaunchCategories, so
+        // non-launch categories never render there either way.
+        p_category: activeCategory ? activeCategory.dbValues[0] : null,
         p_vendor_id: null,
         p_color_category: null,
         p_in_stock: false,
@@ -85,7 +105,13 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
       });
       if (!alive) return;
       if (rpcErr) { setError('Could not load the catalog'); setLoading(false); return; }
-      const rows = data || [];
+      let rows = data || [];
+      // 'All' (no category selected): the server returns every category,
+      // including ones the Team Shop doesn't sell (socks, jerseys, ...) — so
+      // client-filter the loaded page down to launch categories only.
+      // A specific category is already server-filtered exactly (bar the
+      // alternate-spelling rows noted above), so no extra filtering there.
+      if (!activeCategory) rows = rows.filter(inLaunchCategories);
       setProducts(rows);
       setLoading(false);
       // Live stock (src/lib/storeInventory.js — same source as the coach catalog
@@ -96,7 +122,8 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
       } catch { /* best-effort only */ }
     })();
     return () => { alive = false; };
-  }, [debounced]);
+    // activeCategory is derived from categoryKey, so depending on categoryKey covers it.
+  }, [debounced, categoryKey]);
 
   // Per-brand counts come from the currently loaded result page.
   // TODO(brand-counts): real whole-catalog counts need a server aggregate.
@@ -156,12 +183,11 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
   const clearRoster = () => { const next = emptyRoster(); saveRoster(next); setRoster(next); };
   const rosterTotal = SIZES.reduce((sum, s) => sum + (roster[s] || 0), 0);
 
-  // Generic category head: the mockup is a "Polos & Performance" category page;
-  // we keep that title only when the search is polo-scoped, else all products.
-  const isPolos = /polo/i.test(debounced);
-  const title = isPolos ? 'Polos & Performance' : 'All Products';
-  const subhead = isPolos
-    ? 'Decoration-ready polos from the brands teams trust. Set your roster sizes once — they carry to every product and prefill your order.'
+  // Page-head title/breadcrumb: the active category's label (mockup treatment
+  // like "Polos & Performance"), else "All Products".
+  const title = activeCategory ? activeCategory.label : 'All Products';
+  const subhead = activeCategory
+    ? `Decoration-ready ${activeCategory.label.toLowerCase()} from the brands teams trust. Set your roster sizes once — they carry to every product and prefill your order.`
     : 'Decoration-ready gear from the brands teams trust. Set your roster sizes once — they carry to every product and prefill your order.';
 
   return (
@@ -179,6 +205,44 @@ export default function Catalog({ onSelectProduct, onAddBlank }) {
           <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 6px' })}>Team apparel</p>
           <h1 style={displayType('clamp(2.2rem, 4vw, 3rem)', { color: NAVY, margin: '0 0 10px', letterSpacing: '0.01em' })}>{title}</h1>
           <p style={{ fontSize: 'clamp(15px, 1.4vw, 17px)', color: TEXT_MUTED, margin: 0, maxWidth: 600, lineHeight: 1.6 }}>{subhead}</p>
+
+          {/* ---- Category chip row: All + the launch categories ---- */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 22 }}>
+            <button
+              type="button"
+              onClick={() => setCategoryKey(null)}
+              aria-pressed={!categoryKey}
+              style={{
+                fontFamily: 'inherit', fontSize: 13, fontWeight: 600, letterSpacing: '0.04em',
+                padding: '8px 16px', borderRadius: 999, cursor: 'pointer',
+                border: `1px solid ${!categoryKey ? NAVY : BORDER_DARK}`,
+                background: !categoryKey ? NAVY : '#fff',
+                color: !categoryKey ? '#fff' : TEXT,
+              }}
+            >
+              All
+            </button>
+            {LAUNCH_CATEGORIES.map((cat) => {
+              const active = categoryKey === cat.key;
+              return (
+                <button
+                  key={cat.key}
+                  type="button"
+                  onClick={() => setCategoryKey(cat.key)}
+                  aria-pressed={active}
+                  style={{
+                    fontFamily: 'inherit', fontSize: 13, fontWeight: 600, letterSpacing: '0.04em',
+                    padding: '8px 16px', borderRadius: 999, cursor: 'pointer',
+                    border: `1px solid ${active ? NAVY : BORDER_DARK}`,
+                    background: active ? NAVY : '#fff',
+                    color: active ? '#fff' : TEXT,
+                  }}
+                >
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 

@@ -5,6 +5,7 @@ import {
   NAVY, NAVY_DARK, RED, RED_SOFT, OFF_WHITE, BORDER, BORDER_DARK,
   TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
+import { LAUNCH_CATEGORIES } from './categories';
 
 // Team Shop landing page — the approved "National Team Shop - Home" Claude
 // Design mockup, translated section-by-section. Replaces the Stage-1 hero
@@ -21,6 +22,11 @@ import {
 //                       button used (TeamShopApp's setRoute('order')).
 //   onBrowseCatalog  — 'Shop'/browse CTAs (New Drops panel, category tiles,
 //                       "Shop all products"). TeamShopApp's setRoute('catalog').
+//                       Accepts an optional launch-category key (see
+//                       categories.js); category tiles pass their key so the
+//                       catalog opens pre-filtered, every other CTA (New
+//                       Drops, "Shop all products", featured products' "Shop
+//                       all products →") passes nothing and opens on 'All'.
 //
 // Team-stores links use a plain href to the portal's real, already-shipped
 // /team-stores directory (src/index.js `isTeamStores` path check, checked
@@ -40,14 +46,24 @@ import {
 // "from $28*" figures.
 const FEATURED_LIMIT = 8;
 
-const CATEGORY_TILES = [
-  { label: 'Polos', gradient: 'linear-gradient(150deg,#1c2d4f,#192853)' },
-  { label: 'Hoodies & Fleece', gradient: 'linear-gradient(150deg,#243a66,#192853)' },
-  { label: 'Caps', gradient: 'linear-gradient(150deg,#1c2d4f,#0F1A38)' },
-  { label: 'Uniforms', gradient: 'linear-gradient(150deg,#243a66,#1c2d4f)' },
-  { label: 'Outerwear', gradient: 'linear-gradient(150deg,#1c2d4f,#192853)' },
-  { label: 'Drinkware', gradient: 'linear-gradient(150deg,#243a66,#192853)' },
+// The 8 real launch categories (categories.js), each paired with a tile
+// gradient (cycled from the mockup's original palette — visual treatment
+// only, no meaning attached to which gradient lands on which category).
+const TILE_GRADIENTS = [
+  'linear-gradient(150deg,#1c2d4f,#192853)',
+  'linear-gradient(150deg,#243a66,#192853)',
+  'linear-gradient(150deg,#1c2d4f,#0F1A38)',
+  'linear-gradient(150deg,#243a66,#1c2d4f)',
+  'linear-gradient(150deg,#1c2d4f,#192853)',
+  'linear-gradient(150deg,#243a66,#192853)',
+  'linear-gradient(150deg,#1c2d4f,#0F1A38)',
+  'linear-gradient(150deg,#243a66,#1c2d4f)',
 ];
+const CATEGORY_TILES = LAUNCH_CATEGORIES.map((cat, i) => ({
+  key: cat.key,
+  label: cat.label,
+  gradient: TILE_GRADIENTS[i % TILE_GRADIENTS.length],
+}));
 
 const VALUE_PROPS = [
   { label: 'Free Decoration Setup*', icon: <path d="M12 2v6M12 12v8M9 20h6" /> },
@@ -79,9 +95,9 @@ const HOW_IT_WORKS = [
 ];
 
 const DECORATION_METHODS = [
-  { n: '01', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", photoLabel: 'Macro Photo — Embroidery stitching', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
-  { n: '02', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', photoLabel: 'Macro Photo — DTF detail', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
-  { n: '03', title: 'Heat Press', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat press detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
+  { n: '01', method: 'embroidery', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", photoLabel: 'Macro Photo — Embroidery stitching', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
+  { n: '02', method: 'dtf', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', photoLabel: 'Macro Photo — DTF detail', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
+  { n: '03', method: 'heat', title: 'Heat Press', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat press detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
 ];
 
 const BRAND_STRIP = ['adidas', 'Augusta · Holloway', 'Richardson', 'Nike', 'Under Armour'];
@@ -94,7 +110,7 @@ function PhotoLabel({ children, style }) {
   );
 }
 
-export default function Home({ onStartOrder, onBrowseCatalog }) {
+export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }) {
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
   // Welcome popup / chat bubble, per the mockup's <script type="text/x-dc">
@@ -204,7 +220,7 @@ export default function Home({ onStartOrder, onBrowseCatalog }) {
             </span>
           </div>
         </a>
-        <button type="button" onClick={onBrowseCatalog} style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#F7F8FB,#EEF1F6 60%,#E4E8F0)', overflow: 'hidden', textAlign: 'left', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
+        <button type="button" onClick={() => onBrowseCatalog()} style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#F7F8FB,#EEF1F6 60%,#E4E8F0)', overflow: 'hidden', textAlign: 'left', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
           <PhotoLabel style={{ position: 'absolute', top: 20, right: 24, color: BORDER_DARK }}>Photo — New arrivals flat-lay</PhotoLabel>
           <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: RED }} />
           <div>
@@ -228,9 +244,9 @@ export default function Home({ onStartOrder, onBrowseCatalog }) {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 16 }}>
             {CATEGORY_TILES.map((tile) => (
               <button
-                key={tile.label}
+                key={tile.key}
                 type="button"
-                onClick={onBrowseCatalog}
+                onClick={() => onBrowseCatalog(tile.key)}
                 style={{ position: 'relative', aspectRatio: '1 / 1', borderRadius: 12, overflow: 'hidden', display: 'flex', alignItems: 'flex-end', padding: 18, background: tile.gradient, border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit' }}
               >
                 <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to top, rgba(15,26,56,0.55), transparent 55%)' }} />
@@ -297,7 +313,13 @@ export default function Home({ onStartOrder, onBrowseCatalog }) {
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 24 }}>
             {DECORATION_METHODS.map((m) => (
-              <div key={m.n} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 2px rgba(15,26,56,0.06)' }}>
+              <button
+                key={m.n}
+                type="button"
+                className="nts-card"
+                onClick={() => onOpenDecoration && onOpenDecoration(m.method)}
+                style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 2px rgba(15,26,56,0.06)', textAlign: 'left', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
                 <div style={{ aspectRatio: '4 / 3', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: m.gradient, color: TEXT_MUTED }}>
                   <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 16l-5-5-9 8" /></svg>
                   <PhotoLabel>{m.photoLabel}</PhotoLabel>
@@ -307,7 +329,7 @@ export default function Home({ onStartOrder, onBrowseCatalog }) {
                   <h3 style={displayType(22, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.01em' })}>{m.title}</h3>
                   <p style={{ margin: 0, color: TEXT_MUTED, fontSize: 15, lineHeight: 1.55 }}>{m.body}</p>
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         </div>
@@ -323,7 +345,7 @@ export default function Home({ onStartOrder, onBrowseCatalog }) {
             </div>
             <button
               type="button"
-              onClick={onBrowseCatalog}
+              onClick={() => onBrowseCatalog()}
               className="nts-navlink"
               style={{ fontWeight: 600, fontSize: 15, color: NAVY, borderBottom: `1.5px solid ${BORDER_DARK}`, paddingBottom: 3, background: 'none', borderTop: 'none', borderLeft: 'none', borderRight: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
             >

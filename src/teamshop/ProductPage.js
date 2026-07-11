@@ -8,6 +8,7 @@ import {
   SCALE_MIN, SCALE_MAX, DEFAULT_STITCHES,
 } from './decoSpec';
 import LogoPicker from './LogoPicker';
+import { categoryForProduct } from './categories';
 import useCoachSession from './useCoachSession';
 
 // Product detail page — REPLACES the earlier simple ProductPage.js with the
@@ -115,7 +116,11 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
   const name = (product && (product.name || product.sku)) || '';
   const sku = product && product.sku;
   const colorName = product && product.color;
-  const category = (product && product.category) || 'Apparel';
+  // Breadcrumb: the launch-category label (categories.js) this product
+  // belongs to, so the crumb reads like the catalog's own category chips —
+  // falls back to 'All Products' for anything outside the launch set.
+  const launchCategory = categoryForProduct(product);
+  const category = launchCategory ? launchCategory.label : 'All Products';
   const sizes = useMemo(() => (
     (product && Array.isArray(product.available_sizes) && product.available_sizes.length)
       ? product.available_sizes
