@@ -262,6 +262,21 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
   const [result, setResult] = useState(null);
   const [submitErr, setSubmitErr] = useState('');
 
+  // Rebuild from a ?rebuild=<token> share link (full SKU + image snapshot) or
+  // legacy ?skus= (SKU-only, no images). Token is created when staff click
+  // "Share for Rebuild" on an OMG store — it carries the OMG decorated mockup
+  // images so the builder shows the actual team art, not blank catalog photos.
+  const [rebuildToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('rebuild') || ''; } catch { return ''; }
+  });
+  const [rebuildSkus, setRebuildSkus] = useState(() => {
+    try { return new Set((new URLSearchParams(window.location.search).get('skus') || '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)); } catch { return new Set(); }
+  });
+  const [rebuildImages, setRebuildImages] = useState({}); // UPPER(sku) → OMG image_url
+  const [rebuildBanner, setRebuildBanner] = useState(() => {
+    try { const p = new URLSearchParams(window.location.search); return !!(p.get('rebuild') || p.get('skus')); } catch { return false; }
+  });
+
   // Coach: load staff templates + fundraise cap, and jump straight to the
   // catalog when there are none. Public: just set the tab title (the allow-list
   // pool loads when they finish the contact step).
@@ -281,6 +296,38 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
     })();
     return () => { cancel = true; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Fetch the rebuild token snapshot — resolves SKUs + OMG decorated images.
+  useEffect(() => {
+    if (!rebuildToken) return;
+    supabase.from('omg_rebuild_tokens').select('items').eq('token', rebuildToken).maybeSingle()
+      .then(({ data }) => {
+        if (!data?.items?.length) return;
+        const skus = new Set(data.items.map((it) => (it.sku || '').toUpperCase()).filter(Boolean));
+        const imgs = {};
+        data.items.forEach((it) => { if (it.sku && it.image_url) imgs[it.sku.toUpperCase()] = it.image_url; });
+        setRebuildSkus(skus);
+        setRebuildImages(imgs);
+      });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-select items whose SKU matches the rebuild snapshot, whenever pool or
+  // rebuild SKUs become available (either can arrive first).
+  useEffect(() => {
+    if (!rebuildSkus.size || !pool.length) return;
+    const matched = pool.filter((i) => rebuildSkus.has((i.sku || '').toUpperCase()));
+    if (matched.length) setSel(new Set(matched.map((i) => i.product_id)));
+  }, [rebuildSkus.size, pool.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Overlay OMG decorated mockup images onto matched catalog items so coaches
+  // see the team's actual artwork, not the blank vendor product photo.
+  useEffect(() => {
+    if (!Object.keys(rebuildImages).length || !pool.length) return;
+    setPool((prev) => prev.map((i) => {
+      const img = rebuildImages[(i.sku || '').toUpperCase()];
+      return img ? { ...i, image_url: img } : i;
+    }));
+  }, [rebuildImages, pool.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Build the in-stock, price-locked pool. Coach + a template id → that
   // template's items (default all selected); otherwise the allow-list catalog.
@@ -493,6 +540,12 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
               {isCoach && templateId ? 'Your template items are pre-selected — tap to add or remove. ' : 'Tap a photo to add it to your store. '}
               Use the filters to narrow by type and color — only in-stock items are shown, and prices are set for you.
             </div>
+            {rebuildBanner && rebuildSkus.size > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '10px 14px', background: '#ecfeff', border: '1px solid #a5f3fc', borderRadius: 8, marginBottom: 12, fontSize: 13 }}>
+                <div><b style={{ color: '#0e7490' }}>📤 Pre-loaded from a previous store</b> — {sel.size} of {rebuildSkus.size} item{rebuildSkus.size === 1 ? '' : 's'} matched and pre-selected{Object.keys(rebuildImages).length ? ', with decorated mockup images' : ''}. Adjust below, then continue.</div>
+                <button type="button" onClick={() => setRebuildBanner(false)} style={{ background: 'none', border: 'none', fontSize: 18, lineHeight: 1, cursor: 'pointer', color: '#94a3b8', flexShrink: 0 }}>×</button>
+              </div>
+            )}
             {/* Selector chips — built from what's actually in the catalog, so every option returns items */}
             <FacetBar facets={facets} cats={cats} colors={colors} brands={brands}
               onToggleCat={toggleIn(setCats)} onToggleColor={toggleIn(setColors)} onToggleBrand={toggleIn(setBrands)} onClear={clearFilters} />

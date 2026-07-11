@@ -1,12 +1,13 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+import JsBarcode from 'jsbarcode';
 import { supabase as _sbAuthClient } from './lib/supabase';
 // pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
 
 // fetch() that attaches the signed-in user's Supabase JWT — required by the
 // staff-only Netlify functions (qb-api, vectorizer, OMG ingest/notify, Stripe
 // refunds, create-quote-request), which verify the caller server-side.
-export const authFetch=async(url,opts={})=>{
+const _getAuthHeader=async()=>{
   let auth={};
   try{
     let{data:{session}}=await _sbAuthClient.auth.getSession();
@@ -18,7 +19,22 @@ export const authFetch=async(url,opts={})=>{
     }
     if(session?.access_token)auth={Authorization:'Bearer '+session.access_token};
   }catch{}
-  return fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  return auth;
+};
+export const authFetch=async(url,opts={})=>{
+  const auth=await _getAuthHeader();
+  const res=await fetch(url,{...opts,headers:{...(opts.headers||{}),...auth}});
+  // The proactive expiry check above still misses cases (silent refresh failed,
+  // clock skew, session refreshed by another tab). If the server rejects the token,
+  // force a hard refresh and retry once before giving up.
+  if(res.status===401){
+    try{
+      const{data}=await _sbAuthClient.auth.refreshSession();
+      const retryAuth=data?.session?.access_token?{Authorization:'Bearer '+data.session.access_token}:{};
+      if(retryAuth.Authorization)return fetch(url,{...opts,headers:{...(opts.headers||{}),...retryAuth}});
+    }catch{}
+  }
+  return res;
 };
 
 // ── Brevo Email ──
@@ -99,7 +115,15 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
     if(attachment&&attachment.length>0)payload.attachment=attachment;
     const r=await authFetch(_brevoProxy,{method:'POST',headers:{'accept':'application/json','content-type':'application/json'},
     body:JSON.stringify(payload)});
-    const d=await r.json();if(!r.ok)return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};return{ok:true,messageId:d.messageId}}
+    const d=await r.json();
+    if(!r.ok){
+      // authFetch already retried once with a hard session refresh; a 401 that
+      // survives that means the user's session is genuinely gone (signed out
+      // elsewhere, revoked, etc.) rather than just a stale-token blip.
+      if(r.status===401)return{ok:false,error:'Your session has expired. Please refresh the page and sign in again to send this email.'};
+      return{ok:false,error:d.error||d.message||('Send failed (HTTP '+r.status+')')};
+    }
+    return{ok:true,messageId:d.messageId}}
   catch(e){return{ok:false,error:e.message}}
 };
 
@@ -111,7 +135,7 @@ export const _portalAction=async(payload)=>{
   try{
     const r=await fetch('/.netlify/functions/portal-action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
     const d=await r.json().catch(()=>({}));
-    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status)};
+    if(!r.ok)return{ok:false,error:d.error||('HTTP '+r.status),code:d.code};
     return{ok:true,...d};
   }catch(e){return{ok:false,error:e.message}}
 };
@@ -150,6 +174,7 @@ export const fileUpload=async(file,folder='nsa-art-files')=>{const fd=new FormDa
 // ── File helpers ──
 export const isUrl=s=>typeof s==='string'&&(s.startsWith('http://')||s.startsWith('https://'));
 export const fileDisplayName=f=>{if(typeof f==='object'&&f?.name)return f.name;const s=typeof f==='string'?f:(f?.url||'');return isUrl(s)?decodeURIComponent(s.split('/').pop().split('?')[0]):s};
+export const fileBaseName=f=>fileDisplayName(f).replace(/\.[^.]+$/,'');
 export const _urlExt=u=>{if(!u||typeof u!=='string')return '';const clean=u.split('?')[0].split('#')[0];const m=clean.match(/\.(\w+)$/);return m?m[1].toLowerCase():''};
 export const _isDownloadOnly=u=>{const e=_urlExt(u);return['ai','eps','dst','psd','tiff','tif','cdr'].includes(e)};
 export const _isImgUrl=(u,f)=>{if(_isPdfUrl(u,f))return false;const e=_urlExt(u);if(_isDownloadOnly(u))return false;if(['png','jpg','jpeg','gif','webp','svg','bmp'].includes(e))return true;if(typeof f==='object'&&f?.type?.startsWith('image/'))return true;if(u&&typeof u==='string'&&u.includes('cloudinary.com')&&u.includes('/image/upload/'))return true;if(u&&typeof u==='string'&&/(?:assetly|assets)\.ordermygear\.com\//.test(u))return true;return false};
@@ -161,9 +186,27 @@ export const openFile=f=>{const u=typeof f==='string'?f:(f?.url||'');if(isUrl(u)
 
 // ── File filtering helpers ──
 export const _filterDisplayable=files=>(files||[]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');return u&&_isDisplayableFile(u,f)});
-export const _cloudinaryPdfThumb=u=>{if(!u||!u.includes('cloudinary.com'))return null;
+export const _cloudinaryPdfPage=(u,n)=>{if(!u||!u.includes('cloudinary.com'))return null;
   let t=u.replace('/raw/upload/','/image/upload/').replace('/video/upload/','/image/upload/');
-  return t.replace('/image/upload/','/image/upload/pg_1,f_png/')};
+  return t.replace('/image/upload/','/image/upload/pg_'+n+',f_png/')};
+export const _cloudinaryPdfThumb=u=>_cloudinaryPdfPage(u,1);
+// Probe how many pages a Cloudinary-hosted PDF has by loading page renders until one
+// fails (Cloudinary rejects pg_N past the last page). Capped; also warms the browser
+// cache so the print window paints the appendix pages without waiting on the network.
+export const probeCloudinaryPdfPages=async(u,cap=15)=>{
+  if(!_cloudinaryPdfPage(u,1))return[];
+  const tryLoad=src=>new Promise(res=>{const im=new Image();im.onload=()=>res(true);im.onerror=()=>res(false);im.src=src});
+  const out=[];
+  for(let n=1;n<=cap;n++){const src=_cloudinaryPdfPage(u,n);if(await tryLoad(src))out.push(src);else break}
+  return out};
+// Inline SVG Code 128 barcode for print documents — inline so the print window never
+// waits on (or drops) an external image request. Code 128 encodes full ASCII, incl. the
+// underscores in digitizer file names like DG648617_A_3D_CAP_FRONT.
+export const barcodeSvg=(text,{height=46,width=1.6,fontSize=13}={})=>{
+  try{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    JsBarcode(svg,String(text),{format:'CODE128',width,height,fontSize,displayValue:true,margin:6,background:'#ffffff'});
+    return svg.outerHTML}
+  catch(e){console.warn('[barcodeSvg] '+(e?.message||e));return''}};
 
 // ── Art-file superset merge (data-loss guard for reconciliation) ──
 // Background reconciliation (poll/realtime reloadAll) re-reads orders, estimates & customers from
@@ -238,7 +281,7 @@ export const _brevoSmsSender='NSA';
 export const sendBrevoSms=async()=>({ok:false,error:'SMS sending is disabled. Route it through the server-side brevo-proxy to re-enable.'});
 
 // ── Document/print helpers ──
-export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,repeatInfoHeader,_runHeaderCss})=>{
+export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tables,notes,footer,showPricing,portalLink,css,companyInfo,appendixHtml,repeatInfoHeader,_runHeaderCss})=>{
   const _NSA={..._NSA_CONST,...(companyInfo||{})};
   let h='';
   // Repeating running header (browser print): a slim band — doc id + the info
@@ -304,6 +347,8 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
     if(portalLink)h+='<div style="text-align:right"><a href="'+portalLink+'" style="color:#2563eb;text-decoration:none">View Online Portal</a></div>';
     h+='</div>';
   }
+  // Full-page appendix (e.g. digitizer run sheets appended to production sheets)
+  if(appendixHtml)h+=appendixHtml;
   // Wrap with full page HTML for email attachment use
   const _css=(css||'')+(_runHeaderCss?_RUN_HEADER_CSS:'');
   const _title=docNum+(title?' - '+title:'');
@@ -769,7 +814,9 @@ const _inlineLogoUrl=async(logoUrl)=>{
 };
 
 const _serverPdf=async(html,fname,extra)=>{
-  const r=await fetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
+  // authFetch attaches the staff bearer token — the pdf-generator function is
+  // gated to authenticated team members (it renders arbitrary HTML server-side).
+  const r=await authFetch('/.netlify/functions/pdf-generator',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({html,filename:fname,...(extra||{})})});
   if(!r.ok)throw new Error('PDF generation failed: '+r.status);
   return r.json();
 };
@@ -824,7 +871,11 @@ export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id)
 export const pdfDecoLabel = (d, artF) => {
   if (!d) return '';
   if (d.kind === 'numbers') {
-    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"')) + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
+    // Sublimated numbers have no size (the editor hides the size picker), so
+    // don't apply the 4" fallback — printing a size would be wrong.
+    const _sub = d.num_method === 'sublimated';
+    const _szPart = _sub ? '' : ' ' + (d.front_and_back ? 'F:'+(d.num_size||'4"')+' B:'+(d.num_size_back||d.num_size||'4"') : (d.num_size||'4"'));
+    return ('Numbers (' + (d.num_method||'heat transfer').replace(/_/g,' ') + _szPart + (d.print_color ? ' — '+d.print_color : '') + ')' + (d.front_and_back ? ' F+B' : '')).replace(/_/g,' ');
   }
   if (d.kind === 'names') {
     return ('Names' + (d.print_color ? ' ('+d.print_color+')' : '')).replace(/_/g,' ');

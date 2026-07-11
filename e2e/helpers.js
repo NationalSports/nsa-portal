@@ -1,23 +1,58 @@
 /**
  * Shared helpers for NSA Portal E2E tests.
- * Login is a simple rep-picker (no password) — click department, then user name.
+ *
+ * The old no-password "rep picker" login gate ("Who's logging in?") was replaced by
+ * Supabase email/password auth long ago. In NO-DB e2e mode (no Supabase env vars) we
+ * bypass auth entirely by seeding `nsa_user` in localStorage before the app boots — the
+ * same approach used by 13-outbox-durability.spec.js and src/__tests__/appSmoke.test.js.
  */
 
-/** Log in as a specific user by clicking their name on the login gate */
+/** Map a legacy department name to the role string the app expects on nsa_user. */
+const DEPT_ROLE_MAP = {
+  Admin: 'admin',
+  Sales: 'rep',
+  Warehouse: 'warehouse',
+  Art: 'artist',
+  Production: 'production',
+  CSR: 'csr',
+  Accounting: 'accounting',
+  'Sales Rep': 'rep', // legacy dept label used by older specs
+};
+
+/** Log in as a specific user by seeding the nsa_user localStorage bypass. */
 async function login(page, name = 'Steve Peterson', dept = 'Admin') {
+  const role = DEPT_ROLE_MAP[dept] || 'admin';
+  const user = { id: '00000000-0000-0000-0000-000000000001', name, role };
+  await page.addInitScript(u => localStorage.setItem('nsa_user', JSON.stringify(u)), user);
   await page.goto('/');
-  // Wait for login gate
-  await page.locator('text=Who\'s logging in?').waitFor({ state: 'visible', timeout: 10000 });
-  // Click department pill to filter (use getByRole to avoid strict mode issues)
-  const deptBtn = page.getByRole('button', { name: new RegExp(dept + ' \\d') });
-  if (await deptBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await deptBtn.click();
-    await page.waitForTimeout(200);
-  }
-  // Click user name button
-  await page.getByRole('button', { name: new RegExp(name) }).first().click();
   // Wait for dashboard to load (sidebar appears)
-  await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 10000 });
+  await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 20000 });
+}
+
+/**
+ * Seed entity data into localStorage before boot (no-DB mode).
+ * Keys map to nsa_<key>: e.g. seedData(page, { sos: [...], cust: [...] }).
+ *
+ * The built-in demo seeds were removed (src/constants.js: D_C/D_P/D_SO are empty), so
+ * data-dependent specs must seed their own entities. dbEngine.js purges the legacy entity
+ * caches (nsa_sos, nsa_cust, ...) at module load — a plain localStorage seed would be wiped
+ * before App reads it — so we shim Storage.removeItem to preserve exactly the seeded keys
+ * through that one-time boot purge. Call BEFORE login().
+ */
+async function seedData(page, data) {
+  await page.addInitScript(d => {
+    const keys = [];
+    for (const [k, v] of Object.entries(d)) {
+      const key = 'nsa_' + k;
+      localStorage.setItem(key, JSON.stringify(v));
+      keys.push(key);
+    }
+    const orig = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function (key) {
+      if (keys.includes(key)) return; // keep seeded data through the boot purge
+      return orig.apply(this, arguments);
+    };
+  }, data);
 }
 
 /** Navigate to a page via sidebar */
@@ -67,4 +102,4 @@ async function globalSearch(page, query) {
   await page.waitForTimeout(500);
 }
 
-module.exports = { login, navTo, getPageTitle, clickBtn, fillByPlaceholder, collectConsoleErrors, waitForToast, globalSearch };
+module.exports = { login, seedData, navTo, getPageTitle, clickBtn, fillByPlaceholder, collectConsoleErrors, waitForToast, globalSearch };

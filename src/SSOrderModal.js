@@ -25,6 +25,7 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
   const [resolving, setResolving] = useState(true);
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,size,sku}]
@@ -63,14 +64,28 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
   const doSubmit = async () => {
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
+    let r;
     try {
-      const r = await ssSubmitOrder(built.order);
-      setResult(r); setSubmitState('success');
-      // Only a LIVE order should mark the batch as ordered; a test order places nothing.
-      if (live) onSubmitted && onSubmitted(r);
+      r = await ssSubmitOrder(built.order);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on ssactivewear.com.');
       setSubmitState('error');
+      return;
+    }
+    // S&S accepted the order — success regardless of local bookkeeping.
+    setResult(r); setSubmitState('success');
+    // Only a LIVE order should mark the batch as ordered; a test order places nothing.
+    // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order —
+    // but await the (async) result and surface a silent no-op, so a placed-but-unrecorded
+    // order (the NSA 4536 failure) can't look like a clean success.
+    if (live && onSubmitted) {
+      try {
+        const recorded = await onSubmitted(r, lines);
+        if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
+      } catch (e) {
+        console.error('[S&S] order placed but post-order bookkeeping failed:', e);
+        setBookErr(e.message || 'recording failed with an error');
+      }
     }
   };
 
@@ -92,6 +107,10 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
                 <Stat label="PO Number" value={poNumber} mono />
                 <Stat label={live ? 'S&S Order #' : 'Test Order #'} value={result?.orderNumber || '—'} mono />
               </div>
+              {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
+                ⚠ S&S HAS this order, but the portal did NOT record it ({bookErr}).
+                Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
+              </div>}
             </div>
           ) : submitState === 'error' ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>

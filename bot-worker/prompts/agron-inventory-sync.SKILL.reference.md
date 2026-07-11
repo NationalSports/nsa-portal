@@ -31,16 +31,17 @@ portal. One row per SKU+size with:
 - `last_synced`, `source` ('agron-api')
 
 Supabase project: `hpslkvngulqirmbstlfx` · URL `https://hpslkvngulqirmbstlfx.supabase.co`
-Anon key (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — same as the CLICK sync:
-`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhwc2xrdm5ndWxxaXJtYnN0bGZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0NDEyNDAsImV4cCI6MjA4NzAxNzI0MH0.s5OKUjim-EfBmKpuWt8x7c1QxiSoOY7_sTzvThNaYLw`
+**SERVICE ROLE key** (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — same as the CLICK sync:
+read `SUPABASE_SERVICE_ROLE_KEY` from `~/nsa-portal/bot-worker/.env` at runtime — the key
+the Mac Mini bot worker already holds. **Never paste it into this file, the live skill, or
+any log/report** — load it fresh each run.
 
-`agron_inventory` AND `agron_products_staging` writes go through the anon key
-(RLS is open for the app role, same as `adidas_inventory`). **`products` writes do
-NOT** — anon is RLS-blocked; a 200/204 is NOT proof of a write, so verify row
-counts. So product create/backfill uses a **staging handoff**: the bot writes
-metadata to `agron_products_staging` (anon), then Claude Code promotes it into
-`products` with the service role (Step 4b/4c). Stock sync (Steps 1–4) is the
-anon-key core and is all a daily "real inventory run" needs.
+`agron_inventory` AND `agron_products_staging` writes go through the SERVICE ROLE
+key (the anon key is RLS-blocked on all vendor-cache tables since migration
+00183). A 200/204 is NOT proof of a write, so verify row counts. `products`
+writes stay a **staging handoff**: the bot writes metadata to
+`agron_products_staging`, then Claude Code promotes it into `products`
+(Step 4b/4c). Stock sync (Steps 1–4) is all a daily "real inventory run" needs.
 
 Tables:
 - `agron_inventory` (id, sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced, source, created_at, upc, size_code) on-conflict `sku,size`, id = `{sku}-{size}`.
@@ -150,19 +151,19 @@ stock_item.prices                    { elastic_wholesale: 35, elastic_retail: 70
    - `qty   = upcStock[stock_item.upc] || 0`
    - `upc   = stock_item.upc`, `size_code = stock_item.sku`
 
-### Step 4 — Upsert `agron_inventory` (anon key)
+### Step 4 — Upsert `agron_inventory` (service-role key)
 Per size, upsert `{ id: `${sku}-${size}`, sku, size, stock_qty: qty,
 future_delivery_date: null, future_delivery_qty: null, upc, size_code,
 last_synced: now, source: 'agron-api' }` on conflict `sku,size`.
 **Write zero-stock rows too** (so the catalog can show "out of stock" rather than
 hiding the colorway). Batch ~500/upsert. Verify with a row count, not the HTTP code.
 
-### Step 4b/4c — product metadata → staging (anon key), then promote (Claude Code)
+### Step 4b/4c — product metadata → staging (service-role key), then promote (Claude Code)
 
 So the FULL Agron catalog renders on the coach-facing `/adidas` page — not just the
 colorways that already had a product row — capture per-colorway metadata during the
-same paging pass and write it to **`agron_products_staging`** with the anon key (no
-service role needed). **Always grab the image.** A card with no image shows an
+same paging pass and write it to **`agron_products_staging`** with the service-role
+key (same key as Step 4). **Always grab the image.** A card with no image shows an
 "image coming soon" placeholder, so `image_url` is the difference between a usable
 card and a blank one — treat it as required.
 
@@ -185,8 +186,8 @@ Write one staging row per colorway (`POST …/rest/v1/agron_products_staging?on_
 | `description`     | `product.description` (+ `features`)                                   |
 | `sizes`           | array of `stock_item.name` (optional; promote prefers `agron_inventory`) |
 
-**Promote (Claude Code / service role).** `products` writes are RLS-blocked for
-anon, so the bot never writes `products`. After COWORK fills staging, Claude Code runs:
+**Promote (Claude Code).** The bot never writes `products` directly — the staging
+handoff keeps discovery reviewable. After COWORK fills staging, Claude Code runs:
 
 ```sql
 select * from public.promote_agron_products_from_staging();   -- returns (created, updated)
@@ -249,6 +250,7 @@ Quantity Entry screen (cross-ref the per-size `size_code`, e.g. `5159078B`).
 
 ## Notes
 - Read-only: never submit an order / add to a cart.
-- `agron_inventory` writes use raw `fetch` + the anon key (PostgREST), same data
-  path as the CLICK sync; product writes need a service/authenticated key.
+- `agron_inventory` writes use raw `fetch` + the SERVICE ROLE key (PostgREST, from
+  `bot-worker/.env` `SUPABASE_SERVICE_ROLE_KEY`), same data path as the CLICK sync;
+  `products` writes still go through the staging→promote handoff.
 - Diff the live skill against this reference when changing the sync.

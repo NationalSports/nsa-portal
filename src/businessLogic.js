@@ -21,14 +21,19 @@ const safeJobs = (o) => safeArr(o?.jobs);
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
 const rT = v => Math.round(v * 10) / 10;
-const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 70, null, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
-// fl = minimum per-piece sell price (floor); mirrors EM.fl in pricing.js / App.js.
-const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[8, 8.5, 8, 7.5], [9, 8.5, 8, 8], [10, 9.5, 9, 9], [12, 12.5, 12, 10]], mk: 1.6, fl: 8 };
+const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 }, { min: 36, max: 47 }, { min: 48, max: 71 }, { min: 72, max: 107 }, { min: 108, max: 143 }, { min: 144, max: 215 }, { min: 216, max: 499 }, { min: 500, max: 99999 }], pr: { 0: [50, 60, 80, null, null], 1: [3.33, 4.33, 5.33, 6, null], 2: [2.33, 3, 4, 4.67, 5.33], 3: [2.13, 2.83, 3.17, 4, 5], 4: [1.97, 2.57, 2.83, 3.33, 4], 5: [1.83, 2.33, 2.63, 3, 3.5], 6: [1.67, 2.13, 2.47, 2.67, 3.17], 7: [1.5, 2, 2.33, 2.5, 2.83], 8: [1.4, 1.9, 2.07, 2.2, 2.67], 9: [1.27, 1.83, 1.93, 2.07, 2.5] }, mk: 1.5, ub: 0.15 };
+// Mirrors EM in pricing.js / App.js (schema _v:4 defaults). This copy had drifted — it still
+// carried the pre-_v:4 cost table, so tests validated embroidery prices production doesn't use.
+// Guarded against re-drift by src/__tests__/pricingDrift.test.js.
+const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[4.8, 5.1, 4.8, 4.5], [5.4, 5.1, 4.8, 4.8], [6, 5.7, 5.4, 5.4], [7.2, 7.5, 7.2, 6]], mk: 1.6, fl: 8 };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
 const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front Chest (12"x4")', cost: 4.5, sell: 7.5 }];
 
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q, c, s = true) { const bi = SP.bk.findIndex(b => q >= b.min && q <= b.max); if (bi < 0 || c < 1 || c > 5) return 0; const v = SP.pr[bi]?.[c - 1]; if (v == null) return 0; if (bi === 0) return s ? v : rQ(v / SP.mk); return s ? rT(v * SP.mk) : v }
+// Under-12 screen print is an ALL-IN flat charge for the run, not per piece (mirrors src/pricing.js
+// spFlatShare — keep in sync). Unrounded per-piece shares so qty x value rebuilds the exact flat total.
+function spFlatShare(q, c, u = 1) { const b0 = SP.bk[0]; if (!(q >= b0.min && q <= b0.max)) return null; const v = SP.pr[0]?.[c - 1]; if (v == null || !(q > 0)) return null; const fs = v * u; return { sell: fs / q, cost: rQ(fs / SP.mk) / q } }
 // EM.pr stores cost; sell = rT(cost × EM.mk).
 function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
 function npP(q, tw = false, s = true) { const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
@@ -37,15 +42,15 @@ function dP(d, q, artFiles, cq) {
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
-      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
       if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
       if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
-      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
       if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
       if (art.deco_type === 'dtf' || art.deco_type === 'heat_press') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
-  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+  if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(q, d.colors || 1, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
   if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') {
     // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
@@ -144,6 +149,22 @@ const outsourcedDecoTypes = (o) => {
   const add = (ix, t) => { (map[ix] || (map[ix] = new Set())).add(t || '*'); };
   safeArr(o?.deco_pos).forEach(dp => safeArr(dp?.item_idxs).forEach(ix => add(ix, dp?.deco_type)));
   safeItems(o).forEach((it, ii) => safePOs(it).forEach(pl => { if (pl && pl.po_type === 'outside_deco') add(ii, pl.deco_type); }));
+  // A deco PO carries ONE deco_type but covers whole items, whose decorations may be of several
+  // types. When a covering PO's type matches NONE of an item's concretely-typed decorations, the PO
+  // is paying for that item's decoration(s) under a default/mislabeled type (SO-1199: an 'embroidery'
+  // PO covering DTF & screen-print garments) — so promote that item to the '*' wildcard and suppress
+  // its whole in-house set. When the PO's type DOES match a decoration on the item, per-type coverage
+  // stands, so a garment can keep one deco in-house while another is sent out. Art with no concrete
+  // type yet is ignored here (decoIsOutsourced already treats it as covered), so an unassigned design
+  // never forces the promotion.
+  Object.keys(map).forEach(ix => {
+    const set = map[ix];
+    if (set.has('*')) return;
+    const it = safeItems(o)[ix];
+    if (!it) return;
+    const concrete = safeDecos(it).map(d => decoConcreteType(o, d)).filter(Boolean);
+    if (concrete.length && !concrete.some(t => set.has(t))) set.add('*');
+  });
   return map;
 };
 // Is a decoration whose resolved type is `concreteDt` produced by an outside vendor (so it must NOT
@@ -165,9 +186,10 @@ const decoConcreteType = (o, d) => {
 };
 // THE unified in-house↔outside switch. A decoration is produced outside when it carries a legacy
 // kind:'outside_deco', or a covering deco PO (SO-level o.deco_pos or an item-level outside-deco PO
-// line) matches its resolved type. This is the single gate BOTH job creation (syncJobs) and cost
-// accounting (Costs tab) read, so routing a decoration onto a deco PO suppresses its in-house job
-// AND its in-house cost together — never double-counting the in-house cost against the PO's bill.
+// line) matches its resolved type. This is the single gate job creation (syncJobs) AND every cost
+// walk read (Costs tab, OrderEditor totals, calcGP, soCalc, calcOrderMargin, calcTotals) — so
+// routing a decoration onto a deco PO suppresses its in-house job AND its in-house cost together,
+// never double-counting the in-house cost against the PO's bill (SO-1397).
 // Pass a precomputed outsourcedDecoTypes(o) as `outByItem` when calling inside an item loop.
 const isDecoOutsourced = (o, itemIdx, d, outByItem) => {
   if (!d) return false;
@@ -197,7 +219,14 @@ function pickCwAsset(art, sel) {
   const cwId = sel.colorWayId || null;
   if (sel.kind === 'web_logo') {
     const wl = safeArr(art.web_logos).filter((w) => w && w.url);
-    if (cwId) { const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url; }
+    if (cwId) {
+      const m = wl.find((w) => w.color_way_id === cwId); if (m) return m.url;
+      // Legacy label-keyed entry (pre-Decision-2 data): recover the match through the art's
+      // own color_ways — the CW id names a label, and an entry tagged with that label is it.
+      const cw = safeArr(art.color_ways).find((c) => c && c.id === cwId);
+      const lbl = cw ? String(cw.garment_color || '').trim().toLowerCase() : '';
+      if (lbl) { const lm = wl.find((w) => String(w.color_way || '').trim().toLowerCase() === lbl); if (lm) return lm.url; }
+    }
     // blank/default web logo applies to all garments; then legacy single, then design-level default
     const def = wl.find((w) => w.is_default || (!w.color_way_id && !w.color_way));
     if (def) return def.url;
@@ -220,6 +249,24 @@ function pickCwAsset(art, sel) {
   return untagged ? _assetUrl(untagged) : '';
 }
 
+// ── Web-logo re-keying (Decision 2 of the CW web-logo model) ── Stamp the stable
+// color_way_id onto label-keyed web_logos[] entries so resolution never rides on the CW
+// label string (a rename silently breaks label matches). Blank-label entries are the
+// "all garments" default (is_default). Labels are kept for display. Idempotent: entries
+// whose color_way_id still points at a live CW pass through untouched; a stale id gets
+// re-stamped when its label maps to a current CW.
+function normalizeWebLogos(webLogos, colorWays) {
+  const cws = safeArr(colorWays).filter((c) => c && c.id);
+  const byLabel = new Map(cws.filter((c) => String(c.garment_color || '').trim()).map((c) => [String(c.garment_color).trim().toLowerCase(), c.id]));
+  return safeArr(webLogos).filter((w) => w && w.url).map((w) => {
+    const label = String(w.color_way || '').trim();
+    if (!label) return w.is_default ? w : Object.assign({}, w, { is_default: true });
+    if (w.color_way_id && cws.some((c) => c.id === w.color_way_id)) return w;
+    const id = byLabel.get(label.toLowerCase());
+    return id ? Object.assign({}, w, { color_way_id: id }) : w;
+  });
+}
+
 // ── Job Building ── Groups items by their full decoration signature, split by deco type
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
@@ -230,15 +277,18 @@ const buildJobs = (o) => {
     if (it.no_deco) return;
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
-      if (d.kind === 'art' && d.art_file_id) {
-        const artF = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
+      if (d.kind === 'art') {
+        const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
         const dt = artF?.deco_type || d.deco_type || 'screen_print';
-        const part = 'art_' + d.art_file_id;
+        // Art TBD saves to the DB with a null art_file_id (see _sanitizeDeco), so an unassigned
+        // deco must still form a job — keyed by position, mirroring syncJobs in OrderEditor —
+        // instead of silently vanishing from the production board.
+        const part = d.art_file_id ? 'art_' + d.art_file_id : 'unassigned@' + safeStr(d.position);
         // Split-art designs bucket by ART IDENTITY (not the line's split group) so the same logo
         // split across several lines — and a standalone copy of it — all consolidate into ONE job.
         // Non-split decos keep the per-deco-type bucket, so two distinct logos on one garment still
         // bundle into a single combined job (the established Split-Art behavior).
-        const bk = d.split_group ? 'art::' + d.art_file_id : dt;
+        const bk = (d.art_file_id && d.split_group) ? 'art::' + d.art_file_id : dt;
         if (!decosByType[bk]) decosByType[bk] = [];
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
@@ -274,7 +324,14 @@ const buildJobs = (o) => {
     const artNames = []; const artIds = []; const decoTypes = [];
     let worstArtSt = 'art_complete';
     firstEntry.decos.forEach(({ d }) => {
-      if (d.kind === 'art' && d.art_file_id) {
+      if (d.kind === 'art' && !d.art_file_id) {
+        // Art TBD (null id after _sanitizeDeco) — there is no artwork yet, so the job can never
+        // read as complete/ready. Mirrors the unassigned branch in OrderEditor's syncJobs.
+        positions.add(d.position || '');
+        artNames.push('Unassigned Art (' + safeStr(d.position) + ')');
+        decoTypes.push(d.deco_type || 'screen_print');
+        worstArtSt = 'needs_art';
+      } else if (d.kind === 'art' && d.art_file_id) {
         positions.add(d.position || '');
         artIds.push(d.art_file_id);
         const af = safeArr(o?.art_files).find(f => f.id === d.art_file_id);
@@ -283,7 +340,8 @@ const buildJobs = (o) => {
           // confirmation — the per-design prod_files_attached checkbox, or, for embroidery, a .dst that
           // IS the production file. A file merely sitting in prod_files (e.g. an order-sheet PDF dropped
           // in before the seps exist) is NOT enough, so an approved job waits in its production-files
-          // stage until someone confirms. Mirrors artProdFilesConfirmed in constants.js.
+          // stage until someone confirms. Same rule as artProdFilesConfirmed in constants.js — a .dst
+          // confirms on its own; staleness after a recall is gated by af.status, not this check.
           const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
           const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
@@ -328,13 +386,21 @@ const buildJobs = (o) => {
 // The designs a job actually decorates with, taken from its items' CURRENT
 // decorations rather than the job's stored _art_ids/art_file_id (which can go
 // stale when an item's art is swapped, leaving an orphaned art file behind).
-// Falls back to the stored ids only when the items reference no art (e.g.
-// names/numbers-only jobs). Excludes art files that no longer exist or are archived.
+// Scoped to the decorations each job item OWNS (deco_idxs) so a numbers-only job —
+// or a second logo job on the same garment line — never inherits a sibling job's
+// art (which used to gate its completion on, and stamp prod_files_attached onto,
+// the OTHER job's art files). Legacy items without deco_idxs keep the unscoped
+// behavior. Falls back to the stored ids only when the items reference no art
+// (e.g. names/numbers-only jobs). Excludes art files that no longer exist or are archived.
+// Mirrors jobItemDecoIdxs in safeHelpers.js (this module stays dependency-free for tests).
+const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : null;
 const jobLiveArtIds = (j, o) => {
   const ids = []; const seen = new Set();
   (j?.items || []).forEach(gi => {
     const it = safeItems(o)[gi.item_idx]; if (!it) return;
-    safeDecos(it).forEach(d => {
+    const dis = jobItemDecoIdxs(gi);
+    safeDecos(it).forEach((d, di) => {
+      if (dis && !dis.includes(di)) return;
       if (d.kind === 'art' && d.art_file_id && d.art_file_id !== '__tbd' && !seen.has(d.art_file_id)) {
         seen.add(d.art_file_id); ids.push(d.art_file_id);
       }
@@ -486,6 +552,35 @@ const jobsNowReadyForDeco = (prevJobs, nextJobs) => safeArr(nextJobs).filter(j =
   return !!prev && prev.item_status !== 'items_received';
 });
 
+// ── When did a job's items actually arrive? ──
+// items_received_at was never persisted, so the dashboard's "All items received" notifications
+// and to-dos fell back to updated_at — which tracks the LAST edit of the SO/job (inventory syncs,
+// memo tweaks, status changes), making long-received jobs read "Yesterday". Derive the real moment
+// instead from the receipts that fulfilled the job: the latest pulled pick (pulled_at) and the
+// latest PO shipment receipt (shipment.date) across the job's items. Mirrors how the "IF pulled"
+// feed already timestamps itself off pulled_at. Returns the raw timestamp string (whatever format
+// it was stored in — parseable by new Date()) or null when nothing is timestamped (legacy data),
+// leaving the caller to pick its own fallback. Self-healing: works for existing + new jobs, no migration.
+const jobReceivedAt = (j, items) => {
+  if (!j) return null;
+  let latest = -Infinity, raw = null;
+  const bump = (d) => { if (!d) return; const t = new Date(d).getTime(); if (!isNaN(t) && t > latest) { latest = t; raw = d; } };
+  const idxs = new Set((j.items || []).map(gi => gi.item_idx));
+  safeArr(items).forEach((it, ii) => {
+    if (!idxs.has(ii)) return;
+    safePicks(it).forEach(pk => { if (pk.status === 'pulled') bump(pk.pulled_at); });
+    safePOs(it).forEach(po => {
+      const rcvd = po.received || {};
+      // Only count a PO's shipment dates once it has actually received units — an ordered-but-not-yet-
+      // received PO carries no receipt, so its (absent) shipments shouldn't stamp a receive time.
+      if (Object.keys(rcvd).some(sz => safeNum(rcvd[sz]) > 0)) {
+        safeArr(po.shipments).forEach(s => bump(s && s.date));
+      }
+    });
+  });
+  return raw;
+};
+
 // ── Linking jobs that share a decoration ("run together") ──
 // Two jobs are "the same screen/setup" when they carry the same artwork (matched by name +
 // deco type, the same way art is de-duped across orders elsewhere). Used to auto-detect jobs
@@ -519,8 +614,11 @@ function calcTotals(o, cust) {
     safeDecos(it).forEach(d => { if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q } });
   });
   const af = safeArt(o);
+  // Same outsourced gate as Costs tab / OrderEditor totals / calcGP / calcOrderMargin —
+  // never add in-house deco cost for decorations a deco PO already covers (SO-1397).
+  const outByItem = outsourcedDecoTypes(o);
   let rev = 0, cost = 0;
-  safeItems(o).forEach(it => {
+  safeItems(o).forEach((it, ii) => {
     const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
     if (!q) return;
     rev += q * safeNum(it.unit_sell);
@@ -530,7 +628,7 @@ function calcTotals(o, cust) {
       const dp = dP(d, q, af, cq);
       const eq = dp._nq != null ? dp._nq : (d.reversible ? q * 2 : q);
       rev += eq * dp.sell;
-      cost += eq * dp.cost;
+      if (!isDecoOutsourced(o, ii, d, outByItem)) cost += eq * dp.cost;
     });
     // Legacy per-item outside-deco POs: the supplier-bill refactor moved these
     // onto o.deco_pos[], but historical orders still carry them on items[].po_lines —
@@ -548,8 +646,10 @@ function calcTotals(o, cust) {
     cost += safeNum(dp.qty || 0) * safeNum(dp.unit_cost || 0);
   });
   const ship = o.shipping_type === 'pct' ? rev * (o.shipping_value || 0) / 100 : (o.shipping_value || 0);
+  // Prior shipping carried from a Manual Ship recorded when the customer had no open order.
+  const priorShip = safeNum(o.pending_ship_applied ? o.pending_ship_amount : 0);
   const tax = rev * (cust?.tax_rate || 0);
-  return { rev, cost, ship, tax, grand: rev + ship + tax, margin: rev - cost, pct: rev > 0 ? ((rev - cost) / rev * 100) : 0 };
+  return { rev, cost, ship, priorShip, tax, grand: rev + ship + priorShip + tax, margin: rev - cost, pct: rev > 0 ? ((rev - cost) / rev * 100) : 0 };
 }
 
 // ── Invoice Creation Logic ──
@@ -839,8 +939,18 @@ function itemEditReconciles(clientItems, dbItems) {
   };
   const subset = (a, b) => { for (const [k, n] of a) { if ((b.get(k) || 0) < n) return false; } return true; };
   const c = toMs(clientItems), d = toMs(dbItems);
-  if (c.size === 0) return false; // client has items but none carry a SKU/name — can't verify; stay safe (blocked)
-  return subset(c, d) || subset(d, c);
+  if (c.size > 0 && (subset(c, d) || subset(d, c))) return true;
+  // Custom lines have no stable identity — no product_id, and their sku/name is exactly what reps edit —
+  // so a renamed custom line plus any count change defeats the multiset match above and blocked the whole
+  // save (EST-1351 / EST-1353 "won't save"). Fall back to reconciling only the catalog rows (those with a
+  // product_id): if they prove the client held the real estimate, the custom-line churn is a deliberate
+  // edit. BOTH sides must contribute at least one catalog row — with an empty dCat the subset(dCat, cCat)
+  // direction is vacuously true, which would let a phantom-empty client that added one catalog row pass
+  // verification and delete real DB rows (callers whose DB read omits product_id would hit this on every
+  // save). Requiring dCat.size > 0 keeps the phantom-load protection intact.
+  const hasPid = (x) => !!(x && x.product_id);
+  const cCat = toMs(clientItems.filter(hasPid)), dCat = toMs((dbItems || []).filter(hasPid));
+  return cCat.size > 0 && dCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
 }
 
 // ─── Per-item quantity-wipe detection (data-loss guard helper) ───
@@ -885,13 +995,27 @@ function itemsWithWipedQty(clientItems, dbItems) {
   return out;
 }
 
+// ─── Commission / account attribution ───
+// The account OWNER (customer.primary_rep_id) is ALWAYS credited — for earned commission, pipeline,
+// promo-cost deductions, and every per-rep rollup. The SO creator (so.created_by) is only a fallback
+// for accounts that have no assigned rep. This ordering decides who gets PAID, so it lives here as the
+// single source of truth: a reversed `created_by || primary_rep_id` credited whoever happened to write
+// the order instead of the account's rep, leaking open invoices on another rep's account into the
+// creator's pipeline (the Rancho Buena Vista regression). Route ALL commission attribution through this
+// helper so the rule can never drift or get reversed at one of its call sites again.
+function commissionRepId(customer, so) {
+  return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
+  // Attribution
+  commissionRepId,
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

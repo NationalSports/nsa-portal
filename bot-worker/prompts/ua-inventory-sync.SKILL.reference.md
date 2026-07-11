@@ -36,18 +36,20 @@ read `adidas-inventory-sync.SKILL.reference.md` first; this file documents only
 what differs for UA.
 
 Supabase project: `hpslkvngulqirmbstlfx` · URL `https://hpslkvngulqirmbstlfx.supabase.co`
-Anon key (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — SAME as the adidas/agron syncs:
-`eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imhwc2xrdm5ndWxxaXJtYnN0bGZ4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE0NDEyNDAsImV4cCI6MjA4NzAxNzI0MH0.s5OKUjim-EfBmKpuWt8x7c1QxiSoOY7_sTzvThNaYLw`
+**SERVICE ROLE key** (PostgREST, header `apikey` + `Authorization: Bearer <key>`) — SAME as the adidas/agron syncs:
+read `SUPABASE_SERVICE_ROLE_KEY` from `~/nsa-portal/bot-worker/.env` at runtime — the key
+the Mac Mini bot worker already holds. **Never paste it into this file, the live skill,
+or any log/report** — load it fresh each run.
 
 Tables (already migrated — migration 00120):
-- `ua_inventory` (id, sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced, source, created_at, style_number, color_code, upc) on-conflict `sku,size`, id = `{sku}-{size}`. Anon read+write (like adidas_inventory).
-- `ua_products_staging` (sku, style_number, name, color, product_type, gender, retail_price, image_url, description, sizes, is_active, …) — anon read+write. The discovery handoff.
+- `ua_inventory` (id, sku, size, stock_qty, future_delivery_date, future_delivery_qty, last_synced, source, created_at, style_number, color_code, upc) on-conflict `sku,size`, id = `{sku}-{size}`. Service-role read+write (like adidas_inventory since migration 00183).
+- `ua_products_staging` (sku, style_number, name, color, product_type, gender, retail_price, image_url, description, sizes, is_active, …) — service-role read+write. The discovery handoff.
 - `products` — UA rows are `brand='Under Armour'`, `vendor_id='v2'`, `inventory_source='ua'`. ~2,239 today.
 
-`ua_inventory` AND `ua_products_staging` writes go through the ANON key (RLS open,
-same as adidas/agron). **`products` writes do NOT** (anon is RLS-blocked). So
-product create/backfill is a staging handoff: the bot writes to
-`ua_products_staging` (anon), then Claude Code (service role) promotes:
+`ua_inventory` AND `ua_products_staging` writes go through the SERVICE ROLE key
+(the anon key is RLS-blocked on all vendor-cache tables since migration 00183).
+Product create/backfill stays a staging handoff: the bot writes to
+`ua_products_staging`, then Claude Code promotes:
 ```sql
 select * from public.promote_ua_products_from_staging();   -- returns (created, updated)
 ```
@@ -182,11 +184,11 @@ etc., so they fold onto the same grid columns as adidas (the portal's
 `adidasCanonSize` / `normSzName` handle most of this on read, but write clean
 labels). Footwear uses numeric sizes legitimately — leave as-is.
 
-## Step 4 — Product discovery → staging (anon), then promote (Claude Code)
+## Step 4 — Product discovery → staging (service-role key), then promote (Claude Code)
 
 So the FULL UA team range renders on `/adidas` — not just SKUs already in
 `products` — capture per-colorway metadata during the catalog pass and write it to
-`ua_products_staging` with the anon key. **Always grab the image** (a card with no
+`ua_products_staging` with the service-role key. **Always grab the image** (a card with no
 image shows a placeholder). One staging row per colorway
 (`POST …/rest/v1/ua_products_staging?on_conflict=sku`, `Prefer: resolution=merge-duplicates`):
 
@@ -232,8 +234,9 @@ existing rows — never clobber edited portal copy/images.
 
 ## Notes
 - Read-only: never place or submit a UA order / add to a cart (a separate task).
-- `ua_inventory` writes use raw `fetch` + the anon key (PostgREST), same data path
-  as the adidas/agron syncs; product writes need the staging→promote handoff.
+- `ua_inventory` writes use raw `fetch` + the SERVICE ROLE key (PostgREST, from
+  `bot-worker/.env` `SUPABASE_SERVICE_ROLE_KEY`), same data path as the adidas/agron
+  syncs; product writes still need the staging→promote handoff.
 - A puppeteer fallback scaffold (heuristic page-scrape, no API) is in
   `scripts/ua-armourhouse-sync.js` — use it only if the JSON API can't be found.
 - Diff the live skill against this reference when changing the sync; update the

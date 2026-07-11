@@ -3,11 +3,16 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import * as XLSX from 'xlsx';
 import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
-import { shipStationCall } from './vendorApis';
-import { NSA, pantoneHex } from './constants';
+import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
+import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
+import { NSA, pantoneHex, SZ_NORM } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
+import { normalizeWebLogos, pickCwAsset } from './businessLogic';
+import { normSzName } from './pricing';
+import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydrateStoreArt } from './lib/artGrid';
+import { buildTeamArtLibrary } from './lib/artIdentity';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -148,7 +153,7 @@ function buildPackingLists(store, label, groups) {
     const shipTo = store.delivery_mode === 'deliver_club'
       ? 'Deliver to club'
       : [a.name || order.buyer_name, a.street1, a.street2, [a.city, a.state, a.zip].filter(Boolean).join(', ')].filter(Boolean).map(esc).join('<br>');
-    const rows = items.filter((i) => !i.is_bundle_parent).map((i) => `<tr><td>${esc(i.sku || '')}</td><td>${esc(i.size || '')}</td><td>${esc(i.player_number || '')}</td><td>${esc(i.player_name || '')}</td><td style="text-align:center">${i.qty || 1}</td></tr>`).join('');
+    const rows = items.filter((i) => !i.is_bundle_parent).map((i) => `<tr><td>${esc(i._effSku || i.sku || '')}</td><td>${esc(i.size || '')}</td><td>${esc(i.player_number || '')}</td><td>${esc(i.player_name || '')}</td><td style="text-align:center">${i.qty || 1}</td></tr>`).join('');
     const player = [...new Set(items.map((i) => i.player_name).filter(Boolean))].join(', ') || order.buyer_name || '';
     return `<div class="slip">
       <div class="hd"><div><div class="t">${esc(store.name)}</div><div class="s">Packing list · ${esc(label)}</div></div>
@@ -178,15 +183,14 @@ function buildPackingLists(store, label, groups) {
 // lands on the latest orders — the fair, defensible call when we can't cover
 // everyone. Products with no stock record are made-to-order (decorated/custom)
 // and treated as available, matching the batch flow's own inventory check.
-function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set()) {
-  const keyOf = (pid, size) => pid + '|' + (size || 'OS');
+function buildAvailabilityReport(store, label, lines, stockByPid, orderById, madeToOrder = new Set(), stockBySku = {}) {
   // Earliest orders claim stock first.
   const sorted = [...lines].sort((a, b) => {
     const ta = orderById[a.order_id]?.created_at || '', tb = orderById[b.order_id]?.created_at || '';
     return ta < tb ? -1 : ta > tb ? 1 : 0;
   });
-  const remaining = {};   // product|size -> units left to allocate (Infinity if untracked)
-  const itemAgg = {};     // product|size -> rollup row
+  const remaining = {};   // stock-pool key -> units left to allocate (Infinity if untracked)
+  const itemAgg = {};     // stock-pool key -> rollup row
   const orderShort = {};  // order_id -> { order, lines: [...] }
   let totalUnits = 0, shortUnits = 0, untrackedUnits = 0;
 
@@ -194,13 +198,13 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
     totalUnits += need;
     if (!pid) { untrackedUnits += need; return; }
-    const k = keyOf(pid, size);
-    const st = stockByPid[pid];
-    const wh = Number((st?.size_stock || {})[size]) || 0;
-    const ven = Number((st?.vendor_size_stock || {})[size]) || 0;
-    const tracked = !!st && !madeToOrder.has(pid);
+    // Override-aware: a size mapped to a different SKU pools + checks THAT SKU's
+    // stock (lineStock reads inventory_unified for it), not the base product's.
+    const k = lineStockKey(i);
+    const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
+    const wh = ls.ours, ven = ls.vendor, tracked = ls.tracked;
     if (remaining[k] === undefined) remaining[k] = tracked ? wh + ven : Infinity;
-    if (!itemAgg[k]) itemAgg[k] = { name: st?.name || i.sku || pid, sku: i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, onOrder: !!(st?.on_order_qty || st?.vendor_eta) };
+    if (!itemAgg[k]) itemAgg[k] = { name: ls.name || i.sku || pid, sku: i._effSku || i.sku || '', size, needed: 0, ours: wh, adidas: ven, filled: 0, tracked, known: ls.known, onOrder: ls.onOrder };
     const row = itemAgg[k];
     row.needed += need;
     const give = Math.min(need, Math.max(0, remaining[k]));
@@ -212,7 +216,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
       shortUnits += short;
       const o = orderById[i.order_id] || {};
       const bucket = orderShort[i.order_id] || (orderShort[i.order_id] = { order: o, lines: [] });
-      bucket.lines.push({ name: row.name, sku: i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
+      bucket.lines.push({ name: row.name, sku: i._effSku || i.sku || '', size, short, player: i.player_name || '', number: i.player_number || '' });
     }
   });
 
@@ -225,11 +229,15 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
 
   const chip = (n, l, danger) => `<div class="chip${danger ? ' bad' : ''}"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const itemRow = (r) => {
-    const avail = r.tracked ? r.ours + r.adidas : '—';
+    // Show real stock numbers whenever we HAVE them (r.known) — an untracked /
+    // made-to-order line still never shorts, but e.g. an override SKU's vendor
+    // availability is informative rather than a dash.
+    const show = r.tracked || r.known;
+    const avail = show ? r.ours + r.adidas : '—';
     const sh = r.needed - r.filled;
-    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${r.tracked ? r.ours : '—'}</td><td class="c">${r.tracked ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh}</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '✓'}</td></tr>`;
+    return `<tr${sh > 0 ? ' class="r"' : ''}><td>${esc(r.name)}${r.sku ? `<div class="sub">${esc(r.sku)}</div>` : ''}</td><td class="c">${esc(r.size)}</td><td class="c">${r.needed}</td><td class="c">${show ? r.ours : '—'}</td><td class="c">${show ? r.adidas : '—'}</td><td class="c">${avail}</td><td class="c b">${sh > 0 ? `<span class="neg">−${sh} short</span>${r.onOrder ? ' <span class="oo">on order</span>' : ''}` : '<span class="pos">✓ Good</span>'}</td></tr>`;
   };
-  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Short</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
+  const itemTable = (list) => `<table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Need</th><th class="c">Ours</th><th class="c">Adidas</th><th class="c">Avail</th><th class="c">Status</th></tr></thead><tbody>${list.map(itemRow).join('')}</tbody></table>`;
 
   const orderBlock = (b) => {
     const o = b.order;
@@ -253,7 +261,7 @@ function buildAvailabilityReport(store, label, lines, stockByPid, orderById, mad
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}
     .grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ord{border:1px solid #fecaca;border-radius:10px;padding:10px 14px;margin-bottom:10px;background:#fff}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
@@ -291,6 +299,20 @@ function downloadCsv(filename, header, rows) {
 const _csvDate = (d) => (d ? new Date(d).toLocaleDateString() : '');
 const _itemName = (i, stockByPid) => i.name || (i.product_id && stockByPid[i.product_id] && stockByPid[i.product_id].name) || i.sku || i.product_id || 'Item';
 
+// One place for "does this order count": an order that reached Stripe but never paid
+// (pending_payment), was cancelled, or was fully refunded is dead for batching,
+// tracking, and backorder math. NOTE: several older inline copies of this predicate
+// exist in this file (loadStores stats, gatherAll, OrdersTab's `listable`, …) with
+// slightly different exclusion sets — use this helper in new code and fold the old
+// copies in as they're touched.
+const isLiveWebstoreOrder = (o) => o && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded';
+
+// Render the calendar day a batch cutoff instant refers to. The cutoff is stored as
+// the creating rep's LOCAL end-of-day; rendering that instant directly shows the
+// NEXT day for viewers east of the creator. Nudging back 12h lands mid-day of the
+// intended date for any viewer within ±11h of the creator's timezone.
+const batchCutoffDay = (c) => new Date(new Date(c).getTime() - 12 * 3600 * 1000).toLocaleDateString();
+
 // ─── Per-player roll-up ──────────────────────────────────────────────
 // One section per player: exactly what they're getting across the whole store,
 // plus the roster members who haven't ordered yet.
@@ -301,17 +323,27 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     const nm = (i.player_name || '').trim();
     const num = (i.player_number != null ? String(i.player_number) : '').trim();
     const key = (nm || num) ? (nm.toLowerCase() + '|' + num) : ('buyer:' + (o.buyer_email || o.buyer_name || i.order_id));
-    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [] });
+    const p = players[key] || (players[key] = { label: nm || (o.buyer_name ? o.buyer_name + ' (buyer)' : 'Unassigned'), number: num, units: 0, items: [], orders: {} });
     p.units += (i.qty || 1);
-    p.items.push({ name: _itemName(i, stockByPid), sku: i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    p.items.push({ name: _itemName(i, stockByPid), sku: i._effSku || i.sku || '', size: i.size || '', qty: i.qty || 1, buyer: o.buyer_name || '' });
+    // Who placed it + where it goes — the "more info" for each player block.
+    if (o.id && !p.orders[o.id]) p.orders[o.id] = { buyer: o.buyer_name || '', email: o.buyer_email || '', phone: o.buyer_phone || '', ship: o.ship_address || null };
   });
+  const shipLine = (s) => s
+    ? [s.name, s.street1, s.street2, [s.city, s.state, s.zip].filter(Boolean).join(', ')].filter(Boolean).join(', ')
+    : (store.delivery_mode === 'ship_home' ? '' : 'Delivered to the club');
   const list = Object.values(players).sort((a, b) => a.label.localeCompare(b.label));
   const notOrdered = (roster || []).filter((r) => !r.ordered);
   const totalUnits = list.reduce((a, p) => a + p.units, 0);
   const chip = (n, l) => `<div class="chip"><div class="n">${n}</div><div class="l">${l}</div></div>`;
   const block = (p) => {
     const rows = p.items.map((it) => `<tr><td>${esc(it.name)}${it.sku ? `<div class="sub">${esc(it.sku)}</div>` : ''}</td><td class="c">${esc(it.size)}</td><td class="c b">${it.qty}</td><td>${esc(it.buyer)}</td></tr>`).join('');
+    const contacts = Object.values(p.orders).map((c) => {
+      const sh = shipLine(c.ship);
+      return `<div class="contact">👤 <b>${esc(c.buyer || '—')}</b>${c.email ? ` · <a href="mailto:${esc(c.email)}">${esc(c.email)}</a>` : ''}${c.phone ? ` · ${esc(c.phone)}` : ''}${sh ? `<div class="ship">📦 ${esc(sh)}</div>` : ''}</div>`;
+    }).join('');
     return `<div class="ord"><div class="oh">${esc(p.label)}${p.number ? ` <span class="num">#${esc(p.number)}</span>` : ''}<span class="dt">${p.units} item${p.units === 1 ? '' : 's'}</span></div>
+      ${contacts}
       <table class="grid"><thead><tr><th>Item</th><th class="c">Size</th><th class="c">Qty</th><th>Buyer</th></tr></thead><tbody>${rows}</tbody></table></div>`;
   };
   printHtml(`<!doctype html><html><head><title>Player report — ${esc(store.name)}</title><style>
@@ -327,6 +359,7 @@ function buildPlayerReport(store, lines, orderById, roster, stockByPid) {
     .sub{font-size:11px;color:#94a3b8}
     .ord{border:1px solid #e2e8f0;border-radius:10px;padding:10px 14px;margin-bottom:10px;break-inside:avoid}
     .oh{font-weight:800;font-size:14px;margin-bottom:6px}.oh .num{color:#2563eb}.oh .dt{float:right;color:#94a3b8;font-weight:600;font-size:12px}
+    .contact{font-size:12px;color:#475569;margin:0 0 8px;line-height:1.5}.contact a{color:#2563eb;text-decoration:none}.contact .ship{color:#64748b;margin-top:2px}
     .warn{background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;font-size:13px;line-height:1.7}
   </style></head><body>
     <h1>Player Report</h1>
@@ -347,17 +380,70 @@ function madeToOrderPids(catalog) {
   return new Set((catalog || []).filter((c) => c.product_id && c.track_inventory === false).map((c) => c.product_id));
 }
 
-function aggStock(lines, stockByPid, madeToOrder = new Set()) {
+// ── Size-level SKU overrides ─────────────────────────────────────────
+// A size mapped to a different item number (catalog size_skus) is sourced as
+// that SKU everywhere: the SO line (batch flow), the availability/stock
+// reports, CSVs and the batch shortfall check. These helpers resolve a line's
+// EFFECTIVE SKU and annotate order lines so every consumer agrees.
+function sizeSkuMapOf(catalog) {
+  const m = {};
+  (catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) m[c.product_id] = c.size_skus; });
+  return m;
+}
+// Annotate lines with _effSku (the SKU production will actually source) and
+// _skuOv (true when it differs from the line's own SKU).
+function annotateEffSkus(lines, skuMap) {
+  return (lines || []).map((i) => {
+    const ov = i.product_id && skuMap[i.product_id] ? String(skuMap[i.product_id][i.size || 'OS'] || '').trim() : '';
+    const eff = ov || i.sku || '';
+    return { ...i, _effSku: eff, _skuOv: !!ov && ov !== (i.sku || '') };
+  });
+}
+// Vendor stock for override SKUs (they have no product row, so the usual
+// product-keyed stock map can't see them). Looks up inventory_unified by SKU →
+// { SKU: { sizes: {size: qty}, eta: bool } }. Best-effort: on error returns {}
+// and overridden lines simply report as untracked rather than wrong.
+async function fetchOverrideSkuStock(lines) {
+  const skus = [...new Set((lines || []).filter((l) => l._skuOv && l._effSku).map((l) => l._effSku))];
+  if (!skus.length || !supabase) return {};
+  try {
+    const { data } = await supabase.from('inventory_unified').select('sku,size,stock_qty,future_delivery_date').in('sku', skus);
+    const out = {};
+    (data || []).forEach((r) => {
+      const e = out[r.sku] || (out[r.sku] = { sizes: {}, eta: false });
+      e.sizes[r.size] = (Number(e.sizes[r.size]) || 0) + (Number(r.stock_qty) || 0);
+      if ((Number(r.stock_qty) || 0) <= 0 && r.future_delivery_date) e.eta = true;
+    });
+    return out;
+  } catch { return {}; }
+}
+// Stock picture for one line, override-aware: overridden lines read the
+// override SKU's vendor stock (warehouse stock is unknown for a bare SKU → 0);
+// normal lines read the product's stock record as before.
+function lineStock(i, stockByPid, stockBySku, madeToOrder) {
+  const size = i.size || 'OS';
+  if (i._skuOv) {
+    const vst = stockBySku[i._effSku];
+    const base = i.product_id ? stockByPid[i.product_id] : null;
+    // known: we have real stock numbers to SHOW even when the item is untracked
+    // (tracking off = never blocked/short, but availability is still informative).
+    return { ours: 0, vendor: vst ? (Number(vst.sizes[size]) || 0) : 0, tracked: !!vst && !madeToOrder.has(i.product_id), known: !!vst, onOrder: !!(vst && vst.eta), name: base && base.name };
+  }
+  const st = i.product_id ? stockByPid[i.product_id] : null;
+  return { ours: Number(((st && st.size_stock) || {})[size]) || 0, vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0, tracked: !!st && !madeToOrder.has(i.product_id), known: !!st, onOrder: !!(st && (st.on_order_qty || st.vendor_eta)), name: st && st.name };
+}
+// Aggregation key: overridden sizes pool stock separately from the base SKU.
+const lineStockKey = (i) => (i.product_id || i.sku || 'x') + (i._skuOv ? '§' + i._effSku : '') + '|' + (i.size || 'OS');
+
+function aggStock(lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
   const agg = {};
   lines.forEach((i) => {
     const pid = i.product_id; const size = i.size || 'OS'; const need = i.qty || 1;
-    const k = (pid || i.sku || 'x') + '|' + size;
-    const st = pid ? stockByPid[pid] : null;
+    const k = lineStockKey(i);
+    const ls = lineStock(i, stockByPid, stockBySku, madeToOrder);
     if (!agg[k]) agg[k] = {
-      name: (st && st.name) || i.name || i.sku || pid, sku: i.sku || '', size, need: 0,
-      ours: Number(((st && st.size_stock) || {})[size]) || 0,
-      vendor: Number(((st && st.vendor_size_stock) || {})[size]) || 0,
-      tracked: !!st && !madeToOrder.has(pid), onOrder: !!(st && (st.on_order_qty || st.vendor_eta)),
+      name: ls.name || i.name || i.sku || pid, sku: i._effSku || i.sku || '', size, need: 0,
+      ours: ls.ours, vendor: ls.vendor, tracked: ls.tracked, known: ls.known, onOrder: ls.onOrder,
     };
     agg[k].need += need;
   });
@@ -372,8 +458,8 @@ function aggStock(lines, stockByPid, madeToOrder = new Set()) {
 // ─── Store-close stock / shortage report ─────────────────────────────
 // "What can we fill from stock, what do we need to order from Adidas, and what
 // is nobody able to supply (backorder)." Vendor-split, not the combined view.
-function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set()) {
-  const rows = aggStock(lines, stockByPid, madeToOrder);
+function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set(), stockBySku = {}) {
+  const rows = aggStock(lines, stockByPid, madeToOrder, stockBySku);
   const sum = (f) => rows.reduce((a, r) => a + f(r), 0);
   const needSrc = rows.filter((r) => r.poVendor > 0 || r.backorder > 0)
     .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor));
@@ -395,7 +481,7 @@ function buildStockReport(store, label, lines, stockByPid, madeToOrder = new Set
     .grid th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 8px;color:#64748b;font-size:11px;text-transform:uppercase}
     .grid td{padding:7px 8px;border-bottom:1px solid #f1f5f9;vertical-align:top}
     .grid td.c{text-align:center}.grid td.b{font-weight:800}.grid tr.r td{background:#fef2f2}
-    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}
+    .sub{font-size:11px;color:#94a3b8}.neg{color:#b91c1c;font-weight:800}.pos{color:#047857;font-weight:800}
     .oo{font-size:10px;color:#92400e;background:#fef3c7;border-radius:4px;padding:1px 5px;font-weight:700}
     .ok{background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;border-radius:8px;padding:10px 14px;font-size:14px;font-weight:700}
     @media print{.chip,.grid tr.r td,.chip.bad{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
@@ -429,7 +515,7 @@ function webstoreToShipStation(order, items, store, imageByPid = {}) {
     shipTo: { name: a.name || order.buyer_name || '', street1: a.street1 || '', street2: a.street2 || '', city: a.city || '', state: a.state || '', postalCode: a.zip || '', country: a.country || 'US', phone: order.buyer_phone || '', residential: true },
     items: items.filter((i) => !i.is_bundle_parent).map((i) => ({
       lineItemKey: i.id, // echoed back on the shipment so the webhook marks the exact line shipped
-      sku: i.sku || '', name: [i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
+      sku: i._effSku || i.sku || '', name: [i._effSku || i.sku, i.size && ('Size ' + i.size), i.player_number && ('#' + i.player_number), i.player_name].filter(Boolean).join(' · '),
       quantity: i.qty || 1, unitPrice: Number(i.unit_price) || 0,
       imageUrl: imageByPid[i.product_id] || undefined,
       options: [i.size && { name: 'Size', value: i.size }, i.player_number && { name: 'Number', value: String(i.player_number) }, i.player_name && { name: 'Name', value: i.player_name }].filter(Boolean),
@@ -919,8 +1005,10 @@ async function generateFlyerPdfBase64(store, items = []) {
 // items (bundle components) so the flyer can surface the package's hero image.
 // webstore_products has no image_front_url column — it's image_url here.
 async function loadFlyerItems(store) {
+  // NOTE: webstore_products has NO is_bundle_parent column — selecting it 400s the whole query
+  // (which silently emptied the flyer). Bundles are detected by kind==='bundle' below.
   const { data: cat } = await supabase.from('webstore_products')
-    .select('id,display_name,retail_price,image_url,product_id,kind,is_bundle_parent,active')
+    .select('id,display_name,retail_price,image_url,product_id,kind,active')
     .eq('store_id', store.id).order('sort_order');
   const rows = cat || [];
   const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
@@ -977,8 +1065,28 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const [toast, setToast] = useState(null);
   const [wsSettings, setWsSettings] = useState(null); // global webstore defaults (singleton)
   const [showDefaults, setShowDefaults] = useState(false);
-  const [soPrompt, setSoPrompt] = useState(null); // { count, shortages[], proceed() } for the Create-SO modal
+  const [soPrompt, setSoPrompt] = useState(null); // { orders[], shortagesFor(selIds), proceed(overrides, selIds, batchMeta) } for the Create-SO modal
   const [storeStats, setStoreStats] = useState({});
+  // Applying an item template outside the store-detail view (Templates page):
+  const [pendingStartTpl, setPendingStartTpl] = useState(null); // template to load into the store being created
+  const [pickStoreForTpl, setPickStoreForTpl] = useState(null); // template awaiting an existing-store pick
+  const [tplColorFlow, setTplColorFlow] = useState(null);       // { tpl, storeId, existingPids, store } → color selector
+  const [templateFor, setTemplateFor] = useState(null);         // store being saved as a template → SaveAsTemplateModal
+  const [tplAfterEdit, setTplAfterEdit] = useState(null);       // { storeId, tpl } — color picker queued to open after the settings save (Start Store from a store template)
+
+  // "Create from OMG" — the single unified entry point for turning an OMG report link into a
+  // Club Webstore. Self-contained here (no dependency on the OMG Stores shadow-tracking tables):
+  // 'link' = paste-URL step, 'review' = editable SKU/price/name table before the store is created.
+  const [omgStep, setOmgStep] = useState(null); // null | 'link' | 'review'
+  const [omgUrl, setOmgUrl] = useState('');
+  const [omgFetching, setOmgFetching] = useState(false);
+  const [omgItems, setOmgItems] = useState([]); // [{sku,name,color,sizes,retail,image_url,manufacturer,cost,vendor_id,_cost_source,product_id,_removed,_resolving}]
+  const [omgName, setOmgName] = useState('');
+  const [omgCustomerId, setOmgCustomerId] = useState('');
+  const [omgStock, setOmgStock] = useState(null); // Map from fetchStockMap, keyed by product_id | 'omgtmp:'+i
+  const [omgPrefill, setOmgPrefill] = useState(null); // { name, customer_id } → carried into the New Store settings form
+  const [omgVendList, setOmgVendList] = useState([]); // cached at fetch time, reused on per-row SKU re-resolve
+  const [omgMomentecDiscount, setOmgMomentecDiscount] = useState(0.15);
 
   const flash = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(null), 2600); }, []);
 
@@ -1044,12 +1152,19 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     setWsSettings(data || { standard_categories: [], checkout_message: '', default_options: [] });
   }, []);
   useEffect(() => { loadWsSettings(); }, [loadWsSettings]);
-  const saveWsSettings = useCallback(async (patch) => {
+  const saveWsSettings = useCallback(async (patch, opts = {}) => {
     const next = { id: 1, standard_categories: [], checkout_message: '', default_options: [], ...(wsSettings || {}), ...patch, updated_at: new Date().toISOString() };
     const { error } = await supabase.from('webstore_settings').upsert(next, { onConflict: 'id' });
-    if (error) { flash('Error: ' + error.message); return false; }
-    setWsSettings(next); flash('Store defaults saved'); return true;
+    if (error) { if (!opts.quiet) flash('Error: ' + error.message); return false; }
+    setWsSettings(next); if (!opts.quiet) flash('Store defaults saved'); return true;
   }, [wsSettings, flash]);
+  // Placement memory: remember the last-used logo placement per garment TYPE (a hoodie's
+  // left chest sits differently than a tee's), shared by all reps. Written quietly on
+  // every Art-tab apply; read to seed the next placement.
+  const savePlacementMemory = useCallback((patch) => {
+    if (!patch || !Object.keys(patch).length) return;
+    saveWsSettings({ placement_memory: { ...((wsSettings && wsSettings.placement_memory) || {}), ...patch } }, { quiet: true });
+  }, [wsSettings, saveWsSettings]);
 
   const loadDetail = useCallback(async (store) => {
     setDetailLoading(true);
@@ -1105,22 +1220,21 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         par = p;
       }
       const { sos: allSos, ests: allEsts } = _live.current;
-      const byName = new Map(); const acc = [];
-      // De-dupe by name (the same logo recurs across orders with different ids); keep the
-      // copy that actually has a PNG/SVG preview.
-      const addArt = (a, label, srcCustId) => {
-        if (!a || !a.id || a.archived) return;
-        const key = (a.name || a.id).trim().toLowerCase();
-        const rec = { ...a, _srcLabel: label, _srcCustId: srcCustId };
-        const idx = byName.get(key);
-        if (idx == null) { byName.set(key, acc.length); acc.push(rec); return; }
-        if (artImgUrl(a) && !artImgUrl(acc[idx])) acc[idx] = rec;
-      };
-      (cust?.art_files || []).forEach((a) => addArt(a, 'Team library', cust.id));
-      (par?.art_files || []).forEach((a) => addArt(a, (par.alpha_tag || par.name || 'Parent') + ' library', par.id));
-      (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => addArt(a, so.id, store.customer_id)));
-      (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => addArt(a, e.id, store.customer_id)));
-      libraryArt = acc;
+      // Parent-library art must NEVER replace a team-owned record of the same name
+      // (that was how football art snuck onto volleyball stores / batch SOs — a parent
+      // copy with a preview image overwrote the team's id in the name-deduped pool).
+      // buildTeamArtLibrary keeps team rows authoritative; parent only fills gaps.
+      const orderArt = [];
+      (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => orderArt.push({ art: a, label: so.id, srcCustId: store.customer_id })));
+      (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => orderArt.push({ art: a, label: e.id, srcCustId: store.customer_id })));
+      libraryArt = buildTeamArtLibrary({
+        teamArt: cust?.art_files || [],
+        parentArt: par?.art_files || [],
+        orderArt,
+        teamId: cust?.id,
+        parentId: par?.id,
+        parentLabel: (par?.alpha_tag || par?.name || 'Parent') + ' library',
+      });
       // Store palette (child's pantone, falling back to the parent org's) drives the
       // picker's default "school colors" filter.
       storeColors = (cust?.pantone_colors && cust.pantone_colors.length) ? cust.pantone_colors : (par?.pantone_colors || []);
@@ -1215,15 +1329,276 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (prevStore && prevStore.status !== 'open' && data.status === 'open' && data.created_via === 'coach') notifyCoachPublished(data);
       flash('Store saved'); return { data };
     }
-    const { data, error } = await supabase.from('webstores').insert(form).select().single();
+    // New store — webstores.slug is UNIQUE, so guarantee a free one up front. A name that collides
+    // with an existing store (e.g. re-importing the same OMG report, or two similarly-named teams)
+    // auto-suffixes (-2, -3…) instead of failing the insert with a raw constraint error.
+    const baseSlug = (form.slug || slugify(form.name) || 'team-store').slice(0, 60) || 'team-store';
+    let form2 = form;
+    try {
+      const { data: ex } = await supabase.from('webstores').select('slug').ilike('slug', baseSlug + '%');
+      const taken = new Set((ex || []).map((r) => r.slug));
+      let slug = baseSlug;
+      if (taken.has(slug)) { let n = 2; while (taken.has(`${baseSlug}-${n}`)) n++; slug = `${baseSlug}-${n}`; }
+      if (slug !== form.slug) form2 = { ...form, slug };
+    } catch (_) { /* fall through — the retry below still guards the constraint */ }
+    let { data, error } = await supabase.from('webstores').insert(form2).select().single();
+    // Race fallback: another create claimed the slug between the check and the insert.
+    if (error && /slug/i.test(error.message || '') && /duplicate|unique/i.test(error.message || '')) {
+      form2 = { ...form2, slug: `${baseSlug}-${Date.now().toString(36).slice(-4)}` };
+      ({ data, error } = await supabase.from('webstores').insert(form2).select().single());
+    }
     if (error) return { error };
     setStores((prev) => [data, ...prev]);
-    flash('Store created'); return { data };
+    flash(data.slug !== form.slug ? `Store created · URL set to /shop/${data.slug}` : 'Store created');
+    return { data };
   }, [sel, flash, stores, notifyCoachPublished]);
+
+  // ── "Create from OMG" — the one place to turn a shared OMG report link into a Club Webstore.
+  // Self-contained (no dependency on the OMG Stores shadow-tracking tables): fetch → parse →
+  // resolve each SKU against the catalog/supplier APIs → review (edit name/price/SKU, drop items,
+  // check live stock) → create. Mirrors the OMG Stores section's own SKU resolution chain so a
+  // corrected SKU here behaves identically to everywhere else in the app.
+  const _omgSkuInvalid = (sku) => {
+    const s = String(sku || '').trim();
+    if (!s) return true;
+    if (/[\/\\|,;]|\s/.test(s)) return true; // separators → compound / multi-token
+    return false;
+  };
+  const _omgVendorCostSrc = (vendor = '') => ({ sanmar: 'sanmar', 's&s': 'ss', richardson: 'richardson', momentec: 'momentec' })[String(vendor).toLowerCase()] || 'api';
+  // Manufacturer → NSA vendor (who we actually buy the blank from), for items an exact SKU
+  // match didn't already resolve. Mirrors the OMG Stores section's own mapping.
+  const _omgMfgToVendor = (mfg, vendList) => {
+    if (!mfg) return null;
+    const m = mfg.toLowerCase();
+    const find = (re) => vendList.find((v) => re.test(v.name || ''))?.id || null;
+    if (/comfort\s*colors|port\s*(&|and)\s*company|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees/i.test(m)) return find(/sanmar/i);
+    if (/independent\s*trading|next\s*level|bella\s*canvas|tultex|lat|american\s*apparel|alternative|econscious|threadfast/i.test(m)) return find(/s.s\s*active/i);
+    if (/richardson/i.test(m)) return find(/richardson/i);
+    if (/otto/i.test(m)) return find(/otto/i) || find(/s.s\s*active/i);
+    if (/adidas/i.test(m)) return find(/adidas/i);
+    if (/under\s*armou?r/i.test(m)) return find(/under\s*armou?r/i);
+    if (/badger/i.test(m)) return find(/momentec/i);
+    if (/momentec/i.test(m)) return find(/momentec/i);
+    return null;
+  };
+  // Parse the raw OMG report JSON into flat product rows (name/sku/color/sizes/retail/image).
+  // Pure — no DB or vendor calls.
+  const _parseOmgReport = (report) => {
+    const products = [];
+    // Pull a SKU out of "Black/White (KB9093)" → KB9093. Requires a digit so a colour
+    // descriptor like "(Solid)"/"(Heather)" is never mistaken for a style number.
+    const extractSku = (str) => {
+      const m = (str || '').match(/\(([A-Za-z0-9]{2,12})\)/);
+      if (!m) return '';
+      const tok = m[1];
+      if (!/\d/.test(tok)) return '';
+      return tok.toUpperCase();
+    };
+    // OMG appends an internal variant index, e.g. "KF5972 - 7" — the real catalog SKU is
+    // the first whitespace-delimited token (NSA SKUs never contain a space).
+    const cleanSku = (str) => ((str || '').trim().split(/\s+/)[0] || '').toUpperCase();
+    (report.reports || []).forEach((r) => {
+      (r.sections || []).forEach((section) => {
+        const meta = section.meta || {};
+        const rows = section.rows || [];
+        const artworkList = meta.artwork || [];
+        const sectionSku = meta.sku || '';
+        const cleanSectionSku = cleanSku(sectionSku);
+        const sectionSkuOk = cleanSectionSku && !cleanSectionSku.includes(' ') && cleanSectionSku.length <= 15;
+        // One line per distinct colorway — colors sharing a style number can't be told
+        // apart by SKU alone, so group by the per-row color SKU (falling back to color text).
+        const groups = {};
+        rows.forEach((row) => {
+          const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/, '');
+          const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz) ? 'OSFA' : rawSz);
+          const qty = row.quantity || 0;
+          const colorSku = extractSku(row.color);
+          const rowColor = (row.color || '').trim();
+          const rowSku = colorSku || (sectionSkuOk ? cleanSectionSku : '');
+          const key = colorSku || rowColor || '__nosku__';
+          if (!groups[key]) groups[key] = { sku: rowSku, sizes: {}, qty: 0, paid: 0, colors: new Set() };
+          const g = groups[key];
+          g.sizes[sz] = (g.sizes[sz] || 0) + qty;
+          g.qty += qty;
+          g.paid += (row.paid || 0);
+          if (row.color) g.colors.add(row.color);
+        });
+        Object.values(groups).forEach((g) => {
+          if (g.qty === 0) return; // no one ordered it
+          let sku = g.sku;
+          if (!sku) {
+            const fromText = extractSku([...g.colors].join(' ') + ' ' + (meta.name || ''));
+            sku = fromText || (sectionSkuOk ? cleanSectionSku : cleanSku(sectionSku));
+          }
+          // Prefer a COLOR match for the mockup (colors sharing a style number can't be
+          // told apart by SKU), then a SKU match, then the section's first artwork.
+          const _artText = (a) => `${a.caption || ''} ${a.color || ''} ${a.name || ''} ${a.label || ''}`.toUpperCase();
+          const _colorUp = ([...g.colors][0] || '').toUpperCase();
+          const matchedByColor = _colorUp ? artworkList.filter((a) => _artText(a).includes(_colorUp) || (a.color || '').toUpperCase() === _colorUp) : [];
+          const matchedBySku = sku ? artworkList.filter((a) => _artText(a).includes(sku)) : [];
+          const artForSku = matchedByColor.length ? matchedByColor : (matchedBySku.length ? matchedBySku : artworkList);
+          const artwork = artForSku[0];
+          products.push({
+            sku, name: meta.name || '', manufacturer: meta.manufacturer || '', color: [...g.colors].join(', '),
+            retail: meta.base_price || 0, sizes: g.sizes, image_url: artwork?.link || artwork?.thumbnail || '',
+          });
+        });
+      });
+    });
+    return products;
+  };
+  // Resolve one item's SKU against the catalog, then (if still $0) the supplier APIs — the same
+  // chain the OMG Stores SKU editor uses, so an edited SKU here re-sources identically.
+  const _omgResolveOne = useCallback(async (p, vendList, momentecDiscount) => {
+    const skuClean = (p.sku || '').trim().toUpperCase();
+    if (!skuClean) return { ...p, sku: skuClean, product_id: null, vendor_id: null, cost: 0, _cost_source: '' };
+    let product_id = null, vendor_id = null, cost = 0, _cost_source = '';
+    const { data: rows } = await supabase.from('products').select('id,sku,brand,vendor_id,nsa_cost').ilike('sku', skuClean).limit(1);
+    const catMatch = rows && rows[0];
+    if (catMatch) {
+      product_id = catMatch.id;
+      if (catMatch.vendor_id) vendor_id = catMatch.vendor_id;
+      const catCost = parseFloat(catMatch.nsa_cost) || 0;
+      if (catCost > 0) { cost = catCost; _cost_source = 'catalog'; }
+    }
+    if (!vendor_id) vendor_id = _omgMfgToVendor(p.manufacturer, vendList);
+    if (cost === 0) {
+      const vendorName = (vendList.find((v) => v.id === vendor_id)?.name || p.manufacturer || '').toLowerCase();
+      let hit = null;
+      try {
+        if (/richardson/i.test(vendorName)) hit = richardsonResolveSku(skuClean);
+        else if (/sanmar/i.test(vendorName)) hit = await sanmarResolveSku(skuClean);
+        else if (/s.?s\s*activ/i.test(vendorName)) hit = await ssResolveSku(skuClean);
+        else if (/momentec/i.test(vendorName)) hit = await momentecResolveSku(skuClean, { discount: momentecDiscount });
+        else hit = await resolveSkuAcrossVendors(skuClean);
+      } catch (e) { /* API lookup miss — leave cost at 0, staff can enter manually */ }
+      if (hit?.rate > 0) {
+        cost = hit.rate; _cost_source = _omgVendorCostSrc(hit.vendor);
+        const vid = vendList.find((v) => new RegExp(hit.vendor, 'i').test(v.name || ''))?.id;
+        if (vid) vendor_id = vid;
+      }
+    }
+    return { ...p, sku: skuClean, product_id, vendor_id, cost, _cost_source };
+  }, []);
+
+  // Step 1 → 2: fetch the OMG report, parse it, resolve every item's cost/vendor + live stock,
+  // and hand off to the review table. Nothing is written to the database yet.
+  const omgFetchReport = useCallback(async (urlRaw) => {
+    const urlStr = (urlRaw || '').trim();
+    const uuidMatch = urlStr.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+    if (!uuidMatch) { flash('Invalid report URL — needs a valid OMG report link'); return; }
+    setOmgFetching(true);
+    try {
+      const resp = await fetch(`/.netlify/functions/omg-report-proxy?id=${uuidMatch[1]}`);
+      if (!resp.ok) throw new Error('Report fetch failed: ' + resp.status);
+      const report = await resp.json();
+      if (!report?.reports?.length) throw new Error('Report JSON has no data');
+      const saleCode = report.options?.filter?.find((f) => f.key === 'sale_code')?.value || '';
+      const storeName = report.details?.title || ('OMG Store ' + saleCode);
+      const rawItems = _parseOmgReport(report);
+      if (!rawItems.length) throw new Error('No items with sales found in this report');
+      const { data: vendList } = await supabase.from('vendors').select('id,name,api_provider,api_price_discount');
+      const vl = vendList || [];
+      const discount = vl.find((v) => v.api_provider === 'momentec' || /momentec/i.test(v.name))?.api_price_discount ?? 0.15;
+      setOmgVendList(vl); setOmgMomentecDiscount(discount);
+      const resolved = await Promise.all(rawItems.map((p) => _omgResolveOne(p, vl, discount)));
+      let stock = new Map();
+      try { stock = await fetchStockMap(resolved.map((p, i) => ({ id: p.product_id || ('omgtmp:' + i), sku: p.sku }))); } catch { /* show without stock */ }
+      setOmgItems(resolved.map((p) => ({ ...p, _included: true })));
+      setOmgStock(stock);
+      setOmgName(storeName);
+      setOmgCustomerId('');
+      setOmgStep('review');
+    } catch (e) { flash('Failed: ' + e.message); } finally { setOmgFetching(false); }
+  }, [flash, _omgResolveOne]);
+
+  // A staff-edited SKU re-sources cost/vendor and re-checks live stock for that one row.
+  const omgResolveRow = useCallback(async (index, newSku) => {
+    const skuClean = (newSku || '').trim().toUpperCase();
+    setOmgItems((prev) => prev.map((p, i) => (i === index ? { ...p, sku: skuClean, _resolving: true } : p)));
+    const cur = omgItems[index];
+    if (!cur) return;
+    const resolved = await _omgResolveOne({ ...cur, sku: skuClean }, omgVendList, omgMomentecDiscount);
+    setOmgItems((prev) => prev.map((p, i) => (i === index ? { ...resolved, _included: p._included, _resolving: false } : p)));
+    try {
+      const st = await fetchStockMap([{ id: resolved.product_id || ('omgtmp:' + index), sku: resolved.sku }]);
+      const key = resolved.product_id || ('omgtmp:' + index);
+      const hit = st.get(key);
+      if (hit) setOmgStock((prevStock) => { const m = new Map(prevStock || []); m.set(key, hit); return m; });
+    } catch { /* keep old stock display */ }
+  }, [omgItems, omgVendList, omgMomentecDiscount, _omgResolveOne]);
+
+  // Step 2 → don't create the store yet. Hand off to the SAME settings form "+ New Store" uses
+  // (delivery, fundraising, coach contact, decoration mode, etc.), pre-filled with the reviewed
+  // name/customer. The reviewed items stay staged in omgItems until that form is actually
+  // submitted, so backing out of settings leaves nothing behind.
+  const omgProceedToSettings = useCallback(() => {
+    const included = omgItems.filter((p) => p._included !== false && (p.sku || p.name));
+    if (!included.length) { flash('Select at least one item'); return; }
+    setOmgPrefill({ name: (omgName || 'Team Store').trim() || 'Team Store', customer_id: omgCustomerId || '' });
+    setOmgStep(null);
+    setEditing('new');
+  }, [omgItems, omgName, omgCustomerId, flash]);
+
+  // Clears any items/prefill staged by the OMG wizard — called both when the review step is
+  // cancelled outright and when the settings form itself is backed out of.
+  const omgResetStaged = useCallback(() => {
+    setOmgStep(null); setOmgUrl(''); setOmgItems([]); setOmgName(''); setOmgCustomerId(''); setOmgPrefill(null);
+  }, []);
+
+  // Settings form submitted → the store now exists with every setting the rep configured.
+  // Add the reviewed items and queue in-house art (if a customer is linked), then open it.
+  const omgFinishAfterSettings = useCallback(async (newStore) => {
+    const included = omgItems.filter((p) => p._included !== false && (p.sku || p.name));
+    const wsName = newStore.name || 'Team Store';
+    const customerId = newStore.customer_id || null;
+    // In-house art: the OMG mockup shows the finished garment, but OMG never hands over the real
+    // production file. Queue one "needs file" record (art_id only, no art_url — the storefront
+    // never composites a logo over the mockup) so it lands in the art queue instead of silently
+    // looking done.
+    let pendingArtId = null;
+    if (customerId) {
+      try {
+        // status 'waiting_for_art' is the canonical "needs artist attention" state — it puts this
+        // record in the customer Artwork Library's Waiting-for-Art queue and on the Art Dashboard,
+        // so the separations request can't be missed. ('pending' isn't a real art status.)
+        const rec = { id: 'logoomg' + Date.now() + Math.random().toString(36).slice(2, 6), name: wsName + ' — team art (attach production file)', kind: 'art', status: 'waiting_for_art', deco_type: 'screen_print', files: [], color_ways: [], uploaded: new Date().toLocaleDateString() };
+        const { data: cRow } = await supabase.from('customers').select('art_files').eq('id', customerId).maybeSingle();
+        const artArr = Array.isArray(cRow?.art_files) ? cRow.art_files : [];
+        const { error: aErr } = await supabase.from('customers').update({ art_files: [...artArr, rec] }).eq('id', customerId);
+        if (!aErr) { await supabase.from('webstores').update({ store_art: [{ ...rec, _srcLabel: 'From OMG import' }] }).eq('id', newStore.id); pendingArtId = rec.id; }
+      } catch (e) { /* items still get created without the art queue */ }
+    }
+    let linked = 0;
+    if (included.length) {
+      const rows = included.map((p, i) => ({
+        store_id: newStore.id, product_id: p.product_id || null, sku: p.sku || null, kind: 'single',
+        display_name: (p.name || p.sku || 'Item').trim(), image_url: p.image_url || null,
+        // Normalize the OMG report's size labels to catalog size codes ("Men's Small" → "S",
+        // "Men's 3X-Large" → "3XL") so sizes_offered matches the product's scale — otherwise the
+        // storefront filters every offered size out and an in-stock item reads "Sold out".
+        retail_price: Number(p.retail) || 0, sizes_offered: Object.keys(p.sizes || {}).length ? foldScale(Object.keys(p.sizes).map(normSzName)) : null,
+        sort_order: i, active: true,
+        // Items come in with NO art linked. The old behavior blanket-stamped every item with the
+        // placeholder team-art record, so the whole store read "Applied" before the rep chose
+        // anything. Art is now applied deliberately in the Art tab (incl. "Bypass mocks" for OMG
+        // stores whose images already show the decoration).
+      }));
+      const { error: pErr } = await supabase.from('webstore_products').insert(rows);
+      if (pErr) { flash('Store created but items failed to add: ' + pErr.message); omgResetStaged(); await openStore(newStore); return; }
+      linked = rows.filter((r2) => r2.product_id).length;
+    }
+    flash(`✓ ${wsName} created — ${included.length} item${included.length === 1 ? '' : 's'} (${linked} catalog-linked)${pendingArtId ? ' · in-house art queued' : ''}`);
+    omgResetStaged();
+    await openStore(newStore);
+  }, [omgItems, openStore, flash, omgResetStaged]);
 
   // Launch / close a store from the detail view (the form no longer sets status —
   // a store is built as a draft, then launched when it's ready).
   const setStoreStatus = useCallback(async (store, status, opts = {}) => {
+    // Templates are reusable starting points, never live stores: launching one would put
+    // it in the public team-stores directory and make it purchasable.
+    if (store.is_template && status === 'open') { flash("Templates can't be launched — use Start Store on the Templates tab to spin up a real store from it"); return; }
     const patch = { status, updated_at: new Date().toISOString() };
     // A coach email typed in the launch dialog is saved to the store so it's on file.
     const coachEmail = (opts.coachEmail || '').trim();
@@ -1240,51 +1615,100 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, notifyCoachPublished, notifyStoreClosed]);
 
   const duplicateStore = useCallback(async (src, opts = {}) => {
-    if (!window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return;
-    // Unique slug: <slug>-copy, then -copy-2, -copy-3…
+    if (!opts.asTemplate && !opts.startFromTemplate && !window.confirm(`Duplicate "${src.name}"? This copies the catalog, packages and transfer setup into a new draft store (no orders).`)) return null;
+    const cloneName = opts.name != null ? opts.name : src.name + (opts.suffix != null ? opts.suffix : ' (Copy)');
+    // Unique slug: <base>-copy (or -template), then -2, -3…
     const taken = new Set(stores.map((s) => s.slug));
-    let slug = slugify(src.name) + '-copy';
+    let slug = slugify(cloneName) + (opts.asTemplate ? '-template' : '-copy');
     if (taken.has(slug)) { let n = 2; while (taken.has(`${slug}-${n}`)) n++; slug = `${slug}-${n}`; }
     const { id, created_at, updated_at, ...rest } = src;
-    const payload = { ...rest, name: src.name + (opts.suffix != null ? opts.suffix : ' (Copy)'), slug, status: 'draft', open_at: null, close_at: null, is_template: false, ...(opts.rebrand ? { logo_url: null } : {}) };
-    flash('Duplicating store…');
+    // A template is a separate is_template store carrying the ITEMS and packages only —
+    // brand-free by definition (no logo, banner, art, mockups, decorations or transfer
+    // codes from the source team). is_template makes it show in the Templates tab and
+    // stay available to the coach store builder's item pool.
+    // Clone hygiene — never carry from the source:
+    //   featured_product_ids: webstore_product ids of the SOURCE store; they resolve to
+    //     nothing in the clone, which hides the hero collage instead of the auto default.
+    //   closed_notified_at: the close-sweep idempotency stamp; carrying it means the new
+    //     store's close never creates the rep to-do/breakdown email.
+    //   coach_contact_email (rebrand/template paths): the SOURCE team's coach; launch
+    //     would prefill and email the wrong person.
+    // Template philosophy: ONLY the items (and their categories/pricing/kit setup) come
+    // over — every trace of the source team's branding strips, and the new team's colors
+    // and logos are applied fresh. So template paths also drop the banner, hero blurb and
+    // the curated store_art library (the source team's logos).
+    const tplPath = opts.asTemplate || opts.startFromTemplate;
+    const payload = { ...rest, name: cloneName, slug, status: 'draft', open_at: null, close_at: null, is_template: !!opts.asTemplate, featured_product_ids: null, closed_notified_at: null, ...((opts.rebrand || opts.asTemplate) ? { logo_url: null, coach_contact_email: null } : {}), ...(tplPath ? { banner_url: null, hero_blurb: null, store_art: [] } : {}) };
+    flash(opts.asTemplate ? 'Saving template…' : opts.startFromTemplate ? 'Creating store from template…' : 'Duplicating store…');
     const { data: store, error } = await supabase.from('webstores').insert(payload).select().single();
-    if (error) { flash('Could not duplicate: ' + error.message); return; }
+    if (error) { flash('Could not duplicate: ' + error.message); return null; }
 
-    const { data: srcProducts } = await supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+    // opts.itemIds limits the copy to those catalog rows (Save as template's picks, or
+    // start-from-template's verbatim set); absent = whole catalog. Filter in the query —
+    // no point pulling 200 rows to keep 5. An empty list means "copy no catalog".
+    let srcProducts = [];
+    if (!opts.itemIds || opts.itemIds.length) {
+      let q = supabase.from('webstore_products').select('*').eq('store_id', src.id).order('sort_order');
+      if (opts.itemIds) q = q.in('id', opts.itemIds);
+      srcProducts = (await q).data || [];
+    }
     const idMap = {}; // old webstore_product id -> new id
     for (const p of (srcProducts || [])) {
       const { id: pid, created_at: pc, updated_at: pu, store_id, ...prest } = p;
-      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...prest, store_id: store.id }).select('id').single();
+      // Template paths carry the ITEM, not the source team's branding: custom mockups
+      // (which show the old team's logo on the garment), art placements and transfer
+      // links strip; the new team decorates fresh. Plain Duplicate keeps everything.
+      const row = tplPath ? { ...prest, image_url: null, image_back_url: null, decorations: [], transfer_codes: [], num_transfer_sets: [] } : prest;
+      const { data: np, error: pe } = await supabase.from('webstore_products').insert({ ...row, store_id: store.id }).select('id').single();
       if (pe) { flash('Catalog copy failed: ' + pe.message); break; }
       idMap[pid] = np.id;
     }
     const bundleIds = (srcProducts || []).filter((p) => p.kind === 'bundle').map((p) => p.id);
     if (bundleIds.length) {
       const { data: items } = await supabase.from('webstore_bundle_items').select('*').in('bundle_id', bundleIds);
-      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id] }; }).filter((r) => r.bundle_id);
+      // Remap the component's webstore_product_id link too — carrying the SOURCE store's
+      // row id makes the package show (and the storefront fetch) another store's item.
+      // Null when the linked single wasn't copied: components then resolve by product_id.
+      const rows = (items || []).map((it) => { const { id: iid, created_at: ic, updated_at: iu, bundle_id, webstore_product_id, ...irest } = it; return { ...irest, bundle_id: idMap[bundle_id], webstore_product_id: idMap[webstore_product_id] || null, ...(tplPath ? { decoration_id: null } : {}) }; }).filter((r) => r.bundle_id);
       if (rows.length) { const { error: be } = await supabase.from('webstore_bundle_items').insert(rows); if (be) flash('Package items copy failed: ' + be.message); }
     }
-    const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
-    if ((srcTransfers || []).length) {
-      const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
-      const { error: te } = await supabase.from('webstore_transfers').insert(trows);
-      if (te) flash('Transfer setup copy failed: ' + te.message);
+    // Transfer setup (heat-press codes: the team's names/numbers/logos) is source-team
+    // branding — it copies on plain Duplicate / Clone & Rebrand but never on template
+    // paths, where the new team's transfers get set up fresh.
+    if (!tplPath) {
+      const { data: srcTransfers } = await supabase.from('webstore_transfers').select('*').eq('store_id', src.id);
+      if ((srcTransfers || []).length) {
+        const trows = srcTransfers.map((t) => { const { id: tid, created_at: tc, updated_at: tu, store_id, ...trest } = t; return { ...trest, store_id: store.id, on_hand: 0, incoming: 0, incoming_eta: null }; });
+        const { error: te } = await supabase.from('webstore_transfers').insert(trows);
+        if (te) flash('Transfer setup copy failed: ' + te.message);
+      }
     }
     setStores((prev) => [store, ...prev]);
-    flash(opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft');
+    flash(opts.asTemplate ? 'Saved as a template — find it in the Templates tab' : (opts.suffix === '' ? 'New store created from template (draft)' : 'Store duplicated as a draft'));
     // "Clone & rebrand" lands you straight in settings to set the new customer/colors/logo.
-    if (opts.rebrand) setEditing(store);
+    // Templates skip that; start-from-template goes to the color picker instead.
+    if (opts.rebrand && !opts.asTemplate && !opts.startFromTemplate) setEditing(store);
+    return store;
   }, [stores, flash]);
 
-  // Mark / unmark a store as a reusable template — the starting point for
-  // "New from template", which clones it into a fresh draft via duplicateStore.
+  // "Save as template": clone the store into a SEPARATE, reusable template (its own name,
+  // catalog only, no logo). The source store is left untouched and stays in the store list;
+  // the template appears in the Templates tab and the coach store builder's item pool.
+  const saveAsTemplate = useCallback((store) => setTemplateFor(store), []);
+  // Confirmed from the modal: clone the store into a template carrying only the picked items.
+  const confirmSaveAsTemplate = useCallback(async (name, itemIds) => {
+    if (templateFor) await duplicateStore(templateFor, { asTemplate: true, name, itemIds });
+    setTemplateFor(null);
+  }, [templateFor, duplicateStore]);
+
+  // Remove a template: un-flags it (is_template=false) so it's no longer a template and
+  // returns to the normal store list as a draft. Non-destructive — never deletes a store.
   const toggleTemplate = useCallback(async (store) => {
     const next = !store.is_template;
     const { error } = await supabase.from('webstores').update({ is_template: next, updated_at: new Date().toISOString() }).eq('id', store.id);
     if (error) { flash('Error: ' + error.message); return; }
     setStores((prev) => prev.map((s) => s.id === store.id ? { ...s, is_template: next } : s));
-    flash(next ? 'Saved as a template' : 'Removed from templates');
+    flash(next ? 'Saved as a template' : 'Removed from templates — it\'s back in the store list');
   }, [flash]);
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
@@ -1342,6 +1766,46 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (e?.error) { flash('Error: ' + e.error.message); return; }
     flash(`Added ${rows.length} color${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [sel, detail, flash, loadDetail]);
+
+  // Bulk add from the product picker, with colorways of the same STYLE (same product
+  // name — adidas colors carry different SKUs but share the name) folded into ONE card
+  // via a shared variant_group_id, like the template flows — instead of one card per color.
+  const addManyGrouped = useCallback(async (prods, decorations, cfg = {}) => {
+    const list = (prods || []).filter((p) => p && p.id);
+    if (!list.length) return;
+    const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null;
+    const opts = (Array.isArray(cfg.options) && cfg.options.length) ? cfg.options : (Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : []);
+    let base = (detail?.catalog?.length || 0);
+    const mk = (p, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
+      retail_price: hasPrice ? (Number(cfg.price) || 0) : (Number(p.retail_price) || 0),
+      fundraise_amount: Number(cfg.fundraise) || 0, image_url: null,
+      takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: Number(cfg.name_upcharge) || 0,
+      transfer_codes: [], num_transfer_sets: [], decorations: decorations || [],
+      category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required,
+      options: opts, active: true, sort_order: base++, ...(groupId ? { variant_group_id: groupId } : {}) });
+    const groups = new Map();
+    for (const p of list) { const k = String(p.name || p.sku || p.id).trim().toLowerCase(); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+    let added = 0;
+    for (const cols of groups.values()) {
+      const [primary, ...rest] = cols;
+      if (rest.length) {
+        const { data: pr, error: e1 } = await supabase.from('webstore_products').insert(mk(primary, null)).select('id').single();
+        if (e1 || !pr) { flash('Error: ' + (e1?.message || 'insert failed')); continue; }
+        const [r1, r2] = await Promise.all([
+          supabase.from('webstore_products').update({ variant_group_id: pr.id }).eq('id', pr.id),
+          supabase.from('webstore_products').insert(rest.map((p) => mk(p, pr.id))),
+        ]);
+        const bad = r1.error || r2.error;
+        if (bad) { flash('Error: ' + bad.message); continue; }
+        added += 1 + rest.length;
+      } else {
+        const { error: e0 } = await supabase.from('webstore_products').insert(mk(primary, null));
+        if (e0) { flash('Error: ' + e0.message); continue; }
+        added += 1;
+      }
+    }
+    if (added) { flash(`Added ${added} item${added === 1 ? '' : 's'} (${groups.size} card${groups.size === 1 ? '' : 's'})`); loadDetail(sel); }
+  }, [sel, detail, wsSettings, flash, loadDetail]);
 
   // Add a fit/gender variant (Adult/Women's/Youth) as an option ON one card. Like
   // colors each fit is its own SKU/row sharing variant_group_id, but it carries a
@@ -1449,13 +1913,16 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // color-picker). plan = [{ products:[{id,sku,retail_price}], price, fundraise, category,
   // kit_name, required }]; each group's picked colors fold into ONE multi-color card (shared
   // variant_group_id = the primary row's id). Colors already in the store are skipped.
-  const applyTemplateColors = useCallback(async (plan) => {
-    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
-    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
-    let base = (detail?.catalog?.length || 0);
+  // Core insert: fold a color-picker plan into an arbitrary store (used by both the in-store
+  // "Add template" flow and the Templates-page "Start a store / Add to a store" flows).
+  // `existingIds` are product_ids already in the store (skipped). `startSort` seeds sort_order.
+  const applyTemplateColorsTo = useCallback(async (storeId, plan, existingIds, startSort = 0) => {
+    if (!storeId || !Array.isArray(plan)) return { added: 0 };
+    const existing = existingIds instanceof Set ? new Set(existingIds) : new Set(existingIds || []);
+    let base = startSort;
     let added = 0;
     const defOpts = Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : [];
-    const mk = (p, grp, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
+    const mk = (p, grp, groupId) => ({ store_id: storeId, kind: 'single', product_id: p.id, sku: p.sku,
       retail_price: (grp.price != null && grp.price !== '') ? Number(grp.price) : (Number(p.retail_price) || 0),
       fundraise_amount: Number(grp.fundraise) || 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0,
       transfer_codes: [], num_transfer_sets: [], decorations: [], category: grp.category || null, kit_name: grp.kit_name || null,
@@ -1478,9 +1945,52 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       }
       cols.forEach((p) => existing.add(p.id));
     }
+    return { added };
+  }, [wsSettings, flash]);
+
+  const applyTemplateColors = useCallback(async (plan) => {
+    if (!sel?.id || !Array.isArray(plan)) return { added: 0 };
+    const existing = new Set((detail?.catalog || []).map((c) => c.product_id).filter(Boolean));
+    const { added } = await applyTemplateColorsTo(sel.id, plan, existing, detail?.catalog?.length || 0);
     flash(added ? `Added ${added} item${added === 1 ? '' : 's'}` : 'Those colors are already in the store'); loadDetail(sel);
     return { added };
-  }, [sel, detail, wsSettings, flash, loadDetail]);
+  }, [sel, detail, flash, loadDetail, applyTemplateColorsTo]);
+
+  // Templates-page flows — a template can START a new store or be ADDED to an existing one.
+  // Both open the built-in garment color selector so the rep picks which colorways (adidas,
+  // SanMar / S&S, Momentec, Richardson, …) of each style to bring in.
+  const beginTplColorFlow = useCallback(async (tpl, store) => {
+    const { data } = await supabase.from('webstore_products').select('product_id').eq('store_id', store.id);
+    const existingPids = new Set((data || []).map((r) => r.product_id).filter(Boolean));
+    setTplColorFlow({ tpl, storeId: store.id, existingPids, store, startSort: (data || []).length });
+  }, []);
+  const startStoreFromTemplate = useCallback((tpl) => { setPendingStartTpl(tpl); setEditing('new'); }, []);
+  // Start a new store from a STORE template ("Start Store" on a Templates-tab card).
+  // Clones the template's store settings and packages (brand-free — templates carry
+  // items only), then opens SETTINGS FIRST — the rep sets the real name, customer and
+  // colors (the clone still carries the template's) — and on save the color picker
+  // opens for the template's pickable items, so palette matching uses the NEW team's
+  // colors. The new team's logos/art get applied fresh on the Art & Logos tab.
+  // Pickable = active, SKU'd singles (the picker resolves by SKU and inserts as live).
+  // Everything else — packages, custom/no-SKU items, archived rows — copies verbatim
+  // with all its fields, so nothing is dropped and archived items stay archived.
+  const startStoreFromStoreTemplate = useCallback(async (t) => {
+    const { data: rows } = await supabase.from('webstore_products').select('id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').eq('store_id', t.id).order('sort_order');
+    const all = rows || [];
+    const pickable = (r) => r.kind === 'single' && r.sku && r.active !== false;
+    const store = await duplicateStore(t, { suffix: '', rebrand: true, startFromTemplate: true, itemIds: all.filter((r) => !pickable(r)).map((r) => r.id) });
+    if (!store) return;
+    const singles = all.filter(pickable);
+    if (singles.length) setTplAfterEdit({ storeId: store.id, tpl: { name: t.name, items: singles.map(wpRowToTplItem) } });
+    setEditing(store);
+  }, [duplicateStore]);
+  const finishTplColorFlow = useCallback(async (plan) => {
+    const flow = tplColorFlow; if (!flow) return;
+    const { added } = await applyTemplateColorsTo(flow.storeId, plan, flow.existingPids, flow.startSort || 0);
+    setTplColorFlow(null);
+    flash(added ? `Added ${added} item${added === 1 ? '' : 's'} to ${flow.store?.name || 'the store'}` : 'Those colors are already in the store');
+    if (flow.store) openStore(flow.store);
+  }, [tplColorFlow, applyTemplateColorsTo, flash, openStore]);
 
   const updateImage = useCallback(async (id, url) => {
     const { error } = await supabase.from('webstore_products').update({ image_url: url || null }).eq('id', id);
@@ -1515,8 +2025,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, flash, loadDetail]);
 
   const updateCatalogItem = useCallback(async (id, fields) => {
-    const { error } = await supabase.from('webstore_products').update(fields).eq('id', id);
-    if (error) { flash('Error: ' + error.message); return; }
+    const { data: _updated, error } = await supabase.from('webstore_products').update(fields).eq('id', id).select('id');
+    if (error) { flash('Error: ' + error.message); return false; }
+    // A silent 0-row update means RLS blocked the write (e.g. this login isn't a
+    // registered team member). Surface it — otherwise the editor flashes "Saved ✓"
+    // while the change never reached the database.
+    if (!_updated || _updated.length === 0) { flash('Not saved — your login doesn’t have edit access. Ask an admin to add you as a team member.'); return false; }
     // Decorations (incl. per-color web-logo overrides) are a card-level concern: when a
     // multi-color card's art changes, push the same decorations to every color row in the
     // group so the storefront and order handoff render the right logo for each color.
@@ -1563,6 +2077,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       }
     }
     flash('Item updated'); loadDetail(sel);
+    return true;
   }, [sel, detail, flash, loadDetail]);
 
   // Bulk-edit catalog items. Accepts rows of { id, fields }; identical patches are
@@ -1660,9 +2175,17 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const front = arr.find((m) => !m.side || m.side === 'front') || arr[0];
       if (!front || !front.url) continue;
       const item = cat.find((c) => c.sku === sku && (sbw[c.id]?.color || '') === color) || cat.find((c) => c.sku === sku);
-      // The baked mock becomes the item image; clear any overlay decoration so the
-      // logo isn't stamped twice (baked + CSS overlay).
-      if (item) { await supabase.from('webstore_products').update({ image_url: front.url, decorations: [] }).eq('id', item.id); applied++; }
+      // The baked mock becomes the item image. Don't DROP the placed art — the store→SO
+      // conversion reads webstore_products.decorations to build the production art lines,
+      // so clearing them left production with a "no decoration" line for a garment that
+      // clearly shows a logo. Instead mark each art decoration `baked: true`: the storefront
+      // skips the CSS overlay for baked decorations (the logo is already in the image, so no
+      // double-stamp), while the SO conversion still emits the art file + placement to print.
+      if (item) {
+        const prev = Array.isArray(item.decorations) ? item.decorations : [];
+        const baked = prev.filter((d) => d && (d.art_url || d.art_id)).map((d) => ({ ...d, baked: true }));
+        await supabase.from('webstore_products').update({ image_url: front.url, decorations: baked }).eq('id', item.id); applied++;
+      }
     }
     flash(`Mockups saved to the library${applied ? ` and applied to ${applied} item${applied === 1 ? '' : 's'}` : ''}`);
     loadDetail(sel);
@@ -1685,6 +2208,24 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     }
     flash(`Logo applied to ${itemIds.length} item${itemIds.length === 1 ? '' : 's'}`); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
+
+  // Bulk apply — each garment gets its OWN decoration (its per-garment placement +
+  // color-way variant), written in one pass with a single flash/reload. entries:
+  // [{ id, decoration }]. Like applyLogoToItems, replaces same-side decorations so a
+  // re-apply swaps the logo instead of stacking. Used by the Art tab's apply grid.
+  // Bulk apply — each entry carries the item's COMPLETE new decorations array (the Art
+  // tab computes it: replace the logo on each side it's placing, preserve the other side
+  // and personalization tokens). Written in one pass with a single flash/reload.
+  const applyLogoBulk = useCallback(async (entries) => {
+    let n = 0, fails = 0;
+    for (const { id, decorations } of entries) {
+      const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', id);
+      if (error) fails += 1; else n += 1;
+    }
+    flash(fails ? `Logo applied to ${n} item${n === 1 ? '' : 's'} — ${fails} failed` : `Logo applied to ${n} item${n === 1 ? '' : 's'}`);
+    loadDetail(sel);
+    return n;
+  }, [sel, flash, loadDetail]);
 
   const setItemDecorations = useCallback(async (itemId, decorations) => {
     const { error } = await supabase.from('webstore_products').update({ decorations }).eq('id', itemId);
@@ -1744,9 +2285,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // new cutout instead of ignoring it. Any per-CW entries already on the record are kept.
     const withWebLogo = (a) => {
       const wls = Array.isArray(a.web_logos) ? a.web_logos.filter((w) => w && w.url) : [];
-      const di = wls.findIndex((w) => !((w.color_way || '').trim()));
-      const web_logos = di >= 0 ? wls.map((w, i) => (i === di ? { ...w, url } : w)) : [{ url, color_way: '' }, ...wls];
-      return { ...a, web_logo_url: url, web_logos };
+      const di = wls.findIndex((w) => w.is_default || !((w.color_way || '').trim()));
+      const web_logos = di >= 0 ? wls.map((w, i) => (i === di ? { ...w, url, is_default: true } : w)) : [{ url, color_way: '', is_default: true }, ...wls];
+      // Re-key per-CW entries to their stable color_way_id while we're writing anyway.
+      return { ...a, web_logo_url: url, web_logos: normalizeWebLogos(web_logos, a.color_ways) };
     };
     let next;
     if (idx >= 0) {
@@ -1764,6 +2306,55 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       if (st) { setStores((prev) => prev.map((x) => (x.id === sel.id ? st : x))); setSel(st); }
     }
     flash('Web logo attached'); loadDetail(sel);
+    return url;
+  }, [sel, flash, loadDetail]);
+
+  // Rep self-serve: promote a recolored cutout into a real per-color-way web logo, creating
+  // the color way if the rep named a new one. Tagged source:'rep' so an artist can see it in
+  // the art library and swap in a cleaner cutout for complex logos. cwName '' = all-garments.
+  const saveRepWebLogo = useCallback(async (art, url, cwName) => {
+    if (!art || !url) return null;
+    const custId = art._srcCustId || sel?.customer_id;
+    if (!custId) { flash('No customer to save the web logo to'); return null; }
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', custId).maybeSingle();
+    const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const nm = (art.name || '').trim().toLowerCase();
+    const dt = art.deco_type || '';
+    const matches = (a) => a.id === art.id || (nm && (a.name || '').trim().toLowerCase() === nm && (a.deco_type || '') === dt);
+    const label = String(cwName || '').trim();
+    const withLogo = (a) => {
+      const color_ways = Array.isArray(a.color_ways) ? [...a.color_ways] : [];
+      // Resolve the target color way's stable id (create it, tagged rep-made, if new).
+      let cwId = null;
+      if (label) {
+        const found = color_ways.find((c) => c && String(c.garment_color || '').trim().toLowerCase() === label.toLowerCase());
+        if (found) cwId = found.id;
+        else { cwId = 'cw' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5); color_ways.push({ id: cwId, garment_color: label, inks: [''], source: 'rep' }); }
+      }
+      // Replace the entry we're setting (matched by CW id OR label, so a renamed color way
+      // never leaves a duplicate), keep the rest; empty label replaces only the default.
+      const keep = (Array.isArray(a.web_logos) ? a.web_logos : []).filter((w) => {
+        if (!w || !w.url) return false;
+        const wl = String(w.color_way || '').trim().toLowerCase();
+        return label ? (wl !== label.toLowerCase() && !(cwId && w.color_way_id === cwId)) : !(w.is_default || !wl);
+      });
+      const entry = label ? { url, color_way: label, color_way_id: cwId || undefined, source: 'rep' } : { url, color_way: '', is_default: true, source: 'rep' };
+      const web_logos = normalizeWebLogos([...keep, entry], color_ways);
+      const def = (web_logos.find((w) => w.is_default || !((w.color_way || '').trim())) || {}).url || a.web_logo_url || (label ? '' : url);
+      return { ...a, color_ways, web_logos, web_logo_url: def };
+    };
+    const idx = arr.findIndex(matches);
+    const next = idx >= 0 ? arr.map((a, i) => (i === idx ? withLogo(a) : a))
+      : [...arr, withLogo({ id: art.id, name: art.name || 'Logo', deco_type: art.deco_type || 'screen_print', color_ways: art.color_ways || [], files: art.files || [], mockup_files: art.mockup_files || [], kind: art.kind || 'art', status: art.status || 'approved', uploaded: new Date().toLocaleDateString() })];
+    const { error } = await supabase.from('customers').update({ art_files: next }).eq('id', custId);
+    if (error) { flash('Could not save web logo: ' + error.message); return null; }
+    const curArt = Array.isArray(sel?.store_art) ? sel.store_art : [];
+    if (curArt.some(matches)) {
+      const nextStore = curArt.map((a) => (matches(a) ? withLogo(a) : a));
+      const { data: st } = await supabase.from('webstores').update({ store_art: nextStore }).eq('id', sel.id).select().single();
+      if (st) { setStores((prev) => prev.map((x) => (x.id === sel.id ? st : x))); setSel(st); }
+    }
+    flash(label ? `Web logo saved for ${label}` : 'Web logo saved (all garments)'); loadDetail(sel);
     return url;
   }, [sel, flash, loadDetail]);
 
@@ -1816,6 +2407,51 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     loadDetail(sel);
   }, [sel, flash, loadDetail]);
 
+  // ── Roster: add players (each gets a unique link token), remove players ──
+  // A url-safe 32-hex token per player backs /shop/<slug>?player=<token>. The DB
+  // has a UNIQUE index on token, so a collision would surface as an insert error.
+  const addRoster = useCallback(async (players) => {
+    const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+    const normPos = (v) => { const s = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(s)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(s)) return 'field'; return null; };
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: sel.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return { error: true }; }
+    const { data, error } = await supabase.from('webstore_roster').insert(rows).select();
+    if (error) { flash('Could not add players: ' + error.message); return { error }; }
+    flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); loadDetail(sel);
+    return { data };
+  }, [sel, flash, loadDetail]);
+
+  const updateRoster = useCallback(async (id, fields) => {
+    const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id);
+    if (error) { flash('Error: ' + error.message); return { error }; }
+    loadDetail(sel);
+    return {};
+  }, [sel, flash, loadDetail]);
+
+  const removeRoster = useCallback(async (id) => {
+    const { error } = await supabase.from('webstore_roster').delete().eq('id', id);
+    if (error) { flash('Error: ' + error.message); return; }
+    loadDetail(sel);
+  }, [sel, flash, loadDetail]);
+
+  // Email selected roster players their personal link (initial invite / resend).
+  const inviteRoster = useCallback(async (playerIds) => {
+    const ids = (playerIds || []).filter(Boolean);
+    if (!ids.length) { flash('No players to email.'); return { error: true }; }
+    try {
+      const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: sel.id, player_ids: ids }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok || !d.ok) { flash('Email failed: ' + (d.error || res.status)); return { error: true }; }
+      const skipped = (d.skipped || []).length;
+      flash(`Emailed ${d.sent} link${d.sent === 1 ? '' : 's'}${skipped ? ` · ${skipped} skipped (no email)` : ''}`);
+      loadDetail(sel);
+      return { data: d };
+    } catch (e) { flash('Email failed: ' + e.message); return { error: true }; }
+  }, [sel, flash, loadDetail]);
+
   // Edit an order's line items (size/qty/remove), then recompute its totals.
   const saveOrderEdits = useCallback(async (order, edited) => {
     for (const it of edited) {
@@ -1836,8 +2472,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const round2 = (n) => Math.round(n * 100) / 100;
     const subtotal = round2(effective.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 1), 0));
     const fundraise = round2(effective.reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0));
-    const total = round2(Math.max(0, subtotal + fundraise - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0));
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, total }).eq('id', order.id);
+    // Processing fee and sales tax are both levied on the product subtotal, so they scale
+    // with it. Re-derive each from THIS order's own stored ratio (fee/subtotal, tax/subtotal)
+    // and re-apply to the new subtotal: a size-only edit (subtotal unchanged) leaves the total
+    // exactly as charged, while a qty/removal edit scales the fee + tax to match. Dropping
+    // them — the old behavior — pushed the DB total below what the card actually paid and
+    // broke the refund cap (which reads `total`). Mirrors webstore-checkout's preTax + tax.
+    const oldSub = Number(order.subtotal) || 0;
+    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
+    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
+    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - (Number(order.discount_amt) || 0)));
+    const total = round2(preTax + tax);
+    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
   }, [sel, detail, flash, loadDetail]);
@@ -1853,27 +2499,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     try {
       const cents = Math.round((Number(amount) || 0) * 100);
       if (cents <= 0) return { error: 'Enter an amount' };
-      const { data: live, error: readErr } = await supabase.from('webstore_orders').select('refunded_amt,total,status,stripe_pi_id').eq('id', order.id).single();
-      if (readErr) { flash('Refund blocked: could not verify order — ' + readErr.message); return { error: readErr.message }; }
-      const already = Number(live.refunded_amt) || 0;
-      const total = Number(live.total) || 0;
-      if (already + cents / 100 > total + 0.005) {
-        flash(`Refund blocked: ${money(cents / 100)} would exceed the order total (${money(already)} already refunded of ${money(total)})`);
-        return { error: 'over_refund' };
-      }
-      if (live.stripe_pi_id) {
-        try {
-          const res = await authFetch('/.netlify/functions/stripe-payment', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'refund', payment_intent_id: live.stripe_pi_id, amount_cents: cents }) });
-          const d = await res.json();
-          if (d.error) { flash('Stripe refund failed: ' + d.error); return { error: d.error }; }
-        } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
-      }
-      const refunded = already + cents / 100;
-      const status = refunded >= total - 0.005 ? 'refunded' : live.status;
-      const { error } = await supabase.from('webstore_orders').update({ refunded_amt: refunded, status }).eq('id', order.id);
-      if (error) { flash('Refund record failed: ' + error.message); return { error: error.message }; }
-      flash(live.stripe_pi_id ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
-      loadDetail(sel); return { ok: true };
+      // Server-side, recorded, capped, idempotent. The endpoint resolves the
+      // PaymentIntent from the order itself, issues the Stripe refund with an
+      // idempotency key (attempt_id), and atomically records the refund + updates
+      // refunded_amt/status via the apply_webstore_refund RPC. The browser no longer
+      // writes refund state directly (RLS blocks it now; the server is the source of truth).
+      const attemptId = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : ('r' + Date.now() + Math.random().toString(36).slice(2));
+      let d;
+      try {
+        const res = await authFetch('/.netlify/functions/stripe-payment', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'refund_webstore_order', webstore_order_id: order.id, amount_cents: cents, attempt_id: attemptId }),
+        });
+        d = await res.json();
+      } catch (e) { flash('Refund failed: ' + e.message); return { error: e.message }; }
+      if (!d || d.error) { flash('Refund failed: ' + ((d && d.error) || 'unknown error')); return { error: (d && d.error) || 'refund_failed' }; }
+      flash(d.kind === 'card' ? `Refunded ${money(cents / 100)} to card` : `Recorded ${money(cents / 100)} credit`);
+      loadDetail(sel); return { ok: true, ...d };
     } finally { refundingRef.current = false; }
   }, [sel, flash, loadDetail]);
 
@@ -1908,74 +2550,81 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   }, [sel, loadDetail]);
 
   // Gather this store's unbatched orders + their stock picture (shared by the
-  // availability report and the batch flow's inventory check).
-  const gatherBatch = useCallback(() => {
+  // availability report and the batch flow's inventory check). Lines are
+  // annotated with the effective SKU (size_skus overrides) and stockBySku
+  // carries vendor stock for the override SKUs, so reports check/show the item
+  // number production will actually source.
+  const gatherBatch = useCallback(async () => {
     const open = (detail?.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled');
     const openIds = new Set(open.map((o) => o.id));
-    const lines = (detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const skuMap = sizeSkuMapOf(detail?.catalog);
+    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     const orderById = {}; open.forEach((o) => { orderById[o.id] = o; });
-    return { open, openIds, lines, stockByPid, orderById };
+    return { open, openIds, lines, stockByPid, stockBySku, orderById };
   }, [detail]);
 
   // Open the printable availability ("FAFO") report for the pending batch.
-  const availabilityReport = useCallback(() => {
+  const availabilityReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { open, lines, stockByPid, orderById } = gatherBatch();
+    const { open, lines, stockByPid, stockBySku, orderById } = await gatherBatch();
     if (!open.length) { flash('No unbatched orders to report'); return; }
-    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog));
+    buildAvailabilityReport(sel, `${open.length} order${open.length === 1 ? '' : 's'}`, lines, stockByPid, orderById, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherBatch, flash]);
 
   // All valid (non-cancelled, non-pending) orders — the whole-store picture for
   // the player + stock reports (not just the unbatched ones the FAFO report uses).
-  const gatherAll = useCallback(() => {
+  const gatherAll = useCallback(async () => {
     const valid = (detail?.orders || []).filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
     const ids = new Set(valid.map((o) => o.id));
-    const lines = (detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent);
+    const skuMap = sizeSkuMapOf(detail?.catalog);
+    const lines = annotateEffSkus((detail?.orderItems || []).filter((i) => ids.has(i.order_id) && !i.is_bundle_parent), skuMap);
     const stockByPid = {};
     (detail?.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     const orderById = {}; valid.forEach((o) => { orderById[o.id] = o; });
-    return { valid, lines, stockByPid, orderById, roster: detail?.roster || [] };
+    return { valid, lines, stockByPid, stockBySku, orderById, roster: detail?.roster || [] };
   }, [detail]);
 
   // Per-player roll-up (printable): every player and exactly what they ordered.
-  const playerReport = useCallback(() => {
+  const playerReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, orderById, roster, stockByPid } = gatherAll();
+    const { valid, lines, orderById, roster, stockByPid } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
     buildPlayerReport(sel, lines, orderById, roster, stockByPid);
   }, [sel, detail, gatherAll, flash]);
 
   // Store-close stock report (printable): fill-from-stock vs order-from-Adidas
   // vs backorder, split by vendor.
-  const stockReport = useCallback(() => {
+  const stockReport = useCallback(async () => {
     if (!sel || !detail) return;
-    const { valid, lines, stockByPid } = gatherAll();
+    const { valid, lines, stockByPid, stockBySku } = await gatherAll();
     if (!valid.length) { flash('No orders yet'); return; }
-    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog));
+    buildStockReport(sel, `${valid.length} order${valid.length === 1 ? '' : 's'}`, lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku);
   }, [sel, detail, gatherAll, flash]);
 
   // CSV exports: 'players' (per-player line items), 'stock' (shortage split),
   // 'orders' (every line item with order + payment detail).
-  const exportCsv = useCallback((kind) => {
+  const exportCsv = useCallback(async (kind) => {
     if (!sel || !detail) return;
-    const { lines, orderById, stockByPid } = gatherAll();
+    const { lines, orderById, stockByPid, stockBySku } = await gatherAll();
     if (!lines.length) { flash('No orders yet'); return; }
     const slug = (sel.slug || sel.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase().replace(/^-+|-+$/g, '');
     if (kind === 'players') {
       const header = ['Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Buyer', 'Buyer Email', 'Order Date'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, o.buyer_name || '', o.buyer_email || '', _csvDate(o.created_at)]; });
       downloadCsv(`${slug}-players.csv`, header, rows);
     } else if (kind === 'stock') {
       const header = ['Item', 'SKU', 'Size', 'Need', 'Ours', 'Adidas', 'Fill from ours', 'PO from Adidas', 'Backorder', 'On order'];
-      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog))
+      const rows = aggStock(lines, stockByPid, madeToOrderPids(detail.catalog), stockBySku)
         .sort((a, b) => (b.backorder - a.backorder) || (b.poVendor - a.poVendor) || a.name.localeCompare(b.name))
-        .map((r) => [r.name, r.sku, r.size, r.need, r.tracked ? r.ours : '', r.tracked ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
+        .map((r) => [r.name, r.sku, r.size, r.need, (r.tracked || r.known) ? r.ours : '', (r.tracked || r.known) ? r.vendor : '', r.fillOurs, r.poVendor, r.backorder, r.onOrder ? 'yes' : '']);
       downloadCsv(`${slug}-stock.csv`, header, rows);
     } else {
       const header = ['Order', 'Date', 'Status', 'Payment', 'Buyer', 'Email', 'Player', 'Number', 'Item', 'SKU', 'Size', 'Qty', 'Unit Price'];
-      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
+      const rows = lines.map((i) => { const o = orderById[i.order_id] || {}; return [o.id || '', _csvDate(o.created_at), o.status || '', o.payment_mode || '', o.buyer_name || '', o.buyer_email || '', i.player_name || '', i.player_number != null ? String(i.player_number) : '', _itemName(i, stockByPid), i._effSku || i.sku || '', i.size || '', i.qty || 1, Number(i.unit_price) || 0]; });
       downloadCsv(`${slug}-orders.csv`, header, rows);
     }
   }, [sel, detail, gatherAll, flash]);
@@ -1984,32 +2633,72 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // SO creation path (onCreateSO), then link each order back to the new SO id.
   const batchOrders = useCallback(async () => {
     if (!sel || !detail || !onCreateSO) return;
-    const open = (detail.orders || []).filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled' && o.status !== 'refunded');
+    // Fresh snapshot from the DB — not the possibly-minutes-old detail state — so the
+    // modal's order list includes anything placed since the page loaded and excludes
+    // anything batched/cancelled/refunded elsewhere in the meantime.
+    const { data: freshOrders, error: foErr } = await supabase.from('webstore_orders').select('*').eq('store_id', sel.id).is('so_id', null);
+    if (foErr) { flash('Could not load orders: ' + foErr.message); return; }
+    const open = (freshOrders || []).filter(isLiveWebstoreOrder);
     if (!open.length) { flash('No unbatched orders to send'); return; }
     const openIds = new Set(open.map((o) => o.id));
-    const lines = (detail.orderItems || []).filter((i) => openIds.has(i.order_id) && !i.is_bundle_parent);
+    const openItems = [];
+    for (let ii = 0, oidArr = [...openIds]; ii < oidArr.length; ii += 300) {
+      const { data: chunk, error: fiErr } = await supabase.from('webstore_order_items').select('*').in('order_id', oidArr.slice(ii, ii + 300));
+      if (fiErr) { flash('Could not load order items: ' + fiErr.message); return; }
+      openItems.push(...(chunk || []));
+    }
+    const lines = annotateEffSkus(openItems.filter((i) => !i.is_bundle_parent), sizeSkuMapOf(detail.catalog));
 
     // Inventory check: compare demand for this batch against our warehouse +
     // Adidas vendor stock and surface any shortfalls before creating the SO.
+    // Override-aware: a size mapped to a different SKU (size_skus) checks THAT
+    // SKU's vendor stock, not the base product's — the SO will source it.
     const stockByPid = {};
     (detail.catalog || []).forEach((c) => { const _s = detail.invSrcByPid?.[c.product_id]; if (c.product_id && detail.stockByWp?.[c.id] && _s && _s !== 'manual') stockByPid[c.product_id] = detail.stockByWp[c.id]; });
+    const stockBySku = await fetchOverrideSkuStock(lines);
     // Items marked made-to-order (Inventory tracking → off) are decorated/custom and
     // produced to demand, so they're never a stock shortfall — same as products with
-    // no stock record (which the `if (!st) return` below already skips).
+    // no stock record.
     const mto = madeToOrderPids(detail.catalog);
-    const demand = {};
-    lines.forEach((i) => { if (!i.product_id) return; const k = i.product_id + '|' + (i.size || 'OS'); demand[k] = (demand[k] || 0) + (i.qty || 1); });
-    const shortages = [];
-    Object.entries(demand).forEach(([k, q]) => {
-      const [pid, size] = k.split('|'); if (mto.has(pid)) return; const st = stockByPid[pid]; if (!st) return;
-      const wh = Number((st.size_stock || {})[size]) || 0;
-      const ven = Number((st.vendor_size_stock || {})[size]) || 0;
-      const avail = wh + ven;
-      if (q > avail) shortages.push({ pid, size, sku: st.sku || '', label: `${st.name || pid} ${size}: need ${q}, have ${avail} (${wh} ours + ${ven} Adidas)${(st.on_order_qty || st.vendor_eta) ? ' — more on order' : ''}` });
-    });
+    // Shortfall check for whichever subset of orders is currently selected in the
+    // modal (the rep can narrow the batch by cutoff date / checkboxes, and the
+    // shortage list re-runs live against just those orders' demand).
+    const shortagesFor = (selIds) => {
+      const demand = {};
+      lines.forEach((i) => { if (!i.product_id || !selIds.has(i.order_id)) return; const k = lineStockKey(i); (demand[k] = demand[k] || { line: i, q: 0 }).q += (i.qty || 1); });
+      const shortages = [];
+      Object.values(demand).forEach(({ line: i, q }) => {
+        const pid = i.product_id, size = i.size || 'OS';
+        const ls = lineStock(i, stockByPid, stockBySku, mto);
+        if (!ls.tracked) return; // made-to-order / no stock record — never a shortfall
+        const avail = ls.ours + ls.vendor;
+        const nm = ls.name || (stockByPid[pid] && stockByPid[pid].name) || i._effSku || pid;
+        if (q > avail) shortages.push({ pid, size, sku: i._effSku || i.sku || '', label: `${nm}${i._skuOv ? ` (${i._effSku})` : ''} ${size}: need ${q}, have ${avail} (${ls.ours} ours + ${ls.vendor} Adidas)${ls.onOrder ? ' — more on order' : ''}` });
+      });
+      return shortages;
+    };
     // Everything from here on runs once the user confirms in the modal below.
     // inlineOverrides: { "pid|size" -> altSku } — typed in the shortfall modal.
-    const proceed = async (inlineOverrides = {}) => {
+    // selIds: the order ids the rep left checked (defaults to every open order).
+    // batchMeta: { label, cutoff } — the batch name + order-date cutoff for the SO.
+    const proceed = async (inlineOverrides = {}, selIds = openIds, batchMeta = {}) => {
+    // Last-second re-check: another session may have batched, cancelled, or refunded
+    // some of these orders while the modal sat open. Drop any that are no longer
+    // open BEFORE building the SO, so its items and invoice/settle math only ever
+    // cover orders the link below can actually claim. (A residual race between this
+    // check and the claim remains, but the claim's .is('so_id',null) guard plus the
+    // partial-link flash below still surface it.)
+    try {
+      const { data: cur } = await supabase.from('webstore_orders').select('id,status,so_id').in('id', [...selIds]);
+      const gone = new Set((cur || []).filter((o) => o.so_id || !isLiveWebstoreOrder(o)).map((o) => o.id));
+      if (gone.size) {
+        selIds = new Set([...selIds].filter((id) => !gone.has(id)));
+        flash(`${gone.size} order${gone.size === 1 ? '' : 's'} changed while the modal was open (batched or refunded elsewhere) — excluded from this batch.`);
+      }
+    } catch {} // recheck is best-effort; on failure we proceed from the modal snapshot as before
+    const bOrders = open.filter((o) => selIds.has(o.id));
+    if (!bOrders.length) { flash('No orders selected to batch'); return; }
+    const bLines = lines.filter((i) => selIds.has(i.order_id));
     // Which products collect a number / name (from catalog singles + bundle components).
     const personalize = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) personalize[c.product_id] = { num: !!c.takes_number, name: !!c.takes_name }; });
@@ -2026,7 +2715,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
     const retailByPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id) retailByPid[c.product_id] = Number(c.retail_price) || 0; });
-    const allItems = (detail.orderItems || []).filter((i) => openIds.has(i.order_id));
+    const allItems = openItems.filter((i) => selIds.has(i.order_id));
     // Group each order's bundle parent(s) + components by order_id + bundle_product_id.
     // NOTE: older orders' PARENT rows have bundle_ref = null (it was added later), so we
     // cannot match parent→component by bundle_ref — doing so dropped the entire package
@@ -2058,7 +2747,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const sizeSkusByCatPid = {};
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.size_skus && Object.keys(c.size_skus).length) sizeSkusByCatPid[c.product_id] = c.size_skus; });
     const byProduct = {};
-    lines.forEach((i) => {
+    bLines.forEach((i) => {
       const basePid = i.product_id || i.sku || 'unknown';
       const sz = i.size || 'OS';
       const effectiveSku = inlineOverrides[i.product_id + '|' + sz] || (sizeSkusByCatPid[i.product_id] || {})[sz] || i.sku || '';
@@ -2073,7 +2762,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (pdef.name) (g.names[sz] = g.names[sz] || []).push(i.player_name || '');
       }
     });
-    const pids = [...new Set(lines.map((i) => i.product_id).filter(Boolean))];
+    const pids = [...new Set(bLines.map((i) => i.product_id).filter(Boolean))];
     const pinfo = {};
     if (pids.length) {
       const { data } = await supabase.from('products').select('id,sku,name,brand,color,nsa_cost,retail_price').in('id', pids);
@@ -2085,8 +2774,15 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // garment share of each order's discount is capped at its garment subtotal (the rest
     // came off shipping). With no coupons in the batch the ratio is 1 — no change.
     const garmentGross = Object.values(byProduct).reduce((a, g) => a + (g.collected || 0), 0);
-    const totalDiscount = open.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
+    const totalDiscount = bOrders.reduce((a, o) => a + Math.min(Number(o.discount_amt) || 0, (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0)), 0);
     const discRatio = garmentGross > 0 ? Math.max(0, (garmentGross - totalDiscount) / garmentGross) : 1;
+    // Club fundraising is a passthrough NSA owes the team, not rep margin. Its dollars are
+    // baked into each garment's unit_sell (so the SO total reconciles to what was collected),
+    // so we carry the same amount as an SO-level COST (_webstore_fundraise): calcGP subtracts
+    // it, keeping fundraising out of the GP that rep commission is paid on. Scaled by discRatio
+    // to match the fundraise embedded in the (already discount-scaled) unit_sells.
+    const batchFundraiseGross = bOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+    const fundraiseCost = r2(batchFundraiseGross * discRatio);
     const hasVals = (m) => Object.values(m).some((arr) => arr.some((v) => v && v.trim()));
     // Logos placed in the store builder live on webstore_products.decorations (the
     // LogoPlacer format: art_id/art_url/placement/side). They must carry forward as real
@@ -2136,7 +2832,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     Object.values(pinfo).forEach((p) => { if (p && p.id) { if (p.sku) skuByPid[p.id] = p.sku; if (p.color) colorByPid[p.id] = p.color; } });
     (detail.catalog || []).forEach((c) => { if (c.product_id && c.sku && !skuByPid[c.product_id]) skuByPid[c.product_id] = c.sku; });
     const itemMockups = {};
-    lines.forEach((i) => {
+    bLines.forEach((i) => {
       const rsku = i.sku || skuByPid[i.product_id] || '';
       if (!rsku) return;
       const img = i.image_url || catImgByPid[i.product_id] || '';
@@ -2145,8 +2841,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       [rsku + '|' + color, rsku].forEach((key) => { const b = (itemMockups[key] = itemMockups[key] || []); if (!b.includes(img)) b.push(img); });
     });
     // Every art file carries the per-garment mockups (production filters by the
-    // job's SKUs, same as OMG). Merge so library art keeps its own mockups too.
-    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...(rec.item_mockups || {}), ...itemMockups } }); };
+    // job's SKUs, same as OMG). The record's OWN mocks (auto-baked or QuickMockBuilder
+    // proofs — real decorated composites) win over the captured storefront photo, which
+    // only fills keys the record has nothing for. The old spread order let the bare
+    // garment photo clobber a real proof for the same sku|color.
+    const addArtFile = (rec) => { if (rec && rec.id && !soArtFiles.has(rec.id)) soArtFiles.set(rec.id, { ...rec, item_mockups: { ...itemMockups, ...(rec.item_mockups || {}) } }); };
     const cleanArt = (a) => { const { _srcLabel, _srcCustId, ...rest } = a; return rest; };
     const soItems = Object.values(byProduct).map((g) => {
       const info = pinfo[g.product_id] || {};
@@ -2166,16 +2865,33 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           // Carry the placed (possibly recolored) web logo so the mockup shows what the shopper saw.
           const base = cleanArt(lib);
           if (!base.web_logo_url && d.art_url) base.web_logo_url = d.art_url;
+          // Inherited production files must be re-reviewed on THIS order, never auto-confirmed:
+          // a prod_files_attached:true carried over from a prior order/colorway would combine
+          // with the forced 'approved' below to skip the separations stage entirely (audit A8).
+          // Mirrors the manual reuse path (OrderEditor addPrevArt).
+          base.prod_files_attached = false;
+          // Mirror the OMG pull (createOmgSO in App.js): the store sale IS the customer's
+          // approval, so library art lands at least 'approved'. Without this, a library record
+          // still at waiting_for_art/needs_approval — e.g. the OMG-import "attach production
+          // file" shell — drags the SO's job back into the artist/coach approval pipeline.
+          // Production files still gate normally (artProdFilesConfirmed): approval is skipped,
+          // the prod-files stage is not.
+          if (base.status !== 'approved' && base.status !== 'art_complete') { base.status = 'approved'; if (!base.approved_at) base.approved_at = new Date().toISOString(); }
           addArtFile({ ...base, id: artId });
         } else {
           addArtFile({ id: artId, name: 'Store logo', deco_type: 'screen_print', web_logo_url: d.art_url || '', files: d.source_url ? [{ url: d.source_url, name: 'logo' }] : [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
         }
-        // Pin the screen-print colorway whose garment_color matches this line's garment,
-        // so production gets the right inks instead of an unset CW. Each art color_way
-        // carries a garment_color (e.g. "Navy"); match it to the SO line's color, with a
-        // contains-fallback, and use the only colorway when there's just one.
+        // Pin the production colorway. The builder's per-color web-logo pick is the source of
+        // truth when it carries a color_way_id (the rep chose that CW's cutout for this exact
+        // garment color — deterministic, not a guess). Only fall back to matching the CW's
+        // garment_color label against the SO line's color (exact, then contains, then only-CW)
+        // for legacy url-only picks.
         let cwId = null;
-        if (lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
+        const _pick = d.cw_by_color && d.cw_by_color[colorKeyOf(info.color)];
+        if (_pick && typeof _pick === 'object' && _pick.color_way_id && lib && Array.isArray(lib.color_ways) && lib.color_ways.some((c) => c && c.id === _pick.color_way_id)) {
+          cwId = _pick.color_way_id;
+        }
+        if (!cwId && lib && Array.isArray(lib.color_ways) && lib.color_ways.length) {
           const gc = colorKeyOf(info.color);
           const exact = gc && lib.color_ways.find((c) => c && colorKeyOf(c.garment_color) === gc);
           const fuzzy = gc && lib.color_ways.find((c) => { const cc = colorKeyOf(c && c.garment_color); return cc && (cc.includes(gc) || gc.includes(cc)); });
@@ -2205,29 +2921,40 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const discNote = totalDiscount > 0 ? `\nCoupon discounts applied: −$${totalDiscount.toFixed(2)} (spread across line prices).` : '';
     // Payment split — production runs as ONE order, but card orders are already
     // collected via Stripe; only the team-tab total should be invoiced to the club.
-    const cardOrders = open.filter((o) => o.payment_mode === 'paid');
-    const tabOrders = open.filter((o) => o.payment_mode !== 'paid');
+    const cardOrders = bOrders.filter((o) => o.payment_mode === 'paid');
+    const tabOrders = bOrders.filter((o) => o.payment_mode !== 'paid');
     const netOf = (o) => Math.max(0, (Number(o.total) || 0) - (Number(o.refunded_amt) || 0));
     const cardTotal = r2(cardOrders.reduce((a, o) => a + netOf(o), 0));
     const tabTotal = r2(tabOrders.reduce((a, o) => a + netOf(o), 0));
+    // Team-tab extras = the tab orders' tax/shipping/processing beyond their
+    // product (+fundraise) share. The auto-invoice adds these on top of the SO's
+    // product lines so the club's open balance equals the team-tab gross.
+    const tabProduct = r2(tabOrders.reduce((a, o) => a + (Number(o.subtotal) || 0) + (Number(o.fundraise_amt) || 0), 0) * discRatio);
+    const tabExtras = r2(Math.max(0, tabTotal - tabProduct));
     const payNote = `\n\n⚠ PAYMENT — INVOICE THE CLUB FOR THE TEAM-TAB TOTAL ONLY:\n• Already paid by card (collected via Stripe): $${cardTotal.toFixed(2)} · ${cardOrders.length} order${cardOrders.length === 1 ? '' : 's'}\n• To invoice to the club (team tab): $${tabTotal.toFixed(2)} · ${tabOrders.length} order${tabOrders.length === 1 ? '' : 's'}`;
-    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})\n${open.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
+    const cutoffNote = batchMeta.cutoff ? `\nBatch cutoff: orders placed through ${batchCutoffDay(batchMeta.cutoff)} — the store stays open; later orders go into the next batch.` : '';
+    const notes = `Webstore: ${sel.name} (/shop/${sel.slug})${batchMeta.label ? `\nBatch: ${batchMeta.label}` : ''}${cutoffNote}\n${bOrders.length} orders · ${units} units · delivery: ${sel.delivery_mode === 'deliver_club' ? 'deliver to club' : 'ship to home'}\nNames & numbers are on each item's deco lines.${discNote}${payNote}`;
 
     // await — onCreateSO now persists the SO and only resolves an id once it's
     // confirmed saved, so we never tag orders to an SO that doesn't exist yet.
-    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${open.length} orders`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()] });
+    const soId = await onCreateSO({ customer_id: sel.customer_id, memo: `${sel.name} webstore — ${bOrders.length} orders${batchMeta.label ? ` — ${batchMeta.label}` : ''}`, production_notes: notes, items: soItems, webstore_id: sel.id, art_files: [...soArtFiles.values()], fundraise_cost: fundraiseCost,
+      batch_label: batchMeta.label || null, batch_cutoff: batchMeta.cutoff || null,
+      // Money split for the automatic invoice+settle: Stripe-collected card total,
+      // team-tab gross still owed by the club, and the tab's tax/ship/processing extras.
+      settle: { cardTotal, tabTotal, tabExtras } });
     if (!soId) { flash('Could not create the Sales Order — orders were not batched. Please try again.'); return; }
     // Idempotent link: only claim orders still unbatched, so a concurrent batch
     // (two staff at once) can't steal another SO's orders. Returns the rows we won.
-    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...openIds]).is('so_id', null).select('id');
+    const { data: linked, error } = await supabase.from('webstore_orders').update({ so_id: soId, status: 'batched' }).in('id', [...selIds]).is('so_id', null).select('id');
     if (error) flash(`SO ${soId} created, but linking failed: ${error.message}`);
-    else if ((linked || []).length < openIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${openIds.size} (some were just batched elsewhere)`);
-    else flash(`Created ${soId} · linked ${open.length} orders`);
+    else if ((linked || []).length < selIds.size) flash(`Created ${soId} · linked ${(linked || []).length} of ${selIds.size} (some were just batched elsewhere)`);
+    else flash(`Created ${soId} · linked ${bOrders.length} orders`);
     loadDetail(sel);
     }; // end proceed
 
-    // Open the styled confirm modal; it calls proceed() on Create.
-    setSoPrompt({ count: open.length, shortages, proceed, stockByPid, storeId: sel.id });
+    // Open the styled confirm modal; it calls proceed() on Create with the rep's
+    // final selection (cutoff/checkboxes) and batch label.
+    setSoPrompt({ orders: open, shortagesFor, proceed, stockByPid, storeId: sel.id });
   }, [sel, detail, onCreateSO, flash, loadDetail]);
 
   const removeCatalogItem = useCallback(async (id, label) => {
@@ -2331,27 +3058,224 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     <>
       {toast && <div style={{ position: 'fixed', bottom: 20, right: 20, background: '#0f172a', color: '#fff', padding: '10px 16px', borderRadius: 8, fontSize: 13, fontWeight: 600, zIndex: 1000, boxShadow: '0 6px 20px rgba(0,0,0,0.25)' }}>{toast}</div>}
       {showDefaults && <StoreDefaultsModal settings={wsSettings} onSave={saveWsSettings} onClose={() => setShowDefaults(false)} />}
-      {soPrompt && <SoConfirmModal count={soPrompt.count} shortages={soPrompt.shortages} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides); }} />}
+      {soPrompt && <SoConfirmModal orders={soPrompt.orders} shortagesFor={soPrompt.shortagesFor} stockByPid={soPrompt.stockByPid || {}} storeId={soPrompt.storeId} onCancel={() => setSoPrompt(null)} onConfirm={async (overrides, selIds, batchMeta) => { const p = soPrompt.proceed; setSoPrompt(null); await p(overrides, selIds, batchMeta); }} />}
+
+      {tplColorFlow && <TemplateColorPicker tpl={tplColorFlow.tpl} existingPids={tplColorFlow.existingPids} teamHexes={[tplColorFlow.store?.primary_color, tplColorFlow.store?.accent_color].filter(Boolean)} onConfirm={finishTplColorFlow} onClose={() => setTplColorFlow(null)} />}
+      {pickStoreForTpl && <StorePickerModal stores={stores.filter((s) => !s.is_template)} custName={custName} title={`Add “${pickStoreForTpl.name}” to which store?`} onPick={(store) => { const tpl = pickStoreForTpl; setPickStoreForTpl(null); beginTplColorFlow(tpl, store); }} onClose={() => setPickStoreForTpl(null)} />}
+      {templateFor && <SaveAsTemplateModal store={templateFor} onClose={() => setTemplateFor(null)} onConfirm={confirmSaveAsTemplate} />}
 
       {editing ? (
-        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing}
-          onCancel={() => setEditing(null)}
-          onSave={async (form) => { const r = await saveStore(form, editing === 'new' ? null : editing.id); if (r.error) return r; setEditing(null); return r; }} />
+        <StoreForm cust={cust} REPS={REPS} repCsr={repCsr} store={editing === 'new' ? null : editing} initialOverrides={editing === 'new' ? omgPrefill : null}
+          onCancel={() => { setPendingStartTpl(null); if (tplAfterEdit) { setTplAfterEdit(null); flash('Store saved as a draft — bring the template\'s items in any time via Add items → Add template'); } setEditing(null); omgResetStaged(); }}
+          onSave={async (form) => {
+            const isNew = editing === 'new';
+            const r = await saveStore(form, isNew ? null : editing.id);
+            if (r.error) return r;
+            setEditing(null);
+            // Arrived here from the OMG wizard (items staged in omgItems) — add them + queue
+            // in-house art now that the store exists with every setting the rep just configured.
+            if (isNew && omgPrefill && r.data) { await omgFinishAfterSettings(r.data); return r; }
+            if (isNew && pendingStartTpl && r.data) { const tpl = pendingStartTpl; setPendingStartTpl(null); beginTplColorFlow(tpl, r.data); return r; }
+            // Start-Store-from-template: settings are saved, so the store now has the real
+            // team's name/customer/colors — open the color picker with THAT palette.
+            if (!isNew && tplAfterEdit && r.data && r.data.id === tplAfterEdit.storeId) { const q = tplAfterEdit; setTplAfterEdit(null); beginTplColorFlow(q.tpl, r.data); return r; }
+            // A brand-new team store (not from OMG or a template): open it straight to the
+            // Art & Logos page so the rep keeps building — add artwork next — instead of
+            // bouncing back to the store list. Club stores stay on the list (product-first).
+            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('art'); setDetail(null); await loadDetail(r.data); return r; }
+            return r;
+          }}
+          onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
         <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
-          onAddSingle={addSingle} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
+          onAddSingle={addSingle} onAddGrouped={addManyGrouped} onAddColors={addColorsToItem} onAddFits={addFitsToItem} onCopyItem={copyToNewItem} onAddMany={addManyFromList} onApplyTemplate={applyTemplate} onApplyTemplateColors={applyTemplateColors} onPriceToMargin={priceAllToMargin} onCreateBundle={createBundle} onAddBundleItem={addBundleItem} onRemoveBundleItem={removeBundleItem} onReorderBundleItems={reorderBundleItems} onRemove={removeCatalogItem} onRemoveGroup={removeGroup} onUpdateImage={updateImage} onUpdateCost={updateProductCost} onUpdateProductMeta={updateProductMeta} onBatch={batchOrders} onAvailabilityReport={availabilityReport} onPlayerReport={playerReport} onStockReport={stockReport} onExportCsv={exportCsv} onReorder={reorderItem} onMove={moveItem} onReorderColors={reorderColorRows} onUpdateItem={updateCatalogItem} onBulkUpdate={bulkUpdateItems}
           onUpdateTransfer={updateTransfer} onAddTransfers={addTransfers} onRemoveTransfer={removeTransfer} onPullTransfers={pullBatchTransfers}
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
+          onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
-        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onNewFromTemplate={(t) => duplicateStore(t, { suffix: '' })} onStoreDefaults={() => setShowDefaults(true)} />
+        <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
       )}
+
+      {omgStep && <OmgImportWizard
+        step={omgStep} url={omgUrl} setUrl={setOmgUrl} fetching={omgFetching} onFetch={omgFetchReport}
+        items={omgItems} stock={omgStock} name={omgName} setName={setOmgName} vendList={omgVendList}
+        customerId={omgCustomerId} setCustomerId={setOmgCustomerId} cust={cust}
+        onSkuChange={(i, v) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, sku: v } : p)))}
+        onSkuBlur={omgResolveRow}
+        onFieldChange={(i, key, v) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, [key]: v } : p)))}
+        onToggleIncluded={(i) => setOmgItems((prev) => prev.map((p, j) => (j === i ? { ...p, _included: p._included === false } : p)))}
+        onCreate={omgProceedToSettings} creating={false}
+        onClose={omgResetStaged}
+      />}
     </>
+  );
+}
+
+// "Create from OMG" wizard — paste a report link, review/fix every item (SKU, name, price,
+// live stock), then create the draft Club Webstore. Step 1: URL. Step 2: review table.
+function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, name, setName, vendList = [], customerId, setCustomerId, cust, onSkuChange, onSkuBlur, onFieldChange, onToggleIncluded, onCreate, creating, onClose }) {
+  const skuInvalid = (sku) => { const s = String(sku || '').trim(); return !s || /[\/\\|,;]|\s/.test(s); };
+  const LINKED_SRC = ['catalog', 'sanmar', 'ss', 'richardson', 'momentec', 'api'];
+  const isLinked = (p) => Number(p.cost) > 0 && LINKED_SRC.includes(p._cost_source);
+  if (step === 'link') {
+    return (
+      <div className="modal-overlay" onClick={() => { if (!fetching) onClose(); }}>
+        <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 560 }}>
+          <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <h2 style={{ margin: 0, fontSize: 17 }}>📥 Create from OMG</h2>
+            <button onClick={() => { if (!fetching) onClose(); }} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+          </div>
+          <div className="modal-body" style={{ padding: '16px 20px 20px' }}>
+            <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Paste the shared OMG report link. It pulls in every product, size, color and decorated mockup image, then lets you review and fix SKUs, prices and names before the store is created.</div>
+            <input type="text" autoFocus placeholder="https://report.ordermygear.com/..." value={url} onChange={(e) => setUrl(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && url.trim() && !fetching) onFetch(url); }}
+              style={{ width: '100%', padding: '10px 12px', border: '1px solid #d1d5db', borderRadius: 6, fontSize: 13, fontFamily: 'monospace', boxSizing: 'border-box' }} />
+          </div>
+          <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button onClick={onClose} disabled={fetching} style={{ fontSize: 12, fontWeight: 600, padding: '8px 16px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: fetching ? 'not-allowed' : 'pointer' }}>Cancel</button>
+            <button onClick={() => onFetch(url)} disabled={fetching || !url.trim()} style={{ fontSize: 13, fontWeight: 800, padding: '8px 20px', borderRadius: 6, border: 'none', background: (fetching || !url.trim()) ? '#94a3b8' : '#166534', color: '#fff', cursor: (fetching || !url.trim()) ? 'not-allowed' : 'pointer' }}>{fetching ? '⏳ Fetching…' : 'Fetch & Review'}</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  // step === 'review'
+  const badSkus = items.filter((p) => skuInvalid(p.sku));
+  // "Matched" (found a real catalog/vendor SKU) is a different fact than "priced" (that catalog
+  // row happens to have a cost on file). A SKU can be a genuine match with $0 cost — e.g. an
+  // Adidas item NSA hasn't priced yet, since Adidas has no live pricing API — and that is NOT
+  // the same failure as never finding the SKU at all.
+  const unmatched = items.filter((p) => p._included !== false && !p.product_id);
+  const missingCost = items.filter((p) => p._included !== false && p.product_id && !isLinked(p));
+  const included = items.filter((p) => p._included !== false);
+  const totalUnits = included.reduce((a, p) => a + Object.values(p.sizes || {}).reduce((a2, v) => a2 + (Number(v) || 0), 0), 0);
+  const chip = (bg, fg) => ({ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 20, background: bg, color: fg });
+  const th = (align) => ({ textAlign: align || 'center', padding: '7px 8px', borderBottom: '2px solid #e2e8f0', fontWeight: 700, fontSize: 11, whiteSpace: 'nowrap' });
+  const sortedCust = [...(cust || [])].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 900, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+        <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>📥 Review before creating the store</h2>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#94a3b8' }}>×</button>
+        </div>
+        <div className="modal-body" style={{ overflowY: 'auto', padding: '16px 20px 20px' }}>
+          <div style={{ display: 'flex', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 260px' }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 4 }}>Store name</label>
+              <input type="text" value={name} onChange={(e) => setName(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13, boxSizing: 'border-box' }} />
+            </div>
+            <div style={{ flex: '1 1 260px' }}>
+              <label style={{ fontSize: 11, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 4 }}>Customer (for art library + CSR — can set later)</label>
+              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13, background: '#fff' }}>
+                <option value="">— No customer yet —</option>
+                {sortedCust.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Fix any SKU that's wrong — the cost and vendor <b>re-source automatically</b> from the catalog and supplier APIs. Uncheck an item to leave it out entirely.</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            <span style={chip('#eef2ff', '#4338ca')}>{included.length} item{included.length === 1 ? '' : 's'} · {totalUnits} units</span>
+            {badSkus.length > 0 && <span style={chip('#fef2f2', '#b91c1c')}>⚠ {badSkus.length} invalid SKU{badSkus.length === 1 ? '' : 's'}</span>}
+            {unmatched.length > 0 && <span style={chip('#fef2f2', '#b91c1c')}>⚠ {unmatched.length} not linked to catalog/API</span>}
+            {missingCost.length > 0 && <span style={chip('#fffbeb', '#92400e')}>{missingCost.length} matched, no cost on file</span>}
+            {badSkus.length === 0 && unmatched.length === 0 && missingCost.length === 0 && <span style={chip('#f0fdf4', '#166534')}>✓ all linked &amp; valid</span>}
+          </div>
+          <div style={{ overflowX: 'auto', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead><tr style={{ background: '#f8fafc' }}>
+                <th style={th('center')}></th>
+                <th style={th('center')}></th>
+                <th style={th('left')}>Name</th>
+                <th style={th('left')}>SKU</th>
+                <th style={th('left')}>Color / stock</th>
+                <th style={th('right')}>Price</th>
+                <th style={th('right')}>Cost · source</th>
+                <th style={th('left')}>Vendor</th>
+              </tr></thead>
+              <tbody>
+                {items.map((p, i) => {
+                  const invalid = skuInvalid(p.sku);
+                  const included2 = p._included !== false;
+                  const key = p.product_id || ('omgtmp:' + i);
+                  const st = stock && stock.get(key);
+                  // Prefer the catalog/vendor's REAL current sizes over the size the OMG order
+                  // historically recorded — that label (e.g. "Womens S", "OSFA") is whatever a
+                  // parent typed years ago and routinely doesn't match today's raw size key, which
+                  // made every live item look "out of stock" even when it had hundreds on hand.
+                  const liveSizes = (st && st.sizes && st.sizes.length) ? st.sizes : null;
+                  const regSizes = foldScale(liveSizes || Object.keys(p.sizes || {}));
+                  const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
+                  const sizeRows = regSizes.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
+                  const totalStock = sizeRows.reduce((a, s) => a + s.q, 0);
+                  return (
+                    <tr key={i} style={{ background: !included2 ? '#f8fafc' : invalid ? '#fef2f2' : i % 2 ? '#fafbfc' : '#fff', opacity: included2 ? 1 : 0.55 }}>
+                      <td style={{ padding: 4, borderBottom: '1px solid #f1f5f9', textAlign: 'center' }}>
+                        <input type="checkbox" checked={included2} onChange={() => onToggleIncluded(i)} title="Bring this item over" style={{ cursor: 'pointer' }} />
+                      </td>
+                      <td style={{ padding: 4, borderBottom: '1px solid #f1f5f9', width: 44, textAlign: 'center' }}>
+                        {p.image_url ? <img src={p.image_url} alt="" style={{ width: 36, height: 36, objectFit: 'contain', borderRadius: 4, border: '1px solid #e2e8f0' }} /> : <span style={{ color: '#cbd5e1', fontSize: 16 }}>📦</span>}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="text" value={p.name || ''} disabled={!included2} onChange={(e) => onFieldChange(i, 'name', e.target.value)} style={{ width: 160, fontSize: 12, fontWeight: 600, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff' }} />
+                        <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>{p.manufacturer || ''}</div>
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="text" value={p.sku || ''} disabled={!included2} title="Edit the style number — leaving the field re-sources the cost & vendor across the catalog and supplier APIs."
+                          onChange={(e) => onSkuChange(i, e.target.value)}
+                          onFocus={(e) => { e.target.dataset.orig = p.sku || ''; }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.target.blur(); }}
+                          onBlur={(e) => { const orig = e.target.dataset.orig || ''; if ((e.target.value || '').trim() !== orig.trim()) onSkuBlur(i, e.target.value); }}
+                          style={{ fontFamily: 'monospace', fontWeight: 700, color: invalid ? '#b91c1c' : '#1e40af', fontSize: 12, width: 100, padding: '4px 6px', border: '1px solid ' + (invalid ? '#fca5a5' : '#cbd5e1'), borderRadius: 4, background: '#fff' }} />
+                        {p._resolving && <div style={{ fontSize: 8, color: '#64748b', marginTop: 2 }}>⏳ resolving…</div>}
+                        {!p._resolving && invalid && <div style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', marginTop: 2, whiteSpace: 'nowrap' }}>⚠ fix this SKU</div>}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#64748b', maxWidth: 140 }}>
+                        <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginBottom: 3 }}>{p.color || '—'}</div>
+                        {sizeRows.length ? (
+                          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                            {sizeRows.map(({ sz, q }) => <span key={sz} title={`${q} available`} style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 20, background: q > 0 ? '#dcfce7' : '#fef2f2', color: q > 0 ? '#166534' : '#b91c1c' }}>{sz} {q}</span>)}
+                          </div>
+                        ) : <span style={{ fontSize: 9, color: '#94a3b8' }}>{p.product_id ? 'no stock data' : 'not linked to catalog'}</span>}
+                        {totalStock === 0 && sizeRows.length > 0 && <div style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', marginTop: 2 }}>⚠ out of stock</div>}
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid #f1f5f9' }}>
+                        <input type="number" step="0.01" value={p.retail || 0} disabled={!included2} onChange={(e) => onFieldChange(i, 'retail', parseFloat(e.target.value) || 0)} style={{ width: 72, textAlign: 'right', fontSize: 12, fontWeight: 700, padding: '4px 6px', border: '1px solid #cbd5e1', borderRadius: 4 }} />
+                      </td>
+                      <td style={{ textAlign: 'right', padding: '6px 8px', borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap' }}>
+                        <div style={{ color: Number(p.cost) > 0 ? '#166534' : '#b91c1c', fontWeight: 700 }}>{Number(p.cost) > 0 ? '$' + Number(p.cost).toFixed(2) : '—'}</div>
+                        {(() => {
+                          const L = { catalog: ['✓ Catalog', '#15803d', '#dcfce7'], sanmar: ['✓ SanMar', '#1d4ed8', '#dbeafe'], ss: ['✓ S&S', '#6d28d9', '#ede9fe'], richardson: ['✓ Richardson', '#b45309', '#fef3c7'], momentec: ['✓ Momentec', '#0e7490', '#cffafe'], api: ['✓ API', '#475569', '#e2e8f0'] };
+                          const hit = isLinked(p) && L[p._cost_source];
+                          if (hit) return <span style={{ fontSize: 8, fontWeight: 800, color: hit[1], background: hit[2], padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>{hit[0]}</span>;
+                          // A real catalog match with no cost on file (e.g. Adidas — no live pricing
+                          // API) is a DIFFERENT problem than never matching the SKU at all; don't
+                          // call it "not linked" when it genuinely is.
+                          if (p.product_id) return <span title="Matched this exact SKU in the catalog, but it has no cost on file yet — enter one after creating the store." style={{ fontSize: 8, fontWeight: 800, color: '#b45309', background: '#fef3c7', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>Catalog match · no cost</span>;
+                          return <span title="This SKU didn't match the catalog or any supplier API." style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', background: '#fef2f2', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>⚠ not linked</span>;
+                        })()}
+                      </td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontSize: 11, maxWidth: 100, overflow: 'hidden' }}><div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{vendList.find((v) => v.id === p.vendor_id)?.name || '—'}</div></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          {badSkus.length > 0 && <div style={{ marginTop: 12, padding: '8px 12px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: 6, fontSize: 11, color: '#b91c1c' }}>⚠ {badSkus.length} item{badSkus.length === 1 ? '' : 's'} still {badSkus.length === 1 ? 'has' : 'have'} an invalid SKU. You can still create the store, but the Sales Order stays blocked until every SKU is a single valid style number.</div>}
+        </div>
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+          <button onClick={onClose} disabled={creating} style={{ fontSize: 12, fontWeight: 600, padding: '8px 16px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff', color: '#64748b', cursor: creating ? 'not-allowed' : 'pointer' }}>Cancel — don’t create</button>
+          <button onClick={onCreate} disabled={creating || included.length === 0} title="Continue to delivery, fundraising, coach contact and the rest of the store's settings" style={{ fontSize: 13, fontWeight: 800, padding: '8px 22px', borderRadius: 6, border: 'none', background: (creating || included.length === 0) ? '#94a3b8' : '#166534', color: '#fff', cursor: (creating || included.length === 0) ? 'not-allowed' : 'pointer', boxShadow: '0 1px 2px rgba(0,0,0,0.15)' }}>{creating ? '⏳…' : `Next: Store Settings · ${included.length} item${included.length === 1 ? '' : 's'} →`}</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2429,27 +3353,76 @@ function SkuSearchInput({ size, value, onChange, stockByPid, storeId }) {
   );
 }
 
-// Styled confirm for "Create Sales Order" — replaces the native window.confirm,
-// shows the order count and any inventory shortfalls before the batch runs.
+// Styled confirm for "Create Batch" — replaces the native window.confirm.
+// The rep scopes the batch here (an order-date cutoff and/or per-order checkboxes —
+// unselected orders stay open for the next batch while the store keeps running),
+// names it, and sees inventory shortfalls recomputed live for that selection.
 // Shortfall rows have a product search so the rep can pick a substitute SKU
 // with live stock verification without leaving the modal.
-function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid = {}, storeId }) {
+function SoConfirmModal({ orders = [], shortagesFor, onCancel, onConfirm, stockByPid = {}, storeId }) {
   const [busy, setBusy] = useState(false);
   // keyed by "pid|size" → altSku string
   const [overrideSkus, setOverrideSkus] = useState({});
+  const [selIds, setSelIds] = useState(() => new Set(orders.map((o) => o.id)));
+  const [label, setLabel] = useState('');
+  const [cutoff, setCutoff] = useState(''); // yyyy-mm-dd; selects orders placed through end of that day
   const setOverride = (pid, size, val) => setOverrideSkus((prev) => {
     const k = pid + '|' + size; const n = { ...prev };
     const v = val.trim().toUpperCase(); if (v) n[k] = v; else delete n[k]; return n;
   });
-  const go = async () => { setBusy(true); try { await onConfirm(overrideSkus); } finally { setBusy(false); } };
+  const cutoffEnd = (v) => new Date(v + 'T23:59:59.999');
+  const applyCutoff = (v) => {
+    setCutoff(v);
+    if (!v) { setSelIds(new Set(orders.map((o) => o.id))); return; }
+    const end = cutoffEnd(v);
+    // Orders with a missing/unparseable created_at can't be judged against the cutoff —
+    // keep them selected (the rep can uncheck) rather than silently dropping them.
+    setSelIds(new Set(orders.filter((o) => { if (!o.created_at) return true; const t = new Date(o.created_at); return isNaN(t) || t <= end; }).map((o) => o.id)));
+  };
+  // A manual check/uncheck means the selection no longer equals "everything through
+  // the cutoff", so clear the date — otherwise the SO would persist a cutoff that
+  // misdescribes which orders are actually in the batch.
+  const toggle = (id) => { setCutoff(''); setSelIds((prev) => { const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n; }); };
+  const shortages = useMemo(() => (shortagesFor ? shortagesFor(selIds) : []), [selIds, shortagesFor]);
+  const count = selIds.size;
+  const leftOut = orders.length - count;
+  const go = async () => {
+    setBusy(true);
+    // Only pass substitutions that still have a live shortage row behind them — a
+    // substitute typed for a shortage that later disappeared (selection narrowed)
+    // must not silently rewrite that SKU's lines.
+    const validKeys = new Set(shortages.map((s) => s.pid + '|' + s.size));
+    const activeOverrides = {};
+    Object.entries(overrideSkus).forEach(([k, v]) => { if (validKeys.has(k)) activeOverrides[k] = v; });
+    try { await onConfirm(activeOverrides, selIds, { label: label.trim() || null, cutoff: cutoff ? cutoffEnd(cutoff).toISOString() : null }); }
+    finally { setBusy(false); }
+  };
   return (
     <div onClick={busy ? undefined : onCancel} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.55)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100, padding: 20 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, width: '100%', maxWidth: 560, boxShadow: '0 24px 60px rgba(0,0,0,.32)', overflow: 'hidden' }}>
         <div style={{ background: '#192853', color: '#fff', padding: '18px 22px' }}>
-          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Sales Order</div>
-          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} order{count === 1 ? '' : 's'} into one production Sales Order.</div>
+          <div style={{ fontFamily: "'Barlow Condensed',sans-serif", fontSize: 22, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase', lineHeight: 1 }}>Create Batch</div>
+          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 4 }}>Batch {count} of {orders.length} open order{orders.length === 1 ? '' : 's'} into one production Sales Order.{leftOut > 0 ? ` ${leftOut} stay open for the next batch.` : ''}</div>
         </div>
         <div style={{ padding: '20px 22px', maxHeight: '65vh', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <label style={{ flex: '1 1 220px', fontSize: 11.5, fontWeight: 700, color: '#475569' }}>Batch label <span style={{ fontWeight: 500, color: '#94a3b8' }}>(optional)</span>
+              <input className="form-input" value={label} onChange={(e) => setLabel(e.target.value)} placeholder={'e.g. "Spring round 1"'} style={{ marginTop: 4, fontSize: 13 }} />
+            </label>
+            <label style={{ flex: '0 1 190px', fontSize: 11.5, fontWeight: 700, color: '#475569' }}>Orders through <span style={{ fontWeight: 500, color: '#94a3b8' }}>(cutoff)</span>
+              <input type="date" className="form-input" value={cutoff} onChange={(e) => applyCutoff(e.target.value)} style={{ marginTop: 4, fontSize: 13 }} />
+            </label>
+          </div>
+          <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 14, maxHeight: 200, overflowY: 'auto' }}>
+            {orders.map((o, i) => (
+              <label key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 12px', borderTop: i ? '1px solid #f1f5f9' : 'none', cursor: 'pointer', fontSize: 12.5, background: selIds.has(o.id) ? '#fff' : '#f8fafc', color: selIds.has(o.id) ? '#0f172a' : '#94a3b8' }}>
+                <input type="checkbox" checked={selIds.has(o.id)} onChange={() => toggle(o.id)} />
+                <span style={{ fontWeight: 600, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.buyer_name || o.buyer_email || o.id}</span>
+                <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>{o.created_at ? new Date(o.created_at).toLocaleDateString() : ''}</span>
+                <span style={{ fontWeight: 700, whiteSpace: 'nowrap' }}>{money(o.total)}</span>
+              </label>
+            ))}
+          </div>
           {shortages.length ? (
             <>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#b45309', fontWeight: 800, fontSize: 13.5, marginBottom: 10 }}>
@@ -2472,12 +3445,12 @@ function SoConfirmModal({ count, shortages = [], onCancel, onConfirm, stockByPid
               <div style={{ fontSize: 12, color: '#64748b', marginTop: 10, lineHeight: 1.5 }}>Search by SKU or name — stock shown for that size. Substitute creates a separate SO line with the same decoration.</div>
             </>
           ) : (
-            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?</div>
+            <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.6 }}>{count === 0 ? 'No orders selected — pick at least one order (or clear the cutoff) to create a batch.' : 'Everything in this batch can be filled from stock or Adidas. Ready to create the Sales Order?'}</div>
           )}
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 22px', borderTop: '1px solid #eef1f5', background: '#f8fafc' }}>
           <button className="btn btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
-          <button className="btn btn-primary" onClick={go} disabled={busy}>{busy ? 'Creating…' : `Create Sales Order${shortages.length ? ' anyway' : ''}`}</button>
+          <button className="btn btn-primary" onClick={go} disabled={busy || count === 0}>{busy ? 'Creating…' : `Create Batch${shortages.length ? ' anyway' : ''}`}</button>
         </div>
       </div>
     </div>
@@ -2551,7 +3524,7 @@ function StoreDefaultsModal({ settings, onSave, onClose }) {
 const STATUS_RANK = { Open: 0, 'Closing soon': 1, Scheduled: 2, Draft: 3, Closed: 4 };
 const REP_PALETTE = ['#192853', '#962C32', '#2A6FDB', '#1B7F4B', '#7C3AED', '#0891B2'];
 
-function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onNewFromTemplate, onStoreDefaults }) {
+function ListView({ stores, custName, repName, REPS = [], cu, storeStats = {}, onOpen, onNew, onDuplicate, onToggleTemplate, onSaveAsTemplate, onNewFromTemplate, onStoreDefaults, onStartStoreFromTemplate, onAddTemplateToStore, onCreateFromOmg }) {
   const [view, setView] = useState('stores');
   const [statusFilter, setStatusFilter] = useState('all');
   const [repFilter, setRepFilter] = useState('all');
@@ -2560,9 +3533,38 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
   const [sortKey, setSortKey] = useState('status');
   const [sortDir, setSortDir] = useState('asc');
   const [copiedId, setCopiedId] = useState(null);
+  // Live-inventory panel (Reporting view): per-store stock for every item.
+  const [invStoreId, setInvStoreId] = useState('');
+  const [invItems, setInvItems] = useState([]);
+  const [invStock, setInvStock] = useState(null); // Map: product_id | 'wp:'+id → { units, sizeStock, ... }
+  const [invLoading, setInvLoading] = useState(false);
 
   const templates = stores.filter((s) => s.is_template);
   const nonTemplates = stores.filter((s) => !s.is_template);
+
+  // Load a store's items + live availability (vendor by SKU + in-house by product_id), same source
+  // of truth as every store builder so the numbers match. Unlinked items get a synthetic key so
+  // several manual items never collide on a null product id.
+  const loadInventory = useCallback(async (storeId) => {
+    if (!storeId) { setInvItems([]); setInvStock(null); return; }
+    setInvLoading(true);
+    try {
+      const { data: items } = await supabase.from('webstore_products')
+        .select('id,product_id,sku,display_name,image_url,sizes_offered,kind,active')
+        .eq('store_id', storeId).eq('active', true).eq('kind', 'single').order('sort_order');
+      const rows = items || [];
+      const stockRows = rows.map((p) => ({ id: p.product_id || ('wp:' + p.id), sku: p.sku }));
+      let stock = new Map();
+      try { stock = await fetchStockMap(stockRows); } catch { /* show without stock */ }
+      setInvItems(rows); setInvStock(stock);
+    } finally { setInvLoading(false); }
+  }, []);
+  // First time the Reporting view opens, default the picker to the first store.
+  useEffect(() => {
+    if (view === 'reporting' && !invStoreId && nonTemplates.length) {
+      const first = nonTemplates[0].id; setInvStoreId(first); loadInventory(first);
+    }
+  }, [view, invStoreId, nonTemplates, loadInventory]);
 
   const money = (n) => '$' + Math.round(n || 0).toLocaleString();
   const moneyK = (n) => { n = n || 0; return n >= 1000 ? '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : '$' + Math.round(n); };
@@ -2700,14 +3702,16 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
   const TH = { ...BCN, textTransform: 'uppercase', letterSpacing: '1px', fontWeight: 700, fontSize: 12, color: '#5A6075', padding: '12px', userSelect: 'none' };
   const TD = { padding: '13px 12px', verticalAlign: 'middle' };
 
+  // Column is just the close date on top, a short context line underneath — kept to one
+  // line each so row height stays consistent regardless of status.
   const storeWindowText = (s) => {
     const st = storeStatus(s);
-    if (st === 'Draft') return { main: 'Not scheduled', sub: 'Draft', subColor: '#8A93A8' };
-    if (st === 'Scheduled') return { main: fmt(s.open_at), sub: '→ ' + fmt(s.close_at), subColor: '#2A6FDB' };
-    if (st === 'Closed') return { main: (fmt(s.open_at) || '?') + ' – ' + (fmt(s.close_at) || '?'), sub: 'Closed', subColor: '#8A93A8' };
+    if (st === 'Draft') return { main: '—', sub: 'Draft', subColor: '#8A93A8' };
+    if (st === 'Scheduled') return { main: fmt(s.close_at) || '—', sub: 'Opens ' + fmt(s.open_at), subColor: '#2A6FDB' };
+    if (st === 'Closed') return { main: fmt(s.close_at) || '—', sub: 'Closed', subColor: '#8A93A8' };
     const dl = daysLeft(s);
     return {
-      main: s.close_at ? 'Closes ' + fmt(s.close_at) : 'No close date',
+      main: s.close_at ? fmt(s.close_at) : 'No end date',
       sub: dl == null ? 'Open' : dl <= 0 ? 'Closes today' : dl === 1 ? '1 day left' : dl + ' days left',
       subColor: dl != null && dl <= 3 ? '#962C32' : '#1B7F4B',
     };
@@ -2730,6 +3734,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
             ))}
           </div>
           {onStoreDefaults && <button className="btn btn-secondary" onClick={onStoreDefaults} title="Standard categories, checkout copy & default add-on options for all stores">⚙ Defaults</button>}
+          {onCreateFromOmg && <button className="btn btn-secondary" onClick={onCreateFromOmg} title="Turn a shared OMG report link into a new Club Webstore — review & fix SKUs, prices and names first" style={{ borderColor: '#bbf7d0', background: '#f0fdf4', color: '#166534' }}>📥 Create from OMG</button>}
           <button className="btn btn-primary" onClick={onNew}>+ New Store</button>
         </div>
       </div>
@@ -2785,7 +3790,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                   <th onClick={() => setSort('rep')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Rep{sortArrow('rep')}</th>
                   <th onClick={() => setSort('revenue')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Revenue{sortArrow('revenue')}</th>
                   <th onClick={() => setSort('orders')} style={{ ...TH, textAlign: 'right', cursor: 'pointer' }}>Orders{sortArrow('orders')}</th>
-                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Sale Window{sortArrow('window')}</th>
+                  <th onClick={() => setSort('window')} style={{ ...TH, textAlign: 'left', cursor: 'pointer' }}>Close{sortArrow('window')}</th>
                   <th style={{ ...TH, textAlign: 'left', padding: '12px 16px 12px 12px' }}>Storefront</th>
                   <th style={{ ...TH, width: 28 }}></th>
                 </tr>
@@ -2810,12 +3815,12 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                         <td style={{ ...TD, textAlign: 'center', color: '#8A93A8', padding: '13px 8px' }}>
                           <span style={{ display: 'inline-block', transition: 'transform .15s', transform: isExp ? 'rotate(90deg)' : 'rotate(0deg)', fontSize: 11 }}>▶</span>
                         </td>
-                        <td style={TD}>
-                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8 }}>
-                            {s.name}
-                            {coachReview && <span style={{ fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
+                        <td style={{ ...TD, maxWidth: 260 }}>
+                          <div style={{ fontWeight: 700, color: '#192853', fontSize: 15, lineHeight: 1.25, display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                            <span title={s.name} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{s.name}</span>
+                            {coachReview && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, background: '#fef3c7', color: '#92400e', padding: '1px 6px', borderRadius: 4 }}>★ Review</span>}
                           </div>
-                          <div style={{ color: '#8A93A8', fontSize: 12.5 }}>{custName(s.customer_id)}</div>
+                          <div title={custName(s.customer_id)} style={{ color: '#8A93A8', fontSize: 12.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{custName(s.customer_id)}</div>
                         </td>
                         <td style={TD}><span style={statusStyle(st)}>{st}</span></td>
                         <td style={TD}>
@@ -2835,7 +3840,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                         </td>
                         <td style={{ ...TD, padding: '13px 12px', textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'flex-end' }}>
-                            {onToggleTemplate && <button title={s.is_template ? 'Remove template' : 'Save as template'} onClick={(e) => { e.stopPropagation(); onToggleTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: s.is_template ? '#E0A92B' : '#D1D5DE' }}>{s.is_template ? '★' : '☆'}</button>}
+                            {onSaveAsTemplate && <button title="Save as template — copies this store's items into a reusable template (the store stays here)" onClick={(e) => { e.stopPropagation(); onSaveAsTemplate(s); }} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#D1D5DE' }}>☆</button>}
                             <button
                               title="Copy store link"
                               onClick={(e) => {
@@ -2948,6 +3953,96 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
             ))}
           </div>
 
+          {/* Live Inventory — per-store stock for every item */}
+          <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+              <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853' }}>Live Inventory</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <select value={invStoreId} onChange={(e) => { setInvStoreId(e.target.value); loadInventory(e.target.value); }}
+                  style={{ padding: '7px 10px', border: '1px solid #C3CAD8', borderRadius: 7, fontSize: 13, fontWeight: 600, color: '#192853', background: '#fff', maxWidth: 300 }}>
+                  <option value="">Choose a store…</option>
+                  {nonTemplates.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+                <button onClick={() => loadInventory(invStoreId)} disabled={!invStoreId || invLoading} title="Refresh live stock"
+                  style={{ padding: '7px 12px', border: '1px solid #C3CAD8', borderRadius: 7, background: '#fff', fontSize: 12.5, fontWeight: 700, color: '#2A2F3E', cursor: (!invStoreId || invLoading) ? 'default' : 'pointer' }}>{invLoading ? '…' : '↻ Refresh'}</button>
+              </div>
+            </div>
+            {!invStoreId ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Pick a store to see live stock for every item.</div>
+            ) : invLoading ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>Checking live stock…</div>
+            ) : invItems.length === 0 ? (
+              <div style={{ fontSize: 14, color: '#8A93A8' }}>No items on this store.</div>
+            ) : (() => {
+              const pill = (bg, fg) => ({ fontSize: 11, fontWeight: 800, padding: '2px 9px', borderRadius: 20, background: bg, color: fg, whiteSpace: 'nowrap' });
+              let inStock = 0, out = 0, unlinked = 0;
+              const rowData = invItems.map((p) => {
+                const key = p.product_id || ('wp:' + p.id);
+                const st = invStock && invStock.get(key);
+                const offered = foldScale(Array.isArray(p.sizes_offered) ? p.sizes_offered : []);
+                const stockOf = (sz) => (st && st.sizeStock && st.sizeStock[sz]) || 0;
+                const list = offered.length ? offered : (st ? st.sizes : []);
+                const sizeRows = list.map((sz) => ({ sz, q: foldedQty(sz, stockOf) }));
+                const total = sizeRows.reduce((a, s) => a + s.q, 0);
+                const linked = !!p.product_id;
+                if (!linked && !(st && st.units)) unlinked++;
+                else if (total > 0) inStock++;
+                else out++;
+                return { p, sizeRows, total, linked };
+              });
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 16, marginBottom: 12, fontSize: 12.5, color: '#5A6075', flexWrap: 'wrap' }}>
+                    <span><b style={{ color: '#1B7F4B' }}>{inStock}</b> in stock</span>
+                    <span><b style={{ color: '#962C32' }}>{out}</b> out</span>
+                    {unlinked > 0 && <span><b style={{ color: '#9A6B00' }}>{unlinked}</b> not linked to catalog</span>}
+                    <span style={{ color: '#8A93A8' }}>· {invItems.length} item{invItems.length === 1 ? '' : 's'}</span>
+                  </div>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead><tr style={{ color: '#8A93A8', fontSize: 11.5, textTransform: 'uppercase', letterSpacing: '.5px' }}>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Item</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Sizes — live stock</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'right' }}>Total</th>
+                        <th style={{ padding: '8px', borderBottom: '1px solid #EEF1F6', textAlign: 'left' }}>Status</th>
+                      </tr></thead>
+                      <tbody>
+                        {rowData.map(({ p, sizeRows, total, linked }) => (
+                          <tr key={p.id}>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                                {p.image_url ? <img src={p.image_url} alt="" style={{ width: 34, height: 34, objectFit: 'contain', borderRadius: 5, border: '1px solid #EEF1F6' }} /> : <div style={{ width: 34, height: 34, borderRadius: 5, background: '#F4F6FA' }} />}
+                                <div style={{ minWidth: 0 }}>
+                                  <div style={{ fontWeight: 600, color: '#192853', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 230 }}>{p.display_name || p.sku || 'Item'}</div>
+                                  <div style={{ fontFamily: 'monospace', fontSize: 11, color: '#8A93A8' }}>{p.sku || '—'}</div>
+                                </div>
+                              </div>
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {sizeRows.length ? (
+                                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                                  {sizeRows.map(({ sz, q }) => (
+                                    <span key={sz} title={`${q} available`} style={{ fontSize: 11, fontWeight: 700, padding: '2px 7px', borderRadius: 20, background: q > 0 ? '#E7F5EE' : '#FBEBEC', color: q > 0 ? '#1B7F4B' : '#962C32', border: `1px solid ${q > 0 ? '#BFE6D0' : '#F3C7CB'}` }}>{sz}&nbsp;{q}</span>
+                                  ))}
+                                </div>
+                              ) : <span style={{ color: '#8A93A8', fontSize: 12 }}>{linked ? 'No stock data' : 'Not linked — add a catalog SKU'}</span>}
+                            </td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA', textAlign: 'right', fontWeight: 800, color: total > 0 ? '#192853' : '#962C32' }}>{total}</td>
+                            <td style={{ padding: '8px', borderBottom: '1px solid #F4F6FA' }}>
+                              {!linked ? <span style={pill('#FDF3DA', '#9A6B00')}>⚠ not linked</span>
+                                : total > 0 ? <span style={pill('#E7F5EE', '#1B7F4B')}>In stock</span>
+                                  : <span style={pill('#FBEBEC', '#962C32')}>Out of stock</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+
           {/* Sales by Rep */}
           <div style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, boxShadow: '0 2px 12px rgba(0,0,0,.05)', padding: '20px 22px', marginBottom: 16 }}>
             <div style={{ ...BCN, textTransform: 'uppercase', letterSpacing: '.5px', fontWeight: 800, fontSize: 19, color: '#192853', marginBottom: 12 }}>Sales by Rep</div>
@@ -3020,6 +4115,10 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
       {/* ══════════ TEMPLATES VIEW ══════════ */}
       {view === 'templates' && (
         <>
+          <TemplateManager REPS={REPS} cu={cu} onStartStore={onStartStoreFromTemplate} onAddToStore={onAddTemplateToStore} />
+
+          <div style={{ borderTop: '1px solid #E5E9F0', margin: '38px 0 26px' }} />
+          <div style={{ ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Store Templates</div>
           <div style={{ marginBottom: 20, fontSize: 15, color: '#5A6075', maxWidth: 660, lineHeight: 1.6 }}>Spin up a new team store in seconds. Pick a template — gear, delivery, payment and numbering come pre-loaded. Rebrand and adjust anything before you launch.</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(310px, 1fr))', gap: 18 }}>
             {/* Blank store card */}
@@ -3036,9 +4135,10 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
               const nums = t.number_enabled ? (t.number_unique ? 'Unique #s' : 'On') : 'Off';
               return (
                 <div key={t.id} style={{ background: '#fff', border: '1px solid #EEF1F6', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.05)', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden' }}>
+                  <div onClick={() => onOpen && onOpen(t)} title="View / edit this template's items" style={{ position: 'relative', height: 88, background: 'linear-gradient(135deg,#1c2d4f,#0F1A38)', padding: '16px 18px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', overflow: 'hidden', cursor: onOpen ? 'pointer' : 'default' }}>
                     <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(-55deg,rgba(255,255,255,0.05) 0 1px,transparent 1px 9px)' }} />
                     <div style={{ position: 'relative', ...BCN, textTransform: 'uppercase', fontWeight: 800, fontSize: 20, letterSpacing: '.5px', color: '#fff', lineHeight: 1 }}>{t.name}</div>
+                    {onOpen && <div style={{ position: 'relative', fontSize: 11, color: 'rgba(255,255,255,.6)', marginTop: 5 }}>View / edit items →</div>}
                   </div>
                   <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, padding: '8px 0', borderBottom: '1px solid #EEF1F6' }}>
@@ -3050,6 +4150,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
                       ))}
                     </div>
                     <div style={{ display: 'flex', gap: 8, marginTop: 'auto' }}>
+                      {onOpen && <button className="btn btn-sm btn-secondary" onClick={() => onOpen(t)}>View items</button>}
                       {onNewFromTemplate && <button className="btn btn-sm btn-primary" onClick={() => onNewFromTemplate(t)} style={{ flex: 1 }}>Start Store</button>}
                       {onToggleTemplate && <button className="btn btn-sm btn-secondary" onClick={() => onToggleTemplate(t)}>Remove Template</button>}
                     </div>
@@ -3058,7 +4159,7 @@ function ListView({ stores, custName, repName, REPS = [], storeStats = {}, onOpe
               );
             })}
             {templates.length === 0 && (
-              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Mark a store as ☆ Template from the Stores list to add it here.</div>
+              <div style={{ gridColumn: '1/-1', padding: '24px', fontSize: 14, color: '#8A93A8' }}>No templates yet. Hit the ☆ Save as template button on any store in the Stores list to copy its items into a reusable template here.</div>
             )}
           </div>
         </>
@@ -3138,7 +4239,7 @@ const BLANK = {
   director_name: '', director_email: '', director_phone: '',
   number_enabled: false, number_unique: true, number_min: 0, number_max: 99,
   so_creation: 'manual',
-  fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false,
+  fundraise_enabled: false, fundraise_show_parents: false, fundraise_pct: 0, fundraise_flat: 0, fundraise_round: false, fundraise_goal: 0,
   processing_pct: 5,
   size_upcharge_enabled: true,
   public_listed: true,
@@ -3148,11 +4249,12 @@ const BLANK = {
 };
 // Trim a timestamptz to the yyyy-mm-dd a <input type=date> expects.
 const dateOnly = (v) => (v ? String(v).slice(0, 10) : '');
-function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
-  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
+function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportFromOmg, initialOverrides }) {
+  const [f, setF] = useState(() => ({ ...BLANK, ...(store || {}), ...(initialOverrides || {}), open_at: dateOnly(store?.open_at), close_at: dateOnly(store?.close_at) }));
   const [slugTouched, setSlugTouched] = useState(!!store);
-  // Once the name is hand-edited we stop auto-naming from the linked customer.
-  const [nameTouched, setNameTouched] = useState(!!(store && store.name));
+  // Once the name is hand-edited we stop auto-naming from the linked customer. A name carried
+  // in from the OMG wizard counts as "touched" too, so picking a customer here doesn't clobber it.
+  const [nameTouched, setNameTouched] = useState(!!(store && store.name) || !!(initialOverrides && initialOverrides.name));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   // Two pages so nothing scrolls: setup first, then delivery + branding.
@@ -3308,7 +4410,10 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
     payload.fundraise_pct = Number(payload.fundraise_pct) || 0;
     payload.fundraise_flat = Number(payload.fundraise_flat) || 0;
     payload.fundraise_round = !!payload.fundraise_round;
-    if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; }
+    // The goal drives the coach tracking page's "Fundraising goal" bar; 0/blank
+    // means no goal (the bar hides).
+    payload.fundraise_goal = Number(payload.fundraise_goal) || 0;
+    if (!payload.fundraise_enabled) { payload.fundraise_pct = 0; payload.fundraise_flat = 0; payload.fundraise_round = false; payload.fundraise_goal = 0; }
     else if (fundMode === 'pct') payload.fundraise_flat = 0;
     else payload.fundraise_pct = 0;
     const r = await onSave(payload);
@@ -3331,10 +4436,13 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
           <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 27, textTransform: 'uppercase', letterSpacing: '.01em', lineHeight: 1 }}>{store ? 'Edit store' : 'New store'}</div>
           <div style={{ color: '#6A7180', fontSize: 13, marginTop: 4 }}>{store ? "Update this store's setup." : "Set it up here — add products and artwork after it's created."}</div>
         </div>
-        <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
-          {['team', 'club'].map((t) => (
-            <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
-          ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {onImportFromOmg && <button type="button" onClick={onImportFromOmg} title="Skip this blank form — paste a shared OMG report link instead and build the store from its items" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', color: '#166534', borderRadius: 10, padding: '9px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>📥 Import from OMG instead</button>}
+          <div style={{ display: 'inline-flex', background: '#eef0f3', borderRadius: 10, padding: 3 }} role="tablist" aria-label="Store type">
+            {['team', 'club'].map((t) => (
+              <button key={t} type="button" onClick={() => switchOrg(t)} style={{ border: 'none', cursor: 'pointer', borderRadius: 8, padding: '6px 16px', fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.04em', background: orgType === t ? '#fff' : 'transparent', color: orgType === t ? '#191919' : '#6A7180', boxShadow: orgType === t ? '0 1px 2px rgba(0,0,0,.10)' : 'none' }}>{t}</button>
+            ))}
+          </div>
         </div>
       </div>
       {error && <div style={{ background: '#fee2e2', color: '#b91c1c', padding: '11px 14px', borderRadius: 10, fontSize: 13, marginBottom: 14, fontWeight: 600 }}>{error}</div>}
@@ -3424,6 +4532,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave }) {
             ? <Row label="Percent added to each item"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><input className="form-input" type="number" step="1" min={0} style={{ maxWidth: 120 }} value={f.fundraise_pct} onChange={(e) => set('fundraise_pct', e.target.value)} placeholder="10" /><span style={{ color: '#6A7180', fontWeight: 700 }}>%</span></div></Row>
             : <Row label="Dollars added to each item"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#6A7180', fontWeight: 700 }}>$</span><input className="form-input" type="number" step="0.01" min={0} style={{ maxWidth: 120 }} value={f.fundraise_flat} onChange={(e) => set('fundraise_flat', e.target.value)} placeholder="5.00" /></div></Row>}
           <Toggle label="Round the fundraising amount up to the nearest $1" checked={f.fundraise_round} onChange={(v) => set('fundraise_round', v)} />
+          <Row label="Fundraising goal (optional)"><div style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ color: '#6A7180', fontWeight: 700 }}>$</span><input className="form-input" type="number" step="1" min={0} style={{ maxWidth: 120 }} value={f.fundraise_goal} onChange={(e) => set('fundraise_goal', e.target.value)} placeholder="500" /><span style={{ fontSize: 12, color: '#94a3b8' }}>Shows a progress bar to the coach. Leave blank for none.</span></div></Row>
         </div>}
         <div style={{ borderTop: '1px solid #f3f4f7', margin: '6px 0 2px' }} />
         <Toggle label={'Show families the "$X supports the team" line on the storefront'} checked={f.fundraise_show_parents} onChange={(v) => set('fundraise_show_parents', v)} />
@@ -3704,7 +4813,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onSaveOrderEdits, onRefundOrder, onApplyLogo, onSetItemDecorations, onSaveArtVariant, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -3717,22 +4826,55 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
   const bundleItems = detail?.bundleItems || [];
   const stockByWp = detail?.stockByWp || {};
 
-  const totalSales = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
-  const fundraiseTotal = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const totalItems = orderItems.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
+  // Real per-store batch numbers for the linked SOs (webstore_batch_no lives on the
+  // Sales Order, not the order row). Fetched once here and shared by the "Batches
+  // created" chips and the Orders tab's Batch column/sort, so both show the same
+  // numbers with a single load. Keyed on the sorted so_id list so it only refetches
+  // when the set of linked SOs actually changes.
+  const [soBatch, setSoBatch] = useState({}); // so_id -> { no, label }
+  const soIdsKey = [...new Set(orders.map((o) => o.so_id).filter(Boolean))].sort().join(',');
+  useEffect(() => {
+    const ids = soIdsKey ? soIdsKey.split(',') : [];
+    if (!ids.length) { setSoBatch({}); return; }
+    let dead = false;
+    (async () => {
+      const { data } = await supabase.from('sales_orders').select('id,webstore_batch_no,webstore_batch_label').in('id', ids);
+      if (dead) return;
+      const m = {};
+      (data || []).forEach((so) => { m[so.id] = { no: so.webstore_batch_no, label: so.webstore_batch_label }; });
+      setSoBatch(m);
+    })();
+    return () => { dead = true; };
+  }, [soIdsKey]);
+
+  // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
+  // cancelled orders aren't real sales; exclude them so the banner counts, items,
+  // and sales match reality (and the per-order tabs, which already filter them).
+  const validOrders = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
+  const validOrderIds = new Set(validOrders.map((o) => o.id));
+  const totalSales = validOrders.reduce((a, o) => a + (Number(o.total) || 0), 0);
+  const fundraiseTotal = validOrders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const totalItems = orderItems.filter((i) => !i.is_bundle_parent && validOrderIds.has(i.order_id)).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const notOrdered = roster.filter((r) => !r.ordered);
-  // Sales Orders created from this store's batches, with how many orders each covers.
+  // Batches created from this store (each batch = one Sales Order), with how many
+  // orders each covers. Ordered by SO id, which increases with creation, so the
+  // chips read in batch order (Batch 1, 2, 3…).
   const soSummary = (() => {
     const m = {};
     orders.forEach((o) => { if (o.so_id) m[o.so_id] = (m[o.so_id] || 0) + 1; });
-    return Object.entries(m).map(([id, count]) => ({ id, count }));
+    return Object.entries(m).map(([id, count]) => ({ id, count, batchNo: soBatch[id] ? soBatch[id].no : null, batchLabel: soBatch[id] ? soBatch[id].label : null }))
+      // By real batch number when known; fall back to the SO id's numeric part
+      // (increases with creation) until the batch numbers finish loading.
+      .sort((a, b) => (a.batchNo != null && b.batchNo != null)
+        ? a.batchNo - b.batchNo
+        : (Number(String(a.id).replace(/\D/g, '')) || 0) - (Number(String(b.id).replace(/\D/g, '')) || 0));
   })();
 
   // Primary tabs stay visible; the rest tuck into a "More ▾" menu. Store settings
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
-    { id: 'orders', label: `Orders (${orders.length})` },
+    { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
   ];
@@ -3793,7 +4935,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
     const color = st.color || '';
     const key = (c.sku || '') + '|' + color;
     (Array.isArray(c.decorations) ? c.decorations : []).forEach((d) => {
-      if (!d || d.kind !== 'art') return;
+      if (!d || d.kind !== 'art' || d.baked) return; // baked art is already in the item image — don't re-place it
       const url = decoUrlForColor(d, color, _qmWebLogos(d)) || d.art_url || d.web_url || '';
       if (!url || !_qmIsImg(url)) return;
       const artId = d.art_file_id || d.art_id || ('deco-' + url);
@@ -3822,7 +4964,8 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
             onFlyer && { label: 'Printable flyer (QR)', icon: '🖨️', title: 'Open a printable flyer with a QR code to the store', onClick: onFlyer },
             { label: 'Email store link', icon: '✉️', title: 'Send the store link + QR + PDF flyer to a coach or parent', onClick: () => setEmailLinkOpen(true) },
           ]} />
-          {onSetStatus && (s.status !== 'open'
+          {s.is_template && <span title="Templates are never live — Start Store from the Templates tab to launch a real store from this" style={{ background: '#fefce8', color: '#a16207', fontWeight: 800, fontSize: 12, borderRadius: 7, padding: '7px 11px' }}>★ Template</span>}
+          {onSetStatus && !s.is_template && (s.status !== 'open'
             ? <button className="btn btn-sm" style={{ background: '#166534', color: '#fff', fontWeight: 700 }} onClick={() => setLaunchOpen(true)} title="Make this store live for shoppers">🚀 Launch store</button>
             : <button className="btn btn-sm btn-secondary" onClick={() => onSetStatus(s, 'closed')} title="Stop taking orders">Close store</button>)}
           <button className="btn btn-sm btn-primary" onClick={onEdit}>⚙ Settings</button>
@@ -3851,7 +4994,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
                 </div>
               </div>
               <div style={{ display: 'flex', gap: 22, textAlign: 'right', flexShrink: 0, alignSelf: 'flex-start', paddingTop: 2 }}>
-                <BannerStat label="Orders" value={orders.length} />
+                <BannerStat label="Orders" value={validOrders.length} />
                 <BannerStat label="Items" value={totalItems} />
                 <BannerStat label="Sales" value={money(totalSales)} />
                 {fundraiseTotal > 0 && <BannerStat label="Fundraising" value={money(fundraiseTotal)} />}
@@ -3862,11 +5005,11 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
       })()}
 
       {soSummary.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Sales Orders created</span>
-        {soSummary.map((so) => (
-          <button key={so.id} onClick={() => onOpenSO && onOpenSO(so.id)} title="Open in Sales Orders"
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5 }}>Batches created</span>
+        {soSummary.map((so, i) => (
+          <button key={so.id} onClick={() => onOpenSO && onOpenSO(so.id)} title={`Open the batch's Sales Order (${so.id})`}
             style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '5px 12px', borderRadius: 8, border: '1px solid #bfdbfe', background: '#eff6ff', color: '#1e40af', cursor: 'pointer', fontWeight: 700, fontSize: 13, fontFamily: 'monospace' }}>
-            {so.id} <span style={{ fontFamily: 'inherit', fontWeight: 500, color: '#64748b' }}>· {so.count} order{so.count === 1 ? '' : 's'} ↗</span>
+            <span style={{ fontFamily: 'inherit', color: '#6d28d9' }}>Batch {so.batchNo != null ? so.batchNo : i + 1}{so.batchLabel ? ` · ${so.batchLabel}` : ''}</span> {so.id} <span style={{ fontFamily: 'inherit', fontWeight: 500, color: '#64748b' }}>· {so.count} order{so.count === 1 ? '' : 's'} ↗</span>
           </button>
         ))}
       </div></div>}
@@ -3875,14 +5018,14 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
 
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
-          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
           {tab === 'analytics' && <AnalyticsTab store={s} orders={orders} orderItems={orderItems} stockByWp={stockByWp} catalog={catalog} libraryArt={detail?.libraryArt || []} />}
-          {tab === 'roster' && <RosterTab roster={roster} notOrdered={notOrdered} />}
+          {tab === 'roster' && <RosterTab store={s} roster={roster} notOrdered={notOrdered} orders={orders} onAdd={onAddRoster} onUpdate={onUpdateRoster} onRemove={onRemoveRoster} onInvite={onInviteRoster} onFlash={onFlash} />}
           {tab === 'settings' && <SettingsTab store={s} />}
         </>
       )}
@@ -3977,7 +5120,7 @@ const storeFundAmount = (price, sf) => {
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
 
-function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
+function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
   const [pkgItems, setPkgItems] = useState([]); // components selected (via list checkboxes) for the package being built
   const [bulkSel, setBulkSel] = useState(() => new Set()); // catalog ids ticked for bulk edit
@@ -4106,9 +5249,10 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
           ? <input type="checkbox" checked={pkgSel.has(p.id)} onClick={(e) => e.stopPropagation()} onChange={() => togglePkg(p)} title="Add to the package" style={{ width: 16, height: 16, cursor: 'pointer', flexShrink: 0, accentColor: '#4f46e5' }} />
           : <span draggable onClick={(e) => e.stopPropagation()} onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = 'move'; }} title="Drag to reorder, or onto a category" style={{ cursor: 'grab', color: '#cbd5e1', fontSize: 14, userSelect: 'none' }}>⠿</span>}
         <div style={{ position: 'relative', width: 42, height: 42, borderRadius: 7, background: '#f4f6f9', overflow: 'hidden', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {(p.image_url || stock?.image_front_url) ? <img src={p.image_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
-          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup. */}
-          {(p.decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
+          {(p.image_url || p.image_front_url || stock?.image_front_url) ? <img src={p.image_url || p.image_front_url || stock?.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#cbd5e1' }}>—</span>}
+          {/* Overlay the placed front logo(s) so the thumbnail shows the decorated mockup.
+              Skip `baked` decorations — already rendered into the item image (a Quick Mock). */}
+          {(p.decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, stock?.color, _webLogosOf(d))).map((d, i) => { const pl = placementById(d.placement); const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w; return (
             <img key={i} src={decoUrlForColor(d, stock?.color, _webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 1px rgba(0,0,0,.25))' }} />
           ); })}
         </div>
@@ -4236,10 +5380,10 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         );
       })()}
 
-      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
-      {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onAddMany={onAddMany} onClose={() => setMode(null)} />}
-      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
+      {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'custom' && <CustomProductCreator library={library} catSuggestions={[...new Set([...(catalog || []).map((c) => c.category).filter(Boolean), 'Tees', 'Hoods', 'Crew', 'Polos', 'Shorts', 'Pants', 'Outerwear', 'Jersey', 'Hats', 'Bags', 'Socks', 'Footwear', 'Accessories'])]} onClose={() => setMode(null)} onCreated={async (product, alsoAdd, decorations) => { if (alsoAdd && onAddSingle) { await onAddSingle({ product, price: product.retail_price, fundraise: 0, image_url: product.image_front_url || null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [], decorations: decorations || [] }); setPendingOpenPid(product.id); } setMode(null); }} />}
       {mode === 'margin' && <PriceToMarginModal catalog={catalog} costByPid={costByPid} onApply={(pct) => { onPriceToMargin && onPriceToMargin(pct); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'single' && pending && <SinglePriceEditor product={pending} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeFund={storeFund} onSaveLogo={onSaveLogo} onCancel={() => setPending(null)} onAdd={async ({ products, ...rest }) => { for (let i = 0; i < (products || []).length; i++) await onAddSingle({ ...rest, product: products[i], image_url: i === 0 ? rest.image_url : null }); setPending(null); }} />}
@@ -4312,7 +5456,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                     <button className="btn btn-sm btn-secondary" style={{ color: '#b91c1c' }} onClick={() => onRemoveGroup(groupColors.map((r) => r.id), p.display_name || stock?.name || p.sku)}>Remove</button>
                   </div>
                   <div style={{ padding: 14 }}>
-                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                    <CatalogItemEditor key={p.id} item={p} groupColors={groupColors} page={paneTab} setPage={setPaneTab} saveRef={paneEditorSaveRef} dirtyRef={paneEditorDirtyRef} onReorderColors={onReorderColors} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} bundleItems={bundleItems} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onEditItem={switchEditId} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} />
                     {p.kind !== 'bundle' && paneTab === 'details' && onAddFits && <FitManager item={p} fits={groupColors} stockByWp={stockByWp} onAttach={async (pr) => { await onAddFits(p, [{ product: pr, label: '' }]); }} onLabel={(id, label) => onUpdateItem(id, { variant_label: label || null })} onRemoveFit={(id, nm) => onRemove(id, nm)} />}
                   </div>
                 </div>
@@ -4401,7 +5545,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
                           <div style={{ fontWeight: 800, fontSize: 16 }}>{p.display_name || stock?.name || p.sku}</div>
                           <button onClick={() => setEditId(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
                         </div>
-                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => { onUpdateItem(p.id, fields); }} />
+                        <CatalogItemEditor key={p.id} item={p} groupColors={colorRows} defaultName={stock?.name} stockImg={stock?.image_front_url} stockBackImg={stock?.image_back_url} availableSizes={stock?.available_sizes || []} designOptions={designOptions} numberSets={numberSets} isTeam={isTeam} library={library} storeColors={storeColors} catalog={catalog} standardCategories={standardCategories} stockByWp={stockByWp} costByPid={costByPid} invSrcByPid={invSrcByPid} storeFund={storeFund} onApplyLogo={onApplyLogo} onAddSingle={onAddSingle} onAddColors={onAddColors} onCopyItem={onCopyItem} onRemoveColor={onRemove} onSaveLogo={onSaveLogo} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onCancel={() => setEditId(null)} onSave={(fields) => onUpdateItem(p.id, fields)} />
                       </div>
                     </div>
                   </td></tr>}
@@ -4658,7 +5802,7 @@ function LogoPlacer({ imageUrl, decorations, onChange, library = [], onSaveLogo,
         )}
         <div ref={boxRef} onPointerMove={onPtrMove} onPointerUp={endDrag} onPointerLeave={endDrag}
           style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: 'radial-gradient(circle at 50% 36%, #ffffff 0%, #eceff3 100%)', borderRadius: 16, overflow: 'hidden', border: '1px solid #e2e8f0', touchAction: 'none' }}>
-          {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} draggable={false} />
+          {stageUrl ? <img src={stageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} draggable={false} />
             : side === 'back' && onBackImageChange ? <button type="button" onClick={() => backRef.current && backRef.current.click()} style={{ position: 'absolute', inset: 0, border: 'none', background: 'transparent', cursor: 'pointer', color: '#64748b', fontSize: 13, fontWeight: 700 }}>+ Add a back image</button>
             : <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#cbd5e1', fontSize: 12 }}>no image</div>}
           {decos.map((d, i) => (sideOf(d) === side && !(d.kind === 'perso_number' && !takesNumber) && !(d.kind === 'perso_name' && !takesName) ? (
@@ -4891,21 +6035,26 @@ const colorKeyOf = (name) => String(name || '').trim().toLowerCase();
 // "Heather Grey" still finds the "Grey" colorway. Falls back to an "all garments"/blank
 // colorway, then null (caller uses the deco's placed art_url).
 const _normColorWords = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(' ').filter(Boolean);
-const webLogoForGarmentColor = (webLogos, colorName) => {
+// Returns the matched web_logos[] ENTRY (so callers can read its color_way_id, not just the
+// url); webLogoForGarmentColor below keeps the original url-returning shape.
+const webLogoEntryForGarmentColor = (webLogos, colorName) => {
   const wls = (webLogos || []).filter((w) => w && w.url);
   if (!wls.length) return null;
   const g = _normColorWords(colorName);
   if (g.length) {
     const hit = wls.find((w) => { const c = _normColorWords(w.color_way); return c.length && (c.some((t) => g.includes(t)) || g.some((t) => c.includes(t))); });
-    if (hit) return hit.url;
+    if (hit) return hit;
   }
-  const generic = wls.find((w) => { const c = (w.color_way || '').trim(); return !c || /all/i.test(c); });
-  return generic ? generic.url : null;
+  return wls.find((w) => { const c = (w.color_way || '').trim(); return w.is_default || !c || /all/i.test(c); }) || null;
 };
+const webLogoForGarmentColor = (webLogos, colorName) => { const e = webLogoEntryForGarmentColor(webLogos, colorName); return e ? e.url : null; };
+// A cw_by_color value is a bare url (legacy) or { url, color_way_id } (id-keyed, Decision 2).
+const _cwPickUrl = (v) => (typeof v === 'string' ? v : (v && v.url) || '');
 const decoUrlForColor = (deco, colorName, webLogos) => {
   if (!deco) return '';
   const m = deco.cw_by_color; const k = colorKeyOf(colorName);
-  if (m && k && m[k]) return m[k];                       // explicit per-color override wins
+  const pick = m && k && m[k];
+  if (pick) return _cwPickUrl(pick);                     // explicit per-color override wins
   const auto = webLogoForGarmentColor(webLogos, colorName); // else auto-match the garment color
   return auto || deco.art_url || '';
 };
@@ -4914,10 +6063,10 @@ const decoUrlForColor = (deco, colorName, webLogos) => {
 // logo) applied. Mirrors the LogoPlacer hero-canvas math (x/y center %, w = width %).
 function GarmentLogoPreview({ imageUrl, decorations = [], colorName, library = [] }) {
   const webLogosOf = (d) => { const art = (library || []).find((a) => a.id === d.art_id); return art && Array.isArray(art.web_logos) ? art.web_logos : []; };
-  const front = (decorations || []).filter((d) => (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
+  const front = (decorations || []).filter((d) => !d.baked && (d.side || 'front') !== 'back' && decoUrlForColor(d, colorName, webLogosOf(d)));
   return (
     <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', borderRadius: 6, overflow: 'hidden', background: '#f4f6f9' }}>
-      {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
+      {imageUrl && <img src={imageUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />}
       {front.map((d, i) => { const p = placementById(d.placement); const x = d.x != null ? d.x : p.x, y = d.y != null ? d.y : p.y, w = d.w != null ? d.w : p.w; return (
         <img key={i} src={decoUrlForColor(d, colorName, webLogosOf(d))} alt="" draggable={false} style={{ position: 'absolute', left: x + '%', top: y + '%', width: w + '%', transform: 'translate(-50%,-50%)', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.25))' }} />
       ); })}
@@ -5111,10 +6260,17 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
   const page = pageProp || pageState;
   const setPage = setPageProp || setPageState;
   // Storefront placement + requirement (new per-item fields).
-  const [category, setCategory] = useState(item.category || stockByWp[item.id]?.category || '');
+  // Reflect only the item's own saved category — never fall back to the product's
+  // stock category, or saving any edit (e.g. sizes) would silently file an
+  // uncategorized item under that category. The stock category is still offered
+  // as a datalist suggestion below.
+  const [category, setCategory] = useState(item.category || '');
   const [required, setRequired] = useState(!!item.required);
   const [kitName, setKitName] = useState(item.kit_name || '');
   const [cardStyle, setCardStyle] = useState(item.card_style || '');
+  // Roster audience: who this item is for — everyone ('all'), field players, or
+  // goalkeepers. Drives per-player bifurcation of the storefront.
+  const [audience, setAudience] = useState(item.roster_audience || 'all');
   const [options, setOptions] = useState(Array.isArray(item.options) ? item.options : []);
   const imgRef = useRef();
   const estOz = estimateWeightOz(name || item.display_name || defaultName || item.sku);
@@ -5258,16 +6414,66 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
     setImgBusy(false);
   };
 
+  // The additional-images strip is one ordered gallery: the leftmost photo is the MAIN
+  // (front) image, the rest are extra angles. `image` holds the front override (null = the
+  // catalog stock photo) and `extraImages` the angles, so the effective order the rep sees
+  // and reorders is [front, ...extras]. The BACK photo is kept as its own labelled tile —
+  // it's the canvas the storefront uses for the number/name & back-logo preview, not a
+  // plain angle — so it stays out of this reorderable sequence.
+  const [dragPhoto, setDragPhoto] = useState(null); // index of the tile being dragged to reorder
+  const effFront = image || stockImg || item.image_url || null;
+  const galleryPhotos = [effFront, ...extraImages].filter(Boolean);
+  // Rewrite the front + extra images from a new ordered list — position 0 becomes the main.
+  // Deleting the main promotes the next photo; clearing everything falls back to stock.
+  const applyGallery = (list) => {
+    const clean = list.filter(Boolean);
+    setImage(clean[0] || null);
+    setExtraImages(clean.slice(1));
+  };
+  const movePhoto = (from, to) => {
+    if (from == null || to == null || from === to || from < 0 || to < 0) return;
+    const list = [...galleryPhotos];
+    const [moved] = list.splice(from, 1);
+    list.splice(to, 0, moved);
+    applyGallery(list);
+  };
+  const makeMainPhoto = (i) => movePhoto(i, 0);
+  const deletePhoto = (i) => applyGallery(galleryPhotos.filter((_, j) => j !== i));
+  // Move an extra angle out of the front gallery and into the BACK slot (the canvas the
+  // storefront uses for the number/name & back-logo preview). Only offered on non-main
+  // tiles, so `i` is always ≥ 1 and maps to extraImages[i - 1].
+  const makeBackPhoto = (i) => {
+    const url = galleryPhotos[i];
+    if (!url) return;
+    setBackImage(url);
+    setExtraImages((prev) => prev.filter((_, j) => j !== i - 1));
+  };
+
+  // A store item needs a MAIN front photo: it's what the art placer draws logos on, what
+  // saves to image_url, and what the storefront shows on the card. The "+ Add images"
+  // button always appends to `extraImages`, which is right when a front photo already
+  // exists (override or catalog stock). But when the item has NO front photo, those adds
+  // pile into `extraImages` while `image` stays null — so the gallery labels the first
+  // angle "MAIN" yet the placer, image_url, and storefront all stay blank. Promote the
+  // first angle into the real MAIN slot so what the gallery shows and what saves agree.
+  // Also self-heals items already saved in that broken state when they're reopened.
+  useEffect(() => {
+    if (image || stockImg || item.image_url) return;
+    if (!extraImages.length) return;
+    setImage(extraImages[0]);
+    setExtraImages((p) => p.slice(1));
+  }, [extraImages, image, stockImg, item.image_url]);
+
   // Dirty tracking: a signature of every editable field. Compared to the baseline (the
   // values as last loaded / saved) so the parent can prompt a save before the rep switches
   // to another item. Reset to the current signature whenever we persist.
-  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
+  const _dirtySig = JSON.stringify([name, price, fundraise, decoUp, weight, image, backImage, extraImages, category, required, kitName, audience, options, takesNumber, takesName, nameUp, transferCodes, numTransferSets, decorations, offeredSizes, sizeList, trackInv, sizeSkus]);
   const _baselineSig = useRef(_dirtySig);
   if (dirtyRef) dirtyRef.current = _dirtySig !== _baselineSig.current;
 
-  const save = () => {
+  const save = async () => {
     const cleanOptions = cleanItemOptions(options);
-    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, options: cleanOptions, card_style: cardStyle || null };
+    const fields = { retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, deco_upcharge: Number(decoUp) || 0, display_name: (name.trim() && name.trim() !== (defaultName || '').trim()) ? name.trim() : null, weight_oz: weight === '' ? null : Number(weight) || 0, image_url: image || null, image_back_url: backImage || null, extra_image_urls: extraImages, category: category.trim() || null, required: !!required, kit_name: kitName.trim() || null, roster_audience: (audience && audience !== 'all') ? audience : null, options: cleanOptions, card_style: cardStyle || null };
     if (!isBundle) {
       fields.takes_number = !!takesNumber; fields.takes_name = !!takesName; fields.name_upcharge = Number(nameUp) || 0;
       fields.transfer_codes = transferCodes.filter(Boolean);
@@ -5281,10 +6487,12 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       const _cardColors = (groupColors || []).map((c) => (stockByWp[c.id]?.color) || c.sku).filter(Boolean);
       if (_cardColors.length) fields.decorations = fields.decorations.map((d) => {
         const art = (library || []).find((a) => a.id === d.art_id);
-        const wls = art && Array.isArray(art.web_logos) ? art.web_logos.filter((w) => w && w.url) : [];
+        // normalize stamps color_way_id from the label match, so the bake below carries the
+        // STABLE CW identity to the storefront/SO handoff — not just a url keyed by color name.
+        const wls = art ? normalizeWebLogos(art.web_logos, art.color_ways) : [];
         if (wls.length < 2) return d;
         const m = { ...(d.cw_by_color || {}) };
-        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const u = webLogoForGarmentColor(wls, cn); if (u) m[k] = u; } });
+        _cardColors.forEach((cn) => { const k = colorKeyOf(cn); if (!m[k]) { const e = webLogoEntryForGarmentColor(wls, cn); if (e) m[k] = e.color_way_id ? { url: e.url, color_way_id: e.color_way_id } : e.url; } });
         return Object.keys(m).length ? { ...d, cw_by_color: m } : d;
       });
       // null = the product's full scale, unchanged (default). Persist an explicit list
@@ -5297,7 +6505,11 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
       // Size-level SKU overrides: only persist when there's something set.
       fields.size_skus = Object.keys(sizeSkus).length ? sizeSkus : {};
     }
-    onSave(fields);
+    // Only claim success if the write actually landed. onSave returns false when
+    // the DB rejected it (error or RLS-blocked 0-row write) — don't clear the dirty
+    // flag or flash "Saved ✓" in that case, so the edit isn't silently lost.
+    const _ok = await onSave(fields);
+    if (_ok === false) return;
     _baselineSig.current = _dirtySig; // current state is now the saved baseline → no longer dirty
     if (dirtyRef) dirtyRef.current = false;
     // Stay on the item after saving — just confirm briefly on the button.
@@ -5456,9 +6668,16 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
               <input className="form-input" list={kitListId} value={kitName} onChange={(e) => setKitName(e.target.value)} placeholder="e.g. Mandatory Player Kit" />
               <datalist id={kitListId}>{kitSuggestions.map((c) => <option key={c} value={c} />)}</datalist>
             </Row>
+            <Row label="Who it's for (roster position)">
+              <select className="form-input" value={audience} onChange={(e) => setAudience(e.target.value)}>
+                <option value="all">Everyone</option>
+                <option value="field">Field players only</option>
+                <option value="gk">Goalkeepers only</option>
+              </select>
+            </Row>
             <div style={{ paddingBottom: 6 }}><Toggle label="Mandatory — every shopper must buy this" checked={required} onChange={(val) => { setRequired(val); if (item.id && !String(item.id).startsWith('tmp')) onSave({ required: val }); }} /></div>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout.</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8 }}>Items sharing a kit name are bought together; mark the kit's items Mandatory to require them at checkout. “Who it's for” hides an item from players whose roster position doesn't match (players who open their personal link).</div>
         </ItemSection>
 
         <ItemSection title="Shipping" hint="· used for ship-to-home rates">
@@ -5533,7 +6752,10 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
                             }} style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, right: 4, width: 18, height: 18, borderRadius: '50%', background: '#fff', border: '1px solid #e2e8f0', color: '#b91c1c', cursor: 'pointer', fontSize: 12, lineHeight: '16px', padding: 0, textAlign: 'center', zIndex: 1 }}>×</button>}
                             {archived && <span style={{ position: 'absolute', top: onReorderBundleItems ? 18 : 4, left: 4, fontSize: 9, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase', background: '#fef3c7', color: '#92400e', borderRadius: 4, padding: '1px 5px', zIndex: 1 }}>Archived</span>}
                             <div onClick={canEdit ? () => onEditItem(c.id) : undefined} title={canEdit ? 'Edit this item' : undefined} style={{ width: '100%', height: 76, background: '#f4f6f9', display: 'grid', placeItems: 'center', cursor: canEdit ? 'pointer' : 'default' }}>
-                              {img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
+                              {/* Linked singles show their DECORATED look (same as the storefront kit tiles). */}
+                              {img && c && (c.decorations || []).some((d) => d && d.art_url)
+                                ? <div style={{ height: 76, aspectRatio: '4 / 5' }}><GarmentLogoPreview imageUrl={img} decorations={c.decorations} colorName={stockByWp[c.id]?.color} library={library} /></div>
+                                : img ? <img src={img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain', padding: 4, boxSizing: 'border-box' }} /> : <span style={{ fontSize: 10, color: '#cbd5e1' }}>No image</span>}
                             </div>
                             <div style={{ padding: '5px 8px 7px' }}>
                               <div onClick={canEdit ? () => onEditItem(c.id) : undefined} style={{ fontWeight: 700, fontSize: 11.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', color: canEdit ? '#2563eb' : '#191919', cursor: canEdit ? 'pointer' : 'default' }} title={nm}>{nm}{canEdit ? ' · edit' : ''}</div>
@@ -5668,36 +6890,47 @@ function CatalogItemEditor({ item, groupColors = [], page: pageProp, setPage: se
 
         <ItemSection title="Additional images" hint="· front, back & extra angles shown on the product page">
           <div
-            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
+            onDragOver={(e) => { if (dragPhoto != null) return; if (!Array.from(e.dataTransfer.types || []).includes('Files')) return; e.preventDefault(); e.stopPropagation(); if (!mainDragOver) setMainDragOver(true); }}
             onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); }}
-            onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const first = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (first) addExtraFile(first); else [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
+            onDrop={(e) => { if (dragPhoto != null) return; e.preventDefault(); e.stopPropagation(); setMainDragOver(false); const first = [...(e.dataTransfer.files || [])].find((f) => f.type.startsWith('image/')); if (first) addExtraFile(first); else [...(e.dataTransfer.files || [])].forEach(addExtraFile); }}
             style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', padding: 12, border: `1.5px dashed ${mainDragOver ? '#2563eb' : '#d7dbe2'}`, borderRadius: 10, background: mainDragOver ? '#eff4ff' : '#fafbfc', transition: 'background .12s, border-color .12s' }}>
-            {/* Front (main) photo */}
-            <div style={{ position: 'relative', cursor: 'pointer' }} title="Front photo — click to change" onClick={() => mainImgRef.current?.click()}>
-              <div style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid #cbd5e1', overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
-                {(image || stockImg || item.image_url) ? <img src={image || stockImg || item.image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 9, color: '#94a3b8' }}>No photo</span>}
+            {/* One ordered gallery — the leftmost tile is the MAIN (front) photo. Drag to reorder,
+                ★ to promote another photo to main, × to remove any of them (including the main). */}
+            {galleryPhotos.map((url, i) => { const isMain = i === 0; const dragging = dragPhoto === i; return (
+              <div key={url + '|' + i}
+                draggable
+                onDragStart={(e) => { setDragPhoto(i); e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => { if (dragPhoto != null && dragPhoto !== i) { e.preventDefault(); e.stopPropagation(); } }}
+                onDrop={(e) => { if (dragPhoto == null || dragPhoto === i) return; e.preventDefault(); e.stopPropagation(); movePhoto(dragPhoto, i); setDragPhoto(null); }}
+                onDragEnd={() => setDragPhoto(null)}
+                onClick={isMain ? (() => mainImgRef.current?.click()) : undefined}
+                title={isMain ? 'Main (front) photo — click to change · drag to reorder' : 'Drag to reorder · ★ to make main'}
+                style={{ position: 'relative', cursor: isMain ? 'pointer' : 'grab', opacity: dragging ? 0.4 : 1 }}>
+                <div style={{ width: 64, height: 64, borderRadius: 6, border: '1px solid ' + (isMain ? '#cbd5e1' : '#e2e8f0'), overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center' }}>
+                  <img src={url} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                </div>
+                {isMain
+                  ? <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
+                  : <>
+                      <button type="button" title="Make this the main (front) photo" onClick={(e) => { e.stopPropagation(); makeMainPhoto(i); }} style={{ position: 'absolute', bottom: 2, left: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>★ Main</button>
+                      <button type="button" title="Use this as the BACK photo — the storefront draws the number/name & back-logo preview on it" onClick={(e) => { e.stopPropagation(); makeBackPhoto(i); }} style={{ position: 'absolute', bottom: 2, right: 2, background: 'rgba(15,26,56,0.82)', color: '#fff', border: 'none', borderRadius: 4, fontSize: 8, fontWeight: 800, letterSpacing: 0.3, cursor: 'pointer', padding: '2px 5px' }}>⤒ Back</button>
+                    </>}
+                <button type="button" title="Remove this photo" onClick={(e) => { e.stopPropagation(); deletePhoto(i); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
               </div>
-              <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>MAIN</span>
-              {image && <button type="button" title="Remove custom photo (revert to stock)" onClick={(e) => { e.stopPropagation(); setImage(null); }} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
-            </div>
-            {/* Back photo */}
+            ); })}
+            {/* Back photo — kept separate: it's the canvas the storefront uses for the number,
+                name & back-logo preview, so it isn't part of the reorderable front gallery. */}
             {(backImage || stockBackImg) && (
-              <div style={{ position: 'relative' }} title="Back photo">
+              <div style={{ position: 'relative' }} title="Back photo — used for the number, name & back-logo preview">
                 <img src={backImage || stockBackImg} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
                 <span style={{ position: 'absolute', bottom: 0, left: 0, right: 0, fontSize: 8, fontWeight: 800, letterSpacing: 0.4, textAlign: 'center', background: 'rgba(15,26,56,0.78)', color: '#fff', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, padding: '1px 0' }}>BACK</span>
                 {backImage && <button type="button" title="Remove custom back photo" onClick={() => setBackImage(null)} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>}
               </div>
             )}
-            {extraImages.map((url, i) => (
-              <div key={i} style={{ position: 'relative' }}>
-                <img src={url} alt="" style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6, border: '1px solid #e2e8f0' }} />
-                <button type="button" onClick={() => setExtraImages((p) => p.filter((_, j) => j !== i))} style={{ position: 'absolute', top: -6, right: -6, background: '#b91c1c', color: '#fff', border: 'none', borderRadius: '50%', width: 18, height: 18, fontSize: 12, lineHeight: '18px', cursor: 'pointer', padding: 0, textAlign: 'center' }}>×</button>
-              </div>
-            ))}
             <input ref={imgRef} type="file" accept="image/*" multiple style={{ display: 'none' }} onChange={(e) => { [...(e.target.files || [])].forEach(addExtraFile); e.target.value = ''; }} />
             <button type="button" className="btn btn-sm btn-secondary" disabled={imgBusy} onClick={() => imgRef.current?.click()}>{imgBusy ? 'Uploading…' : '+ Add images'}</button>
           </div>
-          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Click MAIN to change the front photo · drag any image here to add an extra angle</div>
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>The leftmost photo is the main — drag to reorder, ★ to make a photo main, ⤒ Back to use one as the back photo, × to remove one. Drop image files here to add extra angles.</div>
         </ItemSection>
         </div>
       </div>
@@ -6055,17 +7288,101 @@ function TemplateEditor({ template, onClose, onSaved }) {
 // ALL-CAPS color code (optionally slash-joined, e.g. ROYBLU/WHITE) so the colorways of a
 // style collapse into one card. Mixed-case names (most of the catalog) keep their color in
 // the color field and are left untouched.
+// The ONE webstore_products row → color-picker template item mapping, shared by
+// Start-Store-from-template and the Add-template gallery so the shape can't drift.
+const wpRowToTplItem = (r) => ({ sku: r.sku, price: r.retail_price, fundraise: r.fundraise_amount || 0, category: r.category || null, kit: r.kit_name || null, required: !!r.required });
+
 const styleKey = (name) => {
   const n = String(name || '').trim();
   const base = n.replace(/\s+[A-Z]{4,}(?:\/[A-Z0-9]{2,})*$/, '').trim();
   return base || n;
 };
 
-function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose }) {
+// ── Shared style-rows machinery (TemplateColorPicker + SkuImporter) ──
+// Group matched products into one row per garment STYLE and pull sibling colorways so
+// the rep can bring in more colors. matched = [{ product, meta }] where meta rides from
+// the source (template item / spreadsheet row): { price, fundraise, category, kit, required }.
+// styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
+// ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
+async function buildStyleRows(matched) {
+  const styleMap = new Map();
+  const savedByKey = new Map();
+  (matched || []).forEach(({ product: p, meta }) => { if (!p) return;
+    const key = styleKey(p.name);
+    if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: meta?.price, fundraise: meta?.fundraise || 0, category: meta?.category || null, kit: meta?.kit || null, required: !!meta?.required }, defaults: new Set() }); savedByKey.set(key, []); }
+    styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
+    savedByKey.get(key).push(p); });
+  const keys = [...styleMap.keys()];
+  // Pull every sibling sharing a style's base name (prefix), then keep only those whose
+  // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
+  const byKey = new Map();
+  await Promise.all(keys.map(async (key) => {
+    const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
+    const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
+    const sibs = (data || []).filter((p) => styleKey(p.name) === key);
+    const seen = new Set(); const list = [];
+    [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
+    byKey.set(key, list);
+  }));
+  return keys.map((key) => {
+    const s = styleMap.get(key);
+    // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
+    const colMap = new Map();
+    (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
+    const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
+    const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
+    return { name: s.name, image: s.image, meta: s.meta, colors, picked, defaults: new Set(picked) };
+  });
+}
+// Row aggregates — whether a style is coming in at all, and the addable-picked total.
+const rowItemIn = (r, existingPids) => [...r.picked].some((id) => !existingPids.has(id));
+const rowItemAvail = (r, existingPids) => r.colors.some((c) => !existingPids.has(c.id));
+const rowsTotalPicked = (rows, existingPids) => rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+// Build the apply plan applyTemplateColors expects (colors already in store are re-filtered there).
+const rowsToPlan = (rows, forcedCategory) => rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
+
+// The style-rows list: one block per style with a whole-style checkbox and per-color
+// swatches. renderRowExtra(r, ri, included) slots custom controls (e.g. the importer's
+// price/fundraise inputs) into an included row's header area.
+function StyleColorRows({ rows, setRows, existingPids = new Set(), renderRowExtra }) {
+  const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
+  const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
+  const toggleItem = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() } : r));
+  return (
+    <>
+      {rows.map((r, ri) => { const included = rowItemIn(r, existingPids); const avail = rowItemAvail(r, existingPids); return (
+        <div key={r.name} style={{ border: '1px solid ' + (included ? '#c7d2fe' : '#e8ebf0'), borderRadius: 12, padding: 12, marginBottom: 10, background: included ? '#fff' : '#fafbfc', opacity: avail ? 1 : 0.55 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: included ? 8 : 0, flexWrap: 'wrap' }}>
+            <input type="checkbox" checked={included} disabled={!avail} onChange={(e) => toggleItem(ri, e.target.checked)} title={avail ? 'Bring this item into the store' : 'All colors already in the store'} style={{ width: 17, height: 17, cursor: avail ? 'pointer' : 'not-allowed', flexShrink: 0 }} />
+            {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+            <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{avail ? `${[...r.picked].filter((id) => !existingPids.has(id)).length} of ${r.colors.filter((c) => !existingPids.has(c.id)).length} colors` : 'already in store'}</div></div>
+            {included && renderRowExtra && renderRowExtra(r, ri, included)}
+            {included && <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All colors</button>}
+            {included && <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>}
+          </div>
+          {included && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
+              <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
+                <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
+                <div style={{ fontSize: 9.5, color: on && !inStore ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.color || c.sku}</div>
+                {on && !inStore && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+                {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
+              </button>
+            ); })}
+          </div>}
+        </div>
+      ); })}
+    </>
+  );
+}
+
+function TemplateColorPicker({ tpl, existingPids = new Set(), teamHexes = [], onConfirm, onClose }) {
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const forcedCategory = (tpl && tpl.kind === 'section') ? (tpl.section || tpl.name || null) : null;
+  // Stable dep for the destination store's colors (inline arrays change identity per render).
+  const teamKey = (teamHexes || []).filter(Boolean).join(',');
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -6076,80 +7393,51 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
       const found = [];
       for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
       const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
-      // Group template items by STYLE so every color of a garment folds into one card.
-      // styleKey() strips any color baked into the name, so adidas-style "M FLEECE HOOD
-      // ROYBLU/WHITE" siblings group instead of each showing as its own "1 of 1 colors".
-      const styleMap = new Map();
-      const savedByKey = new Map();
-      items.forEach((it) => { const p = bySku.get(String(it.sku || '').trim().toUpperCase()); if (!p) return;
-        const key = styleKey(p.name);
-        if (!styleMap.has(key)) { styleMap.set(key, { name: key, image: p.image_front_url, meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required }, defaults: new Set() }); savedByKey.set(key, []); }
-        styleMap.get(key).defaults.add(String(p.sku || '').trim().toUpperCase());
-        savedByKey.get(key).push(p); });
-      const keys = [...styleMap.keys()];
-      // Pull every sibling sharing a style's base name (prefix), then keep only those whose
-      // own style key matches — so "M FLEECE HOOD" never sweeps in "M FLEECE HOOD ZIP".
-      const byKey = new Map();
-      await Promise.all(keys.map(async (key) => {
-        const like = key.replace(/[%_\\]/g, (m) => '\\' + m) + '%';
-        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').ilike('name', like).limit(1000);
-        const sibs = (data || []).filter((p) => styleKey(p.name) === key);
-        const seen = new Set(); const list = [];
-        [...(savedByKey.get(key) || []), ...sibs].forEach((p) => { if (!seen.has(p.id)) { seen.add(p.id); list.push(p); } });
-        byKey.set(key, list);
-      }));
-      const built = keys.map((key) => {
-        const s = styleMap.get(key);
-        // Dedupe colors (blank color → key by SKU so caps/jerseys don't collapse).
-        const colMap = new Map();
-        (byKey.get(key) || []).forEach((p) => { const ck = (p.color || '').trim().toLowerCase() || ('sku:' + String(p.sku || '').toLowerCase()); if (!colMap.has(ck) || (!colMap.get(ck).image_front_url && p.image_front_url)) colMap.set(ck, p); });
-        const colors = [...colMap.values()].sort((a, b) => (a.color || a.sku || '').localeCompare(b.color || b.sku || ''));
-        const picked = new Set(colors.filter((c) => s.defaults.has(String(c.sku || '').trim().toUpperCase())).map((c) => c.id));
-        return { name: s.name, image: s.image, meta: s.meta, colors, picked };
-      });
+      const matched = items.map((it) => ({ product: bySku.get(String(it.sku || '').trim().toUpperCase()), meta: { price: it.price, fundraise: it.fundraise || 0, category: it.category || null, kit: it.kit || null, required: !!it.required } })).filter((m) => m.product);
+      let built = await buildStyleRows(matched);
+      // Default each style's picked colors to the DESTINATION store's palette (same
+      // color-word matching as the product picker's school-colors filter). The colors
+      // saved in the template only remain the default when no colorway matches the
+      // store's colors. The rep still adjusts everything before adding.
+      const words = storeColorWords(teamKey.split(',').filter(Boolean).map((hex) => ({ hex })));
+      if (words.length) {
+        built = built.map((r) => {
+          const team = r.colors.filter((c) => productMatchesColors(c.color, words)).map((c) => c.id);
+          return team.length ? { ...r, picked: new Set(team), defaults: new Set(team) } : r;
+        });
+      }
       if (!cancelled) { setRows(built); setLoading(false); }
     })();
     return () => { cancelled = true; };
-  }, [tpl]);
-  const toggle = (ri, id) => setRows((rs) => rs.map((r, i) => { if (i !== ri) return r; const p = new Set(r.picked); p.has(id) ? p.delete(id) : p.add(id); return { ...r, picked: p }; }));
-  const setAll = (ri, on) => setRows((rs) => rs.map((r, i) => i === ri ? { ...r, picked: on ? new Set(r.colors.filter((c) => !existingPids.has(c.id)).map((c) => c.id)) : new Set() } : r));
-  const totalPicked = rows.reduce((a, r) => a + [...r.picked].filter((id) => !existingPids.has(id)).length, 0);
+  }, [tpl, teamKey]);
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
+  const itemsAvailable = rows.filter((r) => rowItemAvail(r, existingPids)).length;
+  const itemsIncluded = rows.filter((r) => rowItemIn(r, existingPids)).length;
+  const totalPicked = rowsTotalPicked(rows, existingPids);
   const confirm = async () => {
     setBusy(true);
-    const plan = rows.map((r) => ({ products: r.colors.filter((c) => r.picked.has(c.id)), price: r.meta.price, fundraise: r.meta.fundraise, category: forcedCategory || r.meta.category, kit_name: r.meta.kit, required: r.meta.required })).filter((g) => g.products.length);
-    await onConfirm(plan);
+    await onConfirm(rowsToPlan(rows, forcedCategory));
     setBusy(false);
   };
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Pick colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Choose the colors of each item to add. No decoration carries over.</div></div>
+          <div><div style={{ fontWeight: 800, fontSize: 16 }}>Choose items &amp; colors — {tpl?.name}</div><div style={{ fontSize: 11.5, color: '#64748b' }}>Check the items to bring in, then pick each one's colors.{teamKey ? " Colors matching this store's palette come pre-selected." : ''} No decoration carries over.</div></div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
         </div>
-        <div style={{ padding: 16, maxHeight: '64vh', overflowY: 'auto' }}>
+        {!loading && rows.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>Bringing in {itemsIncluded} of {itemsAvailable} item{itemsAvailable === 1 ? '' : 's'}</span>
+            <span style={{ marginLeft: 'auto' }} />
+            <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </div>
+        )}
+        <div style={{ padding: 16, maxHeight: '60vh', overflowY: 'auto' }}>
           {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading colors…</div>
             : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>None of this template's items resolve to live products.</div>
-            : rows.map((r, ri) => (
-              <div key={r.name} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                  {r.image ? <img src={r.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
-                  <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{r.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{[...r.picked].filter((id) => !existingPids.has(id)).length} of {r.colors.length} colors</div></div>
-                  <button type="button" onClick={() => setAll(ri, true)} style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>All</button>
-                  <button type="button" onClick={() => setAll(ri, false)} style={{ fontSize: 11, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>None</button>
-                </div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {r.colors.map((c) => { const inStore = existingPids.has(c.id); const on = r.picked.has(c.id); return (
-                    <button key={c.id} type="button" disabled={inStore} onClick={() => toggle(ri, c.id)} title={inStore ? (c.color || c.sku) + ' — already in store' : (c.color || c.sku)} style={{ position: 'relative', width: 80, border: '2px solid ' + (inStore ? '#e2e8f0' : on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: inStore ? 'not-allowed' : 'pointer', opacity: inStore ? 0.45 : 1 }}>
-                      <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image_front_url ? <img src={c.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.color || c.sku || '').slice(0, 12)}</span>}</div>
-                      <div style={{ fontSize: 9.5, color: on && !inStore ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.color || c.sku}</div>
-                      {on && !inStore && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
-                      {inStore && <div style={{ position: 'absolute', top: 2, right: 2, background: '#64748b', color: '#fff', borderRadius: 5, fontSize: 8, fontWeight: 700, padding: '1px 4px' }}>IN</div>}
-                    </button>
-                  ); })}
-                </div>
-              </div>
-            ))}
+            : <StyleColorRows rows={rows} setRows={setRows} existingPids={existingPids} />}
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
           <button className="btn btn-primary" disabled={busy || !totalPicked} onClick={confirm}>{busy ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'}`}</button>
@@ -6161,7 +7449,7 @@ function TemplateColorPicker({ tpl, existingPids = new Set(), onConfirm, onClose
   );
 }
 
-function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), onApply, onApplyColors, onClose }) {
+function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(), teamHexes = [], onApply, onApplyColors, onClose }) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [myEmail, setMyEmail] = useState('');
@@ -6171,14 +7459,34 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const [view, setView] = useState('gallery');     // 'gallery' | 'ai' | 'form' | 'edit'
   const [editingTpl, setEditingTpl] = useState(null);
   const [pendingItems, setPendingItems] = useState([]); // items captured for a new template
-  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' });
+  const [meta, setMeta] = useState({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' });
   const [saving, setSaving] = useState(false);
   const isCurator = FAV_CURATORS.includes((myEmail || '').toLowerCase());
 
   const load = useCallback(async () => {
     setLoading(true);
-    const { data } = await supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name');
-    setTemplates(data || []); setLoading(false);
+    const [{ data }, { data: tplStores }] = await Promise.all([
+      supabase.from('store_templates').select('*').order('sport', { nullsFirst: false }).order('name'),
+      supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+    ]);
+    // Store templates (Templates tab / "Save as template") join the gallery too: each
+    // becomes a pseudo item-template — its active, SKU'd single items as wpRowToTplItem
+    // entries — so the same "Add to store" color-picker flow applies them. Packages and
+    // custom/no-SKU items don't carry here; archived rows are excluded so a discontinued
+    // item can't be revived (the picker inserts everything as live).
+    let storeTpls = [];
+    const ids = (tplStores || []).map((s) => s.id);
+    if (ids.length) {
+      const { data: rows } = await supabase.from('webstore_products').select('store_id,kind,sku,retail_price,fundraise_amount,category,kit_name,required,active').in('store_id', ids).order('sort_order');
+      const byStore = new Map();
+      (rows || []).forEach((r) => {
+        if (r.kind !== 'single' || !r.sku || r.active === false) return;
+        if (!byStore.has(r.store_id)) byStore.set(r.store_id, []);
+        byStore.get(r.store_id).push(wpRowToTplItem(r));
+      });
+      storeTpls = (tplStores || []).map((s) => ({ id: 'ws:' + s.id, name: s.name, sport: null, brand_focus: null, gender: null, items: byStore.get(s.id) || [], _storeTpl: true })).filter((t) => t.items.length);
+    }
+    setTemplates([...storeTpls, ...(data || [])]); setLoading(false);
   }, []);
   useEffect(() => { (async () => { try { const { data } = await supabase.auth.getUser(); setMyEmail(data?.user?.email || ''); } catch (e) { /* */ } })(); load(); }, [load]);
 
@@ -6187,29 +7495,23 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
   const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
 
   const captureItems = () => (catalog || []).filter((c) => c.kind === 'single' && c.sku).map((c) => ({ sku: c.sku, category: c.category || (stockByWp[c.id]?.category) || null, price: c.retail_price, fundraise: c.fundraise_amount || 0, kit: c.kit_name || null, required: !!c.required }));
-  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'store', sourceCat: '', section: '' })); setView('form'); };
-  // Save just one section/category of the current store as a bolt-on section template.
-  const startSection = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '', kind: 'section', sourceCat: '', section: '' })); setView('form'); };
+  const startFromStore = () => { setPendingItems(captureItems()); setMeta((m) => ({ ...m, name: '' })); setView('form'); };
   const del = async (id) => { await supabase.from('store_templates').delete().eq('id', id); load(); };
-  // Section templates can be limited to one captured category; full-store templates keep all.
-  const pendingCats = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
-  const sectionItems = (meta.kind === 'section' && meta.sourceCat) ? pendingItems.filter((i) => (i.category || '').trim() === meta.sourceCat) : pendingItems;
+  // Sections the captured items already carry (a template can span one or many).
+  const pendingSections = [...new Set(pendingItems.map((i) => (i.category || '').trim()).filter(Boolean))].sort();
   const saveTemplate = async () => {
-    const isSection = meta.kind === 'section';
-    const secName = isSection ? (meta.section || meta.sourceCat || '').trim() : null;
-    const itemsToSave = sectionItems;
-    if (!meta.name.trim() || !itemsToSave.length || (isSection && !secName)) return;
+    if (!meta.name.trim() || !pendingItems.length) return;
     setSaving(true);
-    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: itemsToSave, kind: isSection ? 'section' : 'store', section: secName, created_by: myEmail || null });
+    const { error } = await supabase.from('store_templates').insert({ name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null, gender: meta.gender || null, note: meta.note || null, items: pendingItems, kind: 'store', section: null, created_by: myEmail || null });
     setSaving(false);
-    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '', kind: 'store', sourceCat: '', section: '' }); load(); }
+    if (!error) { setView('gallery'); setPendingItems([]); setMeta({ name: '', sport: '', brand_focus: 'Mixed', gender: 'Unisex', note: '' }); load(); }
   };
 
   const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
 
   return (
     <>
-    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
+    {picking && <TemplateColorPicker tpl={picking} existingPids={existingPids} teamHexes={teamHexes} onConfirm={async (plan) => { await onApplyColors(plan); setPicking(null); }} onClose={() => setPicking(null)} />}
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: view === 'ai' ? 900 : 820, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
@@ -6228,29 +7530,15 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
 
           {view === 'form' && (
             <div>
-              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{sectionItems.length} item{sectionItems.length === 1 ? '' : 's'} captured. Name it so reps can find it.</div>
-              <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-                {[['store', 'Full store', 'Bolt every item onto a store'], ['section', 'Section', 'A bolt-on section, e.g. Football Cleats']].map(([k, lbl, sub]) => { const on = meta.kind === k; return (
-                  <button key={k} type="button" onClick={() => setMeta((m) => ({ ...m, kind: k }))} style={{ flex: 1, textAlign: 'left', border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: on ? '#f8fafc' : '#fff', borderRadius: 10, padding: '8px 12px', cursor: 'pointer' }}>
-                    <div style={{ fontSize: 13, fontWeight: 800, color: '#191919' }}>{lbl}</div>
-                    <div style={{ fontSize: 10.5, color: '#64748b' }}>{sub}</div>
-                  </button>
-                ); })}
-              </div>
-              {meta.kind === 'section' && (
-                <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 12, padding: 10, background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 10 }}>
-                  <Row label="Limit to section (optional)"><select className="form-input" value={meta.sourceCat} onChange={(e) => setMeta((m) => ({ ...m, sourceCat: e.target.value, section: m.section || e.target.value }))}><option value="">All captured items</option>{pendingCats.map((c) => <option key={c} value={c}>{c}</option>)}</select></Row>
-                  <Row label="Section name (lands here)"><input className="form-input" value={meta.section} onChange={(e) => setMeta({ ...meta, section: e.target.value })} placeholder="e.g. Football Cleats" /></Row>
-                </div>
-              )}
+              <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>{pendingItems.length} item{pendingItems.length === 1 ? '' : 's'} captured{pendingSections.length ? ` across ${pendingSections.length} section${pendingSections.length === 1 ? '' : 's'}` : ''}. Name it so reps can find it.</div>
               <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder={meta.kind === 'section' ? 'e.g. Adidas Football Cleats' : 'e.g. Varsity Baseball — Adidas'} /></Row>
+                <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
                 <Row label="Sport"><input className="form-input" list="tpl-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tpl-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
                 <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
                 <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
               </div>
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!meta.name.trim() || !sectionItems.length || (meta.kind === 'section' && !(meta.section || meta.sourceCat).trim()) || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
+                <button className="btn btn-primary" disabled={!meta.name.trim() || !pendingItems.length || saving} onClick={saveTemplate}>{saving ? 'Saving…' : 'Save template'}</button>
                 <button className="btn btn-secondary" onClick={() => setView('gallery')}>Cancel</button>
               </div>
             </div>
@@ -6261,8 +7549,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
               {isCurator && (
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: '#7c3aed', alignSelf: 'center' }}>Curator:</span>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save full store as template</button>
-                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startSection}>＋ Save a section as template</button>
+                  <button className="btn btn-sm btn-secondary" disabled={!(catalog || []).some((c) => c.kind === 'single')} onClick={startFromStore}>＋ Save this store as a template</button>
                   <button className="btn btn-sm btn-secondary" onClick={() => setView('ai')}>✨ Draft with AI</button>
                 </div>
               )}
@@ -6285,16 +7572,16 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                          {t.kind === 'section' ? chip('Section', '#ecfdf5', '#047857') : chip('Full store', '#eff6ff', '#1d4ed8')}
+                          {t._storeTpl && chip('Store template', '#fefce8', '#a16207')}
                           {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{t.kind === 'section' && t.section ? ` · → ${t.section}` : ''}</div>
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
                         <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>{t.kind === 'section' ? 'Add section →' : 'Add to store →'}</button>
-                          {isCurator && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
-                          {isCurator && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
+                          {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
+                          {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
                         </div>
                       </div>
                     ))}
@@ -6307,6 +7594,467 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
       </div>
     </div>
     </>
+  );
+}
+
+// Who "owns" a store template — a rep (matched by created_by email) or the shared
+// "General" pool (curators/admins/legacy). Drives the Templates-page owner filter.
+function templateOwner(tpl, REPS = []) {
+  const email = String(tpl?.created_by || '').trim().toLowerCase();
+  if (email) {
+    const rep = (REPS || []).find((r) => r.role === 'rep' && String(r.email || '').trim().toLowerCase() === email);
+    if (rep) return { scope: 'rep', id: rep.id, name: rep.name };
+  }
+  return { scope: 'general', id: 'general', name: 'General' };
+}
+
+// Build a store template from scratch — search the master catalog, add items with a
+// price / section / kit, then name & save it to `store_templates`. Saved templates show
+// up in every store's "Add template" button, so any of them can be bolted onto an
+// existing store. Also used to edit an existing template (pass `template`).
+function TemplateBuilder({ template = null, myEmail = '', onClose, onSaved }) {
+  const editing = !!template;
+  const [items, setItems] = useState(() => (editing && Array.isArray(template.items) ? template.items : []).map((it) => ({
+    sku: it.sku, name: it.name || it.sku, image: it.image || null,
+    category: it.category || null, price: it.price != null ? it.price : null,
+    fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required,
+  })));
+  const [meta, setMeta] = useState({
+    name: template?.name || '', sport: template?.sport || '', brand_focus: template?.brand_focus || 'Mixed',
+    gender: template?.gender || 'Unisex', note: template?.note || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  // Fold newly-picked products into the item list, de-duped by SKU (re-adding a SKU
+  // just refreshes its setup). Decorations don't carry into templates, so they're ignored.
+  const addProducts = useCallback((products, _decos, setup = {}) => {
+    setItems((prev) => {
+      const bySku = new Map(prev.map((it) => [String(it.sku || '').trim().toUpperCase(), it]));
+      (products || []).forEach((p) => {
+        const key = String(p.sku || '').trim().toUpperCase();
+        if (!key) return;
+        bySku.set(key, {
+          sku: p.sku, name: p.name || p.sku, image: p.image_front_url || null,
+          category: (setup.category || '').trim() || null,
+          price: (setup.price !== '' && setup.price != null) ? Number(setup.price) : (p.retail_price != null ? p.retail_price : null),
+          fundraise: Number(setup.fundraise) || 0,
+          kit: (setup.kit_name || '').trim() || null,
+          required: !!setup.required,
+        });
+      });
+      return [...bySku.values()];
+    });
+  }, []);
+  const patchItem = (sku, patch) => setItems((prev) => prev.map((it) => it.sku === sku ? { ...it, ...patch } : it));
+  const removeItem = (sku) => setItems((prev) => prev.filter((it) => it.sku !== sku));
+
+  // Editing an existing template: its saved items are SKU-only, so resolve product
+  // names / images once on open so the list shows real garments, not bare SKUs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const need = items.filter((it) => !it.image && it.sku);
+      if (!need.length) return;
+      const skus = [...new Set(need.map((it) => it.sku))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('sku,name,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      if (cancelled) return;
+      setItems((prev) => prev.map((it) => { if (it.image) return it; const p = bySku.get(String(it.sku || '').trim().toUpperCase()); return p ? { ...it, name: p.name || it.name, image: p.image_front_url || null } : it; }));
+    })();
+    return () => { cancelled = true; };
+  }, []); // once on mount
+
+  const sections = [...new Set(items.map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canSave = meta.name.trim() && items.length;
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+    const payload = {
+      name: meta.name.trim(), sport: meta.sport || null, brand_focus: meta.brand_focus || null,
+      gender: meta.gender || null, note: meta.note || null, kind: 'store', section: null,
+      items: items.map((it) => ({ sku: it.sku, category: it.category || null, price: it.price, fundraise: it.fundraise || 0, kit: it.kit || null, required: !!it.required })),
+    };
+    let error;
+    if (editing) {
+      ({ error } = await supabase.from('store_templates').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', template.id));
+    } else {
+      ({ error } = await supabase.from('store_templates').insert({ ...payload, created_by: myEmail || null }));
+    }
+    setSaving(false);
+    if (error) { alert('Could not save template: ' + error.message); return; }
+    onSaved && onSaved();
+  };
+
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '32px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#f7f8fa', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 1040, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3', background: '#fff', borderRadius: '14px 14px 0 0' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{editing ? 'Edit template' : 'Create a template'}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          {/* Lead: name the template, then jump straight into the catalog finder */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <Row label="Template name"><input className="form-input" autoFocus value={meta.name} onChange={(e) => setMeta({ ...meta, name: e.target.value })} placeholder="e.g. Varsity Baseball — Adidas" /></Row>
+            <div style={{ fontSize: 12.5, color: '#6A7180', marginTop: 2 }}>Search the catalog below and add the items this template should include. Give each item a <b>section</b> — a template can have one section or many. Sport / brand / gender are at the bottom.</div>
+          </div>
+
+          {/* Captured items */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 10 }}>
+              <div style={{ fontWeight: 800, fontSize: 14 }}>Items in this template <span style={{ color: '#94a3b8', fontWeight: 600 }}>({items.length})</span></div>
+              {items.length > 0 && <button type="button" onClick={() => setItems([])} style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 12, fontWeight: 700, cursor: 'pointer' }}>Clear all</button>}
+            </div>
+            {items.length === 0 ? (
+              <div style={{ color: '#9AA1AC', fontSize: 13, padding: '14px 4px' }}>No items yet — search the catalog below and add products to build the template.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {items.map((it) => (
+                  <div key={it.sku} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px' }}>
+                    <div style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{it.image ? <img src={it.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(it.sku || '').slice(0, 8)}</span>}</div>
+                    <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}</div>
+                      <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{it.sku}</div>
+                    </div>
+                    <input className="form-input" value={it.category || ''} onChange={(e) => patchItem(it.sku, { category: e.target.value })} placeholder="Section" style={{ width: 130, fontSize: 12.5, padding: '5px 8px' }} />
+                    <label style={{ fontSize: 12, color: '#64748b', display: 'flex', alignItems: 'center', gap: 4 }}>$<input className="form-input" type="number" step="0.01" value={it.price ?? ''} onChange={(e) => patchItem(it.sku, { price: e.target.value === '' ? null : Number(e.target.value) })} placeholder="list" style={{ width: 78, fontSize: 12.5, padding: '5px 8px' }} /></label>
+                    <label style={{ fontSize: 11.5, color: '#475569', display: 'flex', alignItems: 'center', gap: 4, cursor: 'pointer', whiteSpace: 'nowrap' }}><input type="checkbox" checked={!!it.required} onChange={(e) => patchItem(it.sku, { required: e.target.checked })} />Req</label>
+                    <button type="button" onClick={() => removeItem(it.sku)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', fontSize: 16, cursor: 'pointer', lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Catalog search / picker — the main way to add items */}
+          <ProductPicker label="Add items to the template" onPickMany={addProducts} destLabel="template" initialInStock={false} standardCategories={[...new Set(items.map((it) => it.category).filter(Boolean))]} />
+
+          {/* Who it's for */}
+          <div style={{ background: '#fff', border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, margin: '14px 0' }}>
+            <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>Details</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 10 }}>{sections.length ? `${sections.length} section${sections.length === 1 ? '' : 's'}: ${sections.join(', ')}` : 'Tip: give items a section so they group when added to a store.'}</div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <Row label="Sport"><input className="form-input" list="tplb-sports" value={meta.sport} onChange={(e) => setMeta({ ...meta, sport: e.target.value })} placeholder="Baseball" /><datalist id="tplb-sports">{TEMPLATE_SPORTS.map((s) => <option key={s} value={s} />)}</datalist></Row>
+              <Row label="Brand focus"><select className="form-input" value={meta.brand_focus} onChange={(e) => setMeta({ ...meta, brand_focus: e.target.value })}>{['Mixed', 'Adidas', 'Non-branded'].map((b) => <option key={b} value={b}>{b}</option>)}</select></Row>
+              <Row label="Gender"><select className="form-input" value={meta.gender} onChange={(e) => setMeta({ ...meta, gender: e.target.value })}>{['Unisex', "Men's", "Women's", 'Youth'].map((g) => <option key={g} value={g}>{g}</option>)}</select></Row>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 4, position: 'sticky', bottom: 0, background: '#f7f8fa', padding: '12px 0 4px' }}>
+            <button className="btn btn-primary" disabled={!canSave || saving} onClick={save}>{saving ? 'Saving…' : editing ? 'Save changes' : 'Save template'}</button>
+            <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
+            {!canSave && <span style={{ fontSize: 12, color: '#94a3b8', alignSelf: 'center' }}>{!meta.name.trim() ? 'Name the template' : 'Add at least one item'}</span>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Read-only detail view for one template — resolves its saved SKUs to live products so you
+// can see every item (image, name, section, price, fundraising, mandatory) in one place.
+function TemplateDetail({ template, owner, canEdit, onClose, onEdit, onDelete, onStartStore, onAddToStore }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const sections = [...new Set((Array.isArray(template?.items) ? template.items : []).map((it) => (it.category || '').trim()).filter(Boolean))];
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const items = Array.isArray(template?.items) ? template.items : [];
+      const skus = [...new Set(items.map((i) => i.sku).filter(Boolean))];
+      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
+      const found = [];
+      for (let i = 0; i < variants.length; i += 150) { const { data } = await supabase.from('products').select('id,sku,name,brand,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150)); if (data) found.push(...data); }
+      const bySku = new Map(); found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!bySku.has(k)) bySku.set(k, p); });
+      const built = items.map((it) => ({ ...it, product: bySku.get(String(it.sku || '').trim().toUpperCase()) || null }));
+      if (!cancelled) { setRows(built); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [template]);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+  const missing = rows.filter((r) => !r.product).length;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1050, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 720, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>{template.name}</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginTop: 6 }}>
+              {owner && (owner.scope === 'rep' ? chip(owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9'))}
+              {template.sport && chip(template.sport, '#eff6ff', '#1d4ed8')}
+              {template.brand_focus && chip(template.brand_focus)}
+              {template.gender && chip(template.gender)}
+              {sections.map((s) => chip('§ ' + s, '#ecfdf5', '#047857'))}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '12px 16px', maxHeight: '62vh', overflowY: 'auto' }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 10 }}>{rows.length} item{rows.length === 1 ? '' : 's'} in this template.{missing > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> {missing} no longer in the catalog.</span>}</div>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading items…</div>
+            : rows.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>This template has no items.</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {rows.map((r, i) => {
+                  const price = (r.price != null && r.price !== '') ? r.price : (r.product ? r.product.retail_price : null);
+                  return (
+                    <div key={(r.sku || '') + i} style={{ display: 'flex', gap: 10, alignItems: 'center', border: '1px solid #eef1f5', borderRadius: 10, padding: '7px 10px', opacity: r.product ? 1 : 0.6 }}>
+                      <div style={{ width: 44, height: 44, flexShrink: 0, borderRadius: 6, border: '1px solid #eef2f7', background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>{r.product?.image_front_url ? <img src={r.product.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700 }}>{(r.sku || '').slice(0, 8)}</span>}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.product?.name || r.sku}{!r.product && <span style={{ color: '#b45309', fontWeight: 700, fontSize: 11 }}> · not found</span>}</div>
+                        <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{r.sku}{r.product?.brand ? ` · ${r.product.brand}` : ''}</div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        {r.category && chip(r.category)}
+                        {r.kit && chip('Kit: ' + r.kit, '#eff6ff', '#1d4ed8')}
+                        {r.required && chip('Mandatory', '#fef2f2', '#b91c1c')}
+                        {Number(r.fundraise) > 0 && chip('+' + money(r.fundraise) + ' fund', '#ecfdf5', '#047857')}
+                        <span style={{ fontSize: 13, fontWeight: 800, color: '#191919', minWidth: 54, textAlign: 'right' }}>{price != null ? money(price) : '—'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          {onAddToStore && <button className="btn btn-primary" onClick={() => onAddToStore(template)}>Add to a store →</button>}
+          {onStartStore && <button className="btn btn-secondary" onClick={() => onStartStore(template)}>Start a store</button>}
+          <span style={{ flex: '1 1 8px' }} />
+          {canEdit && <button className="btn btn-secondary" onClick={onEdit}>Edit</button>}
+          {canEdit && <button className="btn btn-secondary" onClick={onDelete} style={{ color: '#b91c1c' }}>Delete</button>}
+          <button className="btn btn-secondary" onClick={onClose}>Close</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Templates page manager — lists the saved `store_templates` (the item sets that get bolted
+// onto stores via "Add template"), lets a curator create/edit/delete them, and filters by
+// owner: the shared "General" pool vs each rep's own templates.
+function TemplateManager({ REPS = [], cu, onStartStore, onAddToStore }) {
+  const [templates, setTemplates] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [ownerFilter, setOwnerFilter] = useState('all'); // 'all' | 'general' | rep id
+  const [builder, setBuilder] = useState(null);           // null | 'new' | template object (edit)
+  const [viewing, setViewing] = useState(null);           // template being inspected (detail view)
+  // Identity from the logged-in team member (reliable), with the auth email as a fallback.
+  const myEmail = (cu?.email || '').toLowerCase();
+  const isAdmin = cu?.role === 'admin' || FAV_CURATORS.includes(myEmail);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const { data } = await supabase.from('store_templates').select('*').order('name');
+    setTemplates(data || []); setLoading(false);
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const withOwner = templates.map((t) => ({ ...t, _owner: templateOwner(t, REPS) }));
+  // Reps that actually have templates — drives the owner filter chips.
+  const repChips = REPS.filter((r) => r.role === 'rep' && withOwner.some((t) => t._owner.scope === 'rep' && t._owner.id === r.id));
+  const hasGeneral = withOwner.some((t) => t._owner.scope === 'general');
+  const shown = withOwner.filter((t) => ownerFilter === 'all' || (ownerFilter === 'general' ? t._owner.scope === 'general' : t._owner.id === ownerFilter));
+  const del = async (id) => { if (!window.confirm('Delete this template?')) return; await supabase.from('store_templates').delete().eq('id', id); load(); };
+  const itemsOf = (t) => (Array.isArray(t.items) ? t.items : []);
+  const sectionsOf = (t) => [...new Set(itemsOf(t).map((it) => (it.category || '').trim()).filter(Boolean))];
+  const canEdit = (t) => isAdmin || (myEmail && String(t.created_by || '').toLowerCase() === myEmail);
+  const chip = (txt, bg = '#f1f5f9', c = '#475569') => <span style={{ fontSize: 10.5, fontWeight: 800, color: c, background: bg, borderRadius: 5, padding: '2px 7px' }}>{txt}</span>;
+
+  return (
+    <div style={{ marginBottom: 34 }}>
+      {builder && <TemplateBuilder template={builder === 'new' ? null : builder} myEmail={cu?.email || ''} onClose={() => setBuilder(null)} onSaved={() => { setBuilder(null); load(); }} />}
+      {viewing && <TemplateDetail template={viewing} owner={templateOwner(viewing, REPS)} canEdit={canEdit(viewing)} onClose={() => setViewing(null)} onEdit={() => { const t = viewing; setViewing(null); setBuilder(t); }} onDelete={async () => { await del(viewing.id); setViewing(null); }} onStartStore={onStartStore ? (t) => { setViewing(null); onStartStore(t); } : null} onAddToStore={onAddToStore ? (t) => { setViewing(null); onAddToStore(t); } : null} />}
+      <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 17, color: '#192853', letterSpacing: '.5px', marginBottom: 8 }}>Item Templates</div>
+      <div style={{ marginBottom: 16, fontSize: 15, color: '#5A6075', maxWidth: 720, lineHeight: 1.6 }}>Build a reusable set of items from the catalog, then add it to any existing store from that store's catalog → <b>Add template</b>. Prices, colors &amp; art stay editable after.</div>
+
+      {(hasGeneral || repChips.length > 0) && (
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#8A93A8', textTransform: 'uppercase', letterSpacing: '.04em', marginRight: 2 }}>Owner</span>
+          <FilterBtn on={ownerFilter === 'all'} onClick={() => setOwnerFilter('all')}>All</FilterBtn>
+          {hasGeneral && <FilterBtn on={ownerFilter === 'general'} onClick={() => setOwnerFilter('general')}>General</FilterBtn>}
+          {repChips.map((r) => <FilterBtn key={r.id} on={ownerFilter === r.id} onClick={() => setOwnerFilter(r.id)}>{r.name}</FilterBtn>)}
+        </div>
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
+            {/* Build a Template — the primary action: opens the catalog picker */}
+            <button onClick={() => setBuilder('new')} style={{ textAlign: 'center', cursor: 'pointer', background: '#fff', border: '2px dashed #C3CAD8', borderRadius: 12, padding: 20, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 168, gap: 10, color: '#5A6075', fontFamily: 'inherit', transition: 'all .15s' }}>
+              <div style={{ width: 48, height: 48, borderRadius: '50%', background: '#EEF1F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#192853" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14"/></svg>
+              </div>
+              <div style={{ fontFamily: "'Barlow Condensed',sans-serif", textTransform: 'uppercase', fontWeight: 800, fontSize: 18, color: '#192853', letterSpacing: '.5px' }}>Build a Template</div>
+              <div style={{ fontSize: 12.5 }}>Pick items from the catalog</div>
+            </button>
+            {loading ? <div style={{ gridColumn: '1/-1', color: '#9AA1AC', fontSize: 13, padding: 12 }}>Loading templates…</div>
+              : shown.length === 0 ? <div style={{ gridColumn: '1/-1', color: '#8A93A8', fontSize: 13.5, padding: '18px 4px' }}>{templates.length === 0 ? 'No item templates yet — click “Build a Template” to create your first one.' : 'No templates for this owner.'}</div>
+              : shown.map((t) => (
+              <div key={t.id} onClick={() => setViewing(t)} title="View items" style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+                  {t._owner.scope === 'rep' ? chip(t._owner.name, '#fef3c7', '#92400e') : chip('General', '#ede9fe', '#6d28d9')}
+                  {t.sport && chip(t.sport, '#eff6ff', '#1d4ed8')}
+                  {t.brand_focus && chip(t.brand_focus)}
+                </div>
+                <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{sectionsOf(t).length ? ` · ${sectionsOf(t).length} section${sectionsOf(t).length === 1 ? '' : 's'}` : ''}</div>
+                <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6 }}>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {onAddToStore && <button className="btn btn-sm btn-primary" onClick={(e) => { e.stopPropagation(); onAddToStore(t); }} style={{ flex: 1 }}>Add to store</button>}
+                    {onStartStore && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); onStartStore(t); }} style={{ flex: 1 }}>Start store</button>}
+                  </div>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setViewing(t); }} style={{ flex: 1 }}>View items</button>
+                    {canEdit(t) && <button className="btn btn-sm btn-secondary" onClick={(e) => { e.stopPropagation(); setBuilder(t); }}>Edit</button>}
+                    {canEdit(t) && <button title="Delete template" onClick={(e) => { e.stopPropagation(); del(t.id); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                  </div>
+                </div>
+              </div>
+            ))}
+      </div>
+    </div>
+  );
+}
+
+// Pick an existing store to bolt a template onto (used by the Templates-page "Add to a
+// store" action). Lists live (non-template) stores, searchable by store or club name.
+// "Save as template" dialog: name the template and pick which catalog items carry over
+// (all selected by default). Confirming clones the store into a separate is_template store
+// with only the chosen items — the source store is untouched and stays in the store list.
+function SaveAsTemplateModal({ store, onClose, onConfirm }) {
+  const [name, setName] = useState(`${store?.name || ''} Template`);
+  const [items, setItems] = useState([]);
+  const [sel, setSel] = useState(() => new Set());
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const { data: prods } = await supabase.from('webstore_products').select('id,kind,product_id,sku,display_name,retail_price,sort_order,active,variant_group_id').eq('store_id', store.id).order('sort_order');
+      const rows = prods || [];
+      const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
+      const imgByPid = {}; const nameByPid = {};
+      if (pids.length) {
+        const { data: pr } = await supabase.from('products').select('id,name,image_front_url').in('id', pids);
+        (pr || []).forEach((p) => { imgByPid[p.id] = p.image_front_url; nameByPid[p.id] = p.name; });
+      }
+      // One entry per garment STYLE, not per color: colors of the same style (shared
+      // variant_group_id, or same name once any baked-in colorway code is stripped) fold
+      // into one row. Selecting the row carries all of its colors into the template —
+      // they become the picker's default colors when the template is used.
+      const groups = new Map();
+      rows.forEach((r) => {
+        const dispName = r.display_name || nameByPid[r.product_id] || r.sku || '(unnamed item)';
+        const key = r.kind === 'bundle' ? 'b:' + r.id : (r.variant_group_id ? 'g:' + r.variant_group_id : 's:' + styleKey(dispName).toLowerCase());
+        if (!groups.has(key)) groups.set(key, { key, kind: r.kind, name: r.kind === 'bundle' ? dispName : styleKey(dispName), image: null, ids: [], skus: [], prices: [], anyActive: false });
+        const g = groups.get(key);
+        g.ids.push(r.id);
+        if (r.sku) g.skus.push(r.sku);
+        if (r.retail_price != null) g.prices.push(Number(r.retail_price));
+        if (!g.image && r.kind !== 'bundle') g.image = imgByPid[r.product_id] || null;
+        if (r.active !== false) g.anyActive = true;
+      });
+      const built = [...groups.values()];
+      if (!cancelled) { setItems(built); setSel(new Set(built.map((b) => b.key))); setLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [store]);
+  const toggle = (key) => setSel((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; });
+  const setAll = (on) => setSel(on ? new Set(items.map((i) => i.key)) : new Set());
+  const trimmed = name.trim();
+  const canSave = !!trimmed && sel.size > 0 && !busy && !loading;
+  const confirm = async () => { if (!canSave) return; setBusy(true); await onConfirm(trimmed, items.filter((i) => sel.has(i.key)).flatMap((i) => i.ids)); };
+  return (
+    <div onClick={busy ? undefined : onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 620, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', padding: '16px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 16 }}>Save as template</div>
+            <div style={{ fontSize: 11.5, color: '#64748b', marginTop: 2, maxWidth: 470 }}>Copies the selected items into a reusable template — one entry per style, no logos. Whoever uses the template picks each item's colors then. “{store?.name}” stays in your store list.</div>
+          </div>
+          <button onClick={onClose} disabled={busy} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: busy ? 'default' : 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: '16px 18px 10px' }}>
+          <label style={{ display: 'block', fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.5px', color: '#64748b', marginBottom: 6 }}>Template name</label>
+          <input className="form-input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Women's Volleyball Team Store" style={{ width: '100%' }} />
+          <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 5 }}>Shoppers never see this — it labels the template in the Templates tab and the coach store builder.</div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 18px', borderTop: '1px solid #eef0f3', borderBottom: '1px solid #eef0f3', background: '#f8fafc' }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: '#334155' }}>{loading ? 'Loading items…' : `Including ${sel.size} of ${items.length} item${items.length === 1 ? '' : 's'}`}</span>
+          <span style={{ marginLeft: 'auto' }} />
+          {!loading && items.length > 0 && <>
+            <button type="button" onClick={() => setAll(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+            <button type="button" onClick={() => setAll(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
+          </>}
+        </div>
+        <div style={{ padding: 12, maxHeight: '44vh', overflowY: 'auto' }}>
+          {loading ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>Loading items…</div>
+            : items.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 16, textAlign: 'center' }}>This store has no catalog items to template.</div>
+            : items.map((it) => {
+              const on = sel.has(it.key);
+              const lo = it.prices.length ? Math.min(...it.prices) : null;
+              const hi = it.prices.length ? Math.max(...it.prices) : null;
+              const price = lo == null ? '' : (lo === hi ? '$' + lo.toFixed(2) : `$${lo.toFixed(2)}–$${hi.toFixed(2)}`);
+              return (
+                <button key={it.key} type="button" onClick={() => toggle(it.key)} style={{ width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 11, border: `1px solid ${on ? '#c7d7fb' : '#eef1f5'}`, borderRadius: 10, padding: '8px 12px', background: on ? '#f5f8ff' : '#fff', cursor: 'pointer', fontFamily: 'inherit', marginBottom: 6 }}>
+                  <input type="checkbox" readOnly checked={on} style={{ width: 16, height: 16, flexShrink: 0, accentColor: '#1d4ed8' }} />
+                  <div style={{ width: 38, height: 38, borderRadius: 7, background: '#f1f5f9', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+                    {it.image ? <img src={it.image} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 15 }}>{it.kind === 'bundle' ? '📦' : '👕'}</span>}
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.name}{it.kind === 'bundle' ? ' · Package' : ''}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{it.skus[0] ? it.skus[0] + (it.skus.length > 1 ? ` +${it.skus.length - 1}` : '') + ' · ' : ''}{price}{!it.anyActive ? ' · archived' : ''}</div>
+                  </div>
+                  {it.kind !== 'bundle' && it.ids.length > 1 && <span style={{ fontSize: 11, fontWeight: 700, color: '#1d4ed8', background: '#eef4ff', borderRadius: 999, padding: '3px 9px', flexShrink: 0 }}>{it.ids.length} colors</span>}
+                </button>
+              );
+            })}
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', padding: '12px 16px', borderTop: '1px solid #eef0f3' }}>
+          <button className="btn btn-primary" disabled={!canSave} onClick={confirm}>{busy ? 'Saving…' : `Save template${!loading && sel.size ? ` (${sel.size} item${sel.size === 1 ? '' : 's'})` : ''}`}</button>
+          <button className="btn btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          {!loading && !busy && !trimmed && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Name required</span>}
+          {!loading && !busy && trimmed && sel.size === 0 && <span style={{ fontSize: 11.5, color: '#b91c1c', marginLeft: 'auto' }}>Pick at least one item</span>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StorePickerModal({ stores = [], custName = () => '', title = 'Pick a store', onPick, onClose }) {
+  const [q, setQ] = useState('');
+  const ql = q.trim().toLowerCase();
+  const list = stores
+    .filter((s) => !ql || String(s.name || '').toLowerCase().includes(ql) || String(custName(s.customer_id) || '').toLowerCase().includes(ql))
+    .sort((a, b) => String(a.name || '').localeCompare(String(b.name || '')))
+    .slice(0, 300);
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1040, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 560, margin: 'auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+          <div style={{ fontWeight: 800, fontSize: 16 }}>{title}</div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <input className="form-input" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search stores by name or club…" style={{ width: '100%', marginBottom: 12 }} />
+          <div style={{ maxHeight: '52vh', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {list.length === 0 ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 12 }}>No stores match.</div>
+              : list.map((s) => (
+                <button key={s.id} type="button" onClick={() => onPick(s)} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 10, border: '1px solid #eef1f5', borderRadius: 10, padding: '9px 12px', background: '#fff', cursor: 'pointer', fontFamily: 'inherit' }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, fontWeight: 700, color: '#191919', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</div>
+                    <div style={{ fontSize: 11.5, color: '#94a3b8' }}>{custName(s.customer_id)}{s.status ? ` · ${s.status}` : ''}{s.slug ? ` · /shop/${s.slug}` : ''}</div>
+                  </div>
+                  <span style={{ fontSize: 12, fontWeight: 800, color: '#1d4ed8' }}>Add →</span>
+                </button>
+              ))}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -6603,93 +8351,144 @@ function CustomProductCreator({ catSuggestions = [], library = [], onClose, onCr
 // the store. Only a SKU column is required; optional Price, Fundraising, Category, Kit,
 // Mandatory. SKUs are matched to products (case-insensitive) and a preview shows
 // matched / already-in-store / not-found before anything is added.
-function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
+function SkuImporter({ existingPids, storeFund = {}, onApplyColors, onGoToArt, onClose }) {
+  // Spreadsheet → style rows: parse SKUs, group into one row per garment style with
+  // sibling colorways pickable (same grid as the template color picker), price/fundraise
+  // optional (blank = each color's list price / the store's fundraising rule), then the
+  // picked colors fold into multi-color cards via the template-apply path.
   const [rows, setRows] = useState([]);
+  const [issues, setIssues] = useState(null); // { notfound: [skus], dupRows: n, matched: n, viaVendor: n }
   const [fileName, setFileName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [stage, setStage] = useState(''); // sub-status while working (e.g. vendor lookup)
   const [adding, setAdding] = useState(false);
   const [err, setErr] = useState('');
   const [done, setDone] = useState(null);
   const [over, setOver] = useState(false);
+  const [link, setLink] = useState('');
   const fileRef = useRef(null);
+  // Real vendor ids (products.vendor_id FK) so a vendor-API import upserts a valid id.
+  const vendorMapRef = useRef(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); vendorMapRef.current = m; })(); }, []);
 
   const norm = (s) => String(s == null ? '' : s).trim().toLowerCase();
   const pickField = (obj, keys) => { for (const k of Object.keys(obj)) { if (keys.includes(norm(k))) { const v = obj[k]; if (v !== '' && v != null) return v; } } return ''; };
+  const metaOf = (r) => ({ price: r.price, fundraise: r.fundraise, category: r.category || null, kit: r.kit || null, required: r.mandatory });
 
   const downloadTemplate = () => {
-    const csv = 'SKU,Price,Fundraising,Category,Kit,Mandatory\nJX4452,30,,Spirit Wear,,no\nA595,45,5,Coaches,,no\n';
+    const csv = 'SKU,Price,Fundraising,Category,Kit,Mandatory\nJX4452,,,Spirit Wear,,no\nA595,45,5,Coaches,,no\n';
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a'); a.href = url; a.download = 'store-import-template.csv'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
   };
 
+  // Turn parsed spreadsheet rows into the style-row grid: parse SKUs, match the local
+  // catalog, look up any leftovers live in the vendor catalogs (importing what's found),
+  // then group into one row per style with sibling colorways.
+  const processRaw = async (raw) => {
+    const parsed = raw.map((r) => ({
+      sku: String(pickField(r, ['sku', 'style', 'style #', 'item', 'item #', 'item number', 'product', 'product sku', 'number'])).trim(),
+      price: pickField(r, ['price', 'retail', 'retail price', 'x']),
+      fundraise: pickField(r, ['fundraise', 'fundraising', 'fundraiser', 'y']),
+      category: String(pickField(r, ['category', 'section', 'group'])).trim(),
+      kit: String(pickField(r, ['kit', 'package', 'bundle'])).trim(),
+      mandatory: ['yes', 'y', 'true', '1', 'x', 'required'].includes(norm(pickField(r, ['mandatory', 'required']))),
+    })).filter((r) => r.sku);
+    if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setBusy(false); setStage(''); return; }
+    // Dedupe rows repeating the same SKU (first row's price/category wins).
+    const seenSku = new Set(); let dupRows = 0;
+    const uniq = parsed.filter((r) => { const k = r.sku.toUpperCase(); if (seenSku.has(k)) { dupRows += 1; return false; } seenSku.add(k); return true; });
+    const variants = [...new Set(uniq.flatMap((r) => [r.sku, r.sku.toUpperCase(), r.sku.toLowerCase()]))];
+    const cat = [];
+    for (let i = 0; i < variants.length; i += 150) {
+      const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150));
+      if (data) cat.push(...data);
+    }
+    const byKey = new Map();
+    cat.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
+    const matched = [];
+    const notInCatalog = [];
+    uniq.forEach((r) => { const p = byKey.get(r.sku.toUpperCase()); if (p) matched.push({ product: p, meta: metaOf(r) }); else notInCatalog.push(r); });
+
+    // Vendor-API fallback: any SKU not in the catalog gets looked up live (SanMar / S&S /
+    // Richardson / Momentec) and, if found, its colorways are imported so it behaves like
+    // any catalog style. Vendors we don't have API search for just stay "not found".
+    const notfound = [];
+    let viaVendor = 0;
+    const vm = vendorMapRef.current;
+    if (notInCatalog.length && vm) {
+      setStage(`Looking up ${notInCatalog.length} SKU${notInCatalog.length === 1 ? '' : 's'} in vendor catalogs…`);
+      const hits = await Promise.all(notInCatalog.map(async (r) => {
+        try { const { results } = await searchVendorCatalogs(r.sku, { vendorMap: vm }); const st = results.find((s) => String(s.sku).toUpperCase() === r.sku.toUpperCase()) || results[0] || null; return { r, st }; }
+        catch (_) { return { r, st: null }; }
+      }));
+      const upsertById = new Map(); // dedupe imported color rows across all found styles
+      const reps = []; // { r, id } — the representative color for each resolved style
+      hits.forEach(({ r, st }) => {
+        const prodRows = st ? (st.colors || []).map((c) => vendorColorToProductRow(st, c)).filter((p) => p && p.id) : [];
+        if (!prodRows.length) { notfound.push(r.sku); return; }
+        prodRows.forEach((p) => { if (!upsertById.has(p.id)) upsertById.set(p.id, p); });
+        reps.push({ r, id: prodRows[0].id }); viaVendor += 1;
+      });
+      if (upsertById.size) {
+        const { data, error } = await supabase.from('products').upsert([...upsertById.values()], { onConflict: 'id' }).select('id,sku,name,color,retail_price,image_front_url');
+        if (error) { reps.forEach(({ r }) => notfound.push(r.sku)); viaVendor = 0; }
+        else { const ins = new Map((data || []).map((p) => [p.id, p])); reps.forEach(({ r, id }) => { const p = ins.get(id) || upsertById.get(id); if (p) matched.push({ product: p, meta: metaOf(r) }); }); }
+      }
+      setStage('');
+    } else if (notInCatalog.length) {
+      notInCatalog.forEach((r) => notfound.push(r.sku));
+    }
+
+    if (!matched.length) { setErr('None of those SKUs matched the catalog or any vendor.' + (notfound.length ? ` Not found: ${notfound.slice(0, 8).join(', ')}${notfound.length > 8 ? '…' : ''}` : '')); setBusy(false); setStage(''); return; }
+    const built = await buildStyleRows(matched);
+    setRows(built);
+    setIssues({ notfound, dupRows, matched: matched.length, viaVendor });
+    setBusy(false); setStage('');
+  };
+
+  const rawFromSheet = (data, type) => { const wb = XLSX.read(data, { type }); return XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); };
+
   const parseFile = async (file) => {
     if (!file) return;
-    setErr(''); setDone(null); setBusy(true); setFileName(file.name);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: 'array' });
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const raw = XLSX.utils.sheet_to_json(ws, { defval: '' });
-      const parsed = raw.map((r) => ({
-        sku: String(pickField(r, ['sku', 'style', 'style #', 'item', 'item #', 'item number', 'product', 'product sku', 'number'])).trim(),
-        price: pickField(r, ['price', 'retail', 'retail price', 'x']),
-        fundraise: pickField(r, ['fundraise', 'fundraising', 'fundraiser', 'y']),
-        category: String(pickField(r, ['category', 'section', 'group'])).trim(),
-        kit: String(pickField(r, ['kit', 'package', 'bundle'])).trim(),
-        mandatory: ['yes', 'y', 'true', '1', 'x', 'required'].includes(norm(pickField(r, ['mandatory', 'required']))),
-      })).filter((r) => r.sku);
-      if (!parsed.length) { setErr('No SKUs found — make sure a column is headed “SKU”.'); setRows([]); setBusy(false); return; }
-      const skus = [...new Set(parsed.map((r) => r.sku))];
-      const variants = [...new Set(skus.flatMap((s) => [s, s.toUpperCase(), s.toLowerCase()]))];
-      const found = [];
-      for (let i = 0; i < variants.length; i += 150) {
-        const { data } = await supabase.from('products').select('id,sku,name,color,retail_price,image_front_url').in('sku', variants.slice(i, i + 150));
-        if (data) found.push(...data);
-      }
-      const byKey = new Map();
-      found.forEach((p) => { const k = String(p.sku || '').trim().toUpperCase(); if (!byKey.has(k)) byKey.set(k, p); });
-      const seen = new Set();
-      const preview = parsed.map((r) => {
-        const product = byKey.get(r.sku.toUpperCase()) || null;
-        let status = 'new';
-        if (!product) status = 'notfound';
-        else if (existingPids && existingPids.has(product.id)) status = 'dup';
-        else if (seen.has(product.id)) status = 'dupfile';
-        if (product && status === 'new') seen.add(product.id);
-        return { ...r, product, status };
-      });
-      setRows(preview);
-    } catch (e) { setErr('Could not read that file: ' + (e.message || e)); setRows([]); }
-    setBusy(false);
+    setErr(''); setDone(null); setBusy(true); setStage(''); setFileName(file.name); setRows([]); setIssues(null);
+    try { const buf = await file.arrayBuffer(); await processRaw(rawFromSheet(buf, 'array')); }
+    catch (e) { setErr('Could not read that file: ' + (e.message || e)); setRows([]); setBusy(false); setStage(''); }
   };
 
-  const counts = rows.reduce((a, r) => { a[r.status] = (a[r.status] || 0) + 1; return a; }, {});
-  const addable = rows.filter((r) => r.status === 'new');
+  const importLink = async () => {
+    const url = link.trim();
+    if (!url) return;
+    if (!/docs\.google\.com|spreadsheets/i.test(url)) { setErr('Paste a Google Sheets share link (docs.google.com/spreadsheets/…).'); return; }
+    setErr(''); setDone(null); setBusy(true); setStage('Reading the sheet…'); setFileName(''); setRows([]); setIssues(null);
+    try {
+      const res = await fetch('/.netlify/functions/sheet-fetch?url=' + encodeURIComponent(url));
+      const text = await res.text();
+      if (!res.ok) { setErr(text || 'Could not read that sheet.'); setBusy(false); setStage(''); return; }
+      setFileName('Google Sheet'); setStage('');
+      await processRaw(rawFromSheet(text, 'string'));
+    } catch (e) { setErr('Could not read that sheet: ' + (e.message || e)); setBusy(false); setStage(''); }
+  };
+
+  const setMeta = (ri, patch) => setRows((rs) => rs.map((r, i) => (i === ri ? { ...r, meta: { ...r.meta, ...patch } } : r)));
+  const totalPicked = rowsTotalPicked(rows, existingPids);
+  const stylesIn = rows.filter((r) => rowItemIn(r, existingPids)).length;
+  const setAllItems = (on) => setRows((rs) => rs.map((r) => ({ ...r, picked: on ? new Set([...(r.defaults && r.defaults.size ? r.defaults : new Set(r.colors.map((c) => c.id)))].filter((id) => !existingPids.has(id))) : new Set() })));
 
   const doImport = async () => {
-    if (!addable.length || !onAddMany) return;
+    if (!totalPicked || !onApplyColors) return;
     setAdding(true);
-    const res = await onAddMany(addable.map((r) => ({
-      product: r.product,
-      price: (r.price !== '' && r.price != null) ? r.price : r.product.retail_price,
-      fundraise: r.fundraise || 0,
-      category: r.category || null,
-      kit_name: r.kit || null,
-      required: r.mandatory,
-    })));
+    const res = await onApplyColors(rowsToPlan(rows, null));
     setAdding(false);
-    if (res && !res.error) setDone({ added: res.added });
+    if (res && !res.error) setDone({ added: res.added || 0 });
   };
 
-  const statusChip = (s) => {
-    const m = { new: ['Will add', '#166534', '#dcfce7'], dup: ['Already in store', '#92400e', '#fef3c7'], dupfile: ['Duplicate row', '#92400e', '#fef3c7'], notfound: ['SKU not found', '#b91c1c', '#fee2e2'] }[s] || ['—', '#64748b', '#f1f5f9'];
-    return <span style={{ fontSize: 11, fontWeight: 700, color: m[1], background: m[2], borderRadius: 6, padding: '2px 8px' }}>{m[0]}</span>;
-  };
+  // Blank fundraising follows the store rule at checkout — say which rule that is.
+  const fundHint = storeFund?.enabled ? (Number(storeFund.pct) ? `${storeFund.pct}% rule` : Number(storeFund.flat) ? `${money(storeFund.flat)} rule` : 'store rule') : 'none';
 
   return (
     <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 860, margin: 'auto' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
           <div style={{ fontWeight: 800, fontSize: 16 }}>Import a product list</div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
@@ -6699,60 +8498,69 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
             <div style={{ textAlign: 'center', padding: '20px 10px' }}>
               <div style={{ fontSize: 40, marginBottom: 6 }}>✅</div>
               <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 4 }}>Imported {done.added} item{done.added === 1 ? '' : 's'}</div>
-              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog now — set art, colors and any per-item overrides next.</div>
-              <button className="btn btn-primary" onClick={onClose}>Done</button>
+              <div style={{ fontSize: 13, color: '#6A7180', marginBottom: 16 }}>They're in the catalog{done.added ? ' — next, put your logo on them' : ''}.</div>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
+                {onGoToArt && done.added > 0 && <button className="btn btn-primary" onClick={() => { onClose(); onGoToArt(); }}>🎨 Place artwork →</button>}
+                <button className={onGoToArt && done.added > 0 ? 'btn btn-secondary' : 'btn btn-primary'} onClick={onClose}>Done</button>
+              </div>
             </div>
           ) : (
             <>
               <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>
-                Drop an <b>Excel</b> (.xlsx) or <b>Google Sheets / CSV</b> export of the SKUs to add. Only a <b>SKU</b> column is required; optional: Price, Fundraising, Category, Kit, Mandatory. Blank price uses each item's list price{storeFund?.enabled ? '; blank fundraising uses the store rule' : ''}.
+                Paste a <b>Google Sheets link</b> or drop an <b>Excel / CSV</b> file. Only a <b>SKU</b> column is required — price and fundraising are optional (blank price uses each color's list price, blank fundraising follows the store rule{storeFund?.enabled ? ` — ${fundHint}` : ''}). SKUs not in the catalog are looked up live in the vendor catalogs.
                 <button type="button" onClick={downloadTemplate} style={{ marginLeft: 6, color: '#2563eb', background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, padding: 0 }}>Download template ↓</button>
               </div>
 
+              {/* Primary: paste a Google Sheets link */}
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <input value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') importLink(); }} disabled={busy} placeholder="Paste a Google Sheets link (share it as “Anyone with the link”)" style={{ flex: 1, fontSize: 13, padding: '9px 12px', border: '1px solid #cbd5e1', borderRadius: 10, outline: 'none' }} />
+                <button className="btn btn-primary" onClick={importLink} disabled={busy || !link.trim()} style={{ opacity: (busy || !link.trim()) ? 0.5 : 1 }}>Load</button>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '4px 0 10px', color: '#94a3b8', fontSize: 11, fontWeight: 700 }}><div style={{ flex: 1, height: 1, background: '#eef0f3' }} />OR<div style={{ flex: 1, height: 1, background: '#eef0f3' }} /></div>
+
+              {/* Secondary: drop / browse a file */}
               <div
                 onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); if (!over) setOver(true); }}
                 onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); }}
                 onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setOver(false); parseFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}
                 onClick={() => fileRef.current && fileRef.current.click()}
-                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: '22px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
-                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: 14 }}>{busy ? 'Reading…' : fileName ? `${fileName} — drop another to replace` : 'Drop your spreadsheet here, or click to browse'}</div>
-                <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>
+                style={{ border: `1.5px dashed ${over ? '#2563eb' : '#cbd5e1'}`, borderRadius: 12, padding: rows.length ? '10px 14px' : '18px 16px', textAlign: 'center', background: over ? '#eff4ff' : '#fafbfc', cursor: 'pointer' }}>
+                <div style={{ fontWeight: 700, color: '#3A4150', fontSize: rows.length ? 12.5 : 13.5 }}>{busy ? (stage || 'Reading…') : fileName ? `${fileName} — drop another to replace` : 'Drop an Excel / CSV file here, or click to browse'}</div>
+                {!rows.length && !busy && <div style={{ fontSize: 11.5, color: '#94a3b8', marginTop: 4 }}>.xlsx · .xls · .csv</div>}
                 <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style={{ display: 'none' }} onChange={(e) => { parseFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
               </div>
 
+              {busy && stage && <div style={{ fontSize: 12, color: '#4f46e5', fontWeight: 700, marginTop: 8 }}>⏳ {stage}</div>}
               {err && <div style={{ fontSize: 12.5, color: '#b91c1c', fontWeight: 600, marginTop: 10 }}>{err}</div>}
 
               {rows.length > 0 && (
                 <div style={{ marginTop: 14 }}>
-                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
-                    <span style={{ color: '#166534' }}>{counts.new || 0} to add</span>
-                    {counts.dup ? <span style={{ color: '#92400e' }}>{counts.dup} already in store</span> : null}
-                    {counts.dupfile ? <span style={{ color: '#92400e' }}>{counts.dupfile} duplicate row{counts.dupfile === 1 ? '' : 's'}</span> : null}
-                    {counts.notfound ? <span style={{ color: '#b91c1c' }}>{counts.notfound} not found</span> : null}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
+                    <span style={{ color: '#166534' }}>{stylesIn} style{stylesIn === 1 ? '' : 's'} · {totalPicked} color{totalPicked === 1 ? '' : 's'} to add</span>
+                    {issues?.viaVendor ? <span style={{ color: '#3730a3' }} title="Found live in the vendor catalogs and imported">{issues.viaVendor} via vendor lookup</span> : null}
+                    {issues?.dupRows ? <span style={{ color: '#92400e' }}>{issues.dupRows} duplicate row{issues.dupRows === 1 ? '' : 's'} skipped</span> : null}
+                    {issues?.notfound?.length ? <span style={{ color: '#b91c1c' }} title={issues.notfound.join(', ')}>{issues.notfound.length} not found: {issues.notfound.slice(0, 5).join(', ')}{issues.notfound.length > 5 ? '…' : ''}</span> : null}
+                    <span style={{ marginLeft: 'auto' }} />
+                    <button type="button" onClick={() => setAllItems(true)} style={{ fontSize: 12, fontWeight: 700, color: '#1d4ed8', background: 'none', border: 'none', cursor: 'pointer' }}>Select all</button>
+                    <button type="button" onClick={() => setAllItems(false)} style={{ fontSize: 12, fontWeight: 700, color: '#64748b', background: 'none', border: 'none', cursor: 'pointer' }}>Clear all</button>
                   </div>
-                  <div style={{ maxHeight: 280, overflowY: 'auto', border: '1px solid #eef0f3', borderRadius: 10 }}>
-                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
-                      <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase', position: 'sticky', top: 0, background: '#f8fafc' }}>
-                        <th style={{ padding: '7px 10px' }}>SKU</th><th style={{ padding: '7px 10px' }}>Product</th><th style={{ padding: '7px 10px' }}>Price</th><th style={{ padding: '7px 10px' }}>Status</th>
-                      </tr></thead>
-                      <tbody>
-                        {rows.slice(0, 200).map((r, i) => (
-                          <tr key={i} style={{ borderTop: '1px solid #f1f5f9', opacity: r.status === 'new' ? 1 : 0.7 }}>
-                            <td style={{ padding: '6px 10px', fontFamily: 'monospace' }}>{r.sku}</td>
-                            <td style={{ padding: '6px 10px' }}>{r.product ? [r.product.name, r.product.color].filter(Boolean).join(' · ') : <span style={{ color: '#b91c1c' }}>—</span>}</td>
-                            <td style={{ padding: '6px 10px' }}>{r.product ? money((r.price !== '' && r.price != null) ? r.price : r.product.retail_price) : '—'}</td>
-                            <td style={{ padding: '6px 10px' }}>{statusChip(r.status)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <div style={{ maxHeight: '48vh', overflowY: 'auto', paddingRight: 2 }}>
+                    <StyleColorRows rows={rows} setRows={setRows} existingPids={existingPids} renderRowExtra={(r, ri) => (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} onClick={(e) => e.stopPropagation()}>
+                        <label style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>$
+                          <input type="number" step="0.01" min="0" value={r.meta.price ?? ''} onChange={(e) => setMeta(ri, { price: e.target.value })} placeholder="auto" title="Selling price for every color of this style — blank uses each color's list price" style={{ width: 64, marginLeft: 3, fontSize: 12, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                        </label>
+                        <label style={{ fontSize: 10, fontWeight: 700, color: '#94a3b8' }}>FR
+                          <input type="number" step="0.01" min="0" value={r.meta.fundraise || ''} onChange={(e) => setMeta(ri, { fundraise: e.target.value })} placeholder={storeFund?.enabled ? fundHint : '0'} title={storeFund?.enabled ? `Per-item fundraising — blank follows the store rule (${fundHint}) at checkout` : 'Per-item fundraising dollars'} style={{ width: 62, marginLeft: 3, fontSize: 12, padding: '3px 6px', border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                        </label>
+                      </span>
+                    )} />
                   </div>
-                  {rows.length > 200 && <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Showing first 200 of {rows.length} rows.</div>}
                 </div>
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 16 }}>
-                <button className="btn btn-primary" disabled={!addable.length || adding} onClick={doImport} style={{ opacity: (!addable.length || adding) ? 0.5 : 1 }}>{adding ? 'Adding…' : `Add ${addable.length} item${addable.length === 1 ? '' : 's'} to store`}</button>
+                <button className="btn btn-primary" disabled={!totalPicked || adding} onClick={doImport} style={{ opacity: (!totalPicked || adding) ? 0.5 : 1 }}>{adding ? 'Adding…' : `Add ${totalPicked} item${totalPicked === 1 ? '' : 's'} to store`}</button>
                 <button className="btn btn-secondary" onClick={onClose}>Cancel</button>
               </div>
             </>
@@ -6773,7 +8581,76 @@ function SkuImporter({ existingPids, storeFund = {}, onAddMany, onClose }) {
 // favorites are open to any signed-in rep; only these emails can curate the shared list.
 const FAV_CURATORS = ['smpeterson327@gmail.com'];
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {} }) {
+// ── Live vendor-catalog search (shared by the popup modal AND the picker's main search bar).
+// Searches SanMar/District, S&S, Richardson and Momentec APIs for any style (even ones not in
+// the local catalog); picked colorways are imported into `products` so they can go in a store.
+const VENDOR_SRC = { sm: 'SanMar', ss: 'S&S', rs: 'Richardson', mt: 'Momentec' };
+const vendorKeyOf = (s, c) => `${s.source}:${s.sku}:${c.colorName}`;
+
+// Real vendor ids from the DB — products.vendor_id has a FK to vendors, so imports must use
+// a valid id (or null). Map api_provider → id.
+function useVendorMap() {
+  const [vendorMap, setVendorMap] = useState(null);
+  useEffect(() => { (async () => { const { data } = await supabase.from('vendors').select('id,api_provider,name'); const m = {}; (data || []).forEach((v) => { if (v.api_provider) m[v.api_provider] = v.id; }); setVendorMap(m); })(); }, []);
+  return vendorMap;
+}
+
+// Debounced live search across all vendor APIs. Returns { styles, errors, loading, ran,
+// retry } — retry() re-fires the same query, for when a vendor proxy times out.
+function useVendorCatalogSearch(q, vendorMap, { enabled = true, delay = 550 } = {}) {
+  const [loading, setLoading] = useState(false);
+  const [styles, setStyles] = useState([]);
+  const [errors, setErrors] = useState({});
+  const [ran, setRan] = useState(false);
+  const [tick, setTick] = useState(0);
+  const retry = useCallback(() => setTick((t) => t + 1), []);
+  useEffect(() => {
+    const query = (q || '').trim();
+    if (!enabled || query.length < 2 || vendorMap == null) { setStyles([]); setErrors({}); setRan(false); setLoading(false); return; }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try { const { results, errors } = await searchVendorCatalogs(query, { vendorMap }); if (!cancelled) { setStyles(results); setErrors(errors || {}); } }
+      catch (e) { if (!cancelled) { setStyles([]); setErrors({ Search: String(e?.message || e) }); } }
+      finally { if (!cancelled) { setLoading(false); setRan(true); } }
+    }, delay);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [q, vendorMap, enabled, delay, tick]);
+  return { styles, errors, loading, ran, retry };
+}
+
+// Import the picked colorways (Map key -> { style, color }) into `products`; returns the rows.
+async function importVendorSelections(selected) {
+  const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
+  const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
+  if (error) throw new Error(error.message);
+  return (data && data.length ? data : rows);
+}
+
+// Style cards with per-colorway toggle buttons — the shared results UI.
+function VendorStyleCards({ styles, selected, onToggle }) {
+  return styles.map((s) => (
+    <div key={s.source + s.sku} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 12, marginBottom: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        {s.image ? <img src={s.image} alt="" style={{ width: 40, height: 40, objectFit: 'contain', borderRadius: 6, border: '1px solid #eef2f7', background: '#fff' }} /> : null}
+        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 800, fontSize: 13.5, color: '#191919' }}>{s.name}</div><div style={{ fontSize: 11, color: '#64748b' }}>{s.sku} · {s.colors.length} color{s.colors.length === 1 ? '' : 's'}</div></div>
+        <span style={{ fontSize: 10.5, fontWeight: 800, color: '#3730a3', background: '#eef2ff', borderRadius: 5, padding: '2px 7px' }}>{VENDOR_SRC[s.source] || s.source}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {s.colors.map((c) => { const on = selected.has(vendorKeyOf(s, c)); return (
+          <button key={c.colorName || c.sku} type="button" onClick={() => onToggle(s, c)} title={c.colorName} style={{ position: 'relative', width: 84, border: '2px solid ' + (on ? '#191919' : '#e2e8f0'), background: '#fff', borderRadius: 9, padding: 4, cursor: 'pointer' }}>
+            <div style={{ width: '100%', height: 64, borderRadius: 5, overflow: 'hidden', background: '#f4f6f9', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{c.image ? <img src={c.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#cbd5e1', fontWeight: 700, padding: 2, textAlign: 'center' }}>{(c.colorName || '').slice(0, 14)}</span>}</div>
+            <div style={{ fontSize: 9.5, color: on ? '#191919' : '#64748b', fontWeight: 700, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{c.colorName || '—'}</div>
+            <div style={{ fontSize: 9, color: '#94a3b8' }}>{c.cost > 0 ? money(c.cost) : ''}{c.sizes?.length ? ` · ${c.sizes.length} sz` : ''}</div>
+            {on && <div style={{ position: 'absolute', top: -7, right: -7, background: '#191919', color: '#fff', borderRadius: '50%', width: 18, height: 18, fontSize: 11, lineHeight: '18px', fontWeight: 800, textAlign: 'center' }}>✓</div>}
+          </button>
+        ); })}
+      </div>
+    </div>
+  ));
+}
+
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -6783,7 +8660,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const [results, setResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [limit, setLimit] = useState(300);
-  const [inStockOnly, setInStockOnly] = useState(true); // school stores default to fulfillable
+  const [inStockOnly, setInStockOnly] = useState(initialInStock); // school stores default to fulfillable; templates don't
   const colorWords = useMemo(() => storeColorWords(storeColors), [storeColors]);
   const [colorOnly, setColorOnly] = useState(colorWords.length > 0); // default to the school's colors
   useEffect(() => { setColorOnly(colorWords.length > 0); }, [colorWords.length]);
@@ -6816,6 +8693,16 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   const favUnion = useMemo(() => new Set([...favMine.keys(), ...favTeam.keys()]), [favMine, favTeam]); // lower style keys
   const favNames = useMemo(() => [...new Set([...favMine.values(), ...favTeam.values()])], [favMine, favTeam]); // original names, for fetch
   const favStyleKey = (p) => String(p?.name || p?.sku || '').trim().toLowerCase();
+  // Live vendor-catalog results inline under the main search — the same SanMar/S&S/
+  // Richardson/Momentec engines as the popup, so a typed style (e.g. ST358) that isn't in
+  // the local catalog still shows up. Slightly longer debounce: these are external APIs.
+  // (Declared after the favorites state above — vendorEnabled reads favOnly.)
+  const vendorMap = useVendorMap();
+  const vendorEnabled = !favOnly && q.trim().length >= 2;
+  const { styles: vendorStyles, errors: vendorErrors, loading: vendorLoading, ran: vendorRan, retry: vendorRetry } = useVendorCatalogSearch(q, vendorMap, { enabled: vendorEnabled, delay: 700 });
+  const [vendorSel, setVendorSel] = useState(() => new Map()); // key -> { style, color }
+  const [vendorImporting, setVendorImporting] = useState(false);
+  const toggleVendor = (s, c) => setVendorSel((prev) => { const m = new Map(prev); const k = vendorKeyOf(s, c); m.has(k) ? m.delete(k) : m.set(k, { style: s, color: c }); return m; });
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -6855,30 +8742,50 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     let cancelled = false;
     setSearching(true);
     const t = setTimeout(async () => {
-      // Hide retired products (archived) so the store builder can't add what the catalog
-      // live-look already hides, while still including legacy rows whose is_active is null.
-      let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
-        .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
-      if (favOnly) {
-        // Favorites view — load every colorway of each starred STYLE (across all categories)
-        // so the rep's + team's picks always show, regardless of color/stock filters.
-        if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
-        query = query.in('name', favNames);
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-      } else {
-        if (q.trim().length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.%${q}%`);
-        if (brandSel) query = query.eq('brand', brandSel);
-        if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
-        // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
-        // category like Tees doesn't bury the school's colors past the row limit.
-        // School colors only narrow when BROWSING; a typed search overrides them so a
-        // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
-        if (colorOnly && colorWords.length && q.trim().length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+      const typed = q.trim();
+      let rows = null;
+      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
+      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
+      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
+      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      if (!favOnly && typed.length >= 2) {
+        try {
+          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          if (error) throw error;
+          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
+          // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
+          // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
+          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
+          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
+          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+        } catch (e) { rows = null; /* fall through to the table query */ }
       }
-      const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
-      const rows = data || [];
+      if (rows == null) {
+        // Hide retired products (archived) so the store builder can't add what the catalog
+        // live-look already hides, while still including legacy rows whose is_active is null.
+        let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+          .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false');
+        if (favOnly) {
+          // Favorites view — load every colorway of each starred STYLE (across all categories)
+          // so the rep's + team's picks always show, regardless of color/stock filters.
+          if (!favNames.length) { if (!cancelled) { setResults([]); setSearching(false); } return; }
+          query = query.in('name', favNames);
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+        } else {
+          if (typed.length >= 2) query = query.or(`name.ilike.%${q}%,sku.ilike.${q}%`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          // Narrow to the school's colors in the QUERY (not just client-side) so a 3k-item
+          // category like Tees doesn't bury the school's colors past the row limit.
+          // School colors only narrow when BROWSING; a typed search overrides them so a
+          // specific SKU/name is found regardless of color (and skips ~15 color ilikes).
+          if (colorOnly && colorWords.length && typed.length < 2) query = query.or(colorWords.map((w) => `color.ilike.%${w}%`).join(','));
+        }
+        const { data } = await query.order('name').order('color').limit(favOnly ? 500 : limit);
+        rows = data || [];
+      }
       const stock = await fetchStockMap(rows);
       for (const r of rows) r._stock = stock.get(r.id) || { units: 0, sizes: [], sizeStock: {}, incoming: false };
       if (!cancelled) { setResults(rows); setSearching(false); }
@@ -6939,9 +8846,48 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     for (const [k, byColor] of m) out.set(k, [...byColor.values()].sort((a, b) => repScore(b) - repScore(a) || String(a.color || '').localeCompare(String(b.color || ''))));
     return out;
   })();
-  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row.
+  // Hide vendor styles the local search already surfaced (imported vendor rows carry SKU
+  // "<style>-<color>", native rows the bare style) so the same garment isn't listed twice.
+  const localSkusU = useMemo(() => results.map((r) => String(r.sku || '').toUpperCase()), [results]);
+  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
+  // Apply the "School colors" toggle to the live vendor styles too — drop colorways whose
+  // color isn't in the school's palette (same primary-segment match as the local catalog),
+  // and hide any style left with no matching colorway.
+  const vendorNew = useMemo(() => {
+    if (!(colorOnly && colorWords.length)) return vendorDeduped;
+    return vendorDeduped
+      .map((s) => ({ ...s, colors: (s.colors || []).filter((c) => productMatchesColors(c.colorName, colorWords)) }))
+      .filter((s) => (s.colors || []).length > 0);
+  }, [vendorDeduped, colorOnly, colorWords]);
+  // Resolve any selected id (rep OR a swatch-picked colorway) to its product row. Rows are
+  // also remembered in a cache so a pick made under one search stays in the selection tray
+  // after the rep searches something else (the row falls out of `results` but not the tray).
+  const selCacheRef = useRef(new Map());
   const rowById = new Map(swatchPool.map((r) => [r.id, r]));
-  const selProducts = [...selected].map((id) => rowById.get(id)).filter(Boolean);
+  for (const r of swatchPool) selCacheRef.current.set(r.id, r);
+  const selProducts = [...selected].map((id) => rowById.get(id) || selCacheRef.current.get(id)).filter(Boolean);
+  const selTotal = selProducts.length + vendorSel.size;
+  // One "Add to store" for everything: vendor picks import into `products` first, merge
+  // into the selection, then the shared setup/art modal opens over the whole set.
+  const openBulkAdd = async () => {
+    let ids = [...selected];
+    if (vendorSel.size) {
+      setVendorImporting(true);
+      try {
+        const rows = await importVendorSelections(vendorSel);
+        rows.forEach((r) => selCacheRef.current.set(r.id, r));
+        ids = [...new Set([...ids, ...rows.map((r) => r.id)])];
+        setSelected(new Set(ids));
+        setVendorSel(new Map());
+      } catch (e) { setVendorImporting(false); alert('Could not import from vendor: ' + (e?.message || e)); return; }
+      setVendorImporting(false);
+    }
+    if (!ids.length) return;
+    const first = ids.length === 1 ? (rowById.get(ids[0]) || selCacheRef.current.get(ids[0])) : null;
+    setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0);
+    setBPrice((p) => p || (first ? String(first.retail_price ?? '') : ''));
+    setBulkOpen(true);
+  };
 
   const togBtn = (on, onClick, children, c = '#166534', bg = '#dcfce7') => (
     <button type="button" onClick={onClick} aria-pressed={on} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, cursor: 'pointer', borderRadius: 999, padding: '4px 13px 4px 8px', fontSize: 12.5, fontWeight: 700, border: '1px solid ' + (on ? c : '#d1d5db'), background: on ? bg : '#fff', color: on ? c : '#3A4150' }}>
@@ -6961,11 +8907,15 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         <input className="ai-search" autoFocus value={q} onChange={(e) => setQ(e.target.value)}
           placeholder="Search by name or SKU — or pick a category below to browse…" aria-label="Search products" />
 
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginTop: 12, alignItems: 'center' }}>
           {BROWSE_CATS.map((c) => <FilterBtn key={c} on={catSel === c} onClick={() => setCatSel(catSel === c ? null : c)}>{c}</FilterBtn>)}
         </div>
 
+        {/* Toggles live on one row right under the categories — in-stock / school-colors
+            filter both the local catalog AND the live vendor results below. */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
+          {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
+          {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
           {togBtn(favOnly, () => setFavOnly((v) => !v), `★ Favorites${favUnion.size ? ' (' + favUnion.size + ')' : ''}`, '#b45309', '#fef3c7')}
           {FAV_CURATORS.includes((myEmail || '').toLowerCase()) && togBtn(curate, () => setCurate((v) => !v), 'Curate shared list', '#7c3aed', '#ede9fe')}
           {curate && <span style={{ fontSize: 11.5, color: '#7c3aed', fontWeight: 700 }}>Starring now edits the shared list everyone sees</span>}
@@ -6973,9 +8923,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
         </div>
 
         {active && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12, alignItems: 'center' }}>
-            {togBtn(inStockOnly, () => setInStockOnly((v) => !v), 'In stock only')}
-            {colorWords.length > 0 && togBtn(colorOnly, () => setColorOnly((v) => !v), 'School colors', '#1d4ed8', '#dbeafe')}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10, alignItems: 'center' }}>
             <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>{inStockStyleN} of {allStyleN} styles in stock</span>
             {brands.length > 1 && <span style={{ width: 1, alignSelf: 'stretch', background: '#E2E5EA', margin: '0 2px' }} />}
             {brands.length > 1 && brands.map((b) => <FilterBtn key={'b-' + b} on={brandSel === b} onClick={() => setBrandSel(brandSel === b ? null : b)}>{b}</FilterBtn>)}
@@ -7022,26 +8970,72 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
           {active && !searching && results.length >= limit && (
             <ShowMore onClick={() => setLimit((n) => n + 200)}>Show more results</ShowMore>
           )}
+          {vendorEnabled && (vendorLoading || vendorNew.length > 0 || vendorSel.size > 0 || (vendorRan && styles.length === 0)) && (
+            <div style={{ marginTop: 18, borderTop: '1px dashed #dbe2ea', paddingTop: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+                <span style={{ fontWeight: 800, fontSize: 13.5 }}>Live vendor catalogs</span>
+                <span style={{ fontSize: 11.5, color: '#64748b' }}>SanMar / District · S&amp;S Activewear · Richardson · Momentec — picked colors are imported, then added to the {destLabel}.</span>
+              </div>
+              {Object.keys(vendorErrors || {}).length > 0 && (
+                <div style={{ fontSize: 11.5, color: '#b45309', marginBottom: 8 }}>
+                  Couldn't reach: {Object.keys(vendorErrors).join(', ')}.
+                  <button type="button" onClick={vendorRetry} disabled={vendorLoading} style={{ marginLeft: 8, fontSize: 11.5, fontWeight: 800, color: '#b45309', background: '#fef3c7', border: '1px solid #fcd34d', borderRadius: 999, padding: '2px 10px', cursor: 'pointer' }}>↻ Retry</button>
+                </div>
+              )}
+              {vendorLoading && vendorNew.length === 0
+                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>Searching vendor catalogs…</div>
+                : vendorNew.length === 0 && vendorRan
+                ? <div style={{ color: '#9AA1AC', fontSize: 13, padding: 8 }}>{colorOnly && colorWords.length && vendorDeduped.length > 0 ? 'Vendor styles matched, but none in the school colors — turn off "School colors" to see them.' : 'No vendor styles matched either. Try the exact style number (e.g. DM130).'}</div>
+                : <VendorStyleCards styles={vendorNew} selected={vendorSel} onToggle={toggleVendor} />}
+              {vendorSel.size > 0 && (
+                <div style={{ fontSize: 11.5, color: '#3730a3', fontWeight: 700 }}>{vendorSel.size} vendor color{vendorSel.size === 1 ? '' : 's'} in your selection — add everything together from the tray below.</div>
+              )}
+            </div>
+          )}
         </div>
       </KitScope>
-      {selProducts.length > 0 && (
-        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '10px 16px', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', borderRadius: 999 }}>
-          <span style={{ fontWeight: 800, fontSize: 14 }}>{selProducts.length} selected</span>
-          <button className="btn btn-primary" onClick={() => { setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0); setBPrice((p) => p || (selProducts.length === 1 ? String(selProducts[0].retail_price ?? '') : '')); setBulkOpen(true); }}>Add {selProducts.length} to store →</button>
-          <button className="btn btn-secondary" onClick={() => setSelected(new Set())}>Clear</button>
-          <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Adds at list price — tweak fundraising / personalization per item after.</span>
+      {selTotal > 0 && (
+        // Selection tray — persists across searches/filters, holds catalog picks AND live
+        // vendor colorways, each removable, and adds everything to the store in one go.
+        <div style={{ position: 'fixed', bottom: 18, left: '50%', transform: 'translateX(-50%)', zIndex: 60, background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(6px)', border: '1px solid #d7e0ee', boxShadow: '0 10px 30px rgba(15,26,56,.22)', padding: '12px 16px 10px', borderRadius: 16, maxWidth: 'min(92vw, 880px)' }}>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', overflowX: 'auto', paddingBottom: 6, marginBottom: 8, paddingTop: 6 }}>
+            {selProducts.map((p) => (
+              <div key={p.id} title={`${p.name}${p.color ? ' — ' + p.color : ''}`} style={{ position: 'relative', flex: '0 0 auto', width: 54, textAlign: 'center' }}>
+                <div style={{ width: 54, height: 54, borderRadius: 9, border: '1px solid #e2e8f0', background: '#f8fafc', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {p.image_front_url ? <img src={p.image_front_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#94a3b8', fontWeight: 700, padding: 2 }}>{(p.color || p.sku || '').slice(0, 10)}</span>}
+                </div>
+                <div style={{ fontSize: 8.5, color: '#64748b', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{p.color || p.sku}</div>
+                <button type="button" onClick={() => toggleSel(p.id)} aria-label={`Remove ${p.name}`} style={{ position: 'absolute', top: -6, right: -6, width: 17, height: 17, borderRadius: '50%', border: 'none', background: '#191919', color: '#fff', fontSize: 9.5, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', padding: 0 }}>✕</button>
+              </div>
+            ))}
+            {[...vendorSel.values()].map(({ style, color }) => (
+              <div key={vendorKeyOf(style, color)} title={`${style.name} — ${color.colorName || ''} (${VENDOR_SRC[style.source] || 'vendor'})`} style={{ position: 'relative', flex: '0 0 auto', width: 54, textAlign: 'center' }}>
+                <div style={{ width: 54, height: 54, borderRadius: 9, border: '1px solid #c7d2fe', background: '#f8fafc', overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {(color.image || style.image) ? <img src={color.image || style.image} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <span style={{ fontSize: 8, color: '#94a3b8', fontWeight: 700, padding: 2 }}>{(color.colorName || '').slice(0, 10)}</span>}
+                </div>
+                <div style={{ fontSize: 8.5, color: '#3730a3', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', marginTop: 2 }}>{color.colorName || style.sku}</div>
+                <button type="button" onClick={() => toggleVendor(style, color)} aria-label={`Remove ${style.name} ${color.colorName || ''}`} style={{ position: 'absolute', top: -6, right: -6, width: 17, height: 17, borderRadius: '50%', border: 'none', background: '#3730a3', color: '#fff', fontSize: 9.5, lineHeight: '17px', fontWeight: 800, cursor: 'pointer', padding: 0 }}>✕</button>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontWeight: 800, fontSize: 14 }}>{selTotal} selected</span>
+            <button className="btn btn-primary" disabled={vendorImporting} onClick={openBulkAdd}>{vendorImporting ? 'Importing…' : `Add ${selTotal} to ${destLabel} →`}</button>
+            <button className="btn btn-secondary" onClick={() => { setSelected(new Set()); setVendorSel(new Map()); }}>Clear</button>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at list price{vendorSel.size ? '; vendor picks import at ~50% margin' : ''}.</span>
+          </div>
         </div>
       )}
       {bulkOpen && (
         <div onClick={() => setBulkOpen(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)', zIndex: 1000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 16px', overflowY: 'auto' }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 760, margin: 'auto' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
-              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the store</div>
+              <div style={{ fontWeight: 800, fontSize: 16 }}>Add {selProducts.length} item{selProducts.length === 1 ? '' : 's'} to the {destLabel}</div>
               <button onClick={() => setBulkOpen(false)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
             </div>
             <div style={{ padding: 16 }}>
               <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: '2px solid #e5e8ec' }}>
-                {[['setup', '1 · Item setup'], ['art', '2 · Art & logo']].map(([k, lbl]) => { const on = bulkTab === k; return (
+                {(destLabel === 'template' ? [['setup', 'Item setup']] : [['setup', '1 · Item setup'], ['art', '2 · Art & logo']]).map(([k, lbl]) => { const on = bulkTab === k; return (
                   <button key={k} type="button" onClick={() => setBulkTab(k)} style={{ background: 'none', border: 'none', borderBottom: '3px solid ' + (on ? '#191919' : 'transparent'), color: on ? '#191919' : '#94a3b8', fontWeight: 800, fontSize: 13.5, padding: '8px 14px', marginBottom: -2, cursor: 'pointer' }}>{lbl}</button>
                 ); })}
               </div>
@@ -7108,10 +9102,10 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
               )}
 
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to store →`}</button>
-                {bulkTab === 'setup'
+                <button className="btn btn-primary" onClick={() => { setBulkOpen(false); if (onPickMany) onPickMany(selProducts, bulkDecos, { price: bPrice, fundraise: bFund, takes_number: bNumber, takes_name: bName, name_upcharge: bNameUp, category: bCategory.trim(), kit_name: bKit.trim(), required: bRequired, options: cleanItemOptions(bOptions) }); setSelected(new Set()); }}>{bulkDecos.length ? `Add ${selProducts.length} with logo →` : `Add ${selProducts.length} to ${destLabel} →`}</button>
+                {destLabel !== 'template' && (bulkTab === 'setup'
                   ? <button className="btn btn-secondary" onClick={() => setBulkTab('art')}>Next: Art &amp; logo →</button>
-                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>}
+                  : <button className="btn btn-secondary" onClick={() => setBulkTab('setup')}>← Back to setup</button>)}
                 <button className="btn btn-secondary" onClick={() => setBulkOpen(false)}>Cancel</button>
               </div>
             </div>
@@ -7440,7 +9434,7 @@ const webLogoDefault = (art) => {
   if (!art || !Array.isArray(art.web_logos)) return null;
   const wl = art.web_logos.filter((w) => w && w.url);
   if (!wl.length) return null;
-  return (wl.find((w) => !((w.color_way || '').trim())) || wl[0]).url;
+  return (wl.find((w) => w.is_default || !((w.color_way || '').trim())) || wl[0]).url;
 };
 const artImgUrl = (art) => {
   if (!art) return null;
@@ -7459,6 +9453,21 @@ const artThumbUrl = (art) => {
   const itemMocks = Object.values(art.item_mockups || {}).flat();
   const cands = [webLogoDefault(art), art.web_logo_url, art.preview_url, ...((art.mockup_files || []).map(u)), ...itemMocks.map(u), ...((art.files || []).map(u))].filter(Boolean);
   return cands.find((x) => /\.(png|svg|jpe?g|webp)(\?|$)/i.test(x)) || null;
+};
+// Background for a logo THUMBNAIL so a transparent cutout stays visible wherever it's shown
+// (a white logo washes out on a near-white card). Prefer the garment color(s) the shown
+// cutout covers — a white logo on its dark garment reads perfectly — falling back to a soft
+// transparency checker (light + medium gray) that reveals both light- and dark-ink logos
+// when the cutout has no color assigned yet.
+const LOGO_THUMB_CHECKER = 'repeating-conic-gradient(#94a3b8 0 25%, #e2e8f0 0 50%) 50% / 14px 14px';
+const logoThumbBg = (art, thumbUrl) => {
+  const wls = Array.isArray(art && art.web_logos) ? art.web_logos : [];
+  const forUrl = thumbUrl ? wls.filter((w) => w && w.url === thumbUrl) : [];
+  const src = forUrl.length ? forUrl : wls;
+  const labels = [...new Set(src.map((w) => ((w && w.color_way) || '').trim()).filter(Boolean))];
+  if (!labels.length) return LOGO_THUMB_CHECKER;
+  const cols = labels.map(garmentHex);
+  return cols.length === 1 ? cols[0] : ('linear-gradient(135deg, ' + cols[0] + ' 0 50%, ' + cols[1] + ' 50% 100%)');
 };
 const isSvg = (u) => /\.svg(\?|$)/i.test(u || '');
 // Clean cutout for PLACING art on a garment — a real logo, never a full-garment mockup
@@ -7485,8 +9494,6 @@ const artPlaceUrl = (art) => {
   return null;
 };
 const hexRgb = (hex) => { const h = (hex || '#000').replace('#', ''); return [parseInt(h.slice(0, 2), 16) || 0, parseInt(h.slice(2, 4), 16) || 0, parseInt(h.slice(4, 6), 16) || 0]; };
-const DARK_WORDS = ['black', 'navy', 'royal', 'forest', 'maroon', 'charcoal', 'graphite', 'purple', 'brown', 'hunter', 'dark', 'midnight', 'kelly'];
-const guessDark = (name) => { const s = (name || '').toLowerCase(); return DARK_WORDS.some((w) => s.includes(w)); };
 const cssTint = (choice) => choice === 'white' ? 'brightness(0) invert(1)' : choice === 'black' ? 'brightness(0)' : 'none';
 
 // Recolor a logo to a single solid color, returning an uploadable Blob.
@@ -7509,6 +9516,47 @@ async function recolorToBlob(url, hex) {
 }
 
 const _loadImg = (url) => new Promise((res, rej) => { const i = new Image(); i.crossOrigin = 'anonymous'; i.onload = () => res(i); i.onerror = rej; i.src = url; });
+
+// Roughly, does this logo use more than one ink color? A flat white/black recolor (Autocolor's
+// light-on-dark move) turns a MULTI-color mark — e.g. a gold+red+white crest — into a solid
+// silhouette, so Autocolor must leave those as Orig. A single-ink mark (one color + anti-alias
+// edges) can still flip. Returns true only when confident it's multi-color; any load/CORS/parse
+// failure → false (keep the single-ink behavior). SVG: count distinct fill/stroke colors. Raster:
+// bucket opaque pixels into black/white/grey + 12 hue bins and call it multi when ≥2 buckets each
+// hold a meaningful share (≥8%), which discounts anti-aliasing.
+async function logoIsMulticolor(url) {
+  if (!url) return false;
+  try {
+    if (isSvg(url)) {
+      const txt = await fetch(url).then((r) => r.text());
+      const cols = new Set((txt.match(/(?:fill|stroke)\s*[:=]\s*["']?#[0-9a-fA-F]{3,6}/g) || [])
+        .map((m) => m.replace(/.*#/, '#').toLowerCase())
+        .filter((hxc) => !['#fff', '#ffffff', '#000', '#000000'].includes(hxc)));
+      return cols.size >= 2;
+    }
+    const img = await _loadImg(url);
+    const s = 72;
+    const iw = img.naturalWidth || s, ih = img.naturalHeight || s;
+    const scale = Math.min(1, s / Math.max(iw, ih));
+    const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const ctx = c.getContext('2d'); ctx.drawImage(img, 0, 0, w, h);
+    const px = ctx.getImageData(0, 0, w, h).data;
+    const groups = {}; let opaque = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      if (px[i + 3] < 128) continue;
+      opaque++;
+      const r = px[i], g = px[i + 1], b = px[i + 2];
+      const mx = Math.max(r, g, b), mn = Math.min(r, g, b), v = mx / 255, sat = mx ? (mx - mn) / mx : 0;
+      let key;
+      if (sat < 0.22) key = v < 0.28 ? 'k' : v > 0.82 ? 'w' : 'g'; // near-grey: black / white / grey
+      else { const d = mx - mn; let hue = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4; hue = (hue * 60 + 360) % 360; key = 'h' + Math.floor(hue / 30); }
+      groups[key] = (groups[key] || 0) + 1;
+    }
+    if (opaque < 20) return false;
+    return Object.values(groups).filter((n) => n / opaque >= 0.08).length >= 2;
+  } catch (_) { return false; }
+}
 const _toHex = (r, g, b) => '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
 
 // The logo's own dominant colors, so a rep can pick the white / gold / etc. to change.
@@ -7594,13 +9642,61 @@ function WebLogoSlot({ art, onAttach, compact }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogo, onSetItemDecorations, onSaveArtVariant, canMock, onOpenMockBuilder }) {
+// Color-coded decoration-method chip so two visually-identical logos (e.g. an embroidery
+// version and a screen-print version of the same mark) are told apart at a glance. Reads
+// the art record's `deco_type` (embroidery / screen_print / dtf / heat_transfer /
+// sublimation / vinyl); unknown values fall back to a neutral chip, and a blank type
+// renders nothing rather than guessing.
+const DECO_BADGE = {
+  embroidery: { label: 'Embroidery', bg: '#fef3c7', fg: '#92400e', bd: '#fcd34d' },
+  screen_print: { label: 'Screen Print', bg: '#e0e7ff', fg: '#3730a3', bd: '#c7d2fe' },
+  dtf: { label: 'DTF', bg: '#ccfbf1', fg: '#115e59', bd: '#5eead4' },
+  heat_transfer: { label: 'Heat Transfer', bg: '#ffedd5', fg: '#9a3412', bd: '#fdba74' },
+  heat_press: { label: 'Heat Press', bg: '#ffedd5', fg: '#9a3412', bd: '#fdba74' },
+  sublimation: { label: 'Sublimation', bg: '#f3e8ff', fg: '#6b21a8', bd: '#e9d5ff' },
+  vinyl: { label: 'Vinyl', bg: '#ffe4e6', fg: '#9f1239', bd: '#fecdd3' },
+};
+const decoBadge = (dt) => {
+  const k = String(dt || '').toLowerCase().trim();
+  if (DECO_BADGE[k]) return DECO_BADGE[k];
+  return k ? { label: k.replace(/_/g, ' '), bg: '#f1f5f9', fg: '#475569', bd: '#e2e8f0' } : null;
+};
+function DecoBadge({ deco }) {
+  const b = decoBadge(deco);
+  if (!b) return null;
+  return (
+    <span title={`Decoration method: ${b.label}`} style={{
+      display: 'inline-block', maxWidth: '100%', background: b.bg, color: b.fg,
+      border: `1px solid ${b.bd}`, borderRadius: 999, padding: '1px 7px',
+      fontSize: 9.5, fontWeight: 800, lineHeight: 1.5, whiteSpace: 'nowrap',
+      overflow: 'hidden', textOverflow: 'ellipsis', textTransform: 'capitalize',
+    }}>{b.label}</span>
+  );
+}
+
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
-  const [selected, setSelected] = useState(() => new Set()); // items chosen for bulk apply — none by default
-  const [bulkOpen, setBulkOpen] = useState(false); // bulk apply is an opt-in next step, not the default view
-  const [colorByItem, setColorByItem] = useState({}); // item id -> 'original' | 'white' | 'black'
+  const [selected, setSelected] = useState(() => new Set()); // STYLE keys chosen for apply — a style card covers all its colors
+  const [bulkOpen, setBulkOpen] = useState(true); // the apply-to-items grid IS the main flow — open by default after art is in (collapsible via ✕ Close)
+  // Per-color logo choice (keyed by the color row's item id): a real per-CW variant
+  // { kind:'variant', url, colorWayId, label } or a recolor { kind:'recolor', choice }.
+  const [pickByItem, setPickByItem] = useState({});
+  const [multiColorByArt, setMultiColorByArt] = useState({}); // art id -> is the logo multi-color? (async-detected; keeps Autocolor from whiting out a multi-color mark)
+  // One card per style; each card pages through its colors. Placement is per STYLE
+  // (drag/resize applies to all its colors — the photos match, so one size reads
+  // consistently), with an optional nudge override for the odd color's photo.
+  const [activeIdx, setActiveIdx] = useState({});       // styleKey -> index of the color being shown
+  const [logoCwIdx, setLogoCwIdx] = useState({});       // art id -> index of the color way being previewed in "Pick a logo"
+  const [placeByStyle, setPlaceByStyle] = useState({}); // styleKey -> { x, y, w }
+  const [placeByItem, setPlaceByItem] = useState({});   // itemId  -> { x, y, w } (nudge override)
+  const [nudgeItem, setNudgeItem] = useState(null);     // itemId currently in nudge mode
+  const [presetTouched, setPresetTouched] = useState(false); // rep picked a placement preset → it overrides existing placements
+  // Back logos are a rare, per-card add — not a whole-grid mode. A style card that gets
+  // one carries it on every color (decorations are card-level on the storefront).
+  const [backByStyle, setBackByStyle] = useState({});   // styleKey -> { placement, x, y, w }
+  const [flipped, setFlipped] = useState(() => new Set()); // styleKeys whose card is showing the back
   const [applying, setApplying] = useState(false);
   const [done, setDone] = useState('');
   const [addOpen, setAddOpen] = useState(false);
@@ -7609,6 +9705,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [dragOver, setDragOver] = useState(false);
   const fileRef = useRef();
   const emptyRef = useRef();
+  const boxRefs = useRef({}); // styleKey -> the card's stage element (for drag math)
+  const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item'|'backStyle', box, grab }
+  // Picks (and placements) are specific to the active logo — a variant pick holds that
+  // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
+  useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
   // Upload a NEW artwork file here: saves it to the customer's art folder AND this
   // store's set, so it's reusable on orders later and pickable on items now.
   const uploadArt = async (file) => {
@@ -7621,11 +9722,29 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
-  const activeArt = (storeArt || []).find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
+  // The store's art set is a snapshot; web logos / color ways added on the customer's art
+  // record AFTER the art joined the store only exist on the live library copy. Render and
+  // Autocolor from the hydrated view (reads only — saves still write the raw store set).
+  const storeArtLive = hydrateStoreArt(storeArt, libraryArt);
+  const activeArt = storeArtLive.find((a) => a.id === activeId) || libraryArt.find((a) => a.id === activeId) || null;
   const activeUrl = artPlaceUrl(activeArt);
+  // Detect once whether the active logo is multi-color, so Autocolor keeps a multi-color mark
+  // as Orig instead of knocking it out to a white silhouette on dark garments. Cached per art id.
+  const activeMulti = multiColorByArt[activeId];
+  useEffect(() => {
+    if (!activeId || !activeUrl || multiColorByArt[activeId] !== undefined) return;
+    let alive = true;
+    logoIsMulticolor(activeUrl).then((m) => { if (alive) setMultiColorByArt((p) => (p[activeId] !== undefined ? p : { ...p, [activeId]: m })); });
+    return () => { alive = false; };
+  }, [activeId, activeUrl]); // eslint-disable-line react-hooks/exhaustive-deps
   const place = ART_PLACEMENTS.find((p) => p.id === placement) || ART_PLACEMENTS[0];
+  const _fullBack = ART_PLACEMENTS.find((p) => p.id === 'full_back') || place;
+  // The active logo's real per-CW variants (artist cutouts). ≥2 → the card shows variant
+  // chips; otherwise the recolor chips. Re-keyed so each carries its stable color_way_id.
+  const variants = normalizeWebLogos(activeArt && activeArt.web_logos, activeArt && activeArt.color_ways).filter((w) => w && w.url);
 
-  // Group store items into styles, each with its colorways.
+  // Group store items into styles, each with its colorways; stamp the style key on each
+  // item so placement (per style) and drag can resolve it.
   const groups = [];
   { const m = new Map();
     for (const it of singles) {
@@ -7633,41 +9752,236 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, color: st.color || '', decorations: it.decorations || [] });
+      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, backImg: st.image_back_url || '', color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
-  const choiceOf = (item) => colorByItem[item.id] || (guessDark(item.color) ? 'white' : 'original');
-  const setChoice = (id, c) => setColorByItem((m) => ({ ...m, [id]: c }));
-  const toggleItem = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const includedItems = singles.filter((it) => selected.has(it.id));
-  const selectAll = () => setSelected(new Set(singles.map((it) => it.id)));
+  const allItems = groups.flatMap((g) => g.items);
+  const itemById = (id) => allItems.find((it) => it.id === id) || null;
+  const selectedGroups = groups.filter((g) => selected.has(g.key));
+  const includedItems = selectedGroups.flatMap((g) => g.items);
+  const toggleStyle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
+  const selectAll = () => setSelected(new Set(groups.map((g) => g.key)));
   const clearSel = () => setSelected(new Set());
+  const activeItemOf = (g) => g.items[Math.min(activeIdx[g.key] || 0, g.items.length - 1)];
+  const pageColor = (g, dir) => setActiveIdx((m) => { const cur = Math.min(m[g.key] || 0, g.items.length - 1); return { ...m, [g.key]: (cur + dir + g.items.length) % g.items.length }; });
 
-  const apply = async () => {
-    if (!activeArt || !activeUrl) return;
+  // Autocolor: the per-COLOR pick, resolved from the garment color (real CW variant when
+  // the logo has one, else a light/dark recolor). Used as the live default and re-applied
+  // in one click by the Autocolor button.
+  const pickFor = (item) => pickByItem[item.id] || autoColorChoice(activeArt, item.color, { preferOriginal: activeMulti });
+  const setPick = (id, pick) => setPickByItem((m) => ({ ...m, [id]: pick }));
+  // Autocolor: with styles selected, recolor just those; with NOTHING selected it goes
+  // store-wide — selects every style and colors every color in one click.
+  const autocolorSelected = async () => {
+    const targets = includedItems.length ? includedItems : allItems;
+    if (!includedItems.length) setSelected(new Set(groups.map((g2) => g2.key)));
+    // Make sure the multi-color check has resolved before Autocolor commits picks — otherwise a
+    // fast click could still knock a multi-color logo out to white before detection lands.
+    let multi = activeMulti;
+    if (multi === undefined && activeUrl) { multi = await logoIsMulticolor(activeUrl); setMultiColorByArt((p) => (p[activeId] !== undefined ? p : { ...p, [activeId]: multi })); }
+    setPickByItem((m) => { const n = { ...m }; for (const it of targets) n[it.id] = autoColorChoice(activeArt, it.color, { preferOriginal: multi }); return n; });
+  };
+  // Rep self-serve: turn the shown color's cutout (a recolor, or the base) into a saved,
+  // reusable web logo tied to a color way — creating the CW if the rep names a new one.
+  const [repSave, setRepSave] = useState(null); // { url } while the color-way prompt is open
+  const [repBusy, setRepBusy] = useState(false);
+  const [repNewCw, setRepNewCw] = useState('');
+  const startRepSave = async (item) => {
+    if (!activeArt || !activeUrl || !onSaveRepWebLogo) return;
+    const pick = pickFor(item);
+    setRepBusy(true);
+    try {
+      let url = activeUrl;
+      if (pick.kind === 'variant') url = pick.url;
+      else if (pick.choice !== 'original') {
+        const hex = pick.choice === 'white' ? '#ffffff' : '#000000';
+        const blob = await recolorToBlob(activeUrl, hex);
+        const ext = isSvg(activeUrl) ? 'svg' : 'png';
+        url = await cloudUpload(new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${pick.choice}.${ext}`, { type: blob.type }), 'nsa-store-art');
+      }
+      setRepNewCw(item.color || '');
+      setRepSave({ url });
+    } catch (e) { onFlash && onFlash('Could not prepare the web logo: ' + (e.message || e)); }
+    setRepBusy(false);
+  };
+  const confirmRepSave = async (cwName) => {
+    if (!repSave) return;
+    setRepBusy(true);
+    await onSaveRepWebLogo(activeArt, repSave.url, cwName || '');
+    setRepBusy(false); setRepSave(null); setRepNewCw('');
+  };
+  // Where a garment's logo already sits (the active art's deco, else any logo on that
+  // side) — so an already-decorated style loads its real placement instead of snapping
+  // to the preset. Once the rep picks a preset pill (presetTouched), the preset wins.
+  const existingPlace = (item, side) => {
+    const decos = (item && item.decorations) || [];
+    const d = decos.find((x) => x && (x.side || 'front') === side && x.art_id === (activeArt && activeArt.id)) || decos.find((x) => x && x.art_url && (x.side || 'front') === side && !isPerso(x));
+    if (!d) return null;
+    const dp = ART_PLACEMENTS.find((p) => p.id === d.placement) || (side === 'back' ? _fullBack : place);
+    return { id: d.placement || dp.id, x: d.x != null ? d.x : dp.x, y: d.y != null ? d.y : dp.y, w: d.w != null ? d.w : dp.w };
+  };
+  const _groupOf = (item) => groups.find((g) => g.key === item.styleKey);
+  const frontBase = (item) => {
+    if (presetTouched) return { id: place.id, x: place.x, y: place.y, w: place.w };
+    // Seed from this color's existing deco, else any color of the style (they share one
+    // card-level placement), else the REMEMBERED placement for this garment type (a
+    // hoodie's left chest sits differently than a tee's), else the preset.
+    const g = _groupOf(item);
+    let ex = existingPlace(item, 'front');
+    if (!ex && g) for (const it of g.items) { ex = existingPlace(it, 'front'); if (ex) break; }
+    if (ex) return ex;
+    const mem = placementMemory[garmentTypeOf((g && g.name) || item.sku)];
+    if (mem && mem.x != null) return { id: mem.placement || place.id, x: mem.x, y: mem.y, w: mem.w };
+    return { id: place.id, x: place.x, y: place.y, w: place.w };
+  };
+  const placeForItem = (item) => resolveItemPlacement(frontBase(item), placeByStyle, placeByItem, item.styleKey, item.id);
+  // Back logos: one per style card (rare), seeded from an existing back deco on any of the
+  // style's colors, else the Full Back preset. Presence in backByStyle = gets a back logo.
+  const _backSeed = (g) => { let ex = null; for (const it of g.items) { ex = existingPlace(it, 'back'); if (ex) break; } return ex ? { placement: ex.id, x: ex.x, y: ex.y, w: ex.w } : { placement: 'full_back', x: _fullBack.x, y: _fullBack.y, w: _fullBack.w }; };
+  const backPlaceFor = (g) => backByStyle[g.key] || _backSeed(g);
+  const addBack = (g) => { setBackByStyle((m) => (m[g.key] ? m : { ...m, [g.key]: _backSeed(g) })); setFlipped((s) => new Set(s).add(g.key)); };
+  const removeBack = (key) => { setBackByStyle((m) => { const n = { ...m }; delete n[key]; return n; }); setFlipped((s) => { const n = new Set(s); n.delete(key); return n; }); };
+  const flipSide = (key, toBack) => setFlipped((s) => { const n = new Set(s); toBack ? n.add(key) : n.delete(key); return n; });
+  // Switching the base placement preset re-baselines everything (clears per-style /
+  // per-color drags), so "put it all at Left Chest" is a clean reset to nudge from.
+  const choosePlacement = (id) => { setPlacement(id); setPresetTouched(true); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); };
+
+  // Drag / resize the logo on a card's stage. Front scope is the whole STYLE (every color
+  // moves together) unless the shown color is nudged; the back placement is per style too.
+  const startDrag = (e, g, item, mode, side = 'front') => {
+    if (!selected.has(g.key) || !activeUrl) return;
+    e.preventDefault(); e.stopPropagation();
+    const box = boxRefs.current[g.key];
+    if (!box) return;
+    try { box.setPointerCapture(e.pointerId); } catch (_) { /* older browsers */ }
+    const curP = side === 'back' ? backPlaceFor(g) : placeForItem(item);
+    // Capture where the logo was grabbed relative to its center, so a move tracks the
+    // cursor from that point instead of snapping the center under it (no first-move jump).
+    let grab = { dx: 0, dy: 0 };
+    if (mode === 'move') {
+      const r = box.getBoundingClientRect();
+      grab = { dx: (e.clientX - r.left) - (curP.x / 100) * r.width, dy: (e.clientY - r.top) - (curP.y / 100) * r.height };
+    }
+    // The shown color keeps item scope if it's the nudge target OR already carries its own
+    // override — otherwise dragging it would silently rewrite the whole style's placement.
+    const scope = side === 'back' ? 'backStyle' : ((nudgeItem === item.id || placeByItem[item.id]) ? 'item' : 'style');
+    dragRef.current = { itemId: item.id, styleKey: g.key, mode, box, grab, side, scope };
+  };
+  const onDragMove = (e) => {
+    const d = dragRef.current; if (!d || !d.box) return;
+    const r = d.box.getBoundingClientRect();
+    const item = itemById(d.itemId); if (!item) return;
+    const g = _groupOf(item); if (!g) return;
+    const cur = d.side === 'back' ? backPlaceFor(g) : placeForItem(item);
+    const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
+    let patch;
+    if (d.mode === 'resize') {
+      const cx = (cur.x / 100) * r.width;
+      const halfW = Math.abs((e.clientX - r.left) - cx);
+      patch = { w: Math.max(4, Math.min(100, Math.round((halfW * 2 / r.width) * 100))) };
+    } else {
+      patch = {
+        x: clamp(((e.clientX - r.left - d.grab.dx) / r.width) * 100),
+        y: clamp(((e.clientY - r.top - d.grab.dy) / r.height) * 100),
+      };
+    }
+    const merge = (prev) => ({ placement: cur.placement, x: cur.x, y: cur.y, w: cur.w, ...(prev || {}), ...patch });
+    if (d.scope === 'backStyle') setBackByStyle((m) => ({ ...m, [d.styleKey]: merge(m[d.styleKey]) }));
+    else if (d.scope === 'item') setPlaceByItem((m) => ({ ...m, [d.itemId]: merge(m[d.itemId]) }));
+    else setPlaceByStyle((m) => ({ ...m, [d.styleKey]: merge(m[d.styleKey]) }));
+  };
+  const endDrag = (e) => { const d = dragRef.current; if (d && d.box) { try { d.box.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ } } dragRef.current = null; };
+  const clearNudge = (id) => { setPlaceByItem((m) => { const n = { ...m }; delete n[id]; return n; }); if (nudgeItem === id) setNudgeItem(null); };
+
+  // linkOnly = "Bypass mocks": record the art on each selected item (art_id + placement +
+  // method) but with NO art_url and baked:true — so neither this grid nor the storefront
+  // composites a logo over the (already-decorated) product image, while the store→SO handoff
+  // still carries the art to production. Used for OMG stores whose images already show the art.
+  const apply = async ({ linkOnly = false } = {}) => {
+    if (!activeArt || (!linkOnly && !activeUrl) || !includedItems.length) return;
     setApplying(true); setDone('');
     try {
       const custId = activeArt._srcCustId;
-      // Group the included items by their color choice so each recolor uploads once.
-      const byChoice = { original: [], white: [], black: [] };
-      for (const it of includedItems) byChoice[choiceOf(it)]?.push(it.id);
-      const variantCache = {}; // choice -> art_url
-      for (const choice of ['original', 'white', 'black']) {
-        const ids = byChoice[choice]; if (!ids.length) continue;
-        let artUrl = activeUrl;
-        if (choice !== 'original') {
-          const hex = choice === 'white' ? '#ffffff' : '#000000';
-          const blob = await recolorToBlob(activeUrl, hex);
-          const ext = isSvg(activeUrl) ? 'svg' : 'png';
-          const file = new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${choice}.${ext}`, { type: blob.type });
-          artUrl = await cloudUpload(file, 'nsa-store-art');
-          variantCache[choice] = artUrl;
-          // Save the recolored logo back to the library for reuse on future mocks.
-          if (custId && onSaveArtVariant) await onSaveArtVariant(custId, activeArt.id, { label: choice === 'white' ? 'White' : 'Black', color: hex, art_url: artUrl, source: activeUrl });
+      // Recolor each needed shade once (cached); variant picks use the artist cutout as-is.
+      const recolorCache = {};
+      const recoloredUrl = async (choice) => {
+        if (choice === 'original') return activeUrl;
+        if (recolorCache[choice]) return recolorCache[choice];
+        const hex = choice === 'white' ? '#ffffff' : '#000000';
+        const blob = await recolorToBlob(activeUrl, hex);
+        const ext = isSvg(activeUrl) ? 'svg' : 'png';
+        const file = new File([blob], `${(activeArt.name || 'logo').replace(/\s+/g, '-')}-${choice}.${ext}`, { type: blob.type });
+        const url = await cloudUpload(file, 'nsa-store-art');
+        recolorCache[choice] = url;
+        if (custId && onSaveArtVariant) await onSaveArtVariant(custId, activeArt.id, { label: choice === 'white' ? 'White' : 'Black', color: hex, art_url: url, source: activeUrl });
+        return url;
+      };
+      const source_url = artSourceUrl(activeArt);
+      const deco_type = activeArt.deco_type || null;
+      const entries = [];
+      for (const g of selectedGroups) {
+        // Resolve every color's pick once, and build the per-color map (Decision-2 shape:
+        // {url, color_way_id}) that rides on EVERY row of the style — decorations are
+        // card-level on the storefront/item editor, so each row must be able to resolve
+        // any sibling color, and the SO handoff reads the CW id straight from this map.
+        // Link-only skips all of this: no image is placed, so there's no recolor/upload work.
+        const resolvedById = {};
+        const cwMap = {};
+        if (!linkOnly) for (const it of g.items) {
+          const pick = pickFor(it);
+          let r;
+          if (pick.kind === 'variant') r = { url: pick.url, label: pick.label || 'variant', cwId: pick.colorWayId || null };
+          else r = { url: await recoloredUrl(pick.choice), label: pick.choice, cwId: null };
+          resolvedById[it.id] = r;
+          const ck = colorKeyOf(it.color);
+          if (ck) cwMap[ck] = r.cwId ? { url: r.url, color_way_id: r.cwId } : r.url;
         }
-        await onApplyLogo(ids, { art_id: activeArt.id, art_url: artUrl, source_url: artSourceUrl(activeArt), placement, color_label: choice });
+        const multi = g.items.length > 1;
+        const hasBack = !!backByStyle[g.key];
+        const bp = hasBack ? backPlaceFor(g) : null;
+        for (const it of g.items) {
+          const r = resolvedById[it.id];
+          const mk = (side, pl) => {
+            if (linkOnly) {
+              // Art linked, image untouched: art_id + placement + method, baked:true so no
+              // overlay renders anywhere; color_label keeps the intended logo color for production.
+              const pk = pickFor(it);
+              const d = { art_id: activeArt.id, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, baked: true, color_label: pk.kind === 'variant' ? (pk.label || 'variant') : pk.choice };
+              if (deco_type) d.deco_type = deco_type;
+              return d;
+            }
+            const d = { art_id: activeArt.id, source_url, orig_url: activeUrl, placement: pl.placement, x: pl.x, y: pl.y, w: pl.w, side, art_url: r.url, color_label: r.label };
+            if (r.cwId) d.color_way_id = r.cwId;
+            if (multi) d.cw_by_color = cwMap;
+            return d;
+          };
+          const newDecos = [mk('front', placeForItem(it))];
+          if (hasBack) newDecos.push(mk('back', bp));
+          // Replace the logo on each side we're placing; keep the other side and — crucially —
+          // any personalization tokens (number/name live on the back as perso decorations).
+          const sides = new Set(newDecos.map((d) => d.side));
+          const existing = Array.isArray(it.decorations) ? it.decorations : [];
+          const kept = existing.filter((d) => isPerso(d) || !sides.has(d.side || 'front'));
+          entries.push({ id: it.id, decorations: [...kept, ...newDecos] });
+        }
       }
-      setDone(`Applied to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}.`);
+      const n = await onApplyLogoBulk(entries);
+      // Remember each style's final front placement per garment type, so the next
+      // hoodie/tee/polo seeds where reps actually put it (quiet write, shared by all reps).
+      // Skip for link-only — nothing was visually placed, so there's no placement to learn.
+      if (n > 0 && !linkOnly && onSavePlacementMemory) {
+        const memPatch = {};
+        for (const g2 of selectedGroups) {
+          const pl2 = resolveItemPlacement(frontBase(g2.items[0]), placeByStyle, {}, g2.key, '');
+          memPatch[garmentTypeOf(g2.name)] = { placement: pl2.placement, x: pl2.x, y: pl2.y, w: pl2.w };
+        }
+        onSavePlacementMemory(memPatch);
+      }
+      // Link-only: nothing is placed on the image, so drop the selection — this clears the
+      // draggable placement previews, leaving each card as just the untouched image + its
+      // "Applied" badge (the whole point of Bypass mocks).
+      if (n > 0 && linkOnly) clearSel();
+      setDone(n > 0 ? `${linkOnly ? 'Linked art to' : 'Applied to'} ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}${linkOnly ? ' — image unchanged, no mockup.' : '.'}` : 'Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
@@ -7721,14 +10035,37 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         {pickOpen && (<>
         {storeArt.length === 0 && !addOpen && <div style={{ fontSize: 13, color: '#64748b', padding: '4px 2px 8px' }}>No art chosen for this store yet — click <b>+ Add from library</b> to pick which logos belong on it.</div>}
         {storeArt.length > 0 && <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-          {storeArt.map((a) => { const u = artThumbUrl(a); const on = a.id === activeId; return (
+          {storeArtLive.map((a) => {
+            const u = artThumbUrl(a);
+            const on = a.id === activeId;
+            // Multiple color ways → let the rep tab through each CW's web logo on its garment
+            // color, to eyeball that every color way's art is ready. pickCwAsset resolves the
+            // right cutout per CW (real variant, else the shared default); garmentHex paints it.
+            const cwList = (a.color_ways || []).filter((c) => c && (c.garment_color || '').trim());
+            const views = cwList.length >= 2
+              ? cwList.map((cw) => ({ label: cw.garment_color, url: pickCwAsset(a, { kind: 'web_logo', colorWayId: cw.id }) || u, bg: garmentHex(cw.garment_color) }))
+              : [{ label: '', url: u, bg: u ? logoThumbBg(a, u) : '#f8fafc' }];
+            const multi = views.length > 1;
+            const idx = Math.min(logoCwIdx[a.id] || 0, views.length - 1);
+            const view = views[idx] || views[0];
+            const goIdx = (i) => setLogoCwIdx((m) => ({ ...m, [a.id]: (i + views.length) % views.length }));
+            return (
             <div key={a.id} style={{ position: 'relative', flex: '0 0 auto', width: 96 }}>
               <button onClick={() => setActiveId(a.id)} title={a.name} style={{ width: 96, border: on ? '2px solid #191919' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
-                  {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
+                <div style={{ height: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', background: view.url ? view.bg : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: view.url ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
+                  {view.url ? <img src={view.url} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 4px' }}>{(a.files || [])[0] ? 'AI only — add a web logo' : 'Add a web logo'}</span>}
                 </div>
                 <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
+                {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><DecoBadge deco={a.deco_type} /></div>}
               </button>
+              {multi && <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'center', alignItems: 'center' }}>
+                  <button onClick={() => goIdx(idx - 1)} title="Previous color way" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontSize: 13, lineHeight: 1, padding: '0 2px' }}>‹</button>
+                  {views.length <= 6 ? views.map((v, i) => <button key={i} onClick={() => goIdx(i)} title={v.label || `Color way ${i + 1}`} aria-label={v.label || `Color way ${i + 1}`} style={{ width: i === idx ? 14 : 6, height: 6, borderRadius: 3, border: 'none', padding: 0, cursor: 'pointer', background: i === idx ? '#191919' : '#cbd5e1', transition: 'width .15s' }} />) : <span style={{ fontSize: 9.5, fontWeight: 700, color: '#64748b' }}>{idx + 1}/{views.length}</span>}
+                  <button onClick={() => goIdx(idx + 1)} title="Next color way" style={{ border: 'none', background: 'none', cursor: 'pointer', color: '#64748b', fontSize: 13, lineHeight: 1, padding: '0 2px' }}>›</button>
+                </div>
+                <div style={{ fontSize: 9.5, fontWeight: 700, color: '#475569', textAlign: 'center', marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={view.label}>{view.label || '—'}</div>
+              </div>}
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: 4 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
               <button onClick={() => toggleStoreArt(a)} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 20, height: 20, borderRadius: '50%', border: 'none', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, cursor: 'pointer', lineHeight: '20px', textAlign: 'center', padding: 0 }}>×</button>
             </div>
@@ -7740,10 +10077,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
             {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); return (
               <div key={a.id} style={{ position: 'relative' }}>
                 <button onClick={() => toggleStoreArt(a)} title={a.name} style={{ position: 'relative', width: '100%', border: sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
-                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: u ? logoThumbBg(a, u) : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: u ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
                     {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9.5, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 3px' }}>{(a.files || [])[0] ? 'AI — add web logo' : 'Add web logo'}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
+                  {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><DecoBadge deco={a.deco_type} /></div>}
                   {sel2 && <span style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
                 <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
@@ -7756,70 +10094,169 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       </div></div>
 
       {/* 2 · Bulk apply — opt-in. After bringing art in, the rep chooses to bulk-apply
-          a logo: pick placement, select which items, then apply & review them together. */}
+          a logo: pick a starting placement, select items, Autocolor + drag to fine-tune,
+          then apply & review them together. */}
       {activeArt && (!bulkOpen ? (
         <button onClick={() => activeUrl && setBulkOpen(true)} disabled={!activeUrl}
           style={{ width: '100%', textAlign: 'left', cursor: activeUrl ? 'pointer' : 'not-allowed', border: '1px solid #c7d2fe', background: activeUrl ? '#eef2ff' : '#f1f5f9', color: '#3730a3', borderRadius: 12, padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-          <span><span style={{ fontSize: 15, fontWeight: 800 }}>Bulk-apply “{activeArt.name || 'this logo'}” to items →</span><br /><span style={{ fontSize: 12.5, color: activeUrl ? '#4f46e5' : '#94a3b8' }}>{activeUrl ? 'Optional next step — pick the items to put this logo on, recolor per garment, then apply.' : 'Attach a web logo above first.'}</span></span>
+          <span><span style={{ fontSize: 15, fontWeight: 800 }}>Place “{activeArt.name || 'this logo'}” on items →</span><br /><span style={{ fontSize: 12.5, color: activeUrl ? '#4f46e5' : '#94a3b8' }}>{activeUrl ? 'Pick the garments, Autocolor the right logo per color, drag to fine-tune, then apply.' : 'Attach a web logo above first.'}</span></span>
         </button>
       ) : (
         <div className="card"><div style={{ padding: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
-            <div style={{ fontSize: 13, fontWeight: 800 }}>Bulk-apply <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span></div>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</div>
             <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
           </div>
 
-          {/* Placement */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          {/* 1 · Placement — a starting preset; drag on any garment to fine-tune per style */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Placement</span>
             {ART_PLACEMENTS.map((p) => (
-              <button key={p.id} onClick={() => setPlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
+              <button key={p.id} onClick={() => choosePlacement(p.id)} style={{ borderRadius: 999, padding: '5px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', border: placement === p.id ? '1px solid #191919' : '1px solid #d1d5db', background: placement === p.id ? '#191919' : '#fff', color: placement === p.id ? '#fff' : '#3A4150' }}>{p.label}</button>
             ))}
           </div>
+          <div style={{ fontSize: 11.5, color: '#94a3b8', marginBottom: 14 }}>Starting point — each card is one style; <b>‹ ›</b> pages through its colors. <b>Drag the logo</b> to fine-tune (or its corner to resize) and every color follows. <b>⤢ nudge</b> adjusts just the shown color; <b>+ Back</b> adds a back logo to that style.</div>
 
-          {/* Select items — none chosen by default; tap to pick, then review them together */}
+          {/* 2 · Select styles + Autocolor — one card per style; page through its colors */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select items <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the garments to apply this logo to ({includedItems.length} selected)</span></div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>2 · Select styles <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· tap the cards — a style covers all its colors ({selectedGroups.length} of {groups.length})</span></div>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button onClick={autocolorSelected} disabled={!allItems.length} title={includedItems.length ? 'Auto-pick the right logo color for every color of the selected styles (light logo on dark garments, dark on light — using your real color-way variants when the logo has them)' : 'One click: select EVERY style in the store and auto-pick the right logo color for each garment color'} style={{ fontSize: 12.5, fontWeight: 800, borderRadius: 999, padding: '6px 14px', cursor: allItems.length ? 'pointer' : 'not-allowed', border: 'none', background: allItems.length ? 'linear-gradient(135deg,#7c3aed,#a78bfa)' : '#e2e8f0', color: '#fff' }}>✨ Autocolor{includedItems.length ? '' : ' store'}</button>
               <button onClick={selectAll} className="btn btn-sm btn-secondary">Select all</button>
-              <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!includedItems.length}>Clear</button>
+              <button onClick={clearSel} className="btn btn-sm btn-secondary" disabled={!selectedGroups.length}>Clear</button>
             </div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(124px,1fr))', gap: 14, alignItems: 'start' }}>
-          {groups.map((g) => (
-            <div key={g.key}>
-              <div style={{ fontSize: 11.5, fontWeight: 800, color: '#334155', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {g.items.map((item) => { const ch = choiceOf(item); const sel3 = selected.has(item.id); const has = (item.decorations || []).some((d) => d.placement === placement); return (
-                  <div key={item.id} onClick={() => toggleItem(item.id)} title={sel3 ? 'Tap to deselect' : 'Tap to select'} style={{ border: sel3 ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 10, padding: 6, background: '#fff', cursor: 'pointer' }}>
-                    <div style={{ position: 'relative', aspectRatio: '1 / 1', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 8, overflow: 'hidden' }}>
-                      {item.img ? <img src={item.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 10 }}>No image</div>}
-                      {(item.decorations || []).filter((d) => d && d.art_url && (d.side || 'front') === 'front').map((d, di) => { const pl = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : pl.x; const dy = d.y != null ? d.y : pl.y; const dw = d.w != null ? d.w : pl.w; return <img key={'ad' + di} src={d.art_url} alt="" style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} />; })}
-                      {activeUrl && sel3 && <img src={activeUrl} alt="" style={{ position: 'absolute', left: `${place.x}%`, top: `${place.y}%`, width: `${place.w}%`, transform: 'translate(-50%,-50%)', filter: cssTint(ch), pointerEvents: 'none', opacity: 0.95 }} />}
-                      <span style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: sel3 ? '#4f46e5' : 'rgba(255,255,255,.92)', border: sel3 ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)' }}>{sel3 ? '✓' : ''}</span>
-                      {has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase' }}>Applied</span>}
-                    </div>
-                    <div style={{ fontSize: 11, fontWeight: 700, marginTop: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}</div>
-                    {sel3 && <div style={{ display: 'flex', gap: 4, marginTop: 5 }} onClick={(e) => e.stopPropagation()}>
-                      {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => (
-                        <button key={c} onClick={() => setChoice(item.id, c)} title={`Recolor: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: ch === c ? '1px solid #191919' : '1px solid #d1d5db', background: ch === c ? '#191919' : '#fff', color: ch === c ? '#fff' : '#475569' }}>{lbl}</button>
-                      ))}
-                    </div>}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(200px,1fr))', gap: 16, alignItems: 'start' }}>
+          {groups.map((g) => {
+            const selG = selected.has(g.key);
+            const item = activeItemOf(g);
+            const multi = g.items.length > 1;
+            const idx = g.items.indexOf(item);
+            const showBack = selG && flipped.has(g.key);
+            const sideNow = showBack ? 'back' : 'front';
+            const hasBack = !!backByStyle[g.key];
+            const pick = pickFor(item);
+            const pl = showBack ? backPlaceFor(g) : placeForItem(item);
+            const bgImg = showBack ? item.backImg : item.img;
+            const previewUrl = pick.kind === 'variant' ? pick.url : activeUrl;
+            const previewFilter = pick.kind === 'variant' ? 'none' : cssTint(pick.choice);
+            const has = g.items.some((it) => (it.decorations || []).some((d) => d && d.art_id === activeArt.id));
+            const nudged = !!placeByItem[item.id];
+            const navBtn = { position: 'absolute', top: '50%', transform: 'translateY(-50%)', width: 24, height: 24, borderRadius: '50%', border: '1px solid #e2e8f0', background: 'rgba(255,255,255,.94)', color: '#334155', fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 4px rgba(0,0,0,.14)', padding: 0, zIndex: 3, lineHeight: 1 };
+            return (
+            <div key={g.key} onClick={() => { if (!selG) toggleStyle(g.key); }} title={selG ? '' : 'Tap to select this style'} style={{ border: selG ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 12, padding: 8, background: '#fff', cursor: selG ? 'default' : 'pointer', boxShadow: selG ? '0 2px 10px rgba(79,70,229,.10)' : 'none' }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
+              {/* WYSIWYG: this stage frames the garment with objectFit:cover (fills the 4:5 box),
+                  and the storefront (Storefront.js) now matches — same box, same cover — so a
+                  logo placed here lands on the same spot on the garment the shopper sees. */}
+              <div ref={(el) => { if (el) boxRefs.current[g.key] = el; else delete boxRefs.current[g.key]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
+                style={{ position: 'relative', aspectRatio: '4 / 5', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 9, overflow: 'hidden', touchAction: selG ? 'none' : 'auto' }}>
+                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
+                {/* logos already on the shown color+side (other than the one we're placing) —
+                    resolved per color (cw_by_color / web-logo variant), never the raw art_url,
+                    which may be a different color's cutout. */}
+                {(item.decorations || []).filter((d) => d && !d.baked && (d.side || 'front') === sideNow && !isPerso(d) && !(selG && d.art_id === activeArt.id)).map((d, di) => { const dp = ART_PLACEMENTS.find((x) => x.id === d.placement) || place; const dx = d.x != null ? d.x : dp.x; const dy = d.y != null ? d.y : dp.y; const dw = d.w != null ? d.w : dp.w; const wl = (storeArtLive.find((a) => a.id === d.art_id) || libraryArt.find((a) => a.id === d.art_id) || {}).web_logos; const u = decoUrlForColor(d, item.color, wl); return u ? <img key={'ad' + di} src={u} alt="" draggable={false} style={{ position: 'absolute', left: `${dx}%`, top: `${dy}%`, width: `${dw}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none' }} /> : null; })}
+                {/* the logo being placed — draggable; corner square resizes; moves the whole style */}
+                {activeUrl && selG && bgImg && (
+                  <div onPointerDown={(e) => startDrag(e, g, item, 'move', sideNow)} style={{ position: 'absolute', left: `${pl.x}%`, top: `${pl.y}%`, width: `${pl.w}%`, transform: 'translate(-50%,-50%)', cursor: 'move', outline: '2px solid rgba(79,70,229,.7)', outlineOffset: 1, touchAction: 'none', zIndex: 2 }}>
+                    <img src={previewUrl} alt="" draggable={false} style={{ display: 'block', width: '100%', filter: previewFilter, pointerEvents: 'none' }} />
+                    <div onPointerDown={(e) => startDrag(e, g, item, 'resize', sideNow)} title="Drag to resize" style={{ position: 'absolute', right: -7, bottom: -7, width: 14, height: 14, borderRadius: 4, background: '#4f46e5', border: '2px solid #fff', cursor: 'nwse-resize', boxShadow: '0 1px 3px rgba(0,0,0,.3)' }} />
                   </div>
-                ); })}
+                )}
+                {/* color paging — browse colors without selecting the card */}
+                {multi && <button onClick={(e) => { e.stopPropagation(); pageColor(g, -1); }} onPointerDown={(e) => e.stopPropagation()} title="Previous color" aria-label="Previous color" style={{ ...navBtn, left: 6 }}>‹</button>}
+                {multi && <button onClick={(e) => { e.stopPropagation(); pageColor(g, 1); }} onPointerDown={(e) => e.stopPropagation()} title="Next color" aria-label="Next color" style={{ ...navBtn, right: 6 }}>›</button>}
+                <button onClick={(e) => { e.stopPropagation(); toggleStyle(g.key); }} title={selG ? 'Deselect style' : 'Select style'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: selG ? '#4f46e5' : 'rgba(255,255,255,.92)', border: selG ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0, zIndex: 3 }}>{selG ? '✓' : ''}</button>
+                {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Back</span>}
+                {!showBack && selG && hasBack && <span title="This style also gets a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>+ Back</span>}
+                {!selG && has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Applied</span>}
+                {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
+              {/* color name + pager dots */}
+              <div style={{ marginTop: 6, textAlign: 'center' }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: '#334155', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.color || '—'}{multi && <span style={{ fontWeight: 600, color: '#94a3b8' }}> · {idx + 1}/{g.items.length}</span>}</div>
+                {multi && g.items.length <= 8 && (
+                  <div style={{ display: 'flex', gap: 4, justifyContent: 'center', marginTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                    {g.items.map((it, i) => <button key={it.id} onClick={() => setActiveIdx((m) => ({ ...m, [g.key]: i }))} title={it.color || `Color ${i + 1}`} aria-label={it.color || `Color ${i + 1}`} style={{ width: i === idx ? 16 : 6, height: 6, borderRadius: 3, border: 'none', padding: 0, cursor: 'pointer', background: i === idx ? '#4f46e5' : '#cbd5e1', transition: 'width .15s' }} />)}
+                  </div>
+                )}
+              </div>
+              {selG && <div style={{ marginTop: 7 }} onClick={(e) => e.stopPropagation()}>
+                {/* Logo color for the SHOWN color (Autocolor sets all colors at once) */}
+                <div style={{ fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#94a3b8', marginBottom: 3 }}>Logo on {item.color || 'this color'}</div>
+                {variants.length >= 2 && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 4 }}>
+                    {variants.map((v) => { const on = pick.kind === 'variant' && pick.url === v.url; return (
+                      <button key={v.url} onClick={() => setPick(item.id, { kind: 'variant', url: v.url, colorWayId: v.color_way_id || null, label: v.color_way || '' })} title={`Use the ${v.color_way || 'default'} version on ${item.color || 'this color'}`} style={{ fontSize: 9.5, fontWeight: 700, padding: '3px 8px', borderRadius: 999, cursor: 'pointer', border: on ? '1px solid #4f46e5' : '1px solid #d1d5db', background: on ? '#4f46e5' : '#fff', color: on ? '#fff' : '#475569' }}>{v.color_way || 'Default'}</button>
+                    ); })}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 4 }}>
+                  {[['original', 'Orig'], ['white', 'White'], ['black', 'Black']].map(([c, lbl]) => { const on = pick.kind === 'recolor' && pick.choice === c; return (
+                    <button key={c} onClick={() => setPick(item.id, { kind: 'recolor', choice: c })} title={`Recolor the base cutout: ${lbl}`} style={{ flex: 1, fontSize: 10, fontWeight: 700, padding: '4px 0', borderRadius: 6, cursor: 'pointer', border: on ? '1px solid #191919' : '1px solid #d1d5db', background: on ? '#191919' : '#fff', color: on ? '#fff' : '#475569' }}>{lbl}</button>
+                  ); })}
+                </div>
+                {/* Rep self-serve: save this recolored cutout as a real per-CW web logo */}
+                {onSaveRepWebLogo && pick.kind === 'recolor' && <button onClick={() => startRepSave(item)} disabled={repBusy} title="Save this recolored logo to the art library as a reusable web logo tied to a color way" style={{ width: '100%', fontSize: 9.5, fontWeight: 700, color: '#166534', background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 6, padding: '3px 8px', marginTop: 4, cursor: repBusy ? 'wait' : 'pointer' }}>{repBusy ? 'Saving…' : '💾 Save recolor as web logo'}</button>}
+                {/* Front/Back + placement controls */}
+                <div style={{ display: 'flex', gap: 4, marginTop: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {(item.backImg || hasBack) && (
+                    <div style={{ display: 'inline-flex', border: '1px solid #e2e8f0', borderRadius: 6, overflow: 'hidden' }}>
+                      <button onClick={() => flipSide(g.key, false)} title="Front" style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', background: !showBack ? '#0f172a' : '#fff', color: !showBack ? '#fff' : '#475569' }}>Front</button>
+                      <button onClick={() => (hasBack ? flipSide(g.key, true) : addBack(g))} title={hasBack ? 'View / edit the back logo' : 'Add a back logo to this style'} style={{ fontSize: 9.5, fontWeight: 800, padding: '2px 8px', cursor: 'pointer', border: 'none', borderLeft: '1px solid #e2e8f0', background: showBack ? '#0f172a' : '#fff', color: showBack ? '#fff' : (hasBack ? '#0f172a' : '#94a3b8') }}>{hasBack ? 'Back' : '+ Back'}</button>
+                    </div>
+                  )}
+                  {hasBack && <button onClick={() => removeBack(g.key)} title="Remove the back logo from this style" style={{ fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>✕ back</button>}
+                  {!showBack && (nudged
+                    ? <button onClick={() => clearNudge(item.id)} title="Reset this color to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
+                    : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this color's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
+                </div>
+              </div>}
             </div>
-          ))}
+          ); })}
           </div>
 
           {/* Sticky apply bar */}
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
-            <span style={{ fontSize: 12.5, color: '#64748b' }}>{includedItems.length} item{includedItems.length === 1 ? '' : 's'} · {place.label}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-primary" disabled={applying || !activeUrl || !includedItems.length} onClick={apply}>{applying ? 'Applying…' : includedItems.length ? `Apply to ${includedItems.length} item${includedItems.length === 1 ? '' : 's'}` : 'Select items to apply'}</button>
+            <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
+            <button className="btn btn-secondary" disabled={applying || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
+            <button className="btn btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply'}</button>
           </div>
         </div></div>
       ))}
+
+      {/* Rep self-serve: which color way does this saved web logo belong to? */}
+      {repSave && (
+        <div onClick={() => !repBusy && setRepSave(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.5)', zIndex: 1100, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '48px 16px', overflowY: 'auto' }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ background: '#fff', borderRadius: 14, boxShadow: '0 24px 60px rgba(0,0,0,.3)', width: '100%', maxWidth: 420, margin: 'auto' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: '1px solid #eef0f3' }}>
+              <div style={{ fontWeight: 800, fontSize: 15 }}>Save web logo for which color way?</div>
+              <button onClick={() => !repBusy && setRepSave(null)} style={{ background: 'none', border: 'none', fontSize: 22, lineHeight: 1, cursor: 'pointer', color: '#6A7180' }}>×</button>
+            </div>
+            <div style={{ padding: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+                <img src={repSave.url} alt="" style={{ width: 44, height: 44, objectFit: 'contain', borderRadius: 8, border: '1px solid #eef2f7', background: '#f8fafc' }} />
+                <div style={{ fontSize: 12, color: '#64748b' }}>Saved to <b>{activeArt && activeArt.name}</b>'s art library and reusable on every store.</div>
+              </div>
+              {(activeArt && activeArt.color_ways || []).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+                  <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8' }}>Existing color ways</div>
+                  {(activeArt.color_ways || []).map((cw, ci) => <button key={cw.id || ci} disabled={repBusy} onClick={() => confirmRepSave(cw.garment_color || ('Color way ' + (ci + 1)))} style={{ display: 'flex', alignItems: 'center', gap: 8, textAlign: 'left', padding: '9px 12px', border: '1px solid #e2e8f0', borderRadius: 8, background: '#fff', cursor: repBusy ? 'wait' : 'pointer', fontSize: 13, fontWeight: 600, color: '#1e293b' }}><span style={{ fontSize: 10, fontWeight: 700, color: '#fff', background: '#64748b', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>CW {ci + 1}</span>{cw.garment_color || ('Color way ' + (ci + 1))}</button>)}
+                </div>
+              )}
+              <div style={{ paddingTop: 12, borderTop: '1px solid #eef2f7' }}>
+                <div style={{ fontSize: 10, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.3, color: '#94a3b8', marginBottom: 6 }}>Or create a new color way</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <input value={repNewCw} onChange={(e) => setRepNewCw(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && repNewCw.trim()) confirmRepSave(repNewCw.trim()); }} placeholder="e.g. Navy, White" style={{ flex: 1, fontSize: 13, padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 8, outline: 'none' }} />
+                  <button className="btn btn-primary" disabled={repBusy || !repNewCw.trim()} onClick={() => confirmRepSave(repNewCw.trim())}>Create &amp; save</button>
+                </div>
+                <button disabled={repBusy} onClick={() => confirmRepSave('')} style={{ marginTop: 10, fontSize: 11.5, fontWeight: 700, color: '#475569', background: 'none', border: 'none', cursor: repBusy ? 'wait' : 'pointer', padding: 0 }}>or save as the “all garments” default →</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -8001,12 +10438,33 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   const catBySku = {}; (catalog || []).forEach((c) => { if (c.sku) catBySku[String(c.sku).toUpperCase()] = c; });
   const artName = {}; (libraryArt || []).forEach((a) => { if (a && a.id) artName[a.id] = a.name || 'Logo'; });
   const revenue = orders.reduce((a, o) => a + (Number(o.total) || 0), 0);
-  const fundraise = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const r2f = (n) => Math.round((Number(n) || 0) * 100) / 100;
+  // Fundraising the club is actually owed on an order = its fundraise_amt, less the share of
+  // any coupon discount that came off the pot. Checkout applies the % to subtotal + fundraise
+  // together, so a discounted order collected proportionally less fundraising, and a 100%-off
+  // order collected none — paying the club the gross fundraise_amt overpaid them on every
+  // discounted order.
+  const netFundraise = (o) => {
+    const sub = Number(o.subtotal) || 0, fund = Number(o.fundraise_amt) || 0;
+    if (fund <= 0) return 0;
+    const base = sub + fund;
+    if (base <= 0) return r2f(fund);
+    const disc = Math.min(Number(o.discount_amt) || 0, base);
+    return Math.max(0, r2f(fund - disc * (fund / base)));
+  };
+  const fundGross = orders.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const shipCollected = orders.reduce((a, o) => a + (Number(o.shipping_fee) || 0), 0);
   const shipCost = orders.reduce((a, o) => a + (Number(o.label_cost) || 0), 0);
   const shipNet = shipCollected - shipCost;
-  const fundPaid = orders.filter((o) => o.status === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
-  const fundPending = fundraise - fundPaid;
+  // "Collected & owed" counts fundraising on every card-paid order through its whole
+  // lifecycle (paid → batched → shipped → complete), NOT just status==='paid' — the old test
+  // dropped every batched order and cratered the payout right after the rep batched the store.
+  // Team-tab / unpaid orders bill on the club invoice, so their fundraising is still "pending".
+  // Fully-refunded orders (status 'refunded') owe nothing.
+  const nonRefunded = orders.filter((o) => o.status !== 'refunded');
+  const fundOwed = r2f(nonRefunded.reduce((a, o) => a + netFundraise(o), 0));
+  const fundPaid = r2f(nonRefunded.filter((o) => o.payment_mode === 'paid').reduce((a, o) => a + netFundraise(o), 0));
+  const fundPending = r2f(Math.max(0, fundOwed - fundPaid));
   const paid = orders.filter((o) => o.payment_mode === 'paid');
 
   // ── Accounting ledger — every dollar in and out of the store ──
@@ -8096,7 +10554,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12 }}>
-        {[['Revenue', money(revenue)], ['Fundraising', money(fundraise), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
+        {[['Revenue', money(revenue)], ['Fundraising', money(fundOwed), '#166534'], ['Orders', orders.length], ...(packagesSold > 0 ? [['Packages sold', packagesSold, '#7c3aed']] : []), ['Units', units], ['Avg order', money(revenue / orders.length)], ['Paid / Team tab', `${paid.length} / ${orders.length - paid.length}`],
           ...(shipCollected || shipCost ? [['Shipping collected', money(shipCollected)], ['Label cost (actual)', money(shipCost), '#b45309'], ['Shipping net', money(shipNet), shipNet >= 0 ? '#166534' : '#b91c1c']] : [])].map(([l, v, c]) => (
           <div key={l} className="card"><div style={{ padding: 14 }}><div style={{ fontSize: 22, fontWeight: 800, color: c || '#1e293b' }}>{v}</div><div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5 }}>{l}</div></div></div>
         ))}
@@ -8124,7 +10582,7 @@ function AnalyticsTab({ store, orders: allOrders, orderItems, stockByWp, catalog
         <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 8, lineHeight: 1.5 }}>Sales tax is collected on the state's behalf and remitted to CDTFA — it is not store revenue. Card &amp; label costs apply only to card-paid orders; team-tab balances settle on the club invoice.</div>
       </div></div>
 
-      {fundraise > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+      {fundGross > 0 && <div className="card" style={{ background: '#f0fdf4', border: '1px solid #bbf7d0' }}><div style={{ padding: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
         <div>
           <div style={{ fontSize: 11, color: '#15803d', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>Club fundraising payout</div>
           <div style={{ fontSize: 26, fontWeight: 900, color: '#166534' }}>{money(fundPaid)}</div>
@@ -8337,24 +10795,80 @@ function AddNumberSet({ onAdd, onClose }) {
 
 // Batches: the Sales Orders created from this store, with full fulfillment
 // status — ordered qty, picked qty, and stock health per line item.
+// Batched SOs for a set of stores, with the fulfillment children the tracking views
+// need (items + their PO/pick lines, decorations, jobs). Shared by BatchesTab
+// (per-store) and StoreBackordersView (store or whole-customer scope) so the two
+// views can't drift on what "a batch's fulfillment state" means. Throws on error.
+async function fetchStoreSOFulfillment(storeIds) {
+  // Soft-deleted SOs are excluded — a dead batch's unreceived units must not count
+  // as open demand in the backorder rollup (or show as a batch card).
+  const { data: orders, error } = await supabase.from('sales_orders').select('id,webstore_id,status,created_at,memo,production_notes,_shipping_status,_tracking_number,webstore_batch_no,webstore_batch_label,webstore_batch_cutoff').in('webstore_id', storeIds).is('deleted_at', null).order('created_at', { ascending: false });
+  if (error) throw error;
+  const ids = (orders || []).map((o) => o.id);
+  if (!ids.length) return [];
+  // jobs only need `ids` — fire now, await after the item children resolve.
+  const jobsQ = supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
+  const { data: items, error: itemErr } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
+  if (itemErr) throw itemErr;
+  const itemIds = (items || []).map((i) => i.id);
+  let picks = [], decos = [], pos = [];
+  if (itemIds.length) {
+    const [plRes, decoRes, poRes] = await Promise.all([
+      supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
+      supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
+      supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
+    ]);
+    // A failed child query must be loud: silently-empty pick/PO lines would render
+    // every line as unreceived (or the backorder view as all-clear) instead of an error.
+    const failed = [plRes, decoRes, poRes].find((r) => r.error);
+    if (failed) throw failed.error;
+    picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
+  }
+  const { data: jobRes, error: jobErr } = await jobsQ;
+  if (jobErr) throw jobErr;
+  const jobs = jobRes || [];
+  const pickedByItem = {};
+  picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
+  const decosByItem = {};
+  decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
+  // Attach PO + pick lines per item so the per-customer tracking grid can
+  // read Billed/Received (PO lines) and on-IF (pick lines).
+  const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
+  const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
+  return (orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) }));
+}
+
+// Merged per-line tracking across a set of batch SOs: FIFO-allocate each SO's
+// incoming/received stock to its LIVE orders (earliest first, within the batch) and
+// merge the per-line maps. The ONE copy shared by BatchesTab's grids and
+// StoreBackordersView's rollup, so their Need/Open numbers can never drift apart —
+// including which orders count (dead orders must not soak up FIFO supply).
+function mergeStoreTracking(sos, orders, itemsByOrder, products) {
+  const bySo = {};
+  (orders || []).forEach((w) => { if (w.so_id && isLiveWebstoreOrder(w)) (bySo[w.so_id] = bySo[w.so_id] || []).push(w); });
+  const merged = {};
+  (sos || []).forEach((so) => {
+    const bOrders = (bySo[so.id] || []).map((w) => ({ ...w, items: itemsByOrder[w.id] || [] }));
+    if (bOrders.length) Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: so.items }, products: products || [], includeIF: true }));
+  });
+  return merged;
+}
+
 function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems = [], orders = [], orderItems = [], transfers = [], onPullTransfers }) {
   const [sos, setSos] = useState(null);
   const [err, setErr] = useState('');
   const [ssMsg, setSsMsg] = useState({}); // soId -> status message
   const [ssErr, setSsErr] = useState({}); // soId -> [{order, msg}] from the last run
   const shipHome = store.delivery_mode !== 'deliver_club';
-  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store)
+  const [trackMode, setTrackMode] = useState('batch'); // 'batch' (per-SO) | 'all' (overall store) | 'backorders'
   // In-house on-hand by product → {size: qty}, for the "In Inv" column.
   const invProducts = useMemo(() => Object.values(productStock || {}).map((s) => ({ id: s.product_id, _inv: s.size_stock || {} })).filter((p) => p.id), [productStock]);
   // Per-customer-line incoming tracking, FIFO-allocated WITHIN each batch (SO),
   // then merged so the overall view can show every batch at once.
   const trackByLine = useMemo(() => {
-    const merged = {};
-    (sos || []).forEach((o) => {
-      const bOrders = (orders || []).filter((w) => w.so_id === o.id).map((w) => ({ ...w, items: (orderItems || []).filter((i) => i.order_id === w.id) }));
-      Object.assign(merged, computeOrderTracking({ orders: bOrders, so: { items: o.items }, products: invProducts, includeIF: true }));
-    });
-    return merged;
+    const itemsByOrder = {};
+    (orderItems || []).forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+    return mergeStoreTracking(sos, orders, itemsByOrder, invProducts);
   }, [sos, orders, orderItems, invProducts]);
   const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
   // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
@@ -8394,10 +10908,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
       </table>
     );
   };
-  // Webstore orders + items belonging to one batched SO.
+  // Webstore orders + items belonging to one batched SO. Items carry the
+  // effective SKU (size_skus overrides) so packing lists + ShipStation lines
+  // show the item number production actually sourced.
   const batchGroups = (soId) => {
+    const skuMap = sizeSkuMapOf(catalog);
     const linked = orders.filter((o) => o.so_id === soId);
-    return linked.map((o) => ({ order: o, items: orderItems.filter((i) => i.order_id === o.id) }));
+    return linked.map((o) => ({ order: o, items: annotateEffSkus(orderItems.filter((i) => i.order_id === o.id), skuMap) }));
   };
   const printPacking = (soId, soLabel) => printHtml(buildPackingLists(store, soLabel, batchGroups(soId)));
   const homeGroups = (soId) => batchGroups(soId).filter((g) => (g.order.ship_method || store.delivery_mode) !== 'deliver_club' && g.order.ship_address);
@@ -8472,38 +10989,14 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   useEffect(() => {
     (async () => {
       setSos(null); setErr('');
-      const { data: orders, error } = await supabase.from('sales_orders').select('id,status,created_at,memo,production_notes,_shipping_status,_tracking_number').eq('webstore_id', store.id).order('created_at', { ascending: false });
-      if (error) { setErr(error.message); setSos([]); return; }
-      const ids = (orders || []).map((o) => o.id);
-      if (!ids.length) { setSos([]); return; }
-      const { data: items } = await supabase.from('so_items').select('id,so_id,sku,name,product_id,sizes').in('so_id', ids);
-      const itemIds = (items || []).map((i) => i.id);
-      let picks = [], decos = [], jobs = [], pos = [];
-      if (itemIds.length) {
-        const [plRes, decoRes, poRes] = await Promise.all([
-          supabase.from('so_item_pick_lines').select('so_item_id,sizes,status').in('so_item_id', itemIds),
-          supabase.from('so_item_decorations').select('so_item_id,kind,position,type,num_method,deco_type,art_file_id').in('so_item_id', itemIds),
-          supabase.from('so_item_po_lines').select('so_item_id,billed,received,sizes,status').in('so_item_id', itemIds),
-        ]);
-        picks = plRes.data || []; decos = decoRes.data || []; pos = poRes.data || [];
-      }
-      const { data: jobRes } = await supabase.from('so_jobs').select('so_id,art_name,deco_type,positions,art_status,prod_status,total_units,fulfilled_units').in('so_id', ids);
-      jobs = jobRes || [];
-      const pickedByItem = {};
-      picks.forEach((p) => { if ((p.status || '') === 'pulled') { const t = sumSizes(p.sizes); pickedByItem[p.so_item_id] = (pickedByItem[p.so_item_id] || 0) + t; } });
-      const decosByItem = {};
-      decos.forEach((d) => { (decosByItem[d.so_item_id] = decosByItem[d.so_item_id] || []).push(d); });
-      // Attach PO + pick lines per item so the per-customer tracking grid can
-      // read Billed/Received (PO lines) and on-IF (pick lines).
-      const picksByItem = {}; picks.forEach((p) => { (picksByItem[p.so_item_id] = picksByItem[p.so_item_id] || []).push(p); });
-      const posByItem = {}; pos.forEach((p) => { (posByItem[p.so_item_id] = posByItem[p.so_item_id] || []).push(p); });
-      setSos((orders || []).map((o) => ({ ...o, items: (items || []).filter((i) => i.so_id === o.id).map((it) => ({ ...it, po_lines: posByItem[it.id] || [], pick_lines: picksByItem[it.id] || [] })), pickedByItem, decosByItem, jobs: jobs.filter((j) => j.so_id === o.id) })));
+      try { setSos(await fetchStoreSOFulfillment([store.id])); }
+      catch (e) { setErr(e.message || 'Load failed'); setSos([]); }
     })();
   }, [store.id]);
 
   if (sos === null) return <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading batches…</div>;
   if (err) return <Empty msg={'Could not load batches: ' + err} />;
-  if (!sos.length) return <Empty msg="No Sales Orders batched from this store yet. Use Orders → Create Sales Order." />;
+  if (!sos.length) return <Empty msg="No batches created from this store yet. Use Orders → Create Batch." />;
 
   const stockHealth = (item) => {
     const st = productStock[item.product_id];
@@ -8518,7 +11011,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     return short === 0 ? { text: 'Stock OK', color: '#166534' } : { text: `Short on ${short} size${short === 1 ? '' : 's'}`, color: '#b91c1c' };
   };
 
-  const allWOrders = (orders || []).filter((w) => sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
+  // Live orders only, matching mergeStoreTracking — a cancelled/refunded order has no
+  // tracking entry, so rendering it would show a misleading all-defaults row.
+  const allWOrders = (orders || []).filter((w) => isLiveWebstoreOrder(w) && sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -8526,7 +11021,9 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
         <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
         {tBtn('batch', '📦 By batch')}
         {tBtn('all', '🏬 All orders (overall)')}
+        {tBtn('backorders', '⏳ Backorders')}
       </div>
+      {trackMode === 'backorders' && <StoreBackordersView store={store} onOpenSO={onOpenSO} />}
       {trackMode === 'all' && (
         <div className="card"><div style={{ padding: 16 }}>
           <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 4 }}>All customer orders — {store.name}</div>
@@ -8543,8 +11040,11 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
           <div key={o.id} className="card"><div style={{ padding: 16 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
               <div>
-                <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
-                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}</div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+                  {o.webstore_batch_no != null && <span style={{ fontSize: 12, fontWeight: 800, color: '#6d28d9', background: '#ede9fe', borderRadius: 6, padding: '2px 8px', whiteSpace: 'nowrap' }}>Batch {o.webstore_batch_no}{o.webstore_batch_label ? ` · ${o.webstore_batch_label}` : ''}</span>}
+                  <div style={{ fontSize: 16, fontWeight: 800, fontFamily: 'monospace', color: '#1e40af', cursor: 'pointer' }} onClick={() => onOpenSO && onOpenSO(o.id)}>{o.id} ↗</div>
+                </div>
+                <div style={{ fontSize: 12, color: '#64748b' }}>{o.memo}{o.webstore_batch_cutoff ? ` · orders through ${batchCutoffDay(o.webstore_batch_cutoff)}` : ''}</div>
                 <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
                   <button className="btn btn-sm btn-secondary" onClick={() => printPacking(o.id, o.id)}>🖨️ Packing lists</button>
                   {shipHome && <button className="btn btn-sm btn-secondary" onClick={() => printShipLabels(o.id)}>🏷️ Create & print labels</button>}
@@ -8594,7 +11094,7 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
             </table>
             <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Customer order tracking</div>
-              {renderTrackTable((orders || []).filter((w) => w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
+              {renderTrackTable((orders || []).filter((w) => isLiveWebstoreOrder(w) && w.so_id === o.id).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || ''))))}
             </div>
             {(o.jobs || []).length > 0 && <div style={{ marginTop: 12, borderTop: '1px solid #f1f5f9', paddingTop: 10 }}>
               <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Decoration / production</div>
@@ -8642,13 +11142,143 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   );
 }
 
+// Cross-batch backorder rollup: every ordered unit still waiting on stock, aggregated
+// by SKU + size across ALL of the store's batches — and optionally across every store
+// belonging to the same customer, since multiple batches (and stores) often ride on
+// the same incoming stock shipment. Reuses computeOrderTracking (the same FIFO
+// allocation the tracking grids use) so "Open" here always matches the per-line Need
+// column in the batch views.
+function StoreBackordersView({ store, onOpenSO }) {
+  const [scope, setScope] = useState('store'); // 'store' | 'customer' (all this customer's stores)
+  const [data, setData] = useState(null);      // { stores, sos, orders, items }
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      setData(null); setErr('');
+      try {
+        let stores = [{ id: store.id, name: store.name }];
+        if (scope === 'customer' && store.customer_id) {
+          const { data: sibs, error: sErr } = await supabase.from('webstores').select('id,name').eq('customer_id', store.customer_id);
+          if (sErr) throw sErr;
+          if (sibs && sibs.length) stores = sibs;
+        }
+        const storeIds = stores.map((s) => s.id);
+        // The SO-fulfillment chain and the orders query are independent — run them together.
+        const [sos, ordsRes] = await Promise.all([
+          fetchStoreSOFulfillment(storeIds),
+          supabase.from('webstore_orders').select('id,store_id,so_id,status,buyer_name,buyer_email,created_at').in('store_id', storeIds).not('so_id', 'is', null),
+        ]);
+        if (ordsRes.error) throw ordsRes.error;
+        const live = (ordsRes.data || []).filter(isLiveWebstoreOrder);
+        const oIds = live.map((o) => o.id);
+        const chunks = [];
+        for (let i = 0; i < oIds.length; i += 300) chunks.push(oIds.slice(i, i + 300));
+        const itemRes = await Promise.all(chunks.map((c) => supabase.from('webstore_order_items').select('*').in('order_id', c)));
+        const failed = itemRes.find((r) => r.error);
+        if (failed) throw failed.error;
+        const items = itemRes.flatMap((r) => r.data || []);
+        if (!dead) setData({ stores, sos, orders: live, items });
+      } catch (e) { if (!dead) { setErr(e.message || 'Load failed'); setData({ stores: [], sos: [], orders: [], items: [] }); } }
+    })();
+    return () => { dead = true; };
+  }, [store.id, store.name, store.customer_id, scope]);
+
+  const rows = useMemo(() => {
+    if (!data) return [];
+    const { stores, sos, orders, items } = data;
+    const storeName = {}; stores.forEach((s) => { storeName[s.id] = s.name; });
+    const soById = {}; sos.forEach((s) => { soById[s.id] = s; });
+    const itemsByOrder = {}; items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+    // Same per-batch FIFO allocation (and live-order filter) as BatchesTab's grids —
+    // one shared function, so Open here always equals Need there.
+    const track = mergeStoreTracking(sos, orders, itemsByOrder, []);
+    const agg = {};
+    orders.forEach((w) => {
+      const so = soById[w.so_id]; if (!so) return;
+      (itemsByOrder[w.id] || []).forEach((i) => {
+        if (i.is_bundle_parent) return;
+        const t = track[i.id];
+        if (!t || !(t.need > 0) || t.status === 'shipped') return;
+        if (i.line_status === 'shipped' || i.line_status === 'cancelled') return;
+        const sku = t.sku || i.sku || '';
+        const k = (sku || i.product_id || i.name || '?') + '|' + (i.size || 'OS');
+        // i.name first: t.soName is normalized (trimmed/UPPERCASED) inside
+        // computeOrderTracking and would render all-caps here and in the CSV.
+        const r = agg[k] = agg[k] || { sku, name: i.name || i.sku || (t.soName || '').toLowerCase() || 'Item', size: i.size || 'OS', open: 0, ordered: 0, incoming: 0, received: 0, buyers: new Set(), batches: new Map() };
+        r.open += t.need; r.ordered += t.ordered; r.incoming += t.billed; r.received += t.received;
+        r.buyers.add(w.buyer_email || w.buyer_name || w.id);
+        const b = r.batches.get(so.id) || { soId: so.id, no: so.webstore_batch_no, label: so.webstore_batch_label, storeName: storeName[so.webstore_id] || '', open: 0 };
+        b.open += t.need; r.batches.set(so.id, b);
+      });
+    });
+    return Object.values(agg).map((r) => ({ ...r, buyers: r.buyers.size, batches: [...r.batches.values()] })).sort((a, b) => b.open - a.open || String(a.name).localeCompare(String(b.name)));
+  }, [data]);
+
+  const totalOpen = rows.reduce((a, r) => a + r.open, 0);
+  const batchCount = new Set(rows.flatMap((r) => r.batches.map((b) => b.soId))).size;
+  const exportCsv = () => {
+    const header = ['Item', 'SKU', 'Size', 'Open', 'Incoming', 'Received', 'Buyers', 'Batches'];
+    const rws = rows.map((r) => [r.name, r.sku, r.size, r.open, r.incoming, r.received, r.buyers, r.batches.map((b) => `${b.storeName ? b.storeName + ' ' : ''}Batch ${b.no != null ? b.no : '?'} (${b.soId})`).join('; ')]);
+    downloadCsv(`${(store.slug || store.name || 'store').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-backorders.csv`, header, rws);
+  };
+  const scopeBtn = (v, lbl) => <button onClick={() => setScope(v)} style={{ padding: '5px 12px', borderRadius: 7, border: '1px solid ' + (scope === v ? '#0f172a' : '#e2e8f0'), background: scope === v ? '#0f172a' : '#fff', color: scope === v ? '#fff' : '#334155', fontWeight: 700, fontSize: 12, cursor: 'pointer' }}>{lbl}</button>;
+  const ctd = { ...td, textAlign: 'center' };
+  return (
+    <div className="card"><div style={{ padding: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 4 }}>
+        <div style={{ fontSize: 14, fontWeight: 800 }}>Open backorders — all batches</div>
+        {store.customer_id && <div style={{ display: 'flex', gap: 6, marginLeft: 'auto' }}>
+          {scopeBtn('store', 'This store')}
+          {scopeBtn('customer', 'All customer stores')}
+        </div>}
+        {rows.length > 0 && <button className="btn btn-sm btn-secondary" onClick={exportCsv}>⬇️ CSV</button>}
+      </div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Every item unit that's batched but not yet covered by received (or in-house) stock, regardless of which batch it's in — so when a shipment lands, this is the one list of what it can fill.
+        {data && <span style={{ fontWeight: 700, color: '#0f172a' }}> {totalOpen} units open · {rows.length} item/size line{rows.length === 1 ? '' : 's'} · {batchCount} batch{batchCount === 1 ? '' : 'es'}{scope === 'customer' ? ` · ${data.stores.length} store${data.stores.length === 1 ? '' : 's'}` : ''}</span>}
+      </div>
+      {err && <div style={{ fontSize: 12.5, color: '#b91c1c', padding: '8px 0' }}>Could not load backorders: {err}</div>}
+      {!data && !err && <div style={{ fontSize: 13, color: '#64748b', padding: '14px 0' }}>Loading backorders…</div>}
+      {data && !err && rows.length === 0 && <div style={{ fontSize: 13, color: '#16a34a', fontWeight: 600, padding: '10px 0' }}>✓ Nothing on backorder — every batched item is covered by received or in-house stock.</div>}
+      {rows.length > 0 && (
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12.5 }}>
+          <thead><tr style={{ textAlign: 'left', color: '#94a3b8' }}>
+            {[['Item', ''], ['SKU', ''], ['Size', ''], ['Open', 'c'], ['Incoming', 'c'], ['Received', 'c'], ['Buyers', 'c'], ['Batches', '']].map(([h, al]) => <th key={h} style={{ ...th, fontSize: 10.5, textAlign: al === 'c' ? 'center' : 'left' }} title={h === 'Open' ? 'Units still not covered by received or in-house stock' : h === 'Incoming' ? 'Units on vendor bills, allocated to these lines (earliest orders first)' : undefined}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.map((r, ri) => (
+              <tr key={ri} style={{ borderTop: '1px solid #f1f5f9' }}>
+                <td style={td}><span style={{ fontWeight: 600 }}>{r.name}</span></td>
+                <td style={td}>{r.sku ? <span style={{ fontSize: 10.5, fontFamily: 'monospace', fontWeight: 700, color: '#1e40af', background: '#eff6ff', border: '1px solid #dbeafe', borderRadius: 5, padding: '1px 5px', whiteSpace: 'nowrap' }}>{r.sku}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>{r.size}</td>
+                <td style={ctd}><span style={{ background: '#fee2e2', color: '#b91c1c', borderRadius: 6, padding: '1px 8px', fontWeight: 800 }}>{r.open}</span></td>
+                <td style={ctd}><span style={{ color: r.incoming > 0 ? '#1d4ed8' : '#cbd5e1', fontWeight: r.incoming > 0 ? 700 : 500 }}>{r.incoming}</span></td>
+                <td style={ctd}><span style={{ color: r.received > 0 ? '#166534' : '#cbd5e1', fontWeight: r.received > 0 ? 700 : 500 }}>{r.received}</span></td>
+                <td style={ctd}><span style={{ color: '#475569' }}>{r.buyers}</span></td>
+                <td style={td}><div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                  {r.batches.map((b) => (
+                    <span key={b.soId} onClick={() => onOpenSO && onOpenSO(b.soId)} title={`${b.soId}${b.label ? ' · ' + b.label : ''} — ${b.open} open unit${b.open === 1 ? '' : 's'}`} style={{ fontSize: 10.5, fontWeight: 700, color: '#6d28d9', background: '#ede9fe', borderRadius: 5, padding: '1px 7px', whiteSpace: 'nowrap', cursor: onOpenSO ? 'pointer' : 'default' }}>
+                      {scope === 'customer' && b.storeName ? b.storeName + ' · ' : ''}B{b.no != null ? b.no : '?'} · {b.open}
+                    </span>
+                  ))}
+                </div></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div></div>
+  );
+}
+
 function DecoStat({ label, value }) {
   const v = (value || 'pending').replace(/_/g, ' ');
   const done = /complete|approved|done|art_complete/i.test(value || '');
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -8681,6 +11311,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
   const [fStatus, setFStatus] = useState('all');   // all | pending | in_production | shipped | complete
   const [fPay, setFPay] = useState('all');         // all | paid | unpaid
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
+  const [sortBy, setSortBy] = useState('default'); // default | batch_new | batch_old
   const [editId, setEditId] = useState(null);
   const [expanded, setExpanded] = useState(null);
   const [, setTick] = useState(0);
@@ -8693,6 +11324,14 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     item.missing_qty = q;
     setTick((t) => t + 1);
     try { await supabase.from('webstore_order_items').update({ missing_qty: q }).eq('id', item.id); } catch {}
+  };
+  // Expected arrival for a line held short — surfaced on the coach tracking page's
+  // "Backordered · ETA …" badge. Blank clears it.
+  const setItemBackEta = async (item, v) => {
+    const d = v || null;
+    item.backorder_eta = d;
+    setTick((t) => t + 1);
+    try { await supabase.from('webstore_order_items').update({ backorder_eta: d }).eq('id', item.id); } catch {}
   };
   // Reprint the order's last saved label (no re-buy).
   const reprintLabel = async (o) => { if (!o.label_data) return; try { await printPdfLabels([o.label_data]); } catch {} };
@@ -8726,21 +11365,37 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
     return { o, items, players: [...new Set(items.map((i) => i.player_name).filter(Boolean))], numbers: [...new Set(items.map((i) => i.player_number).filter(Boolean))], lineStatus };
   };
   const unbatchedCount = orders.filter((o) => !o.so_id && o.status !== 'pending_payment' && o.status !== 'cancelled').length;
+  // Abandoned pre-payment carts (pending_payment — reached Stripe, never paid) and
+  // cancelled orders aren't real orders; keep them out of the list so they don't show
+  // as a stray "Paid" duplicate of the shopper's actual order.
+  const listable = orders.filter((o) => o.status !== 'pending_payment' && o.status !== 'cancelled');
 
-  const filtered = orders.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
+  const filtered = listable.map(enrich).filter(({ o, players, numbers, lineStatus }) => {
     if (fStatus !== 'all' && lineStatus !== fStatus) return false;
     if (fPay === 'paid' && o.payment_mode !== 'paid') return false;
     if (fPay === 'unpaid' && o.payment_mode === 'paid') return false;
     if (fBatch === 'batched' && !o.so_id) return false;
     if (fBatch === 'unbatched' && o.so_id) return false;
     if (q.trim()) {
-      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')}`.toLowerCase();
+      const hay = `${o.buyer_name} ${o.buyer_email} ${players.join(' ')} ${numbers.join(' ')} ${o.order_number || ''}`.toLowerCase();
       if (!hay.includes(q.toLowerCase())) return false;
     }
     return true;
   });
 
-  if (!orders.length) return <Empty msg="No orders placed in this store yet." />;
+  // Batch number for an order's linked SO (null = not yet batched). Sorting by batch
+  // groups orders by when they were processed; unbatched orders sort to the bottom
+  // (they haven't been processed yet). Array.sort is stable, so within a batch orders
+  // keep their existing order.
+  const batchNoOf = (o) => (o.so_id && soBatch[o.so_id] && soBatch[o.so_id].no != null) ? soBatch[o.so_id].no : null;
+  const sorted = sortBy === 'default' ? filtered : [...filtered].sort((a, b) => {
+    const an = batchNoOf(a.o), bn = batchNoOf(b.o);
+    if ((an == null) !== (bn == null)) return an == null ? 1 : -1; // unbatched last
+    if (an == null && bn == null) return 0;
+    return sortBy === 'batch_old' ? an - bn : bn - an;
+  });
+
+  if (!listable.length) return <Empty msg="No orders placed in this store yet." />;
   const sel = { padding: '7px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12, background: '#fff' };
   return (
     <>
@@ -8749,6 +11404,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
         <select style={sel} value={fStatus} onChange={(e) => setFStatus(e.target.value)}>{['all', 'pending', 'in_production', 'shipped', 'complete'].map((s) => <option key={s} value={s}>{s === 'all' ? 'All statuses' : s.replace(/_/g, ' ')}</option>)}</select>
         <select style={sel} value={fPay} onChange={(e) => setFPay(e.target.value)}><option value="all">All payment</option><option value="paid">Paid</option><option value="unpaid">Team tab</option></select>
         <select style={sel} value={fBatch} onChange={(e) => setFBatch(e.target.value)}><option value="all">All</option><option value="unbatched">Not batched</option><option value="batched">Batched</option></select>
+        <select style={sel} value={sortBy} onChange={(e) => setSortBy(e.target.value)} title="Sort orders by the batch they were processed in">
+          <option value="default">Sort: default</option>
+          <option value="batch_new">Batch: newest first</option>
+          <option value="batch_old">Batch: oldest first</option>
+        </select>
         {onAvailabilityReport && (
           <button className="btn btn-secondary" disabled={!unbatchedCount} onClick={onAvailabilityReport} title={unbatchedCount ? 'What can we fill, and whose items fall short?' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
             📋 Availability report
@@ -8772,18 +11432,18 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             <option value="orders">Orders CSV</option>
           </select>
         )}
-        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? '' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
-          Create Sales Order ({unbatchedCount})
+        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+          Create Batch ({unbatchedCount})
         </button>
       </div>
-      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {orders.length} orders.</div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>SO</th><th style={th}></th>
+            <th style={{ ...th, width: 22 }}></th><th style={th}>Buyer / Player</th>{numbersEnabled && <th style={th}>#</th>}<th style={th}>Items</th><th style={th}>Kind</th><th style={th}>Paid?</th><th style={th}>Total</th><th style={th}>Status</th><th style={th}>Batch</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {filtered.map(({ o, items, players, numbers, lineStatus }) => {
+            {sorted.map(({ o, items, players, numbers, lineStatus }) => {
               const isOpen = expanded === o.id;
               const lineItems = items.filter((i) => !i.is_bundle_parent);
               const shortTotal = lineItems.reduce((a, i) => a + (Number(i.missing_qty) || 0), 0);
@@ -8792,14 +11452,19 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               <React.Fragment key={o.id}>
               <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
-                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div></td>
+                <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div>{o.order_number && <div style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>#{o.order_number}</div>}</td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
                 <td style={td}>{lineItems.reduce((a, i) => a + (i.qty || 0), 0)}{shippedLines > 0 && <span style={{ color: '#166534', fontWeight: 700 }}> · {shippedLines} shipped</span>}{shortTotal > 0 && <span style={{ color: '#b45309', fontWeight: 700 }}> · {shortTotal} short</span>}</td>
                 <td style={td}>{o.order_kind === 'bulk' ? <Chip label="Bulk" tone="blue" /> : <Chip label="Individual" />}</td>
                 <td style={td}>{o.payment_mode === 'paid' ? <Chip label="Paid" tone="green" /> : <Chip label="Team tab" />}{Number(o.refunded_amt) > 0 && <div style={{ fontSize: 10, color: '#b45309' }}>−{money(o.refunded_amt)} refunded</div>}{Number(o.discount_amt) > 0 && <div style={{ fontSize: 10, color: '#16a34a' }}>{o.coupon_code} −{money(o.discount_amt)}</div>}</td>
                 <td style={td}>{money(o.total)}</td>
                 <td style={td}><Chip label={(o.status === 'refunded' ? 'refunded' : lineStatus || 'pending').replace(/_/g, ' ')} tone={o.status === 'refunded' ? 'gray' : lineStatus === 'complete' ? 'green' : lineStatus === 'shipped' ? 'blue' : 'slate'} /></td>
-                <td style={td}>{o.so_id ? <span style={{ fontFamily: 'monospace', fontSize: 12, color: '#1e40af' }}>{o.so_id}</span> : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>{o.so_id ? (
+                  <div onClick={(e) => { e.stopPropagation(); onOpenSO && onOpenSO(o.so_id); }} style={{ cursor: onOpenSO ? 'pointer' : 'default' }} title={`${o.so_id}${soBatch[o.so_id] && soBatch[o.so_id].label ? ' · ' + soBatch[o.so_id].label : ''}`}>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: '#6d28d9', background: '#ede9fe', borderRadius: 5, padding: '1px 6px', whiteSpace: 'nowrap' }}>{soBatch[o.so_id] && soBatch[o.so_id].no != null ? `Batch ${soBatch[o.so_id].no}` : 'Batched'}</span>
+                    <div style={{ fontSize: 10.5, fontFamily: 'monospace', color: '#1e40af', marginTop: 2 }}>{o.so_id}</div>
+                  </div>
+                ) : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
                 <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>{(onSaveOrderEdits || onRefundOrder) && <button className="btn btn-sm btn-secondary" onClick={() => setEditId(o.id)}>Manage</button>}</td>
               </tr>
               {isOpen && (
@@ -8815,7 +11480,10 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
                             <td style={td}>{[i.player_number && '#' + i.player_number, i.player_name].filter(Boolean).join(' · ') || '—'}</td>
                             <td style={td}>{i.qty}</td>
                             <td style={td}>{(Number(i.shipped_qty) || 0) >= (Number(i.qty) || 0) || i.line_status === 'shipped' ? <span style={{ color: '#166534', fontWeight: 700 }}>✓ Shipped</span> : (Number(i.shipped_qty) || 0) > 0 ? <span style={{ color: '#1d4ed8', fontWeight: 700 }}>{i.shipped_qty}/{i.qty} shipped</span> : Number(i.missing_qty) > 0 ? <span style={{ color: '#b45309', fontWeight: 700 }}>Short</span> : <span style={{ color: '#64748b' }}>To ship</span>}</td>
-                            <td style={td}><input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} /></td>
+                            <td style={td}>
+                              <input type="number" min={0} max={i.qty} value={Number(i.missing_qty) || 0} onChange={(e) => setItemMissing(i, e.target.value)} style={{ width: 64, padding: '5px 8px', borderRadius: 6, border: '1px solid ' + (Number(i.missing_qty) > 0 ? '#fde68a' : '#e2e8f0'), background: Number(i.missing_qty) > 0 ? '#fffbeb' : '#fff', fontSize: 13 }} />
+                              {Number(i.missing_qty) > 0 && <div style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 5 }}><span style={{ fontSize: 10.5, color: '#94a3b8' }}>ETA</span><input type="date" value={i.backorder_eta || ''} onChange={(e) => setItemBackEta(i, e.target.value)} title="Expected arrival — shown to the coach" style={{ padding: '3px 6px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 12 }} /></div>}
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -8907,6 +11575,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
         <div style={{ padding: '16px 20px', borderBottom: '1px solid #eef1f5', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1 }}>
             <div style={{ fontWeight: 800, fontSize: 16, color: '#0b1220' }}>{order.buyer_name || order.buyer_email}</div>
+            {order.order_number && <div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>Order #{order.order_number}</div>}
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
               {order.payment_mode === 'paid' ? <span style={{ color: '#166534', fontWeight: 700 }}>Paid {money(order.total)}</span> : <span style={{ color: '#1e40af', fontWeight: 700 }}>Team tab {money(order.total)}</span>}
               {Number(order.discount_amt) > 0 && <span style={{ color: '#16a34a' }}> · {order.coupon_code} −{money(order.discount_amt)}</span>}
@@ -8972,21 +11641,140 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   );
 }
 
-function RosterTab({ roster, notOrdered }) {
-  if (!roster.length) return <Empty msg="No roster uploaded. Upload one (coming in a later step) to track who hasn't ordered." />;
+// Roster management: add players (each gets a private /shop link), copy links to
+// hand out, and track who has ordered. Marking "ordered" happens automatically
+// when a player checks out through their link (webstore-checkout.place_order).
+function RosterTab({ store, roster, notOrdered, orders = [], onAdd, onUpdate, onRemove, onInvite, onFlash }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '', position: '' });
+  const [bulk, setBulk] = useState('');
+  const [bulkPos, setBulkPos] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copiedId, setCopiedId] = useState(null);
+
+  const origin = (typeof window !== 'undefined' && window.location.origin) || '';
+  const linkFor = (r) => r.token ? `${origin}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => onFlash && onFlash(m);
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyMany = (rows, label) => {
+    const withLinks = rows.filter((r) => r.token);
+    if (!withLinks.length) { flash('No links to copy yet.'); return; }
+    const text = withLinks.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n');
+    navigator.clipboard?.writeText(text); flash(`Copied ${withLinks.length} ${label}`);
+  };
+  const emailMany = async (rows, label) => {
+    const ids = rows.filter((r) => r.token && (r.parent_email || '').trim()).map((r) => r.id);
+    if (!ids.length) { flash('No players with an email address to send to.'); return; }
+    if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
+    setBusy(true); await onInvite(ids); setBusy(false);
+  };
+
+  const addSingle = async () => {
+    if (!single.player_name.trim()) { flash('Enter a player name.'); return; }
+    setBusy(true); const r = await onAdd([single]); setBusy(false);
+    if (!r || !r.error) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position });
+  };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => {
+      const parts = line.split(/[,\t]/).map((s) => s.trim());
+      // Columns: Name, Number, Email, Position — a per-line position overrides the
+      // "these are all…" selector; otherwise every pasted player gets bulkPos.
+      return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '', position: parts[3] || bulkPos } : null;
+    }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    setBusy(true); const r = await onAdd(players); setBusy(false);
+    if (!r || !r.error) { setBulk(''); setShowAdd(false); }
+  };
+
+  const fmtDate = (s) => { if (!s) return ''; const d = new Date(s); return isNaN(d) ? '' : d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const posName = (p) => p === 'gk' ? 'Goalkeeper' : p === 'field' ? 'Field' : '';
+  const PosSelect = ({ value, onChange, width = 120 }) => (
+    <select className="form-input" value={value || ''} onChange={(e) => onChange(e.target.value || null)} style={{ width, fontSize: 12.5, padding: '5px 8px' }}>
+      <option value="">— Any —</option>
+      <option value="field">Field</option>
+      <option value="gk">Goalkeeper</option>
+    </select>
+  );
+
+  const addPanel = showAdd && (
+    <div className="card" style={{ padding: 16, marginBottom: 12 }}>
+      <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10 }}>Add players</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 14 }}>
+        <div><div style={rLbl}>Player name</div><input className="form-input" value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Jane Smith" style={{ width: 190 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Number</div><input className="form-input" value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={{ width: 64 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <div><div style={rLbl}>Position</div><PosSelect value={single.position} onChange={(v) => setSingle({ ...single, position: v || '' })} /></div>
+        <div><div style={rLbl}>Parent email (optional)</div><input className="form-input" type="email" value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={{ width: 210 }} onKeyDown={(e) => e.key === 'Enter' && addSingle()} /></div>
+        <button className="btn btn-sm btn-primary" disabled={busy} onClick={addSingle}>Add</button>
+      </div>
+      <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+        <div style={rLbl}>Or paste a list — one player per line, <code>Name, Number, Email, Position</code> (all but name optional)</div>
+        <textarea className="form-input" value={bulk} onChange={(e) => setBulk(e.target.value)} rows={5} placeholder={'Jane Smith, 10, parent@email.com, field\nAlex Kim, 1, alex@email.com, gk\nSam Rivera, 7'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, resize: 'vertical' }} />
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: '#64748b' }}>These are all:</span>
+          <PosSelect value={bulkPos} onChange={(v) => setBulkPos(v || '')} />
+          <button className="btn btn-sm btn-primary" disabled={busy} onClick={addBulk}>Add from list</button>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (!roster.length) {
+    return (
+      <>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: 13, color: '#64748b' }}>Set up a roster so the club can track who’s ordered — each player gets their own store link.</div>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+        {addPanel}
+        {!showAdd && <Empty msg="No players yet. Add a roster to hand each player a private link and see who hasn’t ordered." />}
+      </>
+    );
+  }
+
   return (
     <>
-      <div style={{ fontSize: 13, color: '#64748b', marginBottom: 10 }}>{notOrdered.length} of {roster.length} players have not ordered yet.</div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10, gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, color: '#64748b' }}>{notOrdered.length} of {roster.length} player{roster.length === 1 ? '' : 's'} {notOrdered.length === 1 ? 'has' : 'have'} not ordered yet.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button className="btn btn-sm btn-secondary" onClick={() => copyMany(roster, 'links')}>Copy all links</button>
+          <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => emailMany(notOrdered, 'not-ordered players their link')}>Email not-ordered</button>
+          <button className="btn btn-sm btn-primary" onClick={() => setShowAdd((v) => !v)}>{showAdd ? 'Close' : '+ Add players'}</button>
+        </div>
+      </div>
+      {addPanel}
       <div className="card"><div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}>
-            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Parent email</th><th style={th}>Ordered?</th>
+            <th style={th}>Player</th><th style={th}>#</th><th style={th}>Position</th><th style={th}>Parent email</th><th style={th}>Opened?</th><th style={th}>Ordered?</th><th style={th}>Link</th><th style={th}></th>
           </tr></thead>
           <tbody>
             {roster.map((r) => (
               <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
-                <td style={td}>{r.player_name}</td><td style={td}>{r.player_number || '—'}</td><td style={td}>{r.parent_email || '—'}</td>
-                <td style={td}>{r.ordered ? <Chip label="Ordered" tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>{r.player_name}</td>
+                <td style={td}>
+                  <input defaultValue={r.player_number || ''} onBlur={(e) => { const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 4); if (v !== (r.player_number || '')) onUpdate(r.id, { player_number: v || null }); }} placeholder="#" style={{ width: 48, border: '1px solid #e2e8f0', borderRadius: 5, padding: '3px 6px', fontSize: 12.5 }} />
+                </td>
+                <td style={td}><PosSelect value={r.position} width={118} onChange={(v) => onUpdate(r.id, { position: v })} /></td>
+                <td style={td}>{r.parent_email || <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                <td style={td}>
+                  {r.last_opened_at
+                    ? <Chip label={`Opened ${fmtDate(r.last_opened_at)}${r.open_count > 1 ? ` ·${r.open_count}×` : ''}`} tone="blue" />
+                    : r.invite_sent_at
+                      ? <Chip label={`Invited ${fmtDate(r.invite_sent_at)}`} tone="gray" />
+                      : <span style={{ color: '#cbd5e1' }}>Not sent</span>}
+                </td>
+                <td style={td}>{r.ordered ? <Chip label={r.ordered_at ? `Ordered ${fmtDate(r.ordered_at)}` : 'Ordered'} tone="green" /> : <Chip label="Not yet" tone="gray" />}</td>
+                <td style={td}>
+                  {r.token ? (
+                    <div style={{ display: 'flex', gap: 6 }}>
+                      <button className="btn btn-sm btn-secondary" onClick={() => copyOne(r)} title={linkFor(r)}>{copiedId === r.id ? '✓' : 'Copy'}</button>
+                      <button className="btn btn-sm btn-secondary" disabled={busy || !(r.parent_email || '').trim()} title={(r.parent_email || '').trim() ? `Email link to ${r.parent_email}` : 'Add a parent email first'} onClick={async () => { setBusy(true); await onInvite([r.id]); setBusy(false); }}>Email</button>
+                    </div>
+                  ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                </td>
+                <td style={{ ...td, textAlign: 'right' }}>
+                  <button onClick={() => { if (window.confirm(`Remove ${r.player_name} from the roster?`)) onRemove(r.id); }} title="Remove player" style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>×</button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -8995,6 +11783,7 @@ function RosterTab({ roster, notOrdered }) {
     </>
   );
 }
+const rLbl = { fontSize: 11, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 4, fontWeight: 600 };
 
 function SettingsTab({ store: s }) {
   const dlv = s.delivery_mode === 'deliver_club' ? 'Deliver to club' : 'Ship to home';

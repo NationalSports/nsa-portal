@@ -14,6 +14,11 @@ exports.handler = async (event) => {
   }
 
   const path = event.queryStringParameters?.path || '/stores';
+  // Reject paths that could rewrite the URL authority and leak our credentials
+  // to another host (e.g. "@evil.com/x", "//evil.com", backslash tricks).
+  if (!path.startsWith('/') || path.startsWith('//') || path.includes('@') || path.includes('\\')) {
+    return { statusCode: 400, body: JSON.stringify({ error: 'Invalid path' }) };
+  }
   const url = `https://ssapi.shipstation.com${path}`;
   const auth = Buffer.from(`${SS_API_KEY}:${SS_API_SECRET}`).toString('base64');
 

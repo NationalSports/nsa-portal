@@ -8,13 +8,18 @@
 // momentec-proxy and never appear in this payload.
 import React, { useEffect, useMemo, useState } from 'react';
 import { buildMomentecOrderPayload } from './momentecOrder';
-import { momentecSubmitOrder, momentecResolveSkus } from './vendorApis';
+import { momentecSubmitOrder, momentecResolveSkus, momentecOrderDetails } from './vendorApis';
 import { NSA, NSA_WAREHOUSE } from './constants';
 
 // Momentec ships integrated orders to NSA's receiving dock (caller can override via shipTo).
 const NSA_SHIP_TO = {
   companyName: NSA.name,
   attentionTo: 'Receiving',
+  // Momentec requires a recipient first/last name on the address (their system shows
+  // the order nameless without one — shipTo/attention alone don't count).
+  firstName: 'NSA',
+  lastName: 'Receiving',
+  phone: String(NSA.phone || '').replace(/\D/g, ''), // telePhone — digits only, per their samples
   address1: NSA_WAREHOUSE.street1,
   address2: NSA_WAREHOUSE.street2,
   city: NSA_WAREHOUSE.city,
@@ -29,10 +34,12 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
   const [resolving, setResolving] = useState(true);
   const [resolvedSkus, setResolvedSkus] = useState({}); // line key -> sku
   const [candidates, setCandidates] = useState({});     // STYLE -> [{color,colorCode,size,sku}]
   const [resolveErr, setResolveErr] = useState('');
+  const [verify, setVerify] = useState({ state: 'idle', data: null, error: '' }); // post-submit read-back: idle|checking|found|missing|error
 
   const ship = shipTo || NSA_SHIP_TO;
   const env = live ? 'prod' : 'stage';
@@ -68,16 +75,66 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
   const doSubmit = async () => {
     if (!canSubmit) return;
     setSubmitState('submitting'); setErrorMsg('');
+    let r;
     try {
-      const r = await momentecSubmitOrder(built.order, env);
-      setResult(r); setSubmitState('success');
-      // Only a LIVE (prod) order should mark the batch as ordered; stage validates only.
-      if (live) onSubmitted && onSubmitted(r);
+      r = await momentecSubmitOrder(built.order, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or order manually on momentecbrands.com.');
       setSubmitState('error');
+      return;
+    }
+    // Momentec accepted the order — success regardless of local bookkeeping.
+    setResult(r); setSubmitState('success');
+    doVerify(r.orderId); // read back what their system registered (async; panel updates below)
+    // Only a LIVE (prod) order should mark the batch as ordered; stage validates only.
+    // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order —
+    // but await the (async) result and surface a silent no-op, so a placed-but-unrecorded
+    // order (the NSA 4536 failure) can't look like a clean success.
+    if (live && onSubmitted) {
+      try {
+        const recorded = await onSubmitted(r, lines);
+        if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
+      } catch (e) {
+        console.error('[Momentec] order placed but post-order bookkeeping failed:', e);
+        setBookErr(e.message || 'recording failed with an error');
+      }
     }
   };
+
+  // Read back what Momentec registered for the submitted order and compare it to what we
+  // sent. Their intake has silently dropped orders (NSA 4503-era) and registered the wrong
+  // garment (NSA 4523 youth-for-adult), so "202 accepted" alone isn't proof of a good order.
+  const doVerify = async (orderId) => {
+    if (!orderId) return;
+    setVerify({ state: 'checking', data: null, error: '' });
+    try {
+      const d = await momentecOrderDetails(orderId, env);
+      setVerify({ state: d.found ? 'found' : 'missing', data: d, error: '' });
+    } catch (e) {
+      setVerify({ state: 'error', data: null, error: e.message || 'Lookup failed' });
+    }
+  };
+  // Submitted qty per SKU, to diff against Momentec's registered lines.
+  const sentBySku = useMemo(() => {
+    const m = {};
+    lines.forEach(l => { if (l.sku && l.quantity > 0) m[l.sku] = (m[l.sku] || 0) + l.quantity; });
+    return m;
+  }, [lines]);
+  const verifyDiff = useMemo(() => {
+    if (verify.state !== 'found' || !verify.data) return null;
+    const got = {};
+    (verify.data.lines || []).forEach(ln => { const k = String(ln.itemNumber || '').trim(); if (k) got[k] = (got[k] || 0) + (parseInt(ln.orderedQuantity, 10) || 0); });
+    const problems = [];
+    Object.entries(sentBySku).forEach(([sku, qty]) => {
+      if (!(sku in got)) problems.push(`We sent ${qty} × ${sku} — Momentec has no line for it`);
+      else if (got[sku] !== qty) problems.push(`${sku}: we sent ${qty}, Momentec registered ${got[sku]}`);
+    });
+    Object.entries(got).forEach(([sku, qty]) => {
+      if (!(sku in sentBySku)) problems.push(`Momentec registered ${qty} × ${sku} — we never sent that SKU`);
+    });
+    // Their lines feed can lag the order header; only call it a match when lines exist.
+    return { problems, gotCount: Object.keys(got).length, match: problems.length === 0 && Object.keys(got).length > 0 };
+  }, [verify, sentBySku]);
 
   const safeClose = submitting ? undefined : onClose;
 
@@ -96,6 +153,29 @@ export default function MomentecOrderModal({ batchPOs, poNumber, vendorName = 'M
               <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <Stat label="PO Number" value={poNumber} mono />
                 <Stat label={live ? 'Momentec Order #' : 'Stage Order #'} value={result?.orderId || '—'} mono />
+              </div>
+              {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
+                ⚠ Momentec HAS this order, but the portal did NOT record it ({bookErr}).
+                Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
+              </div>}
+              {/* Read-back verification: is the order actually registered in Momentec's system, with our SKUs? */}
+              <div style={{ marginTop: 10, padding: 10, borderRadius: 6, fontSize: 12, background: verify.state === 'found' ? (verifyDiff?.match ? '#f0fdf4' : verifyDiff?.problems?.length ? '#fef2f2' : '#fffbeb') : '#f8fafc', border: '1px solid ' + (verify.state === 'found' ? (verifyDiff?.match ? '#bbf7d0' : verifyDiff?.problems?.length ? '#fecaca' : '#fde68a') : '#e2e8f0') }}>
+                {verify.state === 'checking' && <span>🔄 Verifying with Momentec that the order is registered…</span>}
+                {verify.state === 'found' && verifyDiff?.match && <span style={{ color: '#166534', fontWeight: 700 }}>✓ Verified in Momentec's system{verify.data?.order?.invoiceOrderId ? <> — CO <span style={{ fontFamily: 'monospace' }}>{verify.data.order.invoiceOrderId}</span></> : ''}{verify.data?.order?.orderStatus ? ` · ${verify.data.order.orderStatus}` : ''} · every line SKU and quantity matches what we sent.</span>}
+                {verify.state === 'found' && !verifyDiff?.match && verifyDiff?.problems?.length > 0 && (
+                  <div style={{ color: '#991b1b' }}>
+                    <strong>⚠ Momentec registered this order DIFFERENTLY than we sent it — contact them before it ships:</strong>
+                    <ul style={{ margin: '6px 0 0', paddingLeft: 18 }}>{verifyDiff.problems.map((p, i) => <li key={i} style={{ fontFamily: 'monospace' }}>{p}</li>)}</ul>
+                  </div>
+                )}
+                {verify.state === 'found' && !verifyDiff?.match && !verifyDiff?.problems?.length && <span style={{ color: '#92400e' }}>Order header is registered, but Momentec hasn't published its line items yet — re-check in a few minutes to confirm the SKUs.</span>}
+                {verify.state === 'missing' && <span style={{ color: '#92400e' }}><strong>Order not visible in Momentec's system yet.</strong> Their intake can lag — re-check in a few minutes. If it's still missing after an hour, email stock@momentecbrands.com with PO {poNumber} and order # {result?.orderId}.</span>}
+                {verify.state === 'error' && <span style={{ color: '#991b1b' }}>Couldn't reach Momentec to verify: {verify.error}</span>}
+                {verify.state !== 'checking' && (
+                  <button className="btn btn-sm btn-secondary" style={{ marginLeft: 8, fontSize: 11 }} onClick={() => doVerify(result?.orderId)}>
+                    {verify.state === 'idle' ? 'Verify with Momentec' : 'Re-check'}
+                  </button>
+                )}
               </div>
             </div>
           ) : submitState === 'error' ? (

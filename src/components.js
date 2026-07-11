@@ -143,6 +143,49 @@ function custShipAddrSub(cu){
 }
 
 
+// Shared control for scheduling AUTOMATED follow-up emails on a document
+// (estimate / invoice / art). Controlled: value = {auto, firstDays, intervalDays,
+// max, message}. When auto is on, the server (netlify/functions/followup-sweep.js)
+// sends `message` + a portal link on the schedule until the doc resolves or the cap
+// is hit. `defaultMessage` seeds the textarea the first time automation is enabled.
+const _FU_DAYS=[1,2,3,5,7,10,14,21,30];
+// Seed the panel from the doc row so a RE-send keeps whatever automation is already armed —
+// without this, re-sending wrote the panel's default (off) back and silently disarmed the
+// follow-ups the rep set up on the first send. Never-armed docs still get the off defaults.
+const seedFollowUp=(doc)=>{const armed=!!doc?.follow_up_auto;const iv=Number(doc?.follow_up_interval_days)||0;
+  return{auto:armed,firstDays:(armed&&iv)||3,intervalDays:armed?iv:0,max:doc?.follow_up_max||4,message:(armed&&doc?.follow_up_message)||''}};
+function FollowUpAutoPanel({value,onChange,defaultMessage}){
+  const v=value||{};const auto=!!v.auto;
+  const first=v.firstDays||3;const interval=v.intervalDays||0;const max=v.max||4;
+  const set=(patch)=>onChange({...v,...patch});
+  const toggle=(checked)=>onChange({...v,auto:checked,message:(checked&&!v.message&&defaultMessage)?defaultMessage:v.message,firstDays:v.firstDays||3,max:v.max||4});
+  const stopHint=/invoice/i.test(defaultMessage||'')?'the invoice is paid':/artwork|art/i.test(defaultMessage||'')?'the art is approved or rejected':'the estimate is approved';
+  return(<div style={{padding:12,background:auto?'#faf5ff':'#f8fafc',border:'1px solid '+(auto?'#e9d5ff':'#e2e8f0'),borderRadius:8}}>
+    <label style={{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:auto?12:0}}>
+      <input type="checkbox" checked={auto} onChange={e=>toggle(e.target.checked)} style={{width:16,height:16,accentColor:'#7c3aed'}}/>
+      <span style={{fontWeight:700,fontSize:13,color:auto?'#6d28d9':'#64748b'}}>Automate follow-ups</span>
+      <span style={{fontSize:9,padding:'1px 6px',borderRadius:4,background:'#ede9fe',color:'#6d28d9',fontWeight:600}}>Sends automatically</span>
+    </label>
+    {auto&&<div style={{display:'flex',flexDirection:'column',gap:10}}>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',fontSize:12,color:'#6d28d9',fontWeight:600}}>
+        <span>Send first follow-up in</span>
+        <select className="form-input" value={first} onChange={e=>set({firstDays:parseInt(e.target.value)})} style={{width:82,fontSize:12,padding:'4px 6px'}}>{_FU_DAYS.map(d=><option key={d} value={d}>{d} day{d>1?'s':''}</option>)}</select>
+        <span>if no response</span>
+      </div>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap',fontSize:12,color:'#6d28d9',fontWeight:600}}>
+        <span>Then repeat</span>
+        <select className="form-input" value={interval} onChange={e=>set({intervalDays:parseInt(e.target.value)})} style={{width:140,fontSize:12,padding:'4px 6px'}}><option value={0}>don't repeat</option>{_FU_DAYS.map(d=><option key={d} value={d}>every {d} day{d>1?'s':''}</option>)}</select>
+        {interval>0&&<><span>up to</span><select className="form-input" value={max} onChange={e=>set({max:parseInt(e.target.value)})} style={{width:64,fontSize:12,padding:'4px 6px'}}>{[2,3,4,5,6,8,10].map(n=><option key={n} value={n}>{n}</option>)}</select><span>total</span></>}
+      </div>
+      <div>
+        <div className="form-label" style={{fontSize:11,marginBottom:4,color:'#6d28d9'}}>Follow-up message <span style={{fontWeight:400,color:'#94a3b8'}}>(auto-sent — different from your first email; a portal link is added)</span></div>
+        <textarea className="form-input" rows={4} value={v.message||''} onChange={e=>set({message:e.target.value})} style={{fontSize:12,resize:'vertical'}} placeholder="Hi, just following up..."/>
+      </div>
+      <div style={{fontSize:10,color:'#8b5cf6'}}>Stops automatically once {stopHint}.</div>
+    </div>}
+  </div>);
+}
+
 // SEND ESTIMATE MODAL
 
 function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo}){
@@ -151,6 +194,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
   const[smsEnabled,setSmsEnabled]=useState(false);const[smsPhone,setSmsPhone]=useState('');const[smsMsg,setSmsMsg]=useState('');
   const[followUpDays,setFollowUpDays]=useState(0);
+  const[followUp,setFollowUp]=useState({auto:false,firstDays:3,intervalDays:0,max:4,message:''});
   const contactEmails=[...new Set((customer?.contacts||[]).filter(c=>c.email).map(c=>c.email))];
   const allTargets=[...contactEmails,...customEmails].filter(em=>checkedEmails[em]);
   const label=docType==='so'?'Sales Order':'Estimate';
@@ -159,7 +203,6 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
   const customerRef=React.useRef(customer);customerRef.current=customer;
   const estimateRef=React.useRef(estimate);estimateRef.current=estimate;
   const docTypeRef=React.useRef(docType);docTypeRef.current=docType;
-  const defaultFollowUpRef=React.useRef(defaultFollowUpDays);defaultFollowUpRef.current=defaultFollowUpDays;
   const repUserRef=React.useRef(repUser);repUserRef.current=repUser;
   React.useEffect(()=>{if(isOpen&&!prevOpenRef.current){
     const cust2=customerRef.current;const est2=estimateRef.current;const dt=docTypeRef.current;
@@ -175,6 +218,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
+    setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
@@ -234,11 +278,11 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
         const smsRes=await sendBrevoSms({to:smsPhone,content:smsMsg.substring(0,160)});
         if(smsRes.ok){if(_notify)_notify('Text sent to '+smsPhone)}else{if(_notify)_notify('SMS failed: '+(smsRes.error||'Unknown'),'error');console.warn('SMS send failed:',smsRes.error)}
       }
-      onSend({followUpDays,toEmails:emails.join(', '),messageId:res.messageId});onClose();
+      onSend({followUpDays,followUp:followUp.auto?followUp:null,toEmails:emails.join(', '),messageId:res.messageId});onClose();
     }else{
       const mailTo='mailto:'+emails[0]+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
       window.open(mailTo,'_blank');
-      onSend({followUpDays,toEmails:emails.join(', ')});onClose();
+      onSend({followUpDays,followUp:followUp.auto?followUp:null,toEmails:emails.join(', ')});onClose();
     }};
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
@@ -289,15 +333,21 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
           <div><label className="form-label" style={{fontSize:11}}>Text Message <span style={{color:'#94a3b8',fontWeight:400}}>({smsMsg.length}/160)</span></label><textarea className="form-input" rows={2} value={smsMsg} onChange={e=>setSmsMsg(e.target.value)} maxLength={160} style={{fontSize:12,resize:'vertical'}}/></div>
         </div>}
       </div>}
-      {/* Follow-up reminder */}
-      <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
-        <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
-        {[1,3,7].map(d=><label key={d} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,color:'#6d28d9',fontWeight:600}}>
-          <input type="checkbox" checked={followUpDays===d} onChange={()=>setFollowUpDays(followUpDays===d?0:d)} style={{width:14,height:14,accentColor:'#6d28d9',cursor:'pointer'}}/>
-          in {d} day{d>1?'s':''}
-        </label>)}
-        {followUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>if no response</span>}
-      </div>
+      {/* Follow-ups — estimates get automated sends; sales orders keep the manual reminder */}
+      {docType==='so'?(
+        <div style={{marginBottom:12,padding:10,background:'#faf5ff',border:'1px solid #e9d5ff',borderRadius:8,display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+          <span style={{fontSize:12,fontWeight:700,color:'#6d28d9'}}>Follow up</span>
+          {[1,3,7].map(d=><label key={d} style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12,color:'#6d28d9',fontWeight:600}}>
+            <input type="checkbox" checked={followUpDays===d} onChange={()=>setFollowUpDays(followUpDays===d?0:d)} style={{width:14,height:14,accentColor:'#6d28d9',cursor:'pointer'}}/>
+            in {d} day{d>1?'s':''}
+          </label>)}
+          {followUpDays>0&&<span style={{fontSize:12,color:'#6d28d9'}}>if no response</span>}
+        </div>
+      ):(
+        <div style={{marginBottom:12}}>
+          <FollowUpAutoPanel value={followUp} onChange={setFollowUp} defaultMessage={`Hi ${(customer?.contacts||[])[0]?.name||'Coach'},\n\nJust following up on the ${label.toLowerCase()} we sent over${estimate?.memo?` for ${estimate.memo}`:''}. Let us know if you'd like to move forward or have any questions — we're happy to help!\n\n${repUser?.name||'National Sports Apparel'}\nNational Sports Apparel`}/>
+        </div>
+      )}
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
     <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={sending} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
@@ -524,4 +574,4 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
     <button onClick={()=>onChange([...cws,{id:'cw'+Date.now(),garment_color:'',inks:['']}])} style={{display:'inline-flex',alignItems:'center',gap:5,background:'#eff6ff',border:'1px dashed #93c5fd',borderRadius:8,cursor:'pointer',fontSize:11,color:'#1d4ed8',padding:'7px 14px',fontWeight:700}}><Icon name="plus" size={12}/> Add Color Way</button>
   </div>}
 
-export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };
+export { Icon, Toast, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery, ColorWaysEditor };

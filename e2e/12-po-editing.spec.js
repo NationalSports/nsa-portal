@@ -1,5 +1,5 @@
 const { test, expect } = require('@playwright/test');
-const { navTo } = require('./helpers');
+const { login, seedData, navTo } = require('./helpers');
 
 /**
  * PO full-edit regression: the "➕ Edit Items & Quantities" section in the SO PO modal
@@ -36,20 +36,11 @@ const TEST_SO = {
 
 test.describe('PO full editing (Edit Items & Quantities)', () => {
   test.beforeEach(async ({ page }) => {
-    await page.goto('/');
-    // Seed the order + a logged-in admin session directly (no Supabase in the test env;
-    // the app falls back to localStorage). The fake sb-* token keeps the stale-session
-    // guard from kicking the seeded user back to the login gate mid-test.
-    await page.evaluate(([so, cust]) => {
-      const user = { id: '00000000-0000-0000-0000-000000000001', name: 'Steve Peterson', role: 'admin' };
-      localStorage.setItem('nsa_sos', JSON.stringify([so]));
-      localStorage.setItem('nsa_cust', JSON.stringify([cust]));
-      localStorage.setItem('nsa_user', JSON.stringify(user));
-      const sess = { access_token: 'e2e', refresh_token: 'e2e', token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, user: { id: user.id, aud: 'authenticated', role: 'authenticated', email: 'e2e@test.local' } };
-      localStorage.setItem('sb-your-project-auth-token', JSON.stringify(sess));
-    }, [TEST_SO, TEST_CUST]);
-    await page.reload();
-    await page.locator('.sidebar').waitFor({ state: 'visible', timeout: 30000 });
+    // Seed the order before boot. The old evaluate-then-reload seeding stopped working when
+    // dbEngine started purging the legacy entity caches at module load; seedData() shims
+    // removeItem so the seeded nsa_sos/nsa_cust survive that one-time purge.
+    await seedData(page, { sos: [TEST_SO], cust: [TEST_CUST] });
+    await login(page, 'Steve Peterson', 'Admin');
   });
 
   test('change ordered sizes on an SO PO line and apply', async ({ page }) => {
@@ -122,6 +113,9 @@ test.describe('PO full editing (Edit Items & Quantities)', () => {
     await page.waitForTimeout(600);
     await mInput.fill('36');
     await mInput.blur();
+    // Raising past PO coverage now opens a custom Add/Leave modal (no longer window.confirm) —
+    // choose "Add ... to PO" so the PO line grows with the item.
+    await page.locator('.modal button', { hasText: /^✓ Add / }).click({ timeout: 5000 });
     await page.waitForTimeout(600);
 
     // Item sizes took the change…

@@ -12,6 +12,67 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── Job-item decoration ownership ──
+// A job item records which decoration indexes of its SO line the job produces (deco_idxs).
+// Returns null for legacy items without the array — the legacy single deco_idx was written as
+// decoIdxs[0] and is NOT exhaustive for multi-deco jobs, so it must not be treated as a scope.
+// Null means "unknown coverage": callers fall back to every decoration on the line.
+export const jobItemDecoIdxs = (gi) => Array.isArray(gi?.deco_idxs) && gi.deco_idxs.length ? gi.deco_idxs : null;
+// Decorations of one kind on a SO line that THIS job actually produces. Keeps a job's
+// display (number rosters, spec rows) from bleeding onto sibling jobs that share the
+// line — e.g. an art job showing the numbers job's roster.
+export const jobItemDecosOfKind = (gi, it, kind) => {
+  const dis = jobItemDecoIdxs(gi);
+  return safeDecos(it).filter((d, di) => d?.kind === kind && (!dis || dis.includes(di)));
+};
+// Does this job's artwork fail to resolve to a real art file? True only when the job's declared
+// art (art_file_id/_art_ids — a '__tbd' placeholder counts as declaring) includes NO live design
+// AND an art decoration the job owns has no live art file behind it. Numbers/names-only jobs and
+// jobs with a live declared design are never "unresolved" — a sibling job's TBD deco on a shared
+// line must not taint them, and a frozen job whose stale indexes drift onto a foreign deco is
+// protected by the declared-art check. archivedIsUnresolved: action guards (marking a job
+// complete) treat archived-only art as unresolved because jobLiveArtIds excludes archived files
+// and the production-files check would otherwise pass vacuously; passive heals leave archived
+// art alone so long-finished jobs aren't resurrected by library cleanup.
+export const jobHasUnresolvedArt = (j, o, { archivedIsUnresolved = false } = {}) => {
+  const art = safeArt(o);
+  const live = (id) => { if (!id || id === '__tbd') return false; const a = art.find(f => f.id === id); return !!a && !(archivedIsUnresolved && a.archived); };
+  const declared = ((j?._art_ids && j._art_ids.length ? j._art_ids : [j?.art_file_id]) || []).filter(Boolean);
+  if (declared.some(live)) return false;
+  return (j?.items || []).some(gi => {
+    const it = safeItems(o)[gi.item_idx]; if (!it) return false;
+    const dis = jobItemDecoIdxs(gi);
+    // Legacy item with unknown coverage on a job that declares no art at all: a TBD deco here
+    // belongs to some other job — don't attribute it.
+    if (!dis && declared.length === 0) return false;
+    return safeDecos(it).some((d, di) => {
+      if (dis && !dis.includes(di)) return false;
+      return d?.kind === 'art' && !live(d.art_file_id);
+    });
+  });
+};
+
+// True when at least one (item_idx, deco_idx) pair this job claims still resolves to a live
+// decoration on the SO. Used to retire frozen (_merged / released / split) jobs after a rep
+// clears every line decoration — without this, syncJobs keeps the frozen snapshot forever
+// (SO-1057: JOB-1057-01 stayed after all art was deleted from the lines because _merged=true).
+// Empty items[] → false (nothing to produce). Missing item or missing deco index → that pair
+// does not count. Legacy items without deco_idxs: any decoration on the line counts as live.
+export const jobHasLiveDecorations = (j, o) => {
+  const items = safeItems(o);
+  const pairs = j?.items || [];
+  if (!pairs.length) return false;
+  return pairs.some(gi => {
+    const it = items[gi.item_idx];
+    if (!it) return false;
+    const decos = safeDecos(it);
+    if (!decos.length) return false;
+    const dis = jobItemDecoIdxs(gi);
+    if (!dis) return true; // legacy unknown coverage — line still has decorations
+    return dis.some(di => decos[di] != null);
+  });
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
@@ -96,6 +157,21 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
 // next invoice should credit them against the remaining balance.
 export const sumDepositInvoiced = (invoicesForSO) =>
   (invoicesForSO || []).reduce((a, inv) => inv?.inv_type === 'deposit' ? a + safeNum(inv?.total) : a, 0);
+
+// Final + $0 invoice create: skip minting a redundant $0 invoice only when prior
+// invoices/deposits already cover the balance. Never-invoiced $0 orders (FREE PROMO
+// with no billable deco, etc.) still need a $0 invoice for AR/audit + promo paid-spend.
+// Promo-funds orders (promo_applied) always create the $0 invoice when requested.
+export const shouldSkipZeroFinalInvoice = ({ invType, invTotal, isPromoOrder, priorInvs, depositApplied }) => {
+  if (invType !== 'final') return false;
+  if (safeNum(invTotal) !== 0) return false;
+  if (isPromoOrder) return false;
+  const prior = priorInvs || [];
+  const priorCoverage = prior.length > 0 || safeNum(depositApplied) > 0
+    || prior.reduce((a, inv) => a + safeNum(inv?.total), 0) > 0;
+  return priorCoverage;
+};
+
 export const safeJobs = (o) => safeArr(o?.jobs);
 export const safeFirm = (o) => safeArr(o?.firm_dates);
 
@@ -140,6 +216,161 @@ export const mockLinkSourceFiles = (anchorArts, sourceKey) => {
     if (safeArr(im[srcSku]).length > 0) return safeArr(im[srcSku]);
   }
   return [];
+};
+
+// ── Mocks follow the garment when its identity changes ──
+// Per-garment mockups and mock links are keyed `sku|color`, so an IN-PLACE sku or color
+// edit on a line item silently orphans them: the mock stays under the old garment's key
+// and the approval gate reports the garment unmocked (SO-1480: a JM5228→KD5416 stock
+// swap stranded the Royal/White mock under the departed SKU). Re-key every art file's
+// item_mockups — the exact `sku|color` key, slot-suffixed keys (`sku|color|numbers`,
+// `sku|color|<cw>`), and the legacy bare-sku key — plus mock_links (both member keys and
+// link targets) from the old garment key to the new one. Colliding buckets merge, deduped
+// by url. Entry-level `sku` tags are updated to match. Pure: returns a NEW array only
+// when something changed, else the same reference (callers can skip a save on no-op).
+// Callers must ensure no OTHER live line still uses the old sku|color before moving —
+// two identical lines share one key by design.
+// opts.moveBareSku (default true): the legacy bare-sku bucket serves EVERY color of that
+// SKU, so callers must pass false when another live line still carries the old SKU in a
+// different color — moving the bare bucket would steal that line's legacy fallback.
+export const rekeyGarmentMocks = (artFiles, fromSku, fromColor, toSku, toColor, opts) => {
+  const moveBareSku = !opts || opts.moveBareSku !== false;
+  const fromKey = mockLinkKeyOf(fromSku, fromColor);
+  const toKey = mockLinkKeyOf(toSku, toColor);
+  if (fromKey === toKey) return artFiles;
+  const mapKey = (k) => {
+    if (k === fromKey) return toKey;
+    if (k.startsWith(fromKey + '|')) return toKey + k.slice(fromKey.length);
+    if (moveBareSku && fromSku && k === fromSku) return toSku || k; // legacy bare-sku bucket
+    return k;
+  };
+  const entryUrl = (f) => (typeof f === 'string' ? f : (f && (f.url || f.name)) || '');
+  let anyChanged = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (!a) return a;
+    let changed = false;
+    // item_mockups: move matching buckets to the new key, merging on collision.
+    const im = a.item_mockups || {};
+    const nim = {};
+    Object.entries(im).forEach(([k, v]) => {
+      const nk = mapKey(k);
+      const arr = safeArr(v).map((f) => (f && typeof f === 'object' && f.sku === fromSku && toSku) ? { ...f, sku: toSku } : f);
+      if (nk !== k || arr.some((f, i) => f !== v[i])) changed = true;
+      if (nim[nk]) {
+        const have = new Set(nim[nk].map(entryUrl));
+        nim[nk] = [...nim[nk], ...arr.filter((f) => !have.has(entryUrl(f)))];
+      } else nim[nk] = arr;
+    });
+    // mock_links: re-key both the member keys and the link targets; drop self-links.
+    const ml = mockLinksOf(a);
+    const nml = {};
+    Object.entries(ml).forEach(([k, v]) => {
+      const nk = mapKey(k); const nv = mapKey(String(v || ''));
+      if (nk !== k || nv !== v) changed = true;
+      if (nk !== nv) nml[nk] = nv;
+      else changed = true; // self-link created by the rename — drop it
+    });
+    if (!changed) return a;
+    anyChanged = true;
+    return { ...a, item_mockups: nim, ...(Object.keys(ml).length ? { mock_links: nml } : {}) };
+  });
+  return anyChanged ? next : artFiles;
+};
+
+// Legacy ink_colors placeholder lines ('Color 1'…'Color 5') are a COUNT artifact — the
+// Art-TBD pricing dropdown writes them so screen-print pricing can count colors before
+// the design exists, and they survive on the row after the art becomes real. They are
+// not ink names: spec displays must skip them so the chips fall through to the art's
+// real color-way inks instead of rendering blank "Color 1/2/3" swatches (SO-1496).
+// Pricing keeps counting the raw lines — only displays should use this.
+// Shared by the deco-spec renderers in OrderEditor (two copies) and CoachPortal.
+export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.trim()).filter(Boolean).filter((c) => !/^color\s*\d+$/i.test(c));
+
+// One shared message for the per-garment mock gate. The gate itself (skusMissingMockups)
+// is enforced at six surfaces — OrderEditor's Approve Artwork / Send-to-Coach button /
+// openCoachSend / Skip-Artist release, CoachPortal's Approve, CustDetail's preview
+// Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
+// what the rep is told to do about it.
+export const missingMockupsMsg = (action, missing) =>
+  'Cannot ' + action + ' — no mockup yet for: ' + missing.join(', ') + '. Upload a mockup or link one ("use the same mockup as…") first.';
+
+// ── Auto-link a copy-swapped garment to its source's mockup ──
+// The style-swap flows clone a line to a NEW sku ("copy decorations from JM5228 →
+// KD5416") rather than editing in place, so rekeyGarmentMocks can't apply (the source
+// line may legitimately stay). Instead, link the new garment to the source garment's
+// mock via the system's own mock_links mechanism — visible as "uses the same mockup
+// as …" and un-linkable in the UI. Only links when the COLOR matches exactly: a
+// different color must never inherit a mock silently (the wrong-colorway class the
+// 2026-07 audits closed elsewhere). Skips garments that already have their own mock
+// or an existing link. Pure: returns the same reference when nothing changed.
+export const linkSwappedGarmentMock = (artFiles, srcItem, newSku, newColor) => {
+  if (!srcItem || (srcItem.color || '') !== (newColor || '')) return artFiles;
+  const oldKey = mockLinkKeyOf(srcItem.sku, srcItem.color);
+  const newKey = mockLinkKeyOf(newSku, newColor);
+  if (oldKey === newKey || !newSku) return artFiles;
+  const artIds = [...new Set(safeDecos(srcItem)
+    .filter((d) => d?.kind === 'art' && d?.art_file_id && d.art_file_id !== '__tbd')
+    .map((d) => d.art_file_id))];
+  if (!artIds.length) return artFiles;
+  let anyChanged = false;
+  const next = safeArr(artFiles).map((a) => {
+    if (!a || !artIds.includes(a.id)) return a;
+    const im = a.item_mockups || {};
+    const srcHasMock = safeArr(im[oldKey]).length > 0 || safeArr(im[srcItem.sku]).length > 0;
+    if (!srcHasMock) return a;
+    if (safeArr(im[newKey]).length > 0) return a; // new garment already has its own mock
+    const links = { ...mockLinksOf(a) };
+    if (links[newKey]) return a; // already linked
+    // Flatten to the root source, mirroring setMockLinkOE's write behavior.
+    let root = oldKey; const seen = new Set([newKey]);
+    while (links[root] && !seen.has(root)) { seen.add(root); root = links[root]; }
+    if (root === newKey) return a;
+    links[newKey] = root;
+    anyChanged = true;
+    return { ...a, mock_links: links };
+  });
+  return anyChanged ? next : artFiles;
+};
+
+// SINGLE SOURCE OF TRUTH for per-garment mockup slot keys. A garment gets one mockup
+// slot per decoration; reversible decorations get TWO (Side A / Side B — a reversible
+// garment prints on both color ways). Slot keys extend the garment's `sku|color` base:
+//   • first art deco, Side A → bare base key (backward-compatible, drives the approval gate)
+//   • other art slots        → base|<color_way_id>  (falling back to base|d<i> / base|d<i>_1)
+//   • numbers / names        → base|numbers, base|numbers_b, base|names_1, …
+// Accepts raw SO decorations (color_way_id) or the enriched view models the mockup
+// screens build (colorWayId). Returns [{key, primary, kind, idx, di, side, reversible}]
+// where idx counts within the deco's kind and di is the index in the ORIGINAL decos
+// array (so callers can scope slots to a job via deco_idxs). The renderers in App.js
+// (rep art-detail grid + artist modal) and the approval gate below must all agree on
+// these keys — that's why this lives here.
+export const mockSlotKeys = (base, decos) => {
+  const slots = [];
+  let ai = 0, ni = 0, mi = 0;
+  safeArr(decos).forEach((d, di) => {
+    if (!d || typeof d !== 'object') return;
+    const rev = !!d.reversible;
+    if (d.kind === 'art') {
+      const cwA = d.color_way_id !== undefined ? d.color_way_id : d.colorWayId;
+      const cwB = d.color_way_id_b !== undefined ? d.color_way_id_b : d.colorWayIdB;
+      const sides = rev ? [{ cw: cwA, side: 'A' }, { cw: cwB, side: 'B' }] : [{ cw: cwA, side: rev ? 'A' : '' }];
+      sides.forEach((s, si) => {
+        const first = ai === 0 && si === 0;
+        const disc = first ? '' : (s.cw || ('d' + ai + (si ? ('_' + si) : '')));
+        slots.push({ key: base + (disc ? ('|' + disc) : ''), primary: first, kind: 'art', idx: ai, di, side: s.side, reversible: rev });
+      });
+      ai++;
+    } else if (d.kind === 'numbers') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|numbers' + (ni ? ('_' + ni) : '') + sfx, primary: false, kind: 'numbers', idx: ni, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      ni++;
+    } else if (d.kind === 'names') {
+      (rev ? ['', '_b'] : ['']).forEach((sfx, si) =>
+        slots.push({ key: base + '|names' + (mi ? ('_' + mi) : '') + sfx, primary: false, kind: 'names', idx: mi, di, side: rev ? (si ? 'B' : 'A') : '', reversible: rev }));
+      mi++;
+    }
+  });
+  return slots;
 };
 
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
@@ -212,7 +443,23 @@ export const skusMissingMockups = (job, so) => {
       const byKey = safeArr(a?.item_mockups?.[mockKey]);
       return byKey.length > 0 ? byKey : safeArr(a?.item_mockups?.[mSku]);
     });
-    if (perSku.length > 0) return;
+    if (perSku.length > 0) {
+      // Primary mock present — additionally require every slot a REVERSIBLE decoration
+      // creates (Side B art, both numbers/names sides). A reversible garment approved
+      // with only one color way mocked is exactly the SO-1116 rejection. Scoped to
+      // reversible decos this job owns (deco_idxs), and only for garments already on
+      // the per-item workflow — legacy jobs whose mocks live in the general
+      // mockup_files bucket (handled below) are left alone.
+      const _idxs = jobItemDecoIdxs(gi);
+      const anchors = [...new Set([...artFiles, ...[...jobArtIds].map(aid => allArt.find(a => a?.id === aid)).filter(Boolean)])];
+      const missSlots = mockSlotKeys(mockKey, safeDecos(it))
+        .filter(s => s.reversible && !s.primary && (!_idxs || _idxs.includes(s.di)))
+        .filter(s => !anchors.some(a => safeArr(a?.item_mockups?.[s.key]).length > 0));
+      if (missSlots.length > 0 && mSku) {
+        missing.push(mSku + ' (' + missSlots.map(s => (s.kind === 'art' ? 'art' : s.kind) + (s.side ? ' Side ' + s.side : '')).join(', ') + ')');
+      }
+      return;
+    }
     // Only fall back to the shared mockup_files/files bucket for art that carries NO
     // per-garment mockups at all (legacy single-design art). Once an art file has
     // per-garment mockups for OTHER garments, this garment needs its own — otherwise a

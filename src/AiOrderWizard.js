@@ -160,14 +160,14 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
     });
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     if (ai.parseMode === 'roster') {
       const keepingR = (ai.rosters || []).filter(r => !r._skip && (r.players || []).some(p => !p._skip));
       if (keepingR.length === 0) { setAi(x => ({ ...x, error: 'Nothing to import — keep at least one roster with players.' })); return; }
       const mk = customer?.catalog_markup || defaultMarkup || 1.65;
       const items = buildRosterItems(mk);
       if (supabase && ai.build_id) {
-        try { supabase.from('ai_order_builds').update({ accepted_lines: keepingR, accepted_count: keepingR.length }).eq('id', ai.build_id); } catch (_) {}
+        try { await supabase.from('ai_order_builds').update({ accepted_lines: keepingR, accepted_count: keepingR.length }).eq('id', ai.build_id); } catch (_) {}
       }
       onCreateEstimate(customer, items);
       const players = items.reduce((a, it) => a + Object.values(it.sizes).reduce((b, v) => b + v, 0), 0);
@@ -215,7 +215,7 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       };
     });
     if (supabase && ai.build_id) {
-      try { supabase.from('ai_order_builds').update({ accepted_lines: keeping, accepted_count: keeping.length }).eq('id', ai.build_id); } catch (_) {}
+      try { await supabase.from('ai_order_builds').update({ accepted_lines: keeping, accepted_count: keeping.length }).eq('id', ai.build_id); } catch (_) {}
     }
     onCreateEstimate(customer, items);
     if (nf) nf('✨ Created estimate with ' + items.length + ' AI-parsed item' + (items.length === 1 ? '' : 's'));

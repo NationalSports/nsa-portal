@@ -13,6 +13,14 @@
  * explicit checkbox (or an embroidery .dst — that IS the production file).
  * artProdFilesReady() keeps its looser semantics for marking staged jobs complete.
  *
+ * Update: a .dst is proof the embroidery production file is on the row, so it
+ * confirms even when prod_files_attached was never checked — but ONLY while the
+ * art file's CURRENT art is signed off (status === 'approved'). A recall/update
+ * flips the file to waiting_for_art without stripping the old .dst, and the
+ * direct approve gates (Approve Artwork, moveArtStatus, coach approve) call this
+ * check without consulting status — an ungated .dst let the STALE stitch file
+ * skip the separations re-check (2026-07-10 audit A2, regression from 93401d1).
+ *
  * SAFE: pure functions from constants.js — no Supabase, no UI, no network.
  */
 
@@ -44,13 +52,33 @@ describe('artProdFilesConfirmed — explicit gate for skipping the separations s
     expect(artProdFilesConfirmed(af)).toBe(false);
   });
 
-  test('embroidery .dst counts as the production file — in files or prod_files', () => {
-    expect(artProdFilesConfirmed({ deco_type: 'embroidery', files: [{ name: 'logo.DST' }] })).toBe(true);
-    expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files: [{ name: 'logo.dst' }] })).toBe(true);
+  test('embroidery .dst on APPROVED art counts as the production file — in files or prod_files', () => {
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', files: [{ name: 'logo.DST' }] })).toBe(true);
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files: [{ name: 'logo.dst' }] })).toBe(true);
+  });
+
+  test('embroidery .dst on approved art confirms even when prod_files_attached was never checked / is false', () => {
+    // The DST is the production file; an unchecked checkbox must not veto a legit one. Matches buildJobs.
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files_attached: false, prod_files: [{ name: 'DG-374031.DST' }] })).toBe(true);
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files_attached: false, files: [{ name: 'logo.dst' }] })).toBe(true);
+  });
+
+  test('AUDIT A2 regression: a stale .dst on pulled-back (non-approved) art must NOT confirm', () => {
+    // Recall/Update flip the art file to waiting_for_art (and the redo cycles through
+    // needs_approval) but never strip the old .dst — the direct approve gates call this
+    // check without a status guard, so the check itself must enforce it.
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'waiting_for_art', prod_files_attached: false, prod_files: [{ name: 'DG-374031.DST' }] })).toBe(false);
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'needs_approval', prod_files: [{ name: 'logo.dst' }] })).toBe(false);
+    // The explicit checkbox still confirms regardless of status — that's a human attestation.
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'waiting_for_art', prod_files_attached: true })).toBe(true);
+  });
+
+  test('embroidery with prod_files_attached false and NO dst is still unconfirmed', () => {
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files_attached: false, prod_files: [{ name: 'spec.pdf' }] })).toBe(false);
   });
 
   test('embroidery with only a PDF is not confirmed', () => {
-    expect(artProdFilesConfirmed({ deco_type: 'embroidery', prod_files: [{ name: 'spec.pdf' }] })).toBe(false);
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files: [{ name: 'spec.pdf' }] })).toBe(false);
   });
 
   test('.dst on a non-embroidery art does not confirm (seps still required)', () => {

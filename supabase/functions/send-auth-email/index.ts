@@ -183,20 +183,34 @@ function render(p: HookPayload): { subject: string; html: string } {
 }
 
 async function sendViaBrevo(to: string, subject: string, html: string): Promise<void> {
-  const r = await fetch("https://api.brevo.com/v3/smtp/email", {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      "api-key": BREVO_API_KEY,
-    },
-    body: JSON.stringify({
-      sender: { name: SENDER_NAME, email: SENDER_EMAIL },
-      to: [{ email: to }],
-      subject,
-      htmlContent: html,
-    }),
-  });
+  // Bound the Brevo call: GoTrue gives this hook a limited window, and without a timeout a hung Brevo
+  // connection would stall past it — the user sees a generic auth error while the request may still
+  // complete later (or double-send on GoTrue's retry). Abort at 8s and let the caller's catch return
+  // the 502 failure path so the outcome is deterministic.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 8000);
+  let r: Response;
+  try {
+    r = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: { name: SENDER_NAME, email: SENDER_EMAIL },
+        to: [{ email: to }],
+        subject,
+        htmlContent: html,
+      }),
+      signal: ctl.signal,
+    });
+  } catch (e) {
+    throw new Error(ctl.signal.aborted ? "Brevo request timed out" : `Brevo request failed: ${(e as Error).message}`);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!r.ok) {
     const detail = await r.text();
     throw new Error(`Brevo HTTP ${r.status}: ${detail}`);

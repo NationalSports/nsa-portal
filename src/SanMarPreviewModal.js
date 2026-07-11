@@ -33,6 +33,7 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
   const [submitState, setSubmitState] = useState('idle'); // idle | submitting | success | error
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState('');
+  const [bookErr, setBookErr] = useState(''); // order placed at vendor but NOT recorded in the portal
   // partId (Unique_Key) resolution
   const [resolving, setResolving] = useState(true);
   const [resolvedParts, setResolvedParts] = useState({}); // lineNumber -> uniqueKey
@@ -142,14 +143,29 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
     if (!canSubmit) return;
     setSubmitState('submitting');
     setErrorMsg('');
+    let r;
     try {
-      const r = await sanmarSubmitPO(payload, env);
-      setResult(r);
-      setSubmitState('success');
-      onSubmitted && onSubmitted(r);
+      r = await sanmarSubmitPO(payload, env);
     } catch (e) {
       setErrorMsg(e.message || 'Submit failed — try again or place the order manually on sanmar.com.');
       setSubmitState('error');
+      return;
+    }
+    // SanMar accepted the order — this is a success no matter what the local bookkeeping does.
+    setResult(r);
+    setSubmitState('success');
+    // Promote/clear the batch OUTSIDE the submit try: a bookkeeping error must never make a
+    // genuinely-placed order look like it failed. But it must not fail SILENTLY either —
+    // NSA 4536 was placed at SanMar with zero portal record because the (async) bookkeeping
+    // result was ignored. Await it and surface anything short of a recorded batch number.
+    if (onSubmitted) {
+      try {
+        const recorded = await onSubmitted(r, lines);
+        if (!recorded) setBookErr('the recording step reported that nothing was written to the portal');
+      } catch (e) {
+        console.error('[SanMar] order placed but post-order bookkeeping failed:', e);
+        setBookErr(e.message || 'recording failed with an error');
+      }
     }
   };
 
@@ -171,6 +187,10 @@ export default function SanMarPreviewModal({ batchPOs, poNumber, vendorName = 'S
                 <Stat label="PO Number" value={result?.orderNumber || poNumber} mono />
                 <Stat label="Transaction ID" value={result?.transactionId || '—'} mono />
               </div>
+              {bookErr && <div style={{ marginTop: 10, padding: 10, background: '#fffbeb', border: '2px solid #f59e0b', borderRadius: 8, color: '#92400e', fontWeight: 700 }}>
+                ⚠ SanMar HAS this order, but the portal did NOT record it ({bookErr}).
+                Do NOT submit or re-order this batch — record the PO on the sales order manually and remove the queue entries, or the batch will look unordered and get double-ordered.
+              </div>}
             </div>
           ) : submitState === 'error' ? (
             <div style={{ padding: 10, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#991b1b' }}>

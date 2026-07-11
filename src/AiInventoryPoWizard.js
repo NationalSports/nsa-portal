@@ -69,7 +69,7 @@ export function AiInventoryPoWizard({ open, onClose, supabase, products, vendors
     }
   };
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     const keeping = (ai.parsed || []).filter(p => !p._skip && p.product_id);
     if (keeping.length === 0) { setAi(x => ({ ...x, error: 'No matched items to import — unmatched lines can\'t go on an inventory PO.' })); return; }
     const items = keeping.map(p => {
@@ -87,7 +87,7 @@ export function AiInventoryPoWizard({ open, onClose, supabase, products, vendors
       };
     }).filter(Boolean);
     if (supabase && ai.build_id) {
-      try { supabase.from('ai_order_builds').update({ accepted_lines: keeping, accepted_count: keeping.length }).eq('id', ai.build_id); } catch (_) {}
+      try { await supabase.from('ai_order_builds').update({ accepted_lines: keeping, accepted_count: keeping.length }).eq('id', ai.build_id); } catch (_) {}
     }
     onCreatePO(vendorId, items);
     if (nf) nf('✨ Pre-filled Inventory PO with ' + items.length + ' AI-parsed item' + (items.length === 1 ? '' : 's'));

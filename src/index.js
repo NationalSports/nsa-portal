@@ -1,11 +1,25 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
+import * as Sentry from '@sentry/react';
 import LoginGate from './LoginGate';
 import {
   supabase, sbSignIn, sbSignUp, sbResendSignup, sbResetPassword,
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
+
+// Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
+// The DSN is a public client identifier (not a secret), so inlining it into the
+// bundle is expected. No-op when unset, so local/dev builds are unaffected. v7
+// default integrations capture uncaught errors + unhandled promise rejections;
+// the App error boundary additionally reports React render errors.
+if (process.env.REACT_APP_SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.REACT_APP_SENTRY_DSN,
+    environment: process.env.REACT_APP_SENTRY_ENV || process.env.NODE_ENV,
+    tracesSampleRate: 0, // errors only — no performance tracing
+  });
+}
 
 // The full portal (App.js, ~2.6MB) is code-split out so a visitor who isn't
 // logged in gets the login screen instantly without downloading it. App loads
@@ -120,7 +134,18 @@ class ErrorBoundary extends React.Component {
             </>
           )}
           <div style={{ marginTop: 20, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <button onClick={() => { localStorage.clear(); sessionStorage.clear(); window.location.href = window.location.pathname; }}
+            <button onClick={() => {
+              // Clearing the cache must never destroy unsaved work: the durable outbox holds the
+              // CONTENT of failed/unsaved edits and the failed-ID ledger drives their retry — carry
+              // those three keys across the wipe.
+              const keep = {};
+              ['nsa_outbox', 'nsa_save_failed_ids', 'nsa_save_failed_errors'].forEach(k => {
+                try { const v = localStorage.getItem(k); if (v != null) keep[k] = v; } catch (_) {}
+              });
+              localStorage.clear(); sessionStorage.clear();
+              Object.entries(keep).forEach(([k, v]) => { try { localStorage.setItem(k, v); } catch (_) {} });
+              window.location.href = window.location.pathname;
+            }}
               style={{ padding: '10px 24px', background: '#dc2626', color: 'white', border: 'none', borderRadius: 8, cursor: 'pointer', fontSize: 14, fontWeight: 700 }}>
               Clear Cache & Hard Reload
             </button>

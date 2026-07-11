@@ -1,16 +1,18 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles } from './safeHelpers';
+import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
+import Papa from 'papaparse';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
 import StoreBuilder from './storefront/BuildStore';
+import { RosterOrdersCoach } from './RosterOrders';
 // Lazy so the uniform designer (and its jsPDF/canvas deps) only loads when opened.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 
@@ -24,25 +26,67 @@ const CP_LINK_TARGET = CP_EMBEDDED ? '_top' : '_blank';
 // Live Look = the live-inventory catalog. Marketing wraps it at /livelook; the
 // portal serves it directly at /adidas.
 const CP_LIVELOOK_URL = CP_EMBEDDED ? `${CP_MARKETING}/livelook` : '/adidas';
+// A team store's public storefront — like CP_LIVELOOK_URL: absolute (marketing
+// domain) when embedded so the click breaks OUT of the iframe to the proxied
+// nationalsportsapparel.com/shop/<slug> instead of the raw portal domain;
+// relative when the portal serves the page directly. Mirrors shopHref() in
+// storefront/TeamStores.js.
+const cpShopHref = (slug) => CP_EMBEDDED ? `${CP_MARKETING}/shop/${slug}` : `/shop/${slug}`;
 
 // Read-only team-store view for the coach: headline order/fundraising/batch
 // summary up top, with the per-player order list as a searchable, collapsible
 // section below. No editing.
 const _cpMoney = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const _cpMoney0 = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { maximumFractionDigits: 0 });
 const _cpStages = { pending: 'Ordered', received: 'Received', in_production: 'In production', bagging: 'Bagging', shipped: 'Shipped', complete: 'Complete' };
-const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#1e40af' : s === 'bagging' ? '#86198f' : s === 'in_production' ? '#92400e' : s === 'received' ? '#3730a3' : '#64748b';
+// Production-stage order, least→most advanced. Mirrors the staff SRANK in
+// src/Webstores.js (enrich()) — keep the two in step if a stage is ever added.
+const _cpStageRank = { pending: 0, received: 1, in_production: 2, bagging: 3, shipped: 4, complete: 5 };
+// Status tones from the NSA design system (Team Store Tracking "1A" handoff):
+// ordered=slate, received=indigo, in-production=red, bagging=amber, shipped=navy,
+// complete=green. A short/backordered line borrows the red accent.
+const _cpTone = (s) => s === 'complete' ? '#166534' : s === 'shipped' ? '#192853' : s === 'bagging' ? '#B26A1C' : s === 'in_production' ? '#962C32' : s === 'received' ? '#4E63A6' : '#7A8194';
+// NSA design tokens used by the tracking card — the fixed brand palette (not the
+// per-team theme), matching the reviewed 1A mock.
+const _CPD = { navy: '#192853', navyDark: '#0F1A38', navyTint: '#2a3d5e', red: '#962C32', green: '#1F7A43', offWhite: '#F7F8FB', panel: '#FBFCFE', lightGray: '#EEF1F6', midGray: '#D1D5DE', text: '#2A2F3E', textLight: '#5A6075' };
+const _cpHash = 'repeating-linear-gradient(-55deg, transparent 0 30px, rgba(255,255,255,.02) 30px 60px)';
+// A short human order reference: the OMG order number for OMG-fed stores, else
+// the native customer-facing order_number (migration 00177), falling back to a
+// stable 6-char slice of the UUID for legacy orders with neither. Mirrors the
+// storefront order tracker (storefront/OrderTrack.js).
+const _cpOrderNo = (o) => o.omg_order_number ? String(o.omg_order_number) : (o.order_number ? '#' + o.order_number : (o.id ? '#' + String(o.id).replace(/-/g, '').slice(-6).toUpperCase() : '—'));
+const _cpDelivery = (o, store) => { const m = String(o.ship_method || store?.delivery_mode || ''); if (/pick/i.test(m)) return 'Pickup'; if (/club|team|deliver/i.test(m)) return 'Team delivery'; return 'Ship to home'; };
+const _cpShipTo = (o) => { const a = o.ship_address || {}; const city = [a.city, a.state].filter(Boolean).join(', '); return [city, a.zip].filter(Boolean).join(' ') || a.name || '—'; };
+const _cpFmtDate = (s) => { if (!s) return ''; const dt = new Date(s); return isNaN(dt) ? '' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+// Carrier tracking deep-links. carrier values seen: fedex, ups, usps, stamps_com.
+const _cpTrackHref = (carrier, tracking) => {
+  if (!tracking) return '';
+  const t = encodeURIComponent(String(tracking).trim());
+  const c = String(carrier || '').toLowerCase();
+  if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${t}`;
+  if (c.includes('fedex')) return `https://www.fedex.com/fedextrack/?trknbr=${t}`;
+  if (c.includes('usps') || c.includes('stamps')) return `https://tools.usps.com/go/TrackConfirmAction?tLabels=${t}`;
+  return `https://www.google.com/search?q=${t}`;
+};
 
 // ── Team-colored portal header ───────────────────────────────────────
 // Wear the team's own colors in the portal header, the way each webstore
 // header is themed by its store colors. customer.school_colors is an array of
 // catalog color-family names (e.g. ["Navy","Orange","White"]); families + hexes
-// match src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js.
-const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#C8102E', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#6D28D9', Pink: '#EC4899', Brown: '#7C4A21' };
+// mirror src/CoachCatalogAccess.js and src/storefront/AdidasInventory.js — except
+// Red and Purple, which are intentionally the deeper team-brand shades here
+// (Red: PMS 200 C, #BA0C2F; Purple: #3B1464) rather than the brighter
+// garment-swatch versions, so a team whose hero banner picks that family reads
+// richer instead of pastel-bright — same reasoning for both.
+// Cardinal/Silver aren't in those catalog files (no garment filter needs them
+// yet) but match the Cardinal/Silver hexes already used for thread-color pickers
+// elsewhere (OrderEditor.js, CustDetail.js).
+const CP_HEX = { Black: '#191919', White: '#FFFFFF', Grey: '#9AA1AC', Silver: '#C0C0C0', Navy: '#1B2A4A', Royal: '#2148C7', Blue: '#3B82F6', Red: '#BA0C2F', Cardinal: '#8C1515', Maroon: '#6B1F2A', Orange: '#EA580C', Gold: '#C9A227', Yellow: '#EAB308', Green: '#15803D', Purple: '#3B1464', Pink: '#EC4899', Brown: '#7C4A21' };
 // Darkest-first: which team color makes the best deep banner background (white
 // text stays readable). Light/neutral families are intentionally excluded.
-const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
+const CP_PRIMARY_PREF = ['Navy', 'Maroon', 'Cardinal', 'Purple', 'Green', 'Royal', 'Brown', 'Red', 'Black', 'Blue'];
 // Brightest-first: which team color pops best as the accent underline/eyebrow.
-const CP_ACCENT_PREF = ['Orange', 'Red', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
+const CP_ACCENT_PREF = ['Orange', 'Red', 'Cardinal', 'Gold', 'Yellow', 'Royal', 'Blue', 'Green', 'Pink', 'Purple', 'Maroon', 'Navy'];
 const CP_DEFAULT_THEME = { primary: '#1e3a5f', accent: '#2563eb' }; // NSA navy/blue fallback
 // Lighten (pct>0) / darken (pct<0) a hex — mirrors storefront/Storefront.js shade().
 const cpShade = (hex, pct) => {
@@ -57,14 +101,25 @@ const cpShade = (hex, pct) => {
 // Resolve a {primary, accent} header theme from a customer's school colors.
 // primary is always a dark, readable banner color (a dark team color or the NSA
 // navy default); accent is the team's brightest color (or a tonal fallback).
-function cpTeamTheme(customer) {
-  const fams = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
-  if (!fams.length) return { ...CP_DEFAULT_THEME };
-  const darkFam = CP_PRIMARY_PREF.find((f) => fams.includes(f));
+function cpTeamTheme(customer, supplement) {
+  const own = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  // Parent-department colors the team doesn't already carry — used to fill the
+  // accent only (e.g. a sub-team borrows the school's gold), never the primary.
+  const sup = Array.isArray(supplement) ? supplement.filter((f) => CP_HEX[f] && !own.includes(f)) : [];
+  if (!own.length && !sup.length) return { ...CP_DEFAULT_THEME };
+  // Primary comes from the team's OWN colors first, so a sub-team keeps its own
+  // banner color; borrow the parent's only when the team has none of its own.
+  const primaryPool = own.length ? own : sup;
+  const darkFam = CP_PRIMARY_PREF.find((f) => primaryPool.includes(f));
   const primary = darkFam ? CP_HEX[darkFam] : CP_DEFAULT_THEME.primary;
-  const accentFam = CP_ACCENT_PREF.find((f) => fams.includes(f) && f !== darkFam)
-    || fams.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Black');
-  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, 45);
+  // Accent from the team's OWN colors first (keep its identity); only borrow the
+  // parent department's colors when the team has no distinct accent of its own.
+  const pickAccent = (pool) => CP_ACCENT_PREF.find((f) => pool.includes(f) && f !== darkFam)
+    || pool.find((f) => f !== darkFam && f !== 'White' && f !== 'Grey' && f !== 'Silver' && f !== 'Black');
+  const accentFam = pickAccent(own) || pickAccent(sup);
+  // No distinct second color anywhere? Deepen the primary for the accent — never
+  // lighten, which would desaturate a warm primary (red) into pink.
+  const accent = (accentFam && CP_HEX[accentFam]) || cpShade(primary, -24);
   return { primary, accent };
 }
 
@@ -107,7 +162,7 @@ function CoachStore({ customer, storeIds }) {
   // progress drafts stay hidden until published. Everything live renders as the
   // usual order-tracking card.
   const pending = stores.filter((s) => s.status === 'draft' && s.created_via === 'coach');
-  const live = stores.filter((s) => s.status !== 'draft');
+  const live = stores.filter((s) => s.status !== 'draft' && s.status !== 'archived');
   if (!pending.length && !live.length) return null;
   return (
     <div style={{ marginBottom: 18 }}>
@@ -126,132 +181,456 @@ function CoachStore({ customer, storeIds }) {
   );
 }
 
+// Coach-facing roster manager — set up players (type, paste, or upload a
+// template), hand each their own store link, and track who's opened / ordered.
+// Runs on the coach's authenticated session, so it reads/writes webstore_roster
+// directly (same RLS access as staff); emails go through the roster-invite fn.
+function CoachRosterManager({ store, initialRoster }) {
+  const [roster, setRoster] = useState(initialRoster || []);
+  const [open, setOpen] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [single, setSingle] = useState({ player_name: '', player_number: '', parent_email: '', position: '' });
+  const [bulk, setBulk] = useState('');
+  const [bulkPos, setBulkPos] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [copiedId, setCopiedId] = useState(null);
+  const fileRef = useRef();
+
+  // Player invite links are copied and sent to players/parents, so they must be
+  // the canonical public URL (nationalsportsapparel.com/shop/<slug>, proxied to
+  // the storefront) rather than the raw portal domain — same rule the Live Look
+  // share link follows (storefront/AdidasInventory.js).
+  const linkFor = (r) => r.token ? `${CP_MARKETING}/shop/${store.slug}?player=${r.token}` : '';
+  const flash = (m) => { setNote(m); setTimeout(() => setNote(''), 3500); };
+
+  const reload = async () => {
+    const { data } = await supabase.from('webstore_roster').select('*').eq('store_id', store.id).order('player_name');
+    if (data) setRoster(data);
+  };
+  useEffect(() => { reload(); /* eslint-disable-next-line */ }, [store.id]);
+
+  const tok = () => { try { const a = new Uint8Array(16); crypto.getRandomValues(a); return Array.from(a, (b) => b.toString(16).padStart(2, '0')).join(''); } catch { return (Math.random().toString(16) + Math.random().toString(16)).replace(/[^a-f0-9]/g, '').slice(0, 32); } };
+  const normPos = (v) => { const x = String(v || '').trim().toLowerCase(); if (['gk', 'goalie', 'goalkeeper', 'keeper'].includes(x)) return 'gk'; if (['field', 'fielder', 'outfield', 'player'].includes(x)) return 'field'; return null; };
+
+  const addPlayers = async (players) => {
+    const rows = (players || [])
+      .map((p) => ({ player_name: String(p.player_name || '').trim(), player_number: String(p.player_number || '').trim() || null, parent_email: String(p.parent_email || '').trim() || null, position: normPos(p.position) }))
+      .filter((p) => p.player_name)
+      .map((p) => ({ ...p, store_id: store.id, token: tok(), ordered: false }));
+    if (!rows.length) { flash('Enter at least one player name.'); return false; }
+    setBusy(true);
+    const { error } = await supabase.from('webstore_roster').insert(rows);
+    setBusy(false);
+    if (error) { flash('Could not add players: ' + error.message); return false; }
+    await reload(); flash(`Added ${rows.length} player${rows.length === 1 ? '' : 's'}`); setOpen(true);
+    return true;
+  };
+  const updatePlayer = async (id, fields) => { const { error } = await supabase.from('webstore_roster').update(fields).eq('id', id); if (error) { flash('Error: ' + error.message); return; } reload(); };
+  const removePlayer = async (r) => { if (!window.confirm(`Remove ${r.player_name}?`)) return; const { error } = await supabase.from('webstore_roster').delete().eq('id', r.id); if (error) { flash('Error: ' + error.message); return; } reload(); };
+
+  const addSingle = async () => { if (!single.player_name.trim()) { flash('Enter a player name.'); return; } const ok = await addPlayers([single]); if (ok) setSingle({ player_name: '', player_number: '', parent_email: '', position: single.position }); };
+  const addBulk = async () => {
+    const players = bulk.split('\n').map((line) => { const parts = line.split(/[,\t]/).map((x) => x.trim()); return parts[0] ? { player_name: parts[0], player_number: parts[1] || '', parent_email: parts[2] || '', position: parts[3] || bulkPos } : null; }).filter(Boolean);
+    if (!players.length) { flash('Paste at least one player (one per line).'); return; }
+    const ok = await addPlayers(players); if (ok) { setBulk(''); }
+  };
+
+  // Template upload — CSV with a header row (Name, Number, Email, Position) or
+  // the same columns in order without a header. Parsed with papaparse so quoted
+  // fields (e.g. "Smith, Jr.") survive.
+  const parseRows = (rows) => {
+    if (!rows.length) return [];
+    const first = rows[0].map((c) => String(c || '').trim().toLowerCase());
+    const hasHeader = first.some((c) => ['name', 'player', 'player name', 'player_name'].includes(c));
+    const header = hasHeader ? first : null;
+    const findIdx = (names) => header ? header.findIndex((h) => names.includes(h)) : -1;
+    const iName = header ? findIdx(['name', 'player', 'player name', 'player_name']) : 0;
+    const iNum = header ? findIdx(['number', '#', 'jersey', 'jersey number', 'player_number']) : 1;
+    const iEmail = header ? findIdx(['email', 'parent email', 'parent_email', 'parent']) : 2;
+    const iPos = header ? findIdx(['position', 'pos', 'role']) : 3;
+    const get = (row, i) => (i >= 0 && i < row.length) ? String(row[i] || '').trim() : '';
+    return rows.slice(hasHeader ? 1 : 0).map((row) => ({ player_name: get(row, iName), player_number: get(row, iNum), parent_email: get(row, iEmail), position: get(row, iPos) || bulkPos })).filter((p) => p.player_name);
+  };
+  const onFile = (e) => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    Papa.parse(file, { skipEmptyLines: true, complete: async (res) => { const players = parseRows(res.data || []); if (!players.length) { flash('No players found in that file.'); return; } await addPlayers(players); }, error: () => flash('Could not read that file.') });
+    e.target.value = '';
+  };
+  const downloadTemplate = () => {
+    const csv = 'Name,Number,Email,Position\nJane Smith,10,parent@email.com,field\nAlex Kim,1,alex@email.com,gk\nSam Rivera,7,,\n';
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' }); const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${store.slug || 'roster'}-template.csv`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  };
+
+  const copyOne = (r) => { const l = linkFor(r); if (!l) return; navigator.clipboard?.writeText(l); setCopiedId(r.id); setTimeout(() => setCopiedId(null), 1500); };
+  const copyAll = () => { const rows = roster.filter((r) => r.token); if (!rows.length) { flash('No links yet.'); return; } navigator.clipboard?.writeText(rows.map((r) => `${r.player_name}${r.player_number ? ' #' + r.player_number : ''}: ${linkFor(r)}`).join('\n')); flash(`Copied ${rows.length} links`); };
+  const emailPlayers = async (rows, label) => {
+    const ids = rows.filter((r) => r.token && (r.parent_email || '').trim()).map((r) => r.id);
+    if (!ids.length) { flash('No players with an email address to send to.'); return; }
+    if (!window.confirm(`Email ${ids.length} ${label}?`)) return;
+    setBusy(true);
+    try { const res = await fetch('/.netlify/functions/roster-invite', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ store_id: store.id, player_ids: ids }) }); const dj = await res.json().catch(() => ({})); if (!res.ok || !dj.ok) flash('Email failed: ' + (dj.error || res.status)); else { flash(`Emailed ${dj.sent} link${dj.sent === 1 ? '' : 's'}${(dj.skipped || []).length ? ` · ${dj.skipped.length} skipped` : ''}`); reload(); } }
+    catch (err) { flash('Email failed: ' + err.message); }
+    setBusy(false);
+  };
+
+  const fmtDate = (s) => { if (!s) return ''; const dt = new Date(s); return isNaN(dt) ? '' : dt.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); };
+  const orderedCount = roster.filter((r) => r.ordered).length;
+  const openedCount = roster.filter((r) => r.last_opened_at).length;
+  const posSel = (value, onChange) => (
+    <select value={value || ''} onChange={(e) => onChange(e.target.value || null)} style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: '4px 6px', fontSize: 12 }}>
+      <option value="">Any</option><option value="field">Field</option><option value="gk">Goalkeeper</option>
+    </select>
+  );
+  const chip = (label, bg, fg) => <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: bg, color: fg }}>{label}</span>;
+
+  return (
+    <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <span style={{ transform: open ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
+        Roster &amp; player links ({roster.length})
+      </button>
+      {roster.length > 0 && <span style={{ marginLeft: 10, fontSize: 12, color: '#64748b' }}>{orderedCount}/{roster.length} ordered · {openedCount} opened their link</span>}
+
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <button onClick={() => setShowAdd((v) => !v)} style={cpRosBtn('#0b1f3a', '#fff')}>{showAdd ? 'Close' : '+ Add players'}</button>
+            <button onClick={() => fileRef.current && fileRef.current.click()} style={cpRosBtn('#fff', '#0b1f3a', true)}>⬆ Upload template</button>
+            <button onClick={downloadTemplate} style={cpRosBtn('#fff', '#0b1f3a', true)}>Download template</button>
+            {roster.length > 0 && <><button onClick={copyAll} style={cpRosBtn('#fff', '#0b1f3a', true)}>Copy all links</button>
+              <button disabled={busy} onClick={() => emailPlayers(roster.filter((r) => !r.ordered), 'players who haven’t ordered')} style={cpRosBtn('#fff', '#0b1f3a', true)}>Email not-ordered</button></>}
+            <input ref={fileRef} type="file" accept=".csv,text/csv,.txt" onChange={onFile} style={{ display: 'none' }} />
+          </div>
+          {note && <div style={{ fontSize: 12, color: '#0b1f3a', background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, padding: '6px 10px', marginBottom: 10 }}>{note}</div>}
+
+          {showAdd && (
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, padding: 12, marginBottom: 12, background: '#fafcff' }}>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+                <input value={single.player_name} onChange={(e) => setSingle({ ...single, player_name: e.target.value })} placeholder="Player name" style={cpRosInput(170)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                <input value={single.player_number} onChange={(e) => setSingle({ ...single, player_number: e.target.value.replace(/[^0-9]/g, '').slice(0, 4) })} placeholder="#" style={cpRosInput(56)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                {posSel(single.position, (v) => setSingle({ ...single, position: v || '' }))}
+                <input value={single.parent_email} onChange={(e) => setSingle({ ...single, parent_email: e.target.value })} placeholder="parent@email.com" style={cpRosInput(190)} onKeyDown={(e) => e.key === 'Enter' && addSingle()} />
+                <button disabled={busy} onClick={addSingle} style={cpRosBtn('#0b1f3a', '#fff')}>Add</button>
+              </div>
+              <div style={{ fontSize: 11.5, color: '#64748b', marginBottom: 4 }}>Or paste a list — one per line: <code>Name, Number, Email, Position</code></div>
+              <textarea value={bulk} onChange={(e) => setBulk(e.target.value)} rows={4} placeholder={'Jane Smith, 10, parent@email.com, field\nAlex Kim, 1, alex@email.com, gk'} style={{ width: '100%', fontFamily: 'monospace', fontSize: 12, border: '1px solid #e2e8f0', borderRadius: 8, padding: 8, boxSizing: 'border-box', resize: 'vertical' }} />
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: '#64748b' }}>These are all:</span>
+                {posSel(bulkPos, (v) => setBulkPos(v || ''))}
+                <button disabled={busy} onClick={addBulk} style={cpRosBtn('#0b1f3a', '#fff')}>Add from list</button>
+              </div>
+            </div>
+          )}
+
+          {roster.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#64748b', padding: '6px 0' }}>No players yet. Add them above or upload your roster — each player gets a private link to your store.</div>
+          ) : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}>
+                  <th style={cpRosTh}>Player</th><th style={cpRosTh}>#</th><th style={cpRosTh}>Position</th><th style={cpRosTh}>Opened?</th><th style={cpRosTh}>Ordered?</th><th style={cpRosTh}>Link</th><th style={cpRosTh}></th>
+                </tr></thead>
+                <tbody>
+                  {roster.map((r) => (
+                    <tr key={r.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                      <td style={cpRosTd}>{r.player_name}</td>
+                      <td style={cpRosTd}><input defaultValue={r.player_number || ''} onBlur={(e) => { const v = e.target.value.replace(/[^0-9]/g, '').slice(0, 4); if (v !== (r.player_number || '')) updatePlayer(r.id, { player_number: v || null }); }} placeholder="#" style={{ width: 44, border: '1px solid #e2e8f0', borderRadius: 5, padding: '3px 5px', fontSize: 12 }} /></td>
+                      <td style={cpRosTd}>{posSel(r.position, (v) => updatePlayer(r.id, { position: v }))}</td>
+                      <td style={cpRosTd}>{r.last_opened_at ? chip(`Opened ${fmtDate(r.last_opened_at)}`, '#dbeafe', '#1e40af') : r.invite_sent_at ? chip(`Invited ${fmtDate(r.invite_sent_at)}`, '#f1f5f9', '#64748b') : <span style={{ color: '#cbd5e1' }}>—</span>}</td>
+                      <td style={cpRosTd}>{r.ordered ? chip('Ordered', '#dcfce7', '#166534') : chip('Not yet', '#f8fafc', '#94a3b8')}</td>
+                      <td style={cpRosTd}>
+                        {r.token ? (
+                          <span style={{ display: 'inline-flex', gap: 6 }}>
+                            <button onClick={() => copyOne(r)} style={cpRosBtn('#fff', '#0b1f3a', true)}>{copiedId === r.id ? '✓' : 'Copy'}</button>
+                            <button disabled={busy || !(r.parent_email || '').trim()} title={(r.parent_email || '').trim() ? `Email ${r.parent_email}` : 'Add a parent email first'} onClick={() => emailPlayers([r], 'this player')} style={cpRosBtn('#fff', '#0b1f3a', true)}>Email</button>
+                          </span>
+                        ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                      </td>
+                      <td style={{ ...cpRosTd, textAlign: 'right' }}><button onClick={() => removePlayer(r)} title="Remove" style={{ background: 'none', border: 'none', color: '#cbd5e1', cursor: 'pointer', fontSize: 16 }}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+const cpRosTh = { padding: '6px 8px', whiteSpace: 'nowrap' };
+const cpRosTd = { padding: '6px 8px', verticalAlign: 'middle' };
+const cpRosInput = (w) => ({ width: w, border: '1px solid #e2e8f0', borderRadius: 8, padding: '7px 9px', fontSize: 13, boxSizing: 'border-box' });
+const cpRosBtn = (bg, fg, outline) => ({ background: bg, color: fg, border: outline ? '1px solid #cbd5e1' : 'none', borderRadius: 8, padding: '6px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', whiteSpace: 'nowrap' });
+
+// Team Store Tracking card — the coach's read-only view of one live store,
+// rebuilt to the NSA "1A · Refined Ledger" design handoff: a navy header, a KPI
+// strip, fundraising-goal + roster-ordered progress bars, and a searchable /
+// filterable player-order ledger whose rows expand into a contact meta band, a
+// priced line-item table, and a fundraising + shipping footer. The roster
+// manager (a separate coach tool) renders below. All data is live; fields with
+// no backing value degrade quietly (no goal → no goal bar, no tracking → no
+// Track link).
 function CoachStoreCard({ store: s, d }) {
   const [q, setQ] = useState('');
-  const [showOrders, setShowOrders] = useState(false);
-  const [openOrder, setOpenOrder] = useState(null);
-  const itemsByOrder = {}; d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
+  const [filter, setFilter] = useState('all');
+  // Open dropdowns, keyed by order id. All orders start collapsed so the ledger
+  // opens as a clean, scannable list (a full store can run to dozens of orders);
+  // the coach expands the ones they want, or hits Expand all.
+  const [open, setOpen] = useState({});
+
+  const itemsByOrder = {};
+  d.items.forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
   // Active orders exclude abandoned pre-payment carts and cancellations.
   const active = d.orders.filter((o) => o.status !== 'cancelled' && o.status !== 'pending_payment');
-  const players = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean));
-  const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0);
+
+  // A line is "backordered" when staff have flagged it short (missing_qty > 0) —
+  // the real, staff-maintained shortfall signal. The unused `backordered` column
+  // is intentionally not read.
+  const isShort = (i) => (Number(i.missing_qty) || 0) > 0;
+
+  const buildRow = (o) => {
+    const lineItems = (itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent);
+    const lines = lineItems.map((i) => {
+      const short = isShort(i);
+      const sk = i.line_status || 'pending';
+      return {
+        id: i.id,
+        name: i.name || i.sku || 'Item',
+        sku: (i.name && i.sku && i.name !== i.sku) ? i.sku : '',
+        size: i.size || '—', qty: Number(i.qty) || 0,
+        priceStr: _cpMoney(Number(i.unit_price) || 0),
+        statusLabel: short ? 'On order' : (_cpStages[sk] || sk),
+        statusTone: short ? _CPD.red : _cpTone(sk),
+        short, backEta: i.backorder_eta ? _cpFmtDate(i.backorder_eta) : '',
+      };
+    });
+    const items = lineItems.reduce((a, i) => a + (Number(i.qty) || 0), 0);
+    const sales = lineItems.reduce((a, i) => a + (Number(i.unit_price) || 0) * (Number(i.qty) || 0), 0);
+    // Overall status = least-advanced non-short line (fall back to all lines).
+    const pool = lineItems.filter((i) => !isShort(i));
+    const src = pool.length ? pool : lineItems;
+    const ranks = src.map((i) => (_cpStageRank[i.line_status || 'pending'] ?? 0));
+    const minRank = ranks.length ? Math.min(...ranks) : 0;
+    const statusKey = Object.keys(_cpStageRank).find((k) => _cpStageRank[k] === minRank) || 'pending';
+    const hasBack = lineItems.some(isShort);
+    const player = [...new Set(lineItems.map((i) => i.player_name).filter(Boolean))].join(', ');
+    const number = [...new Set(lineItems.map((i) => i.player_number).filter(Boolean))].join(', ');
+    const shipped = statusKey === 'shipped' || statusKey === 'complete' || !!o.shipped_at || !!o.tracking_number;
+    const trackHref = _cpTrackHref(o.carrier, o.tracking_number);
+    const shipDate = _cpFmtDate(o.shipped_at);
+    const carrier = o.carrier ? String(o.carrier).toUpperCase().replace('STAMPS_COM', 'USPS') : '';
+    return {
+      id: o.id, no: _cpOrderNo(o), date: _cpFmtDate(o.created_at) || '—',
+      player: player || o.buyer_name || '—', number: number || '—',
+      items, fundStr: _cpMoney(Number(o.fundraise_amt) || 0), salesStr: _cpMoney(sales),
+      buyerName: o.buyer_name || '—', buyerEmail: o.buyer_email || '', buyerPhone: o.buyer_phone || '—',
+      paid: o.payment_mode === 'paid', paymentLabel: o.payment_mode === 'paid' ? 'Paid' : 'Team tab',
+      payColor: o.payment_mode === 'paid' ? _CPD.green : _CPD.textLight,
+      statusKey, statusLabel: _cpStages[statusKey] || statusKey, statusTone: _cpTone(statusKey),
+      hasBack, backCount: lineItems.filter(isShort).length, delivery: _cpDelivery(o, s),
+      shipped, tracked: shipped && !!trackHref, trackHref,
+      shipHeadline: shipped ? (shipDate ? `Shipped ${shipDate}` : 'Shipped') : 'Not yet shipped',
+      shipSub: shipped ? ([carrier, o.tracking_number].filter(Boolean).join(' · ') || 'In transit') : (o.so_id ? `Ships with ${o.so_id}` : 'Awaiting batch'),
+      shipTo: _cpShipTo(o), soId: o.so_id || '', lines,
+      _hay: `${player} ${o.buyer_name || ''} ${o.buyer_email || ''} ${_cpOrderNo(o)} ${number}`.toLowerCase(),
+    };
+  };
+
+  const allRows = active.map(buildRow);
+
+  // ── KPIs ──
+  const playersN = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
+  const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
   const fundraising = active.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const sales = active.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const paidCount = active.filter((o) => o.payment_mode === 'paid').length;
-  const notOrdered = (d.roster || []).filter((r) => !r.ordered);
+  const fundGoal = Number(s.fundraise_goal) || 0;
+  const fundPct = fundGoal > 0 ? Math.min(100, Math.round((fundraising / fundGoal) * 100)) : 0;
+  const roster = d.roster || [];
+  const rosterSize = roster.length;
+  const rosterOrdered = roster.filter((r) => r.ordered).length;
+  const rosterPct = rosterSize > 0 ? Math.min(100, Math.round((rosterOrdered / rosterSize) * 100)) : 0;
 
-  // Group batched orders by Sales Order; derive a representative status.
-  const batchMap = {}; active.forEach((o) => { if (o.so_id) (batchMap[o.so_id] = batchMap[o.so_id] || []).push(o); });
-  const batchStatus = (ords) => {
-    const its = ords.flatMap((o) => itemsByOrder[o.id] || []).filter((i) => !i.is_bundle_parent);
-    const stages = its.map((i) => i.line_status || 'pending');
-    if (stages.length && stages.every((x) => x === 'complete')) return 'complete';
-    if (stages.some((x) => x === 'shipped' || x === 'complete')) return 'shipped';
-    if (stages.some((x) => x === 'in_production')) return 'in_production';
-    return 'pending';
-  };
-  const batches = Object.entries(batchMap).map(([soId, ords]) => ({ soId, count: ords.length, status: batchStatus(ords) }));
-  const unbatched = active.filter((o) => !o.so_id).length;
+  // ── Search + status filter ──
+  const searchRows = q.trim() ? allRows.filter((r) => r._hay.includes(q.trim().toLowerCase())) : allRows;
+  const chipDefs = [['all', 'All'], ['pending', 'Ordered'], ['received', 'Received'], ['in_production', 'In production'], ['bagging', 'Bagging'], ['shipped', 'Shipped'], ['backordered', 'Backordered']];
+  const countFor = (k) => k === 'all' ? searchRows.length : k === 'backordered' ? searchRows.filter((r) => r.hasBack).length : searchRows.filter((r) => r.statusKey === k).length;
+  const visibleRows = searchRows.filter((r) => filter === 'all' ? true : filter === 'backordered' ? r.hasBack : r.statusKey === filter);
 
-  const orderRows = active.filter((o) => {
-    if (!q.trim()) return true;
-    const its = itemsByOrder[o.id] || [];
-    const hay = `${o.buyer_name || ''} ${o.buyer_email || ''} ${its.map((i) => i.player_name).filter(Boolean).join(' ')} ${its.map((i) => i.player_number).filter(Boolean).join(' ')}`.toLowerCase();
-    return hay.includes(q.toLowerCase());
-  });
+  const toggle = (id) => setOpen((m) => ({ ...m, [id]: !m[id] }));
+  const allOpen = visibleRows.length > 0 && visibleRows.every((r) => open[r.id]);
+  const toggleAll = () => { if (allOpen) { setOpen({}); } else { const m = {}; visibleRows.forEach((r) => { m[r.id] = true; }); setOpen(m); } };
 
-  const Kpi = ({ label, value, color }) => (
-    <div style={{ flex: '1 1 110px', minWidth: 110 }}>
-      <div style={{ fontSize: 22, fontWeight: 900, color: color || '#0b1220' }}>{value}</div>
-      <div style={{ fontSize: 10, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 700 }}>{label}</div>
+  const closeStr = s.close_at ? (new Date(s.close_at) < new Date() ? `Store closed ${_cpFmtDate(s.close_at)}` : `Closes ${_cpFmtDate(s.close_at)}`) : '';
+
+  // ── Reusable style atoms ──
+  const disp = { fontFamily: "'Barlow Condensed',sans-serif" };
+  const eyebrow = { ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase', color: _CPD.textLight };
+  const tnum = { fontVariantNumeric: 'tabular-nums' };
+  const GRID = '24px minmax(150px,1.6fr) 46px 58px 96px minmax(150px,1.2fr)';
+  const LN = 'minmax(150px,2.2fr) 54px 40px 74px minmax(110px,1fr) minmax(104px,1fr)';
+  const bagIcon = <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>;
+  const truckIcon = <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.62l-3.48-4.35A1 1 0 0 0 17.52 8H14"/><circle cx="17" cy="18" r="2"/><circle cx="7" cy="18" r="2"/></svg>;
+  const fundIcon = <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>;
+
+  const Kpi = ({ label, value, green }) => (
+    <div style={{ flex: '1 1 108px', minWidth: 100 }}>
+      <div style={{ ...disp, fontWeight: 800, fontSize: 27, lineHeight: 1, color: green ? _CPD.green : _CPD.navy, ...tnum }}>{value}</div>
+      <div style={{ ...eyebrow, marginTop: 5 }}>{label}</div>
+    </div>
+  );
+  const Bar = ({ label, right, pct, from, to }) => (
+    <div style={{ flex: '1 1 260px', minWidth: 220 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 6 }}>
+        <span style={eyebrow}>{label}</span>
+        <span style={{ fontSize: 12.5, color: _CPD.text, fontWeight: 600, ...tnum }}>{right}</span>
+      </div>
+      <div style={{ height: 8, borderRadius: 999, background: _CPD.lightGray, overflow: 'hidden' }}>
+        <div style={{ height: '100%', borderRadius: 999, background: `linear-gradient(90deg, ${from}, ${to})`, width: `${pct}%` }} />
+      </div>
     </div>
   );
 
   return (
-    <div style={{ border: '1px solid #e2e8f0', borderRadius: 12, marginBottom: 14, overflow: 'hidden' }}>
-      <div style={{ background: '#0b1f3a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
-        <div style={{ fontWeight: 800 }}>🛍️ {s.name} <span style={{ fontWeight: 400, opacity: 0.7, fontSize: 12 }}>· team store</span></div>
-        <a href={'/shop/' + s.slug} target="_blank" rel="noopener noreferrer" style={{ fontSize: 12, color: '#bfdbfe', textDecoration: 'none' }}>Visit store ↗</a>
-      </div>
-      <div style={{ padding: 16 }}>
-        {/* Headline KPIs */}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, paddingBottom: 14, borderBottom: '1px solid #f1f5f9' }}>
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
+        {/* Navy header */}
+        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <span style={{ display: 'inline-flex', opacity: 0.92 }}>{bagIcon}</span>
+            <span style={{ ...disp, fontWeight: 800, fontSize: 20, letterSpacing: '.01em', textTransform: 'uppercase' }}>{s.name}</span>
+            {closeStr && <span style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap' }}>· {closeStr}</span>}
+          </div>
+          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 4, padding: '8px 15px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
+        </div>
+
+        {/* KPI strip */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px 0', padding: '18px 20px 16px', borderBottom: `1px solid ${_CPD.lightGray}` }}>
           <Kpi label="Orders" value={active.length} />
-          <Kpi label="Players" value={players.size} />
+          <Kpi label="Players" value={playersN} />
           <Kpi label="Items" value={units} />
-          <Kpi label="Sales" value={_cpMoney(sales)} />
-          <Kpi label="Fundraising" value={_cpMoney(fundraising)} color="#166534" />
+          <Kpi label="Sales" value={_cpMoney0(sales)} />
+          <Kpi label="Fundraising" value={_cpMoney0(fundraising)} green />
           <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
         </div>
 
-        {/* Store batches */}
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 8 }}>Production batches</div>
-          {batches.length === 0 ? (
-            <div style={{ fontSize: 13, color: '#64748b' }}>No batches yet{unbatched ? ` — ${unbatched} order${unbatched === 1 ? '' : 's'} waiting to be batched.` : '.'}</div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {batches.map((b) => (
-                <div key={b.soId} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, padding: '8px 12px', background: '#f8fafc', borderRadius: 8 }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#1e40af' }}>{b.soId}</span>
-                  <span style={{ color: '#64748b' }}>{b.count} order{b.count === 1 ? '' : 's'}</span>
-                  <span style={{ marginLeft: 'auto', fontWeight: 700, color: _cpTone(b.status) }}>{_cpStages[b.status]}</span>
+        {/* Progress bars — shown only when there's a goal / a roster to measure */}
+        {(fundGoal > 0 || rosterSize > 0) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '15px 20px', borderBottom: `1px solid ${_CPD.lightGray}`, background: _CPD.panel }}>
+            {fundGoal > 0 && <Bar label="Fundraising goal" right={<>{_cpMoney0(fundraising)} <span style={{ color: _CPD.textLight, fontWeight: 400 }}>of {_cpMoney0(fundGoal)} · {fundPct}%</span></>} pct={fundPct} from="#1F7A43" to="#2E9455" />}
+            {rosterSize > 0 && <Bar label="Roster ordered" right={<>{rosterOrdered} of {rosterSize} <span style={{ color: _CPD.textLight, fontWeight: 400 }}>players · {rosterPct}%</span></>} pct={rosterPct} from={_CPD.navy} to={_CPD.navyTint} />}
+          </div>
+        )}
+
+        {/* Player order ledger */}
+        <div style={{ padding: '16px 20px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 12 }}>
+            <div style={{ ...disp, fontWeight: 800, fontSize: 15, letterSpacing: '.04em', textTransform: 'uppercase', color: _CPD.navy }}>Player Orders <span style={{ color: _CPD.textLight }}>({active.length})</span></div>
+            {visibleRows.length > 0 && <button onClick={toggleAll} style={{ ...disp, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, padding: '4px 2px' }}>{allOpen ? 'Collapse all' : 'Expand all'}</button>}
+          </div>
+
+          {/* Search */}
+          <div style={{ position: 'relative', maxWidth: 360, marginBottom: 12 }}>
+            <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: _CPD.textLight, display: 'inline-flex' }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 4, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
+          </div>
+
+          {/* Status filter chips */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+            {chipDefs.map(([key, label]) => {
+              const on = filter === key; const isBack = key === 'backordered';
+              return (
+                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 11px', borderRadius: 4, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
+              );
+            })}
+          </div>
+
+          {active.length === 0 ? <div style={{ padding: '24px 4px', color: _CPD.textLight, fontSize: 14 }}>No orders yet.</div> : (
+          <div style={{ overflowX: 'auto' }}>
+            <div style={{ minWidth: 640 }}>
+              {/* Table header */}
+              <div style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '0 10px 8px', borderBottom: `2px solid ${_CPD.lightGray}` }}>
+                <span />
+                {['Player', '#', 'Items', 'Paid?', 'Status'].map((h) => <span key={h} style={eyebrow}>{h}</span>)}
+              </div>
+
+              {visibleRows.map((row) => (
+                <div key={row.id} style={{ borderBottom: `1px solid ${_CPD.lightGray}` }}>
+                  <div onClick={() => toggle(row.id)} style={{ display: 'grid', gridTemplateColumns: GRID, alignItems: 'center', padding: '11px 10px', cursor: 'pointer', background: open[row.id] ? _CPD.offWhite : 'transparent' }}>
+                    <span style={{ color: _CPD.textLight, fontSize: 12 }}>{open[row.id] ? '▾' : '▸'}</span>
+                    <span style={{ fontWeight: 700, color: _CPD.navy, fontSize: 14 }}>{row.player}</span>
+                    <span style={{ color: _CPD.text, fontSize: 14, ...tnum }}>{row.number}</span>
+                    <span style={{ color: _CPD.text, fontSize: 14, ...tnum }}>{row.items}</span>
+                    <span style={{ fontSize: 13, color: row.payColor, fontWeight: 600 }}>{row.paymentLabel}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 999, background: row.statusTone, flex: '0 0 auto' }} />
+                      <span style={{ ...disp, fontWeight: 700, fontSize: 13, letterSpacing: '.02em', textTransform: 'uppercase', color: row.statusTone }}>{row.statusLabel}</span>
+                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 6px', borderRadius: 3 }}>{row.backCount} backordered</span>}
+                    </span>
+                  </div>
+
+                  {open[row.id] && (
+                    <div style={{ padding: '4px 10px 18px' }}>
+                      {/* Contact / order meta band */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, marginBottom: 12 }}>
+                        {[['Order', row.no, tnum], ['Ordered', row.date], ['Ordered by', row.buyerName], ['Email', row.buyerEmail ? <a href={`mailto:${row.buyerEmail}`}>{row.buyerEmail}</a> : '—'], ['Phone', row.buyerPhone, tnum], ['Delivery', row.delivery]].map(([lbl, val, extra]) => (
+                          <div key={lbl}><div style={{ ...eyebrow, marginBottom: 3 }}>{lbl}</div><div style={{ fontSize: 14, color: _CPD.text, fontWeight: lbl === 'Order' || lbl === 'Ordered by' ? 700 : 400, ...(lbl === 'Order' ? { color: _CPD.navy } : {}), ...(extra || {}) }}>{val}</div></div>
+                        ))}
+                      </div>
+
+                      {/* Priced line items */}
+                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, padding: '9px 14px', background: _CPD.offWhite, borderBottom: `1px solid ${_CPD.lightGray}` }}>
+                          {['Item', 'Size', 'Qty', 'Price', 'Batch', 'Status'].map((h, idx) => <span key={h} style={{ ...eyebrow, ...(idx === 3 ? { textAlign: 'right' } : {}) }}>{h}</span>)}
+                        </div>
+                        {row.lines.map((ln) => (
+                          <div key={ln.id} style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, alignItems: 'center', padding: '10px 14px', borderTop: `1px solid ${_CPD.lightGray}` }}>
+                            <span>
+                              <span style={{ fontSize: 13.5, color: _CPD.text, fontWeight: 600 }}>{ln.name}</span>
+                              {ln.sku && <span style={{ fontSize: 11.5, color: _CPD.textLight, marginLeft: 6, ...tnum }}>{ln.sku}</span>}
+                              {ln.short && <div style={{ fontSize: 12, color: _CPD.red, fontWeight: 600, marginTop: 3 }}>Backordered{ln.backEta ? ` · ETA ${ln.backEta}` : ''}</div>}
+                            </span>
+                            <span style={{ fontSize: 13, color: _CPD.text, fontWeight: 600 }}>{ln.size}</span>
+                            <span style={{ fontSize: 13, color: _CPD.text, ...tnum }}>{ln.qty}</span>
+                            <span style={{ fontSize: 13, color: _CPD.text, textAlign: 'right', ...tnum }}>{ln.priceStr}</span>
+                            <span style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.soId || <span style={{ color: _CPD.midGray }}>Not batched</span>}</span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}><span style={{ width: 7, height: 7, borderRadius: 999, background: ln.statusTone, flex: '0 0 auto' }} /><span style={{ fontSize: 12.5, fontWeight: 600, color: ln.statusTone }}>{ln.statusLabel}</span></span>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Fundraising + shipping footer */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+                          <span style={{ display: 'inline-flex', color: _CPD.green }}>{fundIcon}</span>
+                          <span style={{ fontSize: 13, color: _CPD.textLight }}>Fundraising from this order</span>
+                          <span style={{ fontSize: 15, color: _CPD.green, fontWeight: 800, ...tnum }}>{row.fundStr}</span>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                          <span style={{ display: 'inline-flex', color: _CPD.navy }}>{truckIcon}</span>
+                          <div style={{ textAlign: 'right' }}>
+                            <div style={{ fontSize: 13.5, color: _CPD.navy, fontWeight: 700 }}>{row.shipHeadline}</div>
+                            <div style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.shipSub} · Ships to {row.shipTo}</div>
+                          </div>
+                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 12px', borderRadius: 4, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               ))}
-              {unbatched > 0 && <div style={{ fontSize: 12, color: '#92400e' }}>+ {unbatched} new order{unbatched === 1 ? '' : 's'} not yet batched.</div>}
+              {visibleRows.length === 0 && <div style={{ padding: '24px 10px', textAlign: 'center', color: _CPD.textLight, fontSize: 14 }}>No orders match your search or filter.</div>}
             </div>
-          )}
-        </div>
-
-        {/* Not-yet-ordered roster */}
-        {notOrdered.length > 0 && <div style={{ marginTop: 14, fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px' }}>
-          <b>Not yet ordered ({notOrdered.length}):</b> {notOrdered.map((r) => r.player_name + (r.player_number ? ' #' + r.player_number : '')).join(', ')}
-        </div>}
-
-        {/* Player orders — collapsible + searchable */}
-        <div style={{ marginTop: 14, borderTop: '1px solid #f1f5f9', paddingTop: 12 }}>
-          <button onClick={() => setShowOrders((v) => !v)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5, color: '#0b1220', padding: 0, display: 'flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ transform: showOrders ? 'rotate(90deg)' : 'none', transition: 'transform .15s', display: 'inline-block' }}>▶</span>
-            Player orders ({active.length})
-          </button>
-          {showOrders && (
-            <div style={{ marginTop: 10 }}>
-              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or number…" style={{ width: '100%', maxWidth: 360, padding: '8px 12px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13, marginBottom: 10, boxSizing: 'border-box' }} />
-              {active.length === 0 ? <div style={{ fontSize: 13, color: '#64748b' }}>No orders yet.</div> : (
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead><tr style={{ textAlign: 'left', color: '#94a3b8', fontSize: 11, textTransform: 'uppercase' }}><th style={{ padding: 6, width: 18 }}></th><th style={{ padding: 6 }}>Player</th><th style={{ padding: 6 }}>#</th><th style={{ padding: 6 }}>Items</th><th style={{ padding: 6 }}>Paid?</th><th style={{ padding: 6 }}>Status</th></tr></thead>
-                    <tbody>
-                      {orderRows.map((o) => { const its = itemsByOrder[o.id] || []; const player = [...new Set(its.map((i) => i.player_name).filter(Boolean))].join(', '); const num = [...new Set(its.map((i) => i.player_number).filter(Boolean))].join(', '); const ls = its[0]?.line_status || 'pending'; const qty = its.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (i.qty || 0), 0); const open = openOrder === o.id; const lineItems = its.filter((i) => !i.is_bundle_parent); return (
-                        <React.Fragment key={o.id}>
-                        <tr onClick={() => setOpenOrder(open ? null : o.id)} style={{ borderTop: '1px solid #f1f5f9', cursor: 'pointer', background: open ? '#f8fafc' : 'transparent' }}>
-                          <td style={{ padding: 6, color: '#94a3b8' }}>{open ? '▾' : '▸'}</td>
-                          <td style={{ padding: 6 }}>{player || o.buyer_name || '—'}</td>
-                          <td style={{ padding: 6 }}>{num || '—'}</td>
-                          <td style={{ padding: 6 }}>{qty}</td>
-                          <td style={{ padding: 6 }}>{o.payment_mode === 'paid' ? 'Paid' : 'Team tab'}</td>
-                          <td style={{ padding: 6, fontWeight: 700, color: _cpTone(ls) }}>{_cpStages[ls] || ls}</td>
-                        </tr>
-                        {open && <tr><td></td><td colSpan={5} style={{ padding: '4px 6px 12px', background: '#f8fafc' }}>
-                          <div style={{ fontSize: 11, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: 0.5, margin: '4px 0' }}>Ordered by {o.buyer_name || '—'}{o.buyer_email ? ` · ${o.buyer_email}` : ''}</div>
-                          {lineItems.map((i) => (
-                            <div key={i.id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13, borderTop: '1px solid #eef1f5' }}>
-                              <span>{i.sku || 'Item'}{i.size ? ' · ' + i.size : ''}{i.player_number ? ' · #' + i.player_number : ''}{i.player_name ? ' · ' + i.player_name : ''}{i.qty > 1 ? ` · ×${i.qty}` : ''}</span>
-                              <span style={{ color: _cpTone(i.line_status || 'pending'), fontWeight: 600 }}>{_cpStages[i.line_status || 'pending'] || i.line_status}</span>
-                            </div>
-                          ))}
-                        </td></tr>}
-                        </React.Fragment>
-                      ); })}
-                      {orderRows.length === 0 && <tr><td colSpan={6} style={{ padding: 10, color: '#94a3b8' }}>No orders match “{q}”.</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
+          </div>
           )}
         </div>
       </div>
+
+      {/* Roster & player links — set up players, hand out links, track who's ordered */}
+      <CoachRosterManager store={s} initialRoster={d.roster || []} />
     </div>
   );
 }
@@ -278,7 +657,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[uniformBuilder,setUniformBuilder]=useState(false);// coach self-serve uniform designer
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
-  const[page,setPage]=useState('home');// portal nav: home|orders|estimates|billing|art|shop
+  const[page,setPage]=useState('home');// portal nav: home|orders|roster|store|art|billing|shop
+  const[estOpen,setEstOpen]=useState(true);// Orders page: "Estimates to Approve" dropdown open by default
   const[artQuery,setArtQuery]=useState('');const[artDeco,setArtDeco]=useState('all');// Art Locker filters
   const[artView,setArtView]=useState(null);// Art Locker rich viewer: {art, idx}
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
@@ -286,9 +666,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>setInvs(initInvs),[initInvs]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
-  const cpTheme=cpTeamTheme(customer);
+  // A sub-team's own colors drive the theme; its parent department's colors only
+  // *supplement* the accent. So "Cross Country" keeps its own banner color but
+  // still borrows the school's gold — which is what stops a red-only team's
+  // accent from falling back to a lightened tint that reads pink.
+  const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
+  const cpTheme=cpTeamTheme(customer,_parentCust&&_parentCust.school_colors);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
-  const _nsaHasColors=Array.isArray(customer.school_colors)&&customer.school_colors.length>0;
+  const _hasFam=cols=>Array.isArray(cols)&&cols.some(f=>CP_HEX[f]);
+  const _nsaHasColors=_hasFam(customer.school_colors)||(!!_parentCust&&_hasFam(_parentCust.school_colors));
   const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
   const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
   const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
@@ -299,7 +685,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const subs=isP?allCustomers.filter(c=>c.parent_id===customer.id):[];
   const ids=isP?[customer.id,...subs.map(s=>s.id)]:[customer.id];
   // Logo: use own logo_url, fall back to parent's logo if sub has none set
-  const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
+  // (_parentCust is resolved above with the theme colors).
   const cpLogo=customer.logo_url||(_parentCust&&_parentCust.logo_url)||null;
   // ── Team store presence — drives the conditional "Team Store" nav tab. Lightweight
   // top-level lookup (the full per-store tracking is fetched by <CoachStore/> when the
@@ -320,6 +706,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
   const hasStore=cpVisibleStores.length>0;
   const openStoreCount=cpStores.filter(s=>s.status==='open').length;
+  // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
+  // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
+  const hasRoster=!!customer.coach_roster;
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -371,8 +760,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Resolve CC-pay setting; sub-customers inherit from their parent.
   const _parentForCC=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
   const ccDisabled=!!(customer.disable_cc_pay||(_parentForCC&&_parentForCC.disable_cc_pay));
-  // Artwork awaiting coach approval — surface at top of portal
-  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval');
+  // Artwork awaiting coach approval — surface at top of portal. ONLY art a rep actually
+  // forwarded (sent_to_coach_at): every artist mockup parks at waiting_approval for
+  // INTERNAL rep review first, and listing those here let a coach approve a draft the
+  // rep never sent — bypassing the rep-review gate entirely (audit A1).
+  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval'&&j.sent_to_coach_at);
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
@@ -433,6 +825,55 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // Mark job art approvals as viewed when coach opens portal
     const jobSOs=custSOs.filter(s=>safeJobs(s).some(j=>j.sent_to_coach_at&&!j.coach_email_opened_at));
     if(jobSOs.length&&onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>{if(!jobSOs.some(js=>js.id===s.id))return s;const updJobs=safeJobs(s).map(j=>j.sent_to_coach_at&&!j.coach_email_opened_at?{...j,coach_email_opened_at:new Date().toISOString()}:j);return{...s,jobs:updJobs,updated_at:now}}));
+  },[]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── In-portal Back button ─────────────────────────────────────────────
+  // Coaches move around with the menu; a stray browser Back would otherwise
+  // drop them out of the portal. Trap Back so it steps back through the portal
+  // — close an open estimate/order/detail, then return to the previous page,
+  // then Home — only releasing to the browser once we're at Home with nothing
+  // open. History state carries no URL change, so the ?portal= param is kept.
+  const _cpNavStack=useRef([]);      // pages visited before the current one
+  const _cpFromBack=useRef(false);   // set while applying a Back, so it isn't re-recorded
+  const _cpBackRef=useRef(()=>false);
+  _cpBackRef.current=()=>{
+    // 1) close the top-most open detail / overlay
+    if(lightbox){setLightbox(null);return true;}
+    if(showPay){setShowPay(null);setPayLoading(false);return true;}
+    if(contactEdit){setContactEdit(null);return true;}
+    if(estView){setEstView(null);return true;}
+    if(jobView){setJobView(null);return true;} // artwork proof → back to its order detail (soView stays)
+    if(soView){setSoView(null);return true;}   // order detail → back to the page
+    if(invView){setInvView(null);return true;}
+    if(artView){setArtView(null);return true;}
+    if(spendView){setSpendView(false);return true;}
+    if(storeBuilder){setStoreBuilder(false);return true;}
+    // 2) step back to the previous page, else Home
+    if(_cpNavStack.current.length){_cpFromBack.current=true;setPage(_cpNavStack.current.pop());return true;}
+    if(page!=='home'){_cpFromBack.current=true;setPage('home');return true;}
+    return false;                    // 3) at Home, nothing open — let the browser leave
+  };
+  // Record forward page changes so Back can retrace them.
+  const _cpPrevPage=useRef(page);
+  useEffect(()=>{
+    if(_cpPrevPage.current!==page){
+      if(_cpFromBack.current)_cpFromBack.current=false; // change came from Back — don't record
+      else _cpNavStack.current.push(_cpPrevPage.current);
+      _cpPrevPage.current=page;
+    }
+  },[page]);
+  // Seed a history buffer on mount and translate Back presses. The seed is
+  // guarded by a ref so StrictMode's double-invoke (and any remount) pushes it
+  // only once — otherwise an orphan entry makes the first Back from Home a no-op.
+  const _cpHistSeeded=useRef(false);
+  useEffect(()=>{
+    if(!_cpHistSeeded.current){_cpHistSeeded.current=true;try{window.history.pushState({nsaPortal:1},'');}catch{}}
+    const onPop=()=>{
+      if(_cpBackRef.current()){try{window.history.pushState({nsaPortal:1},'');}catch{}} // handled — re-arm the buffer
+      else{window.removeEventListener('popstate',onPop);try{window.history.back();}catch{}} // nothing left — actually leave
+    };
+    window.addEventListener('popstate',onPop);
+    return ()=>window.removeEventListener('popstate',onPop);
   },[]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePaymentSuccess=(result)=>{
@@ -669,9 +1110,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           </div>
           {canApprove&&<button id="est-approve-btn" className="nsa-skew nsa-disp" style={{width:'100%',padding:'15px 20px',background:tAccent,color:'white',border:'none',borderRadius:4,fontSize:17,fontWeight:700,letterSpacing:'.5px',textTransform:'uppercase',cursor:'pointer',marginBottom:10}} onClick={async()=>{
             const _approvedAt=new Date().toISOString();const _updatedAt=new Date().toLocaleString();
-            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
-            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
-            setEstView({...est,status:'approved'});
             // Email the assigned rep when coach approves estimate. Fall back to the
             // customer's primary rep, then a monitored admin inbox, so a rep missing
             // an email on file never silently swallows the approval notification.
@@ -683,7 +1121,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               estimates:[{id:est.id,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt}],
               email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Estimate approved by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><p>This estimate is ready to be converted to a sales order.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:_apprRep?.email?{email:_apprRep.email,name:_apprRep.name}:undefined},
             });
-            if(!_res.ok)alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));
+            // Server FIRST — portal-action only lands the approval on an estimate still
+            // awaiting one (H1 estimate guard); local state flips after it commits, so a
+            // stale tab shows the server's conflict message, never a phantom approval.
+            if(!_res.ok){alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));return}
+            const _approvedEst={...est,status:'approved',approved_by:'Coach',approved_at:_approvedAt,updated_at:_updatedAt};
+            if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_approvedEst:e))}
+            setEstView({...est,status:'approved'});
           }}><span>✅ Approve This Estimate</span></button>}
           {canApprove&&<div id="est-request-box" style={{border:'1px solid #EEF1F6',borderRadius:6,padding:18,marginBottom:10,background:'#F7F8FB'}}>
             <div style={{fontSize:13,fontWeight:700,color:'#1e3a5f',marginBottom:8}}>Need changes? Request updates from your rep</div>
@@ -695,9 +1139,6 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _reqText=updateRequestText.trim();
                 const req={id:'UR-'+Date.now(),text:_reqText,from:'Coach',at:new Date().toISOString(),status:'pending'};
                 const _newReqs=[...(est.update_requests||[]),req];const _updatedAt=new Date().toLocaleString();
-                const _updatedEst={...est,update_requests:_newReqs,updated_at:_updatedAt};
-                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_updatedEst:e))}
-                setEstView({...est,update_requests:_newReqs});
                 // Notify the assigned rep that the coach requested changes
                 const _urRep=REPS.find(r=>r.id===est.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
@@ -708,6 +1149,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   email:_urRep?.email?{to:[{email:_urRep.email}],cc:_accCc,subject:'📝 Estimate update requested by coach — '+(est.memo||est.id)+' ('+est.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to estimate <strong>'+est.id+'</strong>'+(est.memo?' — '+est.memo:'')+'.</p><div style="margin:12px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;color:#78350f"><div style="font-size:11px;font-weight:700;color:#92400e;text-transform:uppercase;margin-bottom:4px">Coach\'s request</div>'+_safeText+'</div><p>Please update the estimate and resend it to the coach.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?est='+est.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Estimate '+est.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:_urRep.email,name:_urRep.name}}:undefined,
                 });
                 if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                // Local state flips only after the server write commits — no phantom request.
+                const _updatedEst={...est,update_requests:_newReqs,updated_at:_updatedAt};
+                if(onUpdateEsts){onUpdateEsts(prev=>prev.map(e=>e.id===est.id?_updatedEst:e))}
+                setEstView({...est,update_requests:_newReqs});
                 setUpdateRequestText('');setUpdateRequestSent(true);
               }}>Request Updates</button>
             </>}
@@ -900,8 +1345,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _liveJob=(safeJobs(_liveSO)).find(jj=>jj.id===jobView.job.id)||jobView.job;
     const j=_liveJob;const so=_liveSO;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
+    // Scoped to the decorations THIS JOB OWNS (deco_idxs), mirroring jobLiveArtIds in
+    // businessLogic.js: an unscoped union pulled a sibling job's art into this job's view
+    // on shared garment lines (mixed-deco items always split into two jobs), so the coach
+    // saw the OTHER job's mocks here — and, worse, those URLs entered seen_mocks while
+    // art_ids stayed narrow, making every approve 409 with NSA_MOCKS_CHANGED (audit follow-up).
+    // The decision payloads below use this same set, so what's shown, what's pinned, and
+    // what gets approved/reset are one set. Legacy items without deco_idxs keep the
+    // unscoped fallback, matching businessLogic.
     const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
     const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
     // Mock links: a garment the rep linked to another garment shows a "same mockup as X"
     // note instead of repeating the image; the source garment shows it once with an
@@ -938,11 +1391,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _mk=gi.sku+'|'+(gi.color||'');
             const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
             // Linked garment → no images of its own (a note references the source); else per-item.
-            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
+            const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
-            const numDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='numbers'):[];
-            const nameDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='names'):[];
+            // Numbers/names shown only when THIS job produces them — the coach approving a logo
+            // job shouldn't see the sibling numbers job's roster on it.
+            const numDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'numbers'):[];
+            const nameDecos=srcItem?jobItemDecosOfKind(gi,srcItem,'names'):[];
             const nd=numDecos[0];const _isEmb=artFile?.deco_type==='embroidery';
             const gk=gi.sku+'|'+(gi.color||'');const gc=artFile?.garment_colors?.[gk]||{};
             const gcColors=Object.values(gc).flat().filter((v,idx,arr)=>v&&arr.indexOf(v)===idx);
@@ -990,7 +1445,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
                     const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
                     const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
-                    const _fbCols=(_aF?.ink_colors||_aF?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                    const _fbCols=realInkLines(_aF?.ink_colors||_aF?.thread_colors);// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                     const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                     const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ')||'—';
@@ -1079,7 +1534,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:24,marginBottom:4}}>🎨</div>
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}
-          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
             {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
@@ -1088,45 +1544,68 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+                // A coach must never approve a proof with unmocked garments — they'd be
+                // approving art they can't see. Same per-garment gate the rep side enforces
+                // (skusMissingMockups honors mock links and legacy general-mockup art).
+                const _liveJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id)||j;
+                const _mmC=skusMissingMockups(_liveJob,liveSO);
+                if(_mmC.length>0){alert('This proof is missing a mockup for: '+_mmC.join(', ')+'.\n\nPlease ask your rep to complete the proof — you can also use "Request Changes" below to send them a note.');return}
+                // The SAME scoped set the view renders (_jobArtIds): seen_mocks are collected
+                // from these files, so the RPC's pinning pools must be built from the same ids —
+                // a narrower art_ids made every mixed-deco approval conflict (NSA_MOCKS_CHANGED).
+                const jArtIds=[..._jobArtIds];
                 const coachComment=comment.trim();
-                const _apDeco=(safeArt(liveSO).find(a=>jArtIds.includes(a.id))?.deco_type)||j.deco_type;const _apSt=prodFilesStatusFor(_apDeco);
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                // Email the assigned rep
-                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                // Folder already carries a confirmed production separation (checkbox, or an
+                // embroidery .dst)? Approval sends it straight to art_complete instead of the
+                // upload-files stage — mirrors the buildJobs derivation. Every art on the job
+                // must be confirmed before we skip the stage.
+                const _apArts=jArtIds.map(id=>safeArt(liveSO).find(a=>a.id===id)).filter(Boolean);const _apDeco=_apArts[0]?.deco_type||j.deco_type;const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apDeco);
+                // Pin the approval to the artwork on screen: every mock URL in view must still
+                // exist server-side, or the approve conflicts instead of recording an approval
+                // for an image the artist has since replaced.
+                const _sm=new Set();const _seenMocks=[...mockups,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
+                // Rep to notify: creator → customer's primary rep → monitored inbox, so a rep
+                // missing an email never silently swallows the decision (mirrors the estimate path).
+                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const _apprTo=rep?.email||'steve@nationalsportsapparel.com';
                 const commentHtml=coachComment?'<p style="margin-top:12px;padding:10px 14px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px"><strong>Coach\'s note:</strong> '+coachComment+'</p>':'';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
-                // Persist via the serverless endpoint — the public portal's anon role can't write under RLS
+                // Server FIRST — apply_coach_art_decision (portal-action) verifies the job is
+                // still awaiting the coach and applies the whole write set in one transaction;
+                // local state only flips after it commits, so a stale tab never shows a phantom approval.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
-                  jobs:[{so_id:liveSO.id,id:j.id,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||null}],
-                  artFiles:jArtIds.map(aid=>({so_id:liveSO.id,id:aid,status:'approved'})),
-                  touchSO:liveSO.id,
-                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                  artDecision:{so_id:liveSO.id,job_id:j.id,decision:'approve',comment:coachComment||null,art_ids:jArtIds,approved_status:_apSt,seen_mocks:_seenMocks},
+                  email:{to:[{email:_apprTo}],cc:_accCc,subject:'✅ Art approved by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p>Great news! <strong>'+customer.name+'</strong> approved the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p>'+commentHtml+'<p>The job is now ready for production file prep.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
-                if(!_res.ok){alert('Could not save your approval — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                if(!_res.ok){alert(_res.error||'Could not save your approval — please try again or contact your rep.');return}
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:coachComment||undefined,coach_rejected:false}:jj),art_files:safeArt(liveSO).map(a=>jArtIds.includes(a.id)?{...a,status:'approved'}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
               <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const _fb=comment.trim();
-                const rej={reason:_fb,by:'Coach',at:new Date().toISOString()};
+                const _rejAt=new Date().toISOString();
+                // Both key spellings on purpose: the portal reads `at`, the dashboard todo reads `rejected_at`.
+                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
                 const rArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
                 const _curJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id);
                 const _newRejections=[...((_curJob&&_curJob.rejections)||[]),rej];
-                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb}:a),updated_at:new Date().toLocaleString()};
-                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
-                const rep=REPS.find(r=>r.id===liveSO.created_by);
+                const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
+                const _rejTo=rep?.email||'steve@nationalsportsapparel.com';
                 const _accCc=getBillingContacts(customer,allCustomers).filter(a=>a.email).map(a=>({email:a.email,name:a.name||''}));
                 const _safeText=_fb.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\n/g,'<br/>');
+                // Server FIRST — the guarded transaction sends the job back to the artist with the
+                // COMPLETE write set (send timestamp cleared, seps confirmation cleared) or conflicts
+                // if this tab is stale; local state only flips after it commits.
                 const _res=await _portalAction({alphaTag:customer.alpha_tag,
-                  jobs:[{so_id:liveSO.id,id:j.id,art_status:'art_requested',coach_rejected:true,rejections:_newRejections}],
-                  artFiles:rArtIds.map(aid=>{const a=safeArt(liveSO).find(x=>x.id===aid);return{so_id:liveSO.id,id:aid,status:'waiting_for_art',notes:((a&&a.notes)?a.notes+'\n':'')+'Coach feedback: '+_fb}}),
-                  touchSO:liveSO.id,
-                  email:rep?.email?{to:[{email:rep.email}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',replyTo:{email:rep.email,name:rep.name}}:undefined,
+                  artDecision:{so_id:liveSO.id,job_id:j.id,decision:'reject',comment:_fb,art_ids:rArtIds},
+                  email:{to:[{email:_rejTo}],cc:_accCc,subject:'📝 Art changes requested by coach — '+j.art_name+' ('+liveSO.id+')',htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6"><p><strong>'+customer.name+'</strong> requested changes to the artwork for <strong>'+j.art_name+'</strong>.</p><p>Order: '+liveSO.id+(liveSO.memo?' — '+liveSO.memo:'')+'</p><div style="margin:12px 0;padding:12px 14px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:#991b1b"><div style="font-size:11px;font-weight:700;color:#dc2626;text-transform:uppercase;margin-bottom:4px">Coach\'s feedback</div>'+_safeText+'</div><p>Please revise the artwork and resend it for approval.</p><p style="margin:18px 0"><a href="https://nsa-portal.netlify.app/?so='+liveSO.id+'" style="display:inline-block;padding:11px 20px;background:#1e3a5f;color:#ffffff;text-decoration:none;border-radius:8px;font-weight:700;font-size:14px">View Order '+liveSO.id+'</a></p></div>',senderName:'NSA Portal',senderEmail:'noreply@nationalsportsapparel.com',...(rep?.email?{replyTo:{email:rep.email,name:rep.name}}:{})},
                 });
-                if(!_res.ok){alert('Could not send your request — please try again or contact your rep.\n\n'+(_res.error||''));return}
+                if(!_res.ok){alert(_res.error||'Could not send your request — please try again or contact your rep.');return}
+                const updSO={...liveSO,jobs:(liveSO.jobs||safeJobs(liveSO)).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,rejections:_newRejections,sent_to_coach_at:null,coach_approved_at:null}:jj),art_files:safeArt(liveSO).map(a=>rArtIds.includes(a.id)?{...a,status:'waiting_for_art',notes:(a.notes?a.notes+'\n':'')+'Coach feedback: '+_fb,prod_files_attached:false}:a),updated_at:new Date().toLocaleString()};
+                if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "changes requested" banner
               }}>❌ Request Changes</button>
             </div>
@@ -1246,7 +1725,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{textAlign:'right'}}>
                     <div style={{fontWeight:700,fontSize:13}}>{qty} units</div>
-                    <div style={{fontSize:10,color:'#64748b'}}>${safeNum(it.unit_sell).toFixed(2)}/ea</div>
+                    {/* Prefer the invoice's stored line rate (garment + decoration, what the customer is
+                        actually billed) — it.unit_sell is garment-only, which made lines not add up to
+                        the invoice total (INV-63089: $16 shown for an $18 all-in item). Match by the
+                        canonical soLineKey (same helper that stamped _so_line_key at invoice creation);
+                        the fallback requires sku + color + qty and refuses ambiguous matches. */}
+                    <div style={{fontSize:10,color:'#64748b'}}>${(()=>{const lis=inv.line_items||[];let li=lis.find(l=>l._so_line_key===soLineKey(it,ii));if(!li){const cands=lis.filter(l=>(l._sku||l.sku)===it.sku&&(l._color==null||l._color===it.color)&&safeNum(l.qty)===qty);if(cands.length===1)li=cands[0]}return safeNum(li&&li.rate!=null?li.rate:it.unit_sell)})().toFixed(2)}/ea</div>
                   </div>
                 </div>
                 {allDecoLabels.length>0&&<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:6}}>
@@ -1325,7 +1809,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,marginBottom:26,flexWrap:'wrap'}}>
           <div>
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:2,textTransform:'uppercase',color:tAccent,marginBottom:8}}>Athletic Department</div>
-            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>Spend &amp; Promo</h1>
+            <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:0,lineHeight:1}}>{hasPromo?'Spend & Promo':'Spend Report'}</h1>
             <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',margin:'12px 0 10px'}}/>
             <div style={{fontSize:15,color:'#64748b'}}>{deptName} · {teamCount} team{teamCount!==1?'s':''}</div>
           </div>
@@ -1418,12 +1902,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const cpNav=[
     {key:'home',label:'Home',icon:'🏠'},
     {key:'orders',label:'Orders',icon:'📦',badge:activeSOs.length},
-    {key:'estimates',label:'Estimates',icon:'📋',badge:openEstCount},
+    ...(hasRoster?[{key:'roster',label:'Roster',icon:'📋'}]:[]),
     ...(hasStore?[{key:'store',label:'Store',icon:'🛍️',badge:openStoreCount}]:[]),
     {key:'billing',label:'Billing',icon:'💳',badge:openInvs.length},
     {key:'art',label:'Art',icon:'🎨'},
     {key:'shop',label:'Shop',icon:'🛍️'},
-    ...(adData?[{key:'spend',label:'Spend & Promo',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
+    ...(adData?[{key:'spend',label:adData.hasPromo?'Spend & Promo':'Spend',icon:'📊',onClick:()=>setSpendView(true)}]:[]),
   ];
   // Reorder a saved design through Live Look — deep-links the catalog with the artwork so the
   // coach picks gear and the design rides along to the rep on the order request.
@@ -1433,7 +1917,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     try{window.open(href,CP_LINK_TARGET,'noopener');}catch(e){window.location.href=href;}
   };
   // ── NSA nav (design tokens are hoisted to the top of the component) ──
-  const _nsaNav=[['home','Dashboard'],['orders','Orders'],['estimates','Estimates'],...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
+  const _nsaNav=[['home','Dashboard'],['orders','Orders'],...(hasRoster?[['roster','Roster']]:[]),...(hasStore?[['store','Team Store']]:[]),['art','Art Locker'],['billing','Billing'],['shop','Shop']];
   // AD-only "filter by sport" — the parent's sub-customers (teams) + the dept itself.
   const _teamName=id=>id==='all'?'all':(((allCustomers||[]).find(c=>c.id===id)||{}).name||'');
   const _teamOpts=isP?[{id:customer.id,name:'Athletic Dept.'},...[...subs].sort((a,b)=>(a.name||'').localeCompare(b.name||''))]:[];
@@ -1480,12 +1964,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div className="nsa-disp" style={{fontWeight:700,fontSize:14,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary}}>{customer.name}</div>
             <div style={{fontSize:11,color:'#5A6075'}}>{(customer.contacts||[])[0]?.name||'Coach'}</div>
           </div>
-          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:customer.logo_url?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
+          <div className="nsa-disp" style={{width:38,height:38,borderRadius:999,overflow:'hidden',background:cpLogo?'#fff':tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:800,fontSize:15,flexShrink:0}}>{cpLogo?<img src={cpLogo} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:cpMonogram}</div>
         </div>
       </div>
     </div>
-    {/* ── Striped rule ── */}
-    <div style={{height:5,background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
+    {/* ── Striped rule — sticks just below the header so the brand bar stays visible while scrolling ── */}
+    <div style={{height:8,position:'sticky',top:84,zIndex:49,boxShadow:'0 2px 6px rgba(0,0,0,.12)',background:`repeating-linear-gradient(90deg, ${tAccent} 0 30%, ${tPrimary} 30% 32%, ${tAccent} 32% 70%, ${tPrimary} 70% 72%, ${tAccent} 72% 100%)`}}/>
     {/* ── MAIN ── */}
     <div className="cp-main" style={{maxWidth:1240,margin:'0 auto',padding:'36px 24px 110px'}}>
         <div className="cp-page">
@@ -1523,13 +2007,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Quick Access ── */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:22,textTransform:'uppercase',letterSpacing:'.5px',color:tPrimary,margin:'8px 0 16px'}}>Quick Access</div>
           <div className="nsa-qa">
-            {(()=>{const qa=[
+            {(()=>{
+              // Surface an open team store right on the dashboard — a live store is
+              // time-sensitive (it closes), so it earns a tile, not just the nav tab.
+              const _openStore=cpStores.find(s=>s.status==='open');
+              const _storeClose=_openStore&&_openStore.close_at?new Date(_openStore.close_at).toLocaleDateString(undefined,{month:'short',day:'numeric',timeZone:'UTC'}):'';
+              const qa=[
               {k:'orders',t:'Orders',sub:activeSOs.length+' active',icon:'📦',accent:false},
-              {k:'estimates',t:'Estimates',sub:openEstCount?openEstCount+' to approve':'All clear',icon:'📋',accent:true,sa:openEstCount>0},
+              // Estimates live inside the Orders section now (the "Estimates to Approve"
+              // dropdown), so there's no separate Estimates tile here.
+              ...(hasStore?[{k:'store',t:'Team Store',sub:openStoreCount>0?('Open now'+(_storeClose?' · closes '+_storeClose:'')):'View store',icon:'🛒',accent:true,sa:openStoreCount>0}]:[]),
               {k:'art',t:'Art Locker',sub:artLibrary.length+' design'+(artLibrary.length!==1?'s':''),icon:'🎨',accent:false},
               {k:'billing',t:'Billing',sub:totalDue>0?'$'+totalDue.toLocaleString(undefined,{minimumFractionDigits:2})+' due':'Up to date',icon:'💳',accent:true,sa:totalDue>0},
               {k:'shop',t:'Catalogs',sub:'Browse the team store',icon:'🛍️',accent:false},
-              ...(adData?[{k:'spend',t:'Promo & Spend',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
+              ...(adData?[{k:'spend',t:adData.hasPromo?'Promo & Spend':'Spend Report',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
               <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
@@ -1547,7 +2038,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
-                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
+                <button onClick={()=>setPage('orders')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
               </div>
               {openE.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>You're all caught up — nothing waiting.</div>:
                openE.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
@@ -1586,7 +2077,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
                 <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
               </div>
-              <a href="mailto:team@nsa-teamwear.com" className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
             </div>
             <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
@@ -1786,6 +2277,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           const _tfEst=e=>!isP||teamFilter==='all'||e.customer_id===teamFilter;
           const openEsts=custEsts.filter(e=>(e.status==='sent'||e.status==='open')&&_tfEst(e));
           if(isP)openEsts.sort(_teamSort);
+          // Approved-but-not-yet-converted estimates stay visible here (read-only)
+          // so they don't vanish between the coach approving and the rep turning
+          // them into an order — this panel is the only place estimates now live.
+          const approvedEsts=custEsts.filter(e=>e.status==='approved'&&_tfEst(e));
+          if(isP)approvedEsts.sort(_teamSort);
           let rows=[...activeSOs,...completedSOs];
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
@@ -1799,17 +2295,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               </div>
               {isP&&_teamSelect}
             </div>
-            {/* ── Estimates to Approve — inline panel (new design) ── */}
-            {openEsts.length>0&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:'1px solid #EEF1F6',background:'#FAFBFC'}}>
-                <div style={{display:'flex',alignItems:'center',gap:10}}>
-                  <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13}}>{openEsts.length}</span>
-                  <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
-                  <span style={{fontSize:13,color:'#5A6075'}}>— approve to start production</span>
-                </div>
-                <button onClick={()=>setPage('estimates')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>View all →</button>
-              </div>
-              {openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+            {/* ── Estimates — always present in the Orders section as a dropdown; lists
+                open (to-approve) first, then approved-awaiting-conversion estimates. ── */}
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+              <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
+                <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
+                  {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
+                  <span className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>{openEsts.length>0?'Estimates to Approve':'Estimates'}</span>
+                  <span style={{fontSize:13,color:'#5A6075',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{openEsts.length>0?'— approve to start production':approvedEsts.length>0?'— approved, awaiting your rep':'— your rep posts quotes here'}</span>
+                </span>
+                <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase',letterSpacing:'.3px',whiteSpace:'nowrap'}}>{estOpen?'Hide':'Show'}<span style={{fontSize:12}}>{estOpen?'▾':'▸'}</span></span>
+              </button>
+              {estOpen&&openEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
                 return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
                   <div style={{minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
@@ -1820,7 +2317,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
                   </div>
                 </div>})}
-            </div>}
+              {estOpen&&approvedEsts.length>0&&openEsts.length>0&&<div style={{padding:'11px 22px 5px',fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'.5px',color:'#94A0B0',background:'#FAFBFC',borderBottom:'1px solid #EEF1F6'}}>Approved — awaiting your rep</div>}
+              {estOpen&&approvedEsts.map(est=>{const team=(allCustomers||[]).find(c=>c.id===est.customer_id);const tn=isP?(team?(team.id===customer.id?'Athletic Dept.':team.name):''):'';const tt=calcEstTotal(est);
+                return<div key={est.id} className="nsa-card" style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'14px 22px',borderBottom:'1px solid #EEF1F6',cursor:'pointer',transition:'background .15s'}} onClick={()=>{setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}}>
+                  <div style={{minWidth:0}}>
+                    <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
+                    <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||'Estimate'} · {(est.items||[]).length} item{(est.items||[]).length!==1?'s':''} · {est.id}{est.created_at?' · '+est.created_at.split(' ')[0]:''}</div>
+                  </div>
+                  <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
+                    <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
+                    <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
+                  </div>
+                </div>})}
+              {estOpen&&openEsts.length===0&&approvedEsts.length===0&&<div style={{padding:'18px 22px',color:'#5A6075',fontSize:13}}>No estimates right now — your rep posts quotes here for you to review &amp; approve.</div>}
+            </div>
             {/* ── Order History table ── */}
             <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
             {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
@@ -1991,6 +2501,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           <CoachStore customer={customer} storeIds={cpStoreCustomerIds}/>
         </div>}
 
+        {/* Roster orders — spreadsheet-style season kit ordering per team */}
+        {page==='roster'&&<div>
+          <div className="nsa-disp" style={{fontWeight:800,fontSize:'clamp(26px,4vw,34px)',textTransform:'uppercase',color:tPrimary,lineHeight:1,marginBottom:6}}>Roster Orders</div>
+          <div style={{fontSize:14,color:'#5A6075',marginBottom:22}}>Build your team, fill in player sizes, and submit to {rep?.name||'your rep'} when you're ready.</div>
+          <RosterOrdersCoach customer={customer} />
+        </div>}
+
         {page==='shop'&&<div>
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
@@ -2116,7 +2633,10 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
     {/* ── BOTTOM NAV (mobile) — team-colored tab bar ── */}
     <nav className="cp-bottomnav">
-      {cpNav.filter(n=>n.key!=='spend').slice(0,6).map(it=>{const active=page===it.key;return(
+      {/* 7 fits today's max real combo (home/orders/estimates/roster/billing/art/shop); if
+          store and roster are ever both enabled for the same account this clips one item —
+          revisit if that combo becomes common. */}
+      {cpNav.filter(n=>n.key!=='spend').slice(0,7).map(it=>{const active=page===it.key;return(
         <button key={it.key} className="cp-bottombtn" onClick={it.onClick||(()=>setPage(it.key))} style={{color:active?cpTheme.primary:'#94a3b8'}}>
           <span style={{position:'relative',width:38,height:30,borderRadius:11,display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,background:active?cpTint:'transparent',transition:'background .12s'}}>{it.icon}{it.badge>0?<span style={{position:'absolute',top:-3,right:-1,fontSize:9,fontWeight:800,background:cpTheme.accent,color:'#fff',borderRadius:999,padding:'0 5px',minWidth:14,textAlign:'center'}}>{it.badge}</span>:null}</span>
           <span>{it.label}</span>
@@ -2160,220 +2680,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   </div>
 }
 
-// ─── PO NUMBER EXTRACTION FROM OCR TEXT ───
-const extractPOFromText=(text)=>{
-  if(!text)return null;
-  // Patterns to match PO numbers on shipping labels:
-  // "PO-NO : 0902323374", "PO-NO: 0902323374"
-  // "TEAM/CUSTOMER PO : PO7540 EXP", "Cust PO#: PO7770 CSM SP"
-  // "PO: 7775GBHSTEN-JB", "PO#: 12345", "PO 12345"
-  // "SalesOrder#:SO-158374470", "RO12173689"
-  const lines=text.split('\n');
-  for(const line of lines){
-    const l=line.trim();
-    // Match "PO-NO" or "PO NO" followed by separator and value
-    let m=l.match(/PO[\s-]*NO\s*[:#=]\s*(\S+)/i);
-    if(m)return m[1].replace(/[.,]+$/,'');
-    // Match "Cust PO#" or "CUSTOMER PO" or "TEAM/CUSTOMER PO" followed by value
-    m=l.match(/(?:CUST(?:OMER)?|TEAM\/CUSTOMER)\s*PO\s*#?\s*[:#=]\s*(.+)/i);
-    if(m)return m[1].trim().replace(/[.,]+$/,'');
-    // Match "PO#:" or "PO:" followed by value
-    m=l.match(/\bPO\s*#?\s*[:#=]\s*(.+)/i);
-    if(m){const v=m[1].trim();if(v.length>=4)return v.replace(/[.,]+$/,'')}
-    // Match "SalesOrder#:" pattern
-    m=l.match(/Sales\s*Order\s*#?\s*[:#=]\s*(\S+)/i);
-    if(m)return m[1].replace(/[.,]+$/,'');
-  }
-  return null;
-};
-
-// ─── BARCODE / QR CAMERA SCANNER ───
-const BarcodeScanner=({onScan,onClose,placeholder='Scan barcode or QR code...'})=>{
-  const videoRef=useRef(null);const streamRef=useRef(null);const scanningRef=useRef(false);
-  const[active,setActive]=useState(false);const[error,setError]=useState(null);const[manualVal,setManualVal]=useState('');
-  const detectorRef=useRef(null);
-  const[scanMode,setScanMode]=useState('barcode');// 'barcode' | 'text'
-  const[ocrStatus,setOcrStatus]=useState('');// OCR progress status
-  const[ocrResults,setOcrResults]=useState([]);// extracted PO numbers from OCR
-  const ocrBusyRef=useRef(false);
-  const canvasRef=useRef(null);
-  const[torchOn,setTorchOn]=useState(false);const[torchOk,setTorchOk]=useState(false);// phone flashlight (warehouse aisles are dim)
-
-  const startCamera=async()=>{
-    setError(null);setOcrResults([]);setOcrStatus('');
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment',width:{ideal:1280},height:{ideal:720}}});
-      streamRef.current=stream;
-      // Torch is only exposed on a live track on some phones — probe once we have the stream.
-      try{const _trk=stream.getVideoTracks&&stream.getVideoTracks()[0];const _caps=_trk&&_trk.getCapabilities&&_trk.getCapabilities();setTorchOk(!!(_caps&&_caps.torch))}catch(e){setTorchOk(false)}
-      const v=videoRef.current;
-      if(v){
-        v.srcObject=stream;
-        await new Promise((resolve)=>{
-          if(v.readyState>=v.HAVE_METADATA){resolve();return}
-          v.onloadedmetadata=()=>resolve();
-        });
-        await v.play();
-      }
-      setActive(true);
-      if(scanMode==='barcode'){
-        const DetectorImpl='BarcodeDetector' in window?window.BarcodeDetector:BarcodeDetectorPolyfill;
-        detectorRef.current=new DetectorImpl({formats:['qr_code','code_128','code_39','ean_13','ean_8','upc_a','upc_e','codabar','itf']});
-      }
-      scanningRef.current=true;
-      if(scanMode==='barcode')scanLoop();
-    }catch(err){
-      if(err.name==='NotAllowedError')setError('Camera permission denied. Please allow camera access and try again.');
-      else if(err.name==='NotFoundError')setError('No camera found. Use manual entry below.');
-      else setError('Camera error: '+err.message);
-    }
-  };
-
-  const scanLoop=async()=>{
-    if(!scanningRef.current||!videoRef.current||!detectorRef.current)return;
-    try{
-      const barcodes=await detectorRef.current.detect(videoRef.current);
-      if(barcodes.length>0){
-        const val=barcodes[0].rawValue;
-        if(val){try{navigator.vibrate&&navigator.vibrate(120)}catch(e){}stopCamera();onScan(val);return}
-      }
-    }catch(err){if(err?.name!=='InvalidStateError')console.warn('[BarcodeScanner] detect error:',err?.message||err)}
-    requestAnimationFrame(()=>setTimeout(scanLoop,150));
-  };
-
-  // Capture a frame from video for OCR
-  const captureFrame=()=>{
-    const v=videoRef.current;
-    if(!v||!v.videoWidth)return null;
-    let canvas=canvasRef.current;
-    if(!canvas){canvas=document.createElement('canvas');canvasRef.current=canvas}
-    canvas.width=v.videoWidth;canvas.height=v.videoHeight;
-    const ctx=canvas.getContext('2d');
-    ctx.drawImage(v,0,0);
-    return canvas;
-  };
-
-  // Run OCR on current camera frame
-  const runOCR=async()=>{
-    if(ocrBusyRef.current)return;
-    ocrBusyRef.current=true;
-    setOcrStatus('Reading text...');setOcrResults([]);
-    try{
-      const canvas=captureFrame();
-      if(!canvas){setOcrStatus('No camera frame available');ocrBusyRef.current=false;return}
-      const worker=await createWorker('eng');
-      const{data:{text}}=await worker.recognize(canvas);
-      await worker.terminate();
-      if(!text||!text.trim()){setOcrStatus('No text detected — try adjusting angle');ocrBusyRef.current=false;return}
-      // Extract PO numbers from OCR text
-      const po=extractPOFromText(text);
-      if(po){
-        setOcrResults([po]);setOcrStatus('Found PO: '+po);
-      }else{
-        // Show raw text so user can pick out the PO
-        const lines=text.split('\n').map(l=>l.trim()).filter(l=>l.length>2);
-        setOcrResults(lines.slice(0,10));
-        setOcrStatus('No PO pattern found — select a line or try again');
-      }
-    }catch(err){
-      console.warn('[OCR] error:',err?.message||err);
-      setOcrStatus('OCR error: '+(err?.message||'Unknown error'));
-    }
-    ocrBusyRef.current=false;
-  };
-
-  // Toggle the phone flashlight on the live video track (no-op where unsupported).
-  const toggleTorch=async()=>{
-    try{const track=streamRef.current&&streamRef.current.getVideoTracks&&streamRef.current.getVideoTracks()[0];if(!track)return;const next=!torchOn;await track.applyConstraints({advanced:[{torch:next}]});setTorchOn(next)}catch(e){setTorchOk(false)}
-  };
-
-  const stopCamera=()=>{
-    scanningRef.current=false;
-    if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop());streamRef.current=null}
-    if(videoRef.current){videoRef.current.srcObject=null}
-    setActive(false);setOcrStatus('');setOcrResults([]);setTorchOn(false);setTorchOk(false);
-  };
-
-  // Cleanup on unmount
-  React.useEffect(()=>()=>{scanningRef.current=false;if(streamRef.current){streamRef.current.getTracks().forEach(t=>t.stop())};},[]);
-
-  // Restart camera when mode changes while active
-  const prevMode=useRef(scanMode);
-  React.useEffect(()=>{
-    if(prevMode.current!==scanMode&&active){stopCamera();setTimeout(()=>startCamera(),200)}
-    prevMode.current=scanMode;
-  },[scanMode]);// eslint-disable-line react-hooks/exhaustive-deps
-
-  const handleManual=(e)=>{
-    if(e.key==='Enter'&&manualVal.trim()){onScan(manualVal.trim());setManualVal('')}
-  };
-
-  return<div style={{background:'#0f172a',borderRadius:12,overflow:'hidden',border:'2px solid #334155'}}>
-    {/* Mode toggle */}
-    <div style={{display:'flex',borderBottom:'1px solid #1e293b'}}>
-      <button onClick={()=>setScanMode('barcode')} style={{flex:1,padding:'8px 0',fontSize:12,fontWeight:700,cursor:'pointer',border:'none',
-        background:scanMode==='barcode'?'#1e293b':'transparent',color:scanMode==='barcode'?'#22c55e':'#64748b',borderBottom:scanMode==='barcode'?'2px solid #22c55e':'2px solid transparent'}}>
-        Barcode Scan
-      </button>
-      <button onClick={()=>setScanMode('text')} style={{flex:1,padding:'8px 0',fontSize:12,fontWeight:700,cursor:'pointer',border:'none',
-        background:scanMode==='text'?'#1e293b':'transparent',color:scanMode==='text'?'#f59e0b':'#64748b',borderBottom:scanMode==='text'?'2px solid #f59e0b':'2px solid transparent'}}>
-        PO Text Scan
-      </button>
-    </div>
-    {/* Single video element always in DOM so ref/stream survive re-renders */}
-    <div style={{position:'relative',background:'#000',display:active?'block':'none'}}>
-      <video ref={videoRef} style={{width:'100%',maxHeight:'58vh',minHeight:240,objectFit:'cover',display:'block',background:'#000'}} autoPlay playsInline muted/>
-      {/* Scan overlay */}
-      <div style={{position:'absolute',top:0,left:0,right:0,bottom:0,display:'flex',alignItems:'center',justifyContent:'center',pointerEvents:'none'}}>
-        <div style={{width:scanMode==='text'?280:200,height:scanMode==='text'?160:200,
-          border:scanMode==='text'?'2px solid rgba(245,158,11,0.7)':'2px solid rgba(34,197,94,0.7)',borderRadius:12,boxShadow:'0 0 0 9999px rgba(0,0,0,0.3)'}}/>
-      </div>
-      <div style={{position:'absolute',bottom:scanMode==='text'?40:8,left:0,right:0,textAlign:'center',
-        color:scanMode==='text'?'#f59e0b':'#22c55e',fontSize:11,fontWeight:600,textShadow:'0 1px 3px rgba(0,0,0,0.8)'}}>
-        {scanMode==='text'?'Point camera at PO label, then tap Capture':'Point camera at barcode or QR code'}
-      </div>
-      {scanMode==='text'&&<button onClick={runOCR} disabled={ocrBusyRef.current}
-        style={{position:'absolute',bottom:8,left:'50%',transform:'translateX(-50%)',background:ocrBusyRef.current?'#475569':'#f59e0b',
-          color:ocrBusyRef.current?'#94a3b8':'#000',border:'none',borderRadius:8,padding:'6px 24px',cursor:ocrBusyRef.current?'default':'pointer',fontSize:13,fontWeight:700}}>
-        {ocrBusyRef.current?'Reading...':'Capture & Read'}
-      </button>}
-      {torchOk&&<button onClick={toggleTorch} title="Toggle flashlight" style={{position:'absolute',top:8,left:8,background:torchOn?'#fde68a':'rgba(0,0,0,0.6)',border:'none',color:torchOn?'#000':'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12,fontWeight:700}}>🔦 {torchOn?'On':'Off'}</button>}
-      <button onClick={stopCamera} style={{position:'absolute',top:8,right:8,background:'rgba(0,0,0,0.6)',border:'none',color:'white',borderRadius:8,padding:'4px 10px',cursor:'pointer',fontSize:12}}>Close Camera</button>
-    </div>
-    {/* OCR results */}
-    {scanMode==='text'&&active&&(ocrStatus||ocrResults.length>0)&&<div style={{padding:'8px 12px',borderBottom:'1px solid #1e293b'}}>
-      {ocrStatus&&<div style={{fontSize:11,color:ocrResults.length===1?'#22c55e':'#f59e0b',marginBottom:ocrResults.length>1?6:0,fontWeight:600}}>{ocrStatus}</div>}
-      {ocrResults.length===1&&<button onClick={()=>{const v=ocrResults[0];stopCamera();onScan(v)}}
-        style={{marginTop:4,width:'100%',background:'#22c55e',color:'#000',border:'none',borderRadius:6,padding:'8px',fontSize:13,fontWeight:700,cursor:'pointer'}}>
-        Use: {ocrResults[0]}
-      </button>}
-      {ocrResults.length>1&&<div style={{maxHeight:120,overflowY:'auto'}}>
-        {ocrResults.map((line,i)=><button key={i} onClick={()=>{stopCamera();onScan(line)}}
-          style={{display:'block',width:'100%',textAlign:'left',background:'#1e293b',color:'#e2e8f0',border:'1px solid #334155',borderRadius:4,padding:'4px 8px',marginBottom:2,fontSize:11,fontFamily:'monospace',cursor:'pointer',':hover':{background:'#334155'}}}>
-          {line}
-        </button>)}
-      </div>}
-    </div>}
-    {!active&&<div style={{padding:'20px',textAlign:'center'}}>
-      {error?<div style={{color:'#f87171',fontSize:12,marginBottom:10}}>{error}</div>:
-      <div style={{color:'#94a3b8',fontSize:12,marginBottom:10}}>
-        {scanMode==='text'?'Open the camera to scan PO text from shipping labels':'Open the camera to scan barcodes/QR codes, or type manually below'}
-      </div>}
-      <button onClick={startCamera} style={{background:scanMode==='text'?'#f59e0b':'#22c55e',color:scanMode==='text'?'#000':'white',border:'none',borderRadius:8,padding:'10px 24px',fontSize:14,fontWeight:700,cursor:'pointer',display:'inline-flex',alignItems:'center',gap:8}}>
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
-        Open Camera
-      </button>
-    </div>}
-    {/* Manual entry always available */}
-    <div style={{padding:'10px 16px',borderTop:'1px solid #1e293b',display:'flex',gap:8}}>
-      <input value={manualVal} onChange={e=>setManualVal(e.target.value)} onKeyDown={handleManual}
-        placeholder={placeholder} style={{flex:1,background:'#1e293b',border:'1px solid #334155',borderRadius:6,padding:'8px 12px',color:'white',fontSize:13,fontWeight:600,fontFamily:'monospace'}}/>
-      <button onClick={()=>{if(manualVal.trim()){onScan(manualVal.trim());setManualVal('')}}}
-        style={{background:'#2563eb',color:'white',border:'none',borderRadius:6,padding:'8px 16px',fontSize:12,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>Look Up</button>
-      {onClose&&<button onClick={onClose} style={{background:'#334155',color:'#94a3b8',border:'none',borderRadius:6,padding:'8px 12px',cursor:'pointer',fontSize:12}}>Cancel</button>}
-    </div>
-  </div>;
-};
+// BarcodeScanner + extractPOFromText moved to src/BarcodeScanner.js (shared with App.js and
+// MobilePortal.js) — import it from there if the coach portal ever needs camera scanning.
 
 // MAIN APP
 

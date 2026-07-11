@@ -51,7 +51,7 @@ const CATEGORY_RULES = [
   ['Tees', /T-SHIRT|\bTEE\b|ACTIVEWEAR/i],
   ['Bags', /\bBAG\b|BACKPACK|DUFFEL|SACKPACK/i],
   ['Socks', /\bSOCK\b/i],
-  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL/i],
+  ['Accessories', /ACCESSOR|GLOVE|SCARF|TOWEL|SLEEVE/i],
 ];
 function mapCategory(title) {
   for (const [cat, re] of CATEGORY_RULES) if (re.test(String(title || ''))) return cat;

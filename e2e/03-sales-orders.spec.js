@@ -1,12 +1,35 @@
 const { test, expect } = require('@playwright/test');
-const { login, navTo, clickBtn, collectConsoleErrors } = require('./helpers');
+const { login, seedData, navTo, clickBtn, collectConsoleErrors } = require('./helpers');
+
+// Built-in demo seeds were removed from the app (D_C/D_SO/D_P are empty in no-DB mode),
+// so this spec seeds its own minimal customer + sales order via localStorage.
+// created_by must match the login() user id — the SO list defaults to "My Orders".
+const TEST_CUST = { id: 'cust-e2e-1', name: 'E2E Test School', alpha_tag: 'TST' };
+const TEST_SO = {
+  id: 'SO-9002',
+  customer_id: 'cust-e2e-1',
+  status: 'in_production',
+  created_by: '00000000-0000-0000-0000-000000000001',
+  created_at: '1/1/2026, 9:00:00 AM',
+  updated_at: '1/1/2026, 9:00:00 AM',
+  memo: 'E2E sales order',
+  items: [
+    {
+      product_id: 'p-e2e-1', sku: 'TEST123', name: 'Test Tee', color: 'Navy',
+      sizes: { S: 10, M: 10 }, available_sizes: ['S', 'M', 'L', 'XL'],
+      nsa_cost: 5, unit_sell: 12, retail_price: 12,
+      pick_lines: [], decorations: [], po_lines: [],
+    },
+  ],
+};
 
 test.describe('Sales Orders Flow', () => {
   test.beforeEach(async ({ page }) => {
+    await seedData(page, { sos: [TEST_SO], cust: [TEST_CUST] });
     await login(page, 'Steve Peterson', 'Admin');
   });
 
-  test('sales orders page loads with demo data', async ({ page }) => {
+  test('sales orders page loads with seeded data', async ({ page }) => {
     await navTo(page, 'Sales Orders');
     await expect(page.locator('.main').locator('text=/SO-\\d+/').first()).toBeVisible({ timeout: 5000 });
   });

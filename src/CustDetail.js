@@ -1,17 +1,69 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt } from './safeHelpers';
+import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
-import { dP, rQ, DTF, mergeColors, calcQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
+import { pickCwAsset, normalizeWebLogos } from './businessLogic';
+import { garmentHex, garmentIsDark } from './lib/artGrid';
+import { artWriteMatches } from './lib/artIdentity';
+import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
+import { RosterOrdersStaff } from './RosterOrders';
 import { supabase } from './lib/supabase';
+
+// Multi-select garment-color picker — tie ONE web-logo cutout to any number of garment
+// colors (reuse without re-uploading the same file per color). Colors come from the art's
+// color ways, but you can also type any color that isn't listed yet, and "All dark / All
+// light" quick-check the rows by garment brightness. Plus an "all garments" default.
+function CwMultiPrompt({title,cws=[],initialNames=[],initialDefault=false,onApply,onClose}){
+  const _norm=(s)=>String(s||'').trim().toLowerCase();
+  const baseNames=(cws||[]).map((cw,ci)=>cw.garment_color||('Color way '+(ci+1)));
+  const _baseSet=new Set(baseNames.map(_norm));
+  // Already-covered colors that aren't one of the art's color ways (typed-in earlier) show
+  // as first-class rows too, so they can be seen and unchecked.
+  const [extras,setExtras]=useState(()=>[...new Set((initialNames||[]).filter(n=>n&&!_baseSet.has(_norm(n))))]);
+  const [checked,setChecked]=useState(()=>new Set((initialNames||[]).map(_norm)));
+  const [def,setDef]=useState(!!initialDefault);
+  const [typed,setTyped]=useState('');
+  const allNames=[...baseNames,...extras];
+  const toggle=(nm)=>setChecked(s=>{const n=new Set(s);const k=_norm(nm);n.has(k)?n.delete(k):n.add(k);return n});
+  const addTyped=()=>{const n=typed.trim();if(!n)return;const k=_norm(n);if(!allNames.some(x=>_norm(x)===k))setExtras(e=>[...e,n]);setChecked(s=>new Set(s).add(k));setTyped('')};
+  const bucket=(dark)=>setChecked(s=>{const n=new Set(s);allNames.forEach(nm=>{if(garmentIsDark(nm)===dark)n.add(_norm(nm))});return n});
+  const count=[...checked].filter(k=>allNames.some(nm=>_norm(nm)===k)).length+(def?1:0);
+  const apply=()=>onApply&&onApply(allNames.filter(nm=>checked.has(_norm(nm))),def);
+  const Swatch=({nm})=><span style={{width:16,height:16,borderRadius:'50%',background:garmentHex(nm),border:'1px solid rgba(0,0,0,.25)',flexShrink:0,display:'inline-block'}}/>;
+  return <div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();onClose&&onClose()}}>
+    <div className="modal" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+      <div className="modal-header"><h2 style={{fontSize:16}}>{title||'Garment colors'}</h2><button className="modal-close" onClick={()=>onClose&&onClose()}>x</button></div>
+      <div className="modal-body">
+        <div style={{fontSize:11.5,color:'#64748b',marginBottom:10}}>Pick every garment color this one cutout goes on — no need to re-upload it per color.</div>
+        {allNames.length>1&&<div style={{display:'flex',gap:6,marginBottom:8}}>
+          <button type="button" onClick={()=>bucket(true)} title="Check every dark garment color" style={{flex:1,fontSize:11,fontWeight:700,color:'#334155',background:'#f1f5f9',border:'1px solid #e2e8f0',borderRadius:7,padding:'6px 8px',cursor:'pointer'}}>✓ All dark</button>
+          <button type="button" onClick={()=>bucket(false)} title="Check every light garment color" style={{flex:1,fontSize:11,fontWeight:700,color:'#334155',background:'#f1f5f9',border:'1px solid #e2e8f0',borderRadius:7,padding:'6px 8px',cursor:'pointer'}}>✓ All light</button>
+        </div>}
+        <label style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(def?'#c7d2fe':'#e2e8f0'),background:def?'#eef2ff':'#fff',borderRadius:8,marginBottom:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569'}}><input type="checkbox" checked={def} onChange={()=>setDef(v=>!v)} style={{width:16,height:16,cursor:'pointer'}}/>All garments <span style={{fontSize:11,fontWeight:500,color:'#94a3b8'}}>(default fallback)</span></label>
+        <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'40vh',overflowY:'auto'}}>
+          {allNames.map((nm,ci)=>{const on=checked.has(_norm(nm));return <label key={ci} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',border:'1px solid '+(on?'#c7d2fe':'#e2e8f0'),borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#1e293b',background:on?'#eef2ff':'#fff'}}><input type="checkbox" checked={on} onChange={()=>toggle(nm)} style={{width:16,height:16,cursor:'pointer'}}/><Swatch nm={nm}/>{nm}</label>;})}
+          {!allNames.length&&<div style={{fontSize:12,color:'#94a3b8',padding:'8px 2px'}}>No garment colors yet — type one below, or just use “All garments”.</div>}
+        </div>
+        <div style={{display:'flex',gap:6,marginTop:8}}>
+          <input value={typed} onChange={e=>setTyped(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){e.preventDefault();addTyped()}}} placeholder="Add a garment color (e.g. Forest)…" style={{flex:1,minWidth:0,fontSize:12.5,border:'1px solid #e2e8f0',borderRadius:7,padding:'7px 9px',outline:'none'}}/>
+          <button type="button" onClick={addTyped} disabled={!typed.trim()} style={{fontSize:12,fontWeight:700,color:typed.trim()?'#2563eb':'#94a3b8',background:typed.trim()?'#eff6ff':'#f1f5f9',border:'1px solid '+(typed.trim()?'#bfdbfe':'#e2e8f0'),borderRadius:7,padding:'0 12px',cursor:typed.trim()?'pointer':'default'}}>Add</button>
+        </div>
+      </div>
+      <div style={{display:'flex',gap:8,padding:'12px 16px',borderTop:'1px solid #eef2f7'}}>
+        <button className="btn btn-primary" disabled={!count} onClick={apply}>Apply{count?(' ('+count+')'):''}</button>
+        <button className="btn btn-secondary" onClick={()=>onClose&&onClose()}>Cancel</button>
+      </div>
+    </div>
+  </div>;
+}
 
 // CUSTOMER DETAIL
 
-function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
+function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSelCust,onNewEst,sos,msgs,cu,onOpenSO,onOpenEst,onOpenInv,ests,invs,onSaveSO,onSaveEst,onSaveArtFiles,REPS,prod,onCopy,onDelete,onArchive,onMarkRead,onSavePromoProgram,onDeletePromoProgram,onSavePromoPeriod,onDeletePromoPeriod,onSavePromoUsage,onDeletePromoUsage,onSaveCredit,onDeleteCredit,onSavePendingShip,onDeletePendingShip,onRefreshCustomer,onReceivePayment,onOpenWebstore,onOpenOmgStore,nf}){
   const[tab,setTab]=useState('activity');const[oF,setOF]=useState('all');const[sF,setSF]=useState('open');const[rR,setRR]=useState('thisyear');
   const[expSOs,setExpSOs]=useState(()=>new Set());
   const toggleExpSO=id=>setExpSOs(s=>{const n=new Set(s);if(n.has(id))n.delete(id);else n.add(id);return n});
@@ -31,6 +83,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   const[promoPeriodEdit,setPromoPeriodEdit]=useState(null);// null or {id,allocated} — inline edit of a period's allocation
   // Credit state
   const[creditAdd,setCreditAdd]=useState(null);// null or {amount,source}
+  const[pendShipAdd,setPendShipAdd]=useState(null);// null or {amount,cost,source}
   const[portalJobView,setPortalJobView]=useState(null);// {job,so} when viewing a job mockup
   const[portalComment,setPortalComment]=useState('');
   const[portalContactEdit,setPortalContactEdit]=useState(null);
@@ -69,28 +122,50 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   React.useEffect(()=>setCustLocal(initCust),[initCust]);
   React.useEffect(()=>{if(!showActions)return;const close=()=>setShowActions(false);document.addEventListener('click',close);return()=>document.removeEventListener('click',close)},[showActions]);
   const customer=custLocal;
-  // Auto co-op true-up: the first time this customer is opened after a period rollover (1/1 or 7/1),
-  // finalize the now-current period's allocation to the full % earned from the prior half's qualifying spend.
+  // Auto co-op allocation + overdraft carry-forward.
+  // 1) Whenever a % of Spend program is present (including one added just now), materialize the
+  //    CURRENT period's allocation from the prior half's PAID qualifying spend × pct. Paid = portal
+  //    SOs whose invoices are fully paid + paid NetSuite history invoices. Re-runs when programs
+  //    change so a newly added % program populates ALLOCATED without a reload. Only raises the
+  //    allocation (Math.max), never claws back.
+  // 2) Past periods that ended overdrawn (used > allocated) carry their deficit into the current
+  //    period as starting `used` — new earnings pay the negative down first. The source period is
+  //    stamped with an [overdraft carried…] note so the deficit is never carried twice, and a usage
+  //    row records the carry on the current period's ledger.
+  const _carriedRef=useRef({});
   useEffect(()=>{
     const c=initCust;if(!c)return;
     const pId=c.parent_id||c.id;
     const pctProg=(c.promo_programs||[]).find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
-    if(!pctProg)return;const pct=safeNum(pctProg.spend_percentage);if(pct<=0)return;
+    const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const d=new Date();const yy=d.getFullYear();const mm=d.getMonth();
-    const cur=mm<6?{start:yy+'-01-01',end:yy+'-06-30'}:{start:yy+'-07-01',end:yy+'-12-31'};
-    const prev=mm<6?{start:(yy-1)+'-07-01',end:(yy-1)+'-12-31'}:{start:yy+'-01-01',end:yy+'-06-30'};
-    const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
-    const fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
-    const prevSpend=(sos||[]).filter(so=>fam.includes(so.customer_id)&&fulfilled(so)&&(()=>{const dt=(so.order_date||so.created_at||'').slice(0,10);return dt>=prev.start&&dt<=prev.end})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
-    const prevEarned=Math.round(prevSpend*pct*100)/100;if(prevEarned<=0)return;
+    const cur=mm<6?{start:yy+'-01-01',end:yy+'-06-30',label:'H1 '+yy}:{start:yy+'-07-01',end:yy+'-12-31',label:'H2 '+yy};
+    const prev=mm<6?{start:(yy-1)+'-07-01',end:(yy-1)+'-12-31',label:'H2 '+(yy-1)}:{start:yy+'-01-01',end:yy+'-06-30',label:'H1 '+yy};
+    let prevEarned=0;
+    if(pct>0){
+      const fam=[pId,...allCustomers.filter(x=>x.parent_id===pId).map(x=>x.id)];
+      const histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+      const prevSpend=calcPaidQualifyingSpend({sos,invs,histInvs:histInvsAll,famIds:fam,start:prev.start,end:prev.end}).total;
+      prevEarned=Math.round(prevSpend*pct*100)/100;
+    }
+    const carryPeriods=(c.promo_periods||[]).filter(p=>p.period_start<cur.start
+      &&safeNum(p.used)>safeNum(p.allocated)+0.009
+      &&!String(p.notes||'').includes('[overdraft carried')
+      &&!_carriedRef.current[p.id]);
+    const carry=rQ(carryPeriods.reduce((a,p)=>a+safeNum(p.used)-safeNum(p.allocated),0));
     const existing=(c.promo_periods||[]).find(p=>p.period_start===cur.start);
     const curAlloc=existing?safeNum(existing.allocated):0;
-    if(prevEarned-curAlloc>0.01){
-      if(existing)onSavePromoPeriod({...existing,allocated:Math.max(curAlloc,prevEarned),program_id:existing.program_id||pctProg.id,notes:existing.notes||'Auto co-op true-up'});
-      else onSavePromoPeriod({id:'pp_'+pId+'_'+cur.start,customer_id:pId,program_id:pctProg.id,period_start:cur.start,period_end:cur.end,allocated:prevEarned,used:0,notes:'Auto co-op true-up',created_at:new Date().toISOString()});
+    const needAlloc=prevEarned-curAlloc>0.01;
+    if(!needAlloc&&carry<=0)return;
+    const base=existing||{id:'pp_'+pId+'_'+cur.start,customer_id:pId,program_id:pctProg?.id||null,period_start:cur.start,period_end:cur.end,allocated:0,used:0,notes:pct>0?'Auto co-op allocation from paid spend':'',created_at:new Date().toISOString()};
+    onSavePromoPeriod({...base,allocated:Math.max(safeNum(base.allocated),prevEarned),used:safeNum(base.used)+carry,program_id:base.program_id||pctProg?.id||null,notes:base.notes||(pct>0?'Auto co-op allocation from paid spend':'')});
+    if(carry>0){
+      carryPeriods.forEach(p=>{_carriedRef.current[p.id]=true});
+      onSavePromoUsage({period_id:base.id,amount:carry,description:'Overdraft carried forward from '+carryPeriods.map(p=>(p.period_start.slice(5,7)==='01'?'H1 ':'H2 ')+p.period_start.slice(0,4)).join(', '),created_by:'System',so_id:null,estimate_id:null,created_at:new Date().toISOString()});
+      carryPeriods.forEach(p=>onSavePromoPeriod({...p,notes:((p.notes||'')+' [overdraft carried to '+cur.label+']').trim()}));
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[initCust.id,sos]);
+  },[initCust.id,initCust.promo_programs,initCust.promo_periods,sos,invs]);
   useEffect(()=>{if(!supabase)return;const _isP=!customer.parent_id;const _ids=_isP?[customer.id,...(allCustomers||[]).filter(c=>c.parent_id===customer.id).map(c=>c.id)]:[customer.id];if(!_ids.length)return;let cancelled=false;(async()=>{const{data}=await supabase.from('webstores').select('id,name,slug,status,open_at,close_at,director_name').in('customer_id',_ids).neq('status','archived').order('created_at',{ascending:false});if(!cancelled&&data)setCustWebstores(data)})();return()=>{cancelled=true}},[customer.id]);
   // OMG ("Order My Gear") stores for this account — open + past — so the Stores tab can
   // show both store types in one place and jump into either.
@@ -132,8 +207,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const lib=customer.art_files||[];
     if(lib.some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt)){nf&&nf('"'+(art.name||'art')+'" is already in the program library');return}
     if(!window.confirm('Add "'+(art.name||'this art')+'" to the program library so it applies to all sub-customers?'))return;
-    const mockFiles=(art._allMockups||[]).map(m=>m.file||m.url).filter(Boolean);
-    const prodFiles=(art._allProd||[]).map(m=>m.file||m.url).filter(Boolean);
+    // Only take mockups/prod files from THIS art's source team — never the name-merged
+    // _allMockups/_allProd bags (those collapse sibling sports into one card and would
+    // copy football imagery into the program library under a volleyball logo name).
+    const srcId=art._srcCustId;
+    const ownMocks=(art._allMockups||[]).filter(m=>!srcId||!m.srcCustId||m.srcCustId===srcId);
+    const ownProd=(art._allProd||[]).filter(m=>!srcId||!m.srcCustId||m.srcCustId===srcId);
+    const mockFiles=(ownMocks.length?ownMocks:(art.mockup_files||[]).map(f=>({file:f}))).map(m=>m.file||m.url).filter(Boolean);
+    const prodFiles=(ownProd.length?ownProd:(art.prod_files||[]).map(f=>({file:f}))).map(m=>m.file||m.url).filter(Boolean);
     const entry={id:'caf'+Date.now(),name:art.name||'',deco_type:dt||'screen_print',ink_colors:art.ink_colors||'',thread_colors:art.thread_colors||'',stitches:parseInt(art.stitches,10)||null,art_size:art.art_size||'',art_sizes:art.art_sizes||null,garment_colors:art.garment_colors||null,color_ways:art.color_ways||[],files:[],mockup_files:mockFiles,prod_files:prodFiles,notes:art.notes||'',status:art.status==='uploaded'?'needs_approval':(art.status||'approved'),uploaded:new Date().toLocaleDateString()};
     const newCust={...customer,art_files:[...lib,entry]};setCustLocal(newCust);onRefreshCustomer(newCust);
     nf&&nf('"'+(art.name||'art')+'" added to the program library — now applies to all sub-customers');
@@ -216,7 +297,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
   {subs.map(sub=><div key={sub.id} style={{padding:'10px 18px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:8,cursor:'pointer'}} onClick={()=>onSelCust(sub)}>
     <span style={{color:'#cbd5e1'}}>|_</span><span style={{fontWeight:600,color:'#1e40af'}}>{sub.name}</span><span className="badge badge-gray">{sub.alpha_tag}</span><div style={{flex:1}}/>
     {(sub._ob||0)>0&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626'}}>${sub._ob.toLocaleString()}</span>}</div>)}</div>}</div>}
-  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
+  <div className="tabs">{['activity','messages','contacts','overview','webstores','promo','artwork','catalog','roster','reporting'].map(t=><button key={t} className={`tab ${tab===t?'active':''}`} onClick={()=>setTab(t)}>{t==='activity'?'Orders':t==='messages'?'Messages'+(custUnread>0?' ('+custUnread+')':''):t==='contacts'?'Contacts'+(customer.contacts?.length?' ('+customer.contacts.length+')':''):t==='promo'?'Promo $'+(customer.promo_programs?.length||((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?' ('+(customer.promo_programs?.length?customer.promo_programs.length+' promo':'')+(customer.promo_programs?.length&&(customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0?' · ':'')+(((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)>0)?'$'+((customer.credits||[]).reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0)).toLocaleString()+' credit':'')+')':''):t==='webstores'?'Stores'+((custWebstores.length+custOmgStores.length)?' ('+(custWebstores.length+custOmgStores.length)+')':''):t[0].toUpperCase()+t.slice(1)}</button>)}</div>
 
   {/* ORDERS TAB — with live SO status */}
   {tab==='activity'&&<>
@@ -529,13 +610,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const otherPeriods=periods.filter(p=>p.period_start!==curPeriod.start);
     const upcomingPeriods=otherPeriods.filter(p=>(p.period_start||'')>curPeriod.start).sort((a,b)=>a.period_start.localeCompare(b.period_start));
     const pastPeriods=otherPeriods.filter(p=>(p.period_start||'')<curPeriod.start).sort((a,b)=>b.period_start.localeCompare(a.period_start));
-    // Co-op earning: live % of qualifying (≥20% margin) net spend this half, destined for the next half.
+    // Co-op earning: live % of qualifying (≥20% margin) net PAID spend this half, destined for the
+    // next half. Paid = portal SOs with fully paid invoices + paid NetSuite history invoices
+    // (ownership rule 2026-07-06: promo is not earned until the invoice is paid).
     const pctProg=programs.find(p=>p.is_active!==false&&p.type==='percent_of_spend'&&safeNum(p.spend_percentage)>0);
     const pct=pctProg?safeNum(pctProg.spend_percentage):0;
     const famIds=[parentId,...allCustomers.filter(c=>c.parent_id===parentId).map(c=>c.id)];
-    const _fulfilled=so=>['approved','paid','complete'].includes(so.status)||calcSOStatus(so)==='complete';
-    const _spendInRange=(s,e)=>(sos||[]).filter(so=>famIds.includes(so.customer_id)&&_fulfilled(so)&&(()=>{const d=(so.order_date||so.created_at||'').slice(0,10);return d>=s&&d<=e})()).reduce((a,so)=>a+calcQualifyingSpend(so),0);
-    const curHalfSpend=pct>0?_spendInRange(curPeriod.start,curPeriod.end):0;
+    const _histInvsAll=(allOrders||[]).filter(oo=>oo._hist&&oo.type==='invoice');
+    const _spendInRange=(s,e)=>calcPaidQualifyingSpend({sos,invs,histInvs:_histInvsAll,famIds,start:s,end:e});
+    const curSpendParts=pct>0?_spendInRange(curPeriod.start,curPeriod.end):{soSpend:0,histSpend:0,total:0};
+    const curHalfSpend=curSpendParts.total;
     const curEarned=pct>0?Math.round(curHalfSpend*pct*100)/100:0;
     const nextPeriod=m<6?{start:y+'-07-01',end:y+'-12-31',label:'H2 '+y}:{start:(y+1)+'-01-01',end:(y+1)+'-06-30',label:'H1 '+(y+1)};
     const nextExisting=periods.find(p=>p.period_start===nextPeriod.start);
@@ -564,6 +648,35 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         }}>× Delete</button>
       </td>;
     };
+    // ── Fundraiser Dollars vs Account Credits ── both live in customer_credits and spend
+    // dollar-for-dollar via the order's Apply Credit. Fundraiser rows (is_fundraise —
+    // auto-credited from OMG/webstore store fundraising at SO pull/batch time) total
+    // separately from promo and from manually-added credits; they are CASH, not promo's
+    // retail-repriced spend.
+    const _allCredits=customer.credits||[];const _creditUsageAll=customer.credit_usage||[];
+    const fundCredits=_allCredits.filter(cr=>cr.is_fundraise);
+    const regCredits=_allCredits.filter(cr=>!cr.is_fundraise);
+    const _creditRow=cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=_creditUsageAll.filter(u=>u.credit_id===cr.id);
+      return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+        <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
+        <div style={{flex:1}}>
+          <div style={{fontWeight:700,fontSize:14}}>${(cr.amount||0).toLocaleString()} {cr.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {cr.source}</span>}</div>
+          <div style={{fontSize:11,color:'#64748b'}}>Used: ${(cr.used||0).toLocaleString()} · Remaining: ${bal.toLocaleString()}</div>
+          <div style={{fontSize:10,color:'#94a3b8'}}>Added {cr.created_at?new Date(cr.created_at).toLocaleDateString():'-'}{cr.created_by?' by '+cr.created_by:''}</div>
+          {usages.length>0&&<div style={{marginTop:6}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>USAGE</div>
+            {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+              <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
+                <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
+                <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</span>
+                <span>{u.description||'-'}</span>
+                <span style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</span>
+              </div>)}
+          </div>}
+        </div>
+        <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
+        {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
+      </div>;};
     return<div style={{display:'flex',flexDirection:'column',gap:12}}>
       {customer.parent_id&&parentCust&&parentCust.id!==customer.id&&<div style={{padding:'8px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8,fontSize:12,color:'#1e40af'}}>Promo $ is shared with parent account <strong style={{cursor:'pointer',textDecoration:'underline'}} onClick={()=>onSelCust&&onSelCust(parentCust)}>{parentCust.name}</strong> — changes here apply to all sub-accounts.</div>}
       {/* Current Balance */}
@@ -606,7 +719,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         <div className="card-body">
           <div style={{display:'flex',gap:12,alignItems:'center',flexWrap:'wrap'}}>
             <div style={{fontSize:13,color:'#334155',flex:1,minWidth:240}}>
-              Qualifying spend <span style={{fontSize:11,color:'#94a3b8'}}>(net, ≥20% margin)</span>: <strong>${curHalfSpend.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
+              Qualifying spend <span style={{fontSize:11,color:'#94a3b8'}}>(paid invoices only — net, ≥20% margin)</span>: <strong>${curHalfSpend.toLocaleString(undefined,{maximumFractionDigits:0})}</strong>
               <span style={{margin:'0 6px',color:'#cbd5e1'}}>×</span>{(pct*100).toFixed(0)}%
               <span style={{margin:'0 6px',color:'#cbd5e1'}}>=</span>
               <strong style={{color:'#166534'}}>${curEarned.toLocaleString(undefined,{maximumFractionDigits:2})}</strong>
@@ -615,7 +728,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             <button className="btn btn-sm btn-primary" disabled={curEarned<=nextPulled} onClick={doPullForward} title={curEarned<=nextPulled?'Nothing new to pull forward yet':('Make $'+(curEarned-nextPulled).toLocaleString()+' usable now')}>↪ Pull Forward to {nextPeriod.label}</button>
           </div>
           {nextPulled>0&&<div style={{fontSize:11,color:'#64748b',marginTop:8}}>${nextPulled.toLocaleString()} already pulled forward to {nextPeriod.label}{curEarned>nextPulled?(' — $'+(curEarned-nextPulled).toLocaleString()+' more available'):' (up to date)'}.</div>}
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Pulled-forward dollars are usable on orders now. Spend keeps accruing — the {nextPeriod.label} allocation trues up automatically when the half closes.</div>
+          {(curSpendParts.soSpend>0||curSpendParts.histSpend>0)&&<div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Paid spend sources: ${curSpendParts.soSpend.toLocaleString(undefined,{maximumFractionDigits:0})} portal orders (paid invoices) + ${curSpendParts.histSpend.toLocaleString(undefined,{maximumFractionDigits:0})} NetSuite invoices (paid). Overlap between the two isn't auto-detected — adjust manually if an order appears in both.</div>}
+          <div style={{fontSize:11,color:'#94a3b8',marginTop:6}}>Pulled-forward dollars are usable on orders now. Spend keeps accruing — the {nextPeriod.label} allocation trues up automatically when the half closes. Only PAID invoices count toward earning.</div>
         </div>
       </div>}
 
@@ -712,13 +826,34 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </tbody></table>
       </div></div>}
 
+      {/* ═══ FUNDRAISER DOLLARS ═══ store fundraising (OMG + webstore), auto-credited when
+          the store's SO is pulled/batched. Cash — spends dollar-for-dollar via Apply Credit. */}
+      <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
+        <div style={{fontSize:13,fontWeight:800,color:'#9a3412',marginBottom:8}}>FUNDRAISER DOLLARS</div>
+      </div>
+      {(()=>{const raised=fundCredits.reduce((a,cr)=>a+(cr.amount||0),0);
+        const fUsed=fundCredits.reduce((a,cr)=>a+(cr.used||0),0);
+        const avail=raised-fUsed;
+        return<div className="card"><div className="card-header"><h2>Fundraiser Balance</h2></div>
+          <div className="card-body">
+            <div className="stats-row">
+              <div className="stat-card"><div className="stat-label">Raised</div><div className="stat-value" style={{color:'#2563eb'}}>${raised.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Used</div><div className="stat-value" style={{color:'#dc2626'}}>${fUsed.toLocaleString()}</div></div>
+              <div className="stat-card"><div className="stat-label">Available</div><div className="stat-value" style={{color:avail>0?'#166534':'#94a3b8'}}>${avail.toLocaleString()}</div></div>
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginTop:8}}>Credited automatically from OMG / webstore fundraising when the store's SO is created. Spends like cash — apply to an order with “Apply Credit” (not promo's retail-priced spend).</div>
+            {fundCredits.length===0?<div className="empty" style={{marginTop:8}}>No fundraiser dollars yet</div>
+              :<div style={{marginTop:10}}>{fundCredits.map(_creditRow)}</div>}
+          </div>
+        </div>;})()}
+
       {/* ═══ CREDITS SECTION ═══ */}
       <div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
         <div style={{fontSize:13,fontWeight:800,color:'#065f46',marginBottom:8}}>ACCOUNT CREDITS</div>
       </div>
 
       {/* Credit Balance */}
-      {(()=>{const credits=customer.credits||[];const creditUsage=customer.credit_usage||[];
+      {(()=>{const credits=regCredits;
         const totalBalance=credits.reduce((a,cr)=>a+(cr.amount||0)-(cr.used||0),0);
         const totalAllocated=credits.reduce((a,cr)=>a+(cr.amount||0),0);
         const totalUsed=credits.reduce((a,cr)=>a+(cr.used||0),0);
@@ -738,27 +873,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         </div>
         <div className="card-body">
           {credits.length===0&&!creditAdd&&<div className="empty">No credits on this account</div>}
-          {credits.map(cr=>{const bal=(cr.amount||0)-(cr.used||0);const usages=creditUsage.filter(u=>u.credit_id===cr.id);
-            return<div key={cr.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
-              <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#d1fae5':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'🏷️':'✓'}</div>
-              <div style={{flex:1}}>
-                <div style={{fontWeight:700,fontSize:14}}>${(cr.amount||0).toLocaleString()} {cr.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {cr.source}</span>}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>Used: ${(cr.used||0).toLocaleString()} · Remaining: ${bal.toLocaleString()}</div>
-                <div style={{fontSize:10,color:'#94a3b8'}}>Added {cr.created_at?new Date(cr.created_at).toLocaleDateString():'-'}{cr.created_by?' by '+cr.created_by:''}</div>
-                {usages.length>0&&<div style={{marginTop:6}}>
-                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>USAGE</div>
-                  {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
-                    <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
-                      <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
-                      <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||u.estimate_id||'-'}</span>
-                      <span>{u.description||'-'}</span>
-                      <span style={{fontWeight:700,color:'#dc2626'}}>${(u.amount||0).toLocaleString()}</span>
-                    </div>)}
-                </div>}
-              </div>
-              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#d1fae5':'#f1f5f9',color:bal>0?'#065f46':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' avail':'Fully Used'}</span>
-              {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this credit of $'+cr.amount+'?'))onDeleteCredit(cr.id)}}>×</button>}
-            </div>})}
+          {credits.map(_creditRow)}
           {creditAdd&&<div style={{padding:14,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',marginTop:8}}>
             <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
               <div><label className="form-label">Amount ($)</label><input className="form-input" type="number" style={{width:120}} value={creditAdd.amount||''} onChange={e=>setCreditAdd({...creditAdd,amount:parseFloat(e.target.value)||0})}/></div>
@@ -774,6 +889,62 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>}
         </div></div></>})()}
+
+      {/* ═══ PENDING SHIPPING CHARGES ═══ */}
+      {(()=>{const pend=customer.pending_shipping||[];const pendUsage=customer.pending_shipping_usage||[];
+        const totalCharged=pend.reduce((a,r)=>a+(r.amount||0),0);
+        const totalApplied=pend.reduce((a,r)=>a+(r.used||0),0);
+        const outstanding=pend.reduce((a,r)=>a+Math.max(0,(r.amount||0)-(r.used||0)),0);
+        return<><div style={{borderTop:'2px solid #e2e8f0',paddingTop:12,marginTop:4}}>
+          <div style={{fontSize:13,fontWeight:800,color:'#1e40af',marginBottom:8}}>PENDING SHIPPING CHARGES</div>
+        </div>
+        <div className="card"><div className="card-header"><h2>Carried Shipping</h2></div>
+          <div className="card-body"><div className="stats-row">
+            <div className="stat-card"><div className="stat-label">Recorded</div><div className="stat-value" style={{color:'#2563eb'}}>${totalCharged.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Applied to Orders</div><div className="stat-value" style={{color:'#166534'}}>${totalApplied.toLocaleString()}</div></div>
+            <div className="stat-card"><div className="stat-label">Waiting for Next Order</div><div className="stat-value" style={{color:outstanding>0?'#c2410c':'#94a3b8'}}>${outstanding.toLocaleString()}</div></div>
+          </div></div>
+        </div>
+        <div className="card"><div className="card-header"><h2>Shipping Charges</h2>
+          {!pendShipAdd&&<button className="btn btn-sm btn-primary" onClick={()=>setPendShipAdd({amount:0,source:''})}>+ Add Charge</button>}
+        </div>
+        <div className="card-body">
+          {pend.length===0&&!pendShipAdd&&<div className="empty">No pending shipping charges. Recorded from Warehouse → Manual Ship → “Ship without an order”; they auto-add to this customer’s next order.</div>}
+          {pend.map(r=>{const bal=Math.max(0,(r.amount||0)-(r.used||0));const usages=pendUsage.filter(u=>u.pending_id===r.id);
+            return<div key={r.id} style={{padding:12,background:'#f8fafc',borderRadius:8,marginBottom:8,display:'flex',gap:12,alignItems:'center'}}>
+              <div style={{width:40,height:40,borderRadius:8,background:bal>0?'#dbeafe':'#f1f5f9',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0}}>{bal>0?'📦':'✓'}</div>
+              <div style={{flex:1}}>
+                <div style={{fontWeight:700,fontSize:14}}>${(r.amount||0).toLocaleString()} {r.source&&<span style={{fontWeight:400,color:'#64748b',fontSize:12}}>— {r.source}</span>}</div>
+                <div style={{fontSize:11,color:'#64748b'}}>Applied: ${(r.used||0).toLocaleString()} · Waiting: ${bal.toLocaleString()}{r.cost?' · Our cost: $'+(r.cost||0).toLocaleString():''}{r.tracking_number?' · '+(r.carrier?r.carrier+' ':'')+r.tracking_number:''}</div>
+                <div style={{fontSize:10,color:'#94a3b8'}}>Added {r.created_at?new Date(r.created_at).toLocaleDateString():'-'}{r.created_by?' by '+r.created_by:''}</div>
+                {usages.length>0&&<div style={{marginTop:6}}>
+                  <div style={{fontSize:10,fontWeight:700,color:'#64748b',marginBottom:2}}>APPLIED TO</div>
+                  {usages.sort((a,b)=>(b.created_at||'').localeCompare(a.created_at||'')).map((u,i)=>
+                    <div key={i} style={{fontSize:11,color:'#475569',display:'flex',gap:8}}>
+                      <span style={{color:'#94a3b8'}}>{u.created_at?new Date(u.created_at).toLocaleDateString():'-'}</span>
+                      <span style={{fontWeight:600,color:'#1e40af'}}>{u.so_id||'-'}</span>
+                      <span style={{fontWeight:700,color:'#166534'}}>${(u.amount||0).toLocaleString()}</span>
+                    </div>)}
+                </div>}
+              </div>
+              <span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,background:bal>0?'#dbeafe':'#f1f5f9',color:bal>0?'#1e40af':'#94a3b8'}}>{bal>0?'$'+bal.toLocaleString()+' pending':'Applied'}</span>
+              {bal>0&&<button className="btn btn-sm" style={{color:'#dc2626'}} onClick={()=>{if(window.confirm('Delete this pending shipping charge of $'+(r.amount||0)+'?'))onDeletePendingShip(r.id)}}>×</button>}
+            </div>})}
+          {pendShipAdd&&<div style={{padding:14,background:'#eff6ff',borderRadius:8,border:'1px solid #bfdbfe',marginTop:8}}>
+            <div style={{display:'flex',gap:8,marginBottom:8,flexWrap:'wrap'}}>
+              <div><label className="form-label">Charge ($)</label><input className="form-input" type="number" style={{width:120}} value={pendShipAdd.amount||''} onChange={e=>setPendShipAdd({...pendShipAdd,amount:parseFloat(e.target.value)||0})}/></div>
+              <div style={{flex:1}}><label className="form-label">Reason / Note</label><input className="form-input" value={pendShipAdd.source||''} onChange={e=>setPendShipAdd({...pendShipAdd,source:e.target.value})} placeholder="e.g., Manual ship, sample package..."/></div>
+            </div>
+            <div style={{display:'flex',gap:6}}>
+              <button className="btn btn-sm btn-primary" onClick={()=>{
+                if(!pendShipAdd.amount||pendShipAdd.amount<=0){nf('Enter a charge amount','error');return}
+                const rec={id:'ps_'+Date.now(),customer_id:customer.id,amount:pendShipAdd.amount,used:0,cost:0,source:pendShipAdd.source||'',tracking_number:'',carrier:'',label_url:null,created_by:cu?.name||'System',created_at:new Date().toISOString()};
+                onSavePendingShip(rec);setPendShipAdd(null);nf('Pending shipping charge of $'+pendShipAdd.amount.toLocaleString()+' added');
+              }}>Add Charge</button>
+              <button className="btn btn-sm btn-secondary" onClick={()=>setPendShipAdd(null)}>Cancel</button>
+            </div>
+          </div>}
+        </div></div></>})()}
     </div>})()}
 
   {/* ARTWORK TAB — customer library + aggregated from SOs/Estimates */}
@@ -781,7 +952,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // Aggregate art: customer-level library + parent library + SO/Estimate art
     const custOwnArt=(customer.art_files||[]).map(a=>({...a,_src:'library',_srcLabel:'Customer Library',_srcCustId:customer.id}));
     const parentCust2=customer.parent_id?allCustomers.find(c=>c.id===customer.parent_id):null;
-    const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent'})):[];
+    const parentArt=parentCust2?(parentCust2.art_files||[]).map(a=>({...a,_src:'parent',_srcLabel:parentCust2.alpha_tag||parentCust2.name||'Parent',_srcCustId:parentCust2.id})):[];
     const orderArt=[];
     custSOs.forEach(so=>{(so.art_files||[]).forEach(art=>{orderArt.push({...art,_src:'so',_srcLabel:so.id+(so.memo?' — '+so.memo:''),_so_id:so.id,_so_memo:so.memo||'',_srcCustId:so.customer_id})})});
     custEsts.forEach(est=>{(est.art_files||[]).forEach(art=>{if(!orderArt.some(a=>a.name===art.name&&a.deco_type===art.deco_type))orderArt.push({...art,_src:'est',_srcLabel:est.id+(est.memo?' — '+est.memo:''),_est_id:est.id,_est_memo:est.memo||'',_srcCustId:est.customer_id})})});
@@ -806,13 +977,14 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const mockups=[...(art.mockup_files||[]),...itemMocks].filter(f=>f);
       const dispFiles=mockups.length?mockups:(art.files||[]).filter(f=>f);
       // Thumbnail: first renderable image across preview, mockups, then files.
-      const imgUrl=[art.web_logo_url,art.preview_url,...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
+      const imgUrl=[pickCwAsset(art,{kind:'web_logo'}),...mockups,...(art.files||[])].map(f=>typeof f==='string'?f:(f?.url||'')).find(u=>u&&_isImgUrl(u))||'';
       const usedOnSOs=[];if(art._src==='so'||art._src==='est'){custSOs.forEach(so=>{(so.art_files||[]).forEach(a=>{if(a.name===art.name&&a.deco_type===art.deco_type){const items=[];(so.items||[]).forEach(it=>{(it.decorations||[]).forEach(d=>{if(d.art_file_id===a.id)items.push({sku:it.sku,name:it.name,position:d.position,deco_type:d.deco_type||a.deco_type})})});usedOnSOs.push({so_id:so.id,memo:so.memo,status:so.status,items})}})})}
       const allMockups=[];const seen=new Set();
       const allProd=[];const seenP=new Set();
       const grpKey=_logoKey(art);
-      artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel})}})});
-      artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel})}})});
+      // Tag each file with its source customer so promote/writes can refuse sibling-sport bleed.
+      artGroups[grpKey]?.instances.forEach(inst=>{[...(inst.mockup_files||[]),...Object.values(inst.item_mockups||{}).flat(),...(inst.files||[])].filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seen.has(url)){seen.add(url);allMockups.push({file:f,url,src:inst._srcLabel,srcCustId:inst._srcCustId})}})});
+      artGroups[grpKey]?.instances.forEach(inst=>{(inst.prod_files||[]).filter(f=>f).forEach(f=>{const url=typeof f==='string'?f:(f?.url||'');if(url&&!seenP.has(url)){seenP.add(url);allProd.push({file:f,url,src:inst._srcLabel,srcCustId:inst._srcCustId})}})});
       // Find index in ownArt for editable items
       const ownIdx=art._src==='library'?ownArt.findIndex(a=>a.id===art.id):-1;
       return{...art,_st:st,_mockups:dispFiles,_imgUrl:imgUrl,_usedOnSOs:usedOnSOs,_allMockups:allMockups,_allProd:allProd,_ownIdx:ownIdx};
@@ -831,11 +1003,15 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       return rep;
     });
     // Archive/unarchive a logo across every order it's on plus the customer library copy.
+    // Name+deco writes stay scoped to the art's source customer so a parent-view edit of
+    // "Front Logo" can't archive a sibling sport's identically-named art.
     const archiveLogo=(art,arch)=>{
       const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
-      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
-      if((ownArt||[]).some(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>(a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt?{...a,archived:arch}:a));
+      const srcCustId=art._srcCustId;
+      const _match=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:nm,decoType:dt,soCustomerId:soCustId,srcCustId});
+      custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_match(a,so.customer_id)&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveSO)onSaveSO({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      custEsts.forEach(est=>{let changed=false;const updArt=(est.art_files||[]).map(a=>{if(_match(a,est.customer_id)&&!!a.archived!==arch){changed=true;return{...a,archived:arch}}return a});if(changed&&onSaveEst)onSaveEst({...est,art_files:updArt})});
+      if((ownArt||[]).some(a=>_match(a,customer.id)&&!!a.archived!==arch))saveCustArt(ownArt.map(a=>_match(a,customer.id)?{...a,archived:arch}:a));
       nf&&nf((arch?'Archived ':'Unarchived ')+'"'+(art.name||'art')+'"');
     };
     // Status counts for filter tabs (archived excluded from the normal tabs)
@@ -918,17 +1094,21 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const urlOf=f=>typeof f==='string'?f:(f?.url||'');
     // Program-library copies of this logo live in customer.art_files. File add/remove/tag must
     // also hit those so library art is self-contained (not just whatever order it came from).
-    const _libMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
+    // Name+deco writes must stay on the art's source customer — otherwise a parent-view
+    // edit of "Front Logo" rewrites a sibling sport's identically-named art (and its
+    // customer folder). artWriteMatches enforces that; same-id always matches.
+    const _srcCustId=art._srcCustId;
+    const _rowMatch=(a,soCustId)=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:soCustId,srcCustId:_srcCustId});
+    const _libMatch=a=>artWriteMatches(a,{artId:art.id,name:art.name,decoType:art.deco_type,soCustomerId:customer.id,srcCustId:_srcCustId||customer.id});
     const libHasLogo=()=>(customer.art_files||[]).some(_libMatch);
     const updateLibArt=(updater)=>{const lib=customer.art_files||[];if(!lib.some(_libMatch))return false;const newCust={...customer,art_files:lib.map(a=>_libMatch(a)?updater(a):a)};setCustLocal(newCust);onRefreshCustomer(newCust);return true};
     const removeMockFromArt=(url)=>{
       if(!url)return;
       if(!window.confirm('Remove this file from "'+(art.name||'this artwork')+'" everywhere it\'s used (orders + program library)? This cannot be undone.'))return;
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const filt=arr=>(arr||[]).filter(f=>urlOf(f)!==url);
       if(saveArt)custSOs.forEach(so=>{let changed=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if((a.name||'').toLowerCase()!==nm||(a.deco_type||'')!==dt)return a;
+          if(!_rowMatch(a,so.customer_id))return a;
           const mf=filt(a.mockup_files),fl=filt(a.files),pf=filt(a.prod_files);
           const im={...(a.item_mockups||{})};let imCh=false;Object.keys(im).forEach(k=>{const nv=filt(im[k]);if(nv.length!==(im[k]||[]).length)imCh=true;im[k]=nv});
           if(mf.length!==(a.mockup_files||[]).length||fl.length!==(a.files||[]).length||pf.length!==(a.prod_files||[]).length||imCh){changed=true;return{...a,mockup_files:mf,files:fl,prod_files:pf,item_mockups:im}}
@@ -946,14 +1126,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const so=custSOs.find(s=>s.id===soId);
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the mockup to','error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-mockups');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,mockup_files:[...(a.mockup_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
       if(hasLib){updateLibArt(a=>({...a,mockup_files:[...(a.mockup_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
+      setCustArtDetail(d=>d?{...d,_allMockups:[...(d._allMockups||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
       nf&&nf(added.length+' mockup'+(added.length>1?'s':'')+' added');
       // Prompt for the color way these mockups are for (or create a new one), then tag them.
       const _tag=(cwName)=>{if(cwName)added.forEach(m=>applyMockToCW(m,cwName));setCwPrompt(null)};
@@ -966,14 +1145,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const so=custSOs.find(s=>s.id===soId);
       const hasLib=libHasLogo();
       if(!so&&!hasLib){nf&&nf('No order or program-library record found to attach the file to','error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
       const added=[];
       for(const f of Array.from(fileList||[])){nf&&nf('Uploading '+f.name+'...');try{const url=await fileUpload(f,'nsa-production');added.push({url,name:f.name})}catch(e){nf&&nf('Upload failed: '+e.message,'error')}}
       if(!added.length)return;
       let srcLabel='';
-      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);return match?{...a,prod_files:[...(a.prod_files||[]),...added]}:a});saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
+      if(so&&saveArt){const updArt=(so.art_files||[]).map(a=>_rowMatch(a,so.customer_id)?{...a,prod_files:[...(a.prod_files||[]),...added]}:a);saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});srcLabel=so.id+(so.memo?' — '+so.memo:'')}
       if(hasLib){updateLibArt(a=>({...a,prod_files:[...(a.prod_files||[]),...added]}));if(!srcLabel)srcLabel='Program Library'}
-      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel}))]}:d);
+      setCustArtDetail(d=>d?{...d,_allProd:[...(d._allProd||[]),...added.map(m=>({file:m,url:m.url,src:srcLabel,srcCustId:so?.customer_id||customer.id}))]}:d);
       nf&&nf(added.length+' production file'+(added.length>1?'s':'')+' added');
     };
     const pickProd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.pdf,.ai,.eps,.dst,.png,.jpg,.jpeg';inp.multiple=true;inp.onchange=()=>addProdToArt(inp.files);inp.click()};
@@ -986,8 +1164,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logo_url:url}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logo_url:url}));
       if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logo_url:url,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
       setCustArtDetail(d=>d?{...d,web_logo_url:url}:d);
@@ -995,18 +1172,16 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     };
     const pickWebLogo=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)setWebLogoFile(f)};inp.click()};
     const removeWebLogo=()=>{
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)&&a.web_logo_url){changed=true;return{...a,web_logo_url:''}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       updateLibArt(a=>({...a,web_logo_url:''}));
       setCustArtDetail(d=>d?{...d,web_logo_url:''}:d);
       nf&&nf('Web logo removed');
     };
     const prodFiles=(art._allProd&&art._allProd.length)?art._allProd:(art.prod_files||[]).filter(f=>f).map(f=>({file:f,url:typeof f==='string'?f:(f?.url||''),src:art._srcLabel||''}));
     // Color ways for this artwork — from the art's color_ways, else distinct colors of items that use it.
-    const _logoMatch=a=>(a.name||'').toLowerCase()===(art.name||'').toLowerCase()&&(a.deco_type||'')===(art.deco_type||'');
     const cwColors=(art.color_ways&&art.color_ways.length)
       ? [...new Set(art.color_ways.map(c=>c.garment_color||c.color||'').filter(Boolean))]
-      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_logoMatch(af)})).map(it=>it.color)).filter(Boolean))];
+      : [...new Set(custSOs.flatMap(so=>(so.items||[]).filter(it=>(it.decorations||[]).some(d=>{const af=(so.art_files||[]).find(a=>a.id===d.art_file_id);return af&&_rowMatch(af,so.customer_id)})).map(it=>it.color)).filter(Boolean))];
     // Tag a mock with a color way wherever this file is attached on the artwork.
     const applyMockToCW=(mock,cwColor)=>{
       if(!cwColor)return;
@@ -1016,7 +1191,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       if(saveArt)custSOs.forEach(so=>{
         let soChanged=false;
         const updArt=(so.art_files||[]).map(a=>{
-          if(!_logoMatch(a))return a;
+          if(!_rowMatch(a,so.customer_id))return a;
           const has=(a.mockup_files||[]).some(f=>urlOf(f)===url)||Object.values(a.item_mockups||{}).flat().some(f=>urlOf(f)===url);
           if(!has)return a;
           soChanged=true;
@@ -1033,11 +1208,11 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const persistColorWays=(newCws)=>{
       if(saveArt)custSOs.forEach(so=>{
         let changed=false;
-        const updArt=(so.art_files||[]).map(a=>{if(!_logoMatch(a))return a;changed=true;return{...a,color_ways:newCws}});
+        const updArt=(so.art_files||[]).map(a=>{if(!_rowMatch(a,so.customer_id))return a;changed=true;return{...a,color_ways:newCws}});
         if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()});
       });
       const lib=customer.art_files||[];
-      if(onRefreshCustomer&&lib.some(_logoMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_logoMatch(a)?{...a,color_ways:newCws}:a)});
+      if(onRefreshCustomer&&lib.some(_libMatch))onRefreshCustomer({...customer,art_files:lib.map(a=>_libMatch(a)?{...a,color_ways:newCws}:a)});
       setCustArtDetail(d=>d?{...d,color_ways:newCws}:d);
     };
     // For text fields: update only the modal's local state while typing (snappy, no focus loss), then
@@ -1051,28 +1226,44 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     const webLogos=(Array.isArray(art.web_logos)&&art.web_logos.length)
       ? art.web_logos
       : (art.web_logo_url?[{url:art.web_logo_url,color_way:''}]:[]);
-    const saveWebLogos=(list)=>{
-      const clean=(list||[]).filter(w=>w&&w.url);
-      const def=(clean.find(w=>!((w.color_way||'').trim()))||clean[0]||{}).url||'';
-      const nm=(art.name||'').toLowerCase();const dt=art.deco_type||'';
-      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{const match=a.id===art.id||((a.name||'').toLowerCase()===nm&&(a.deco_type||'')===dt);if(match){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
+    const saveWebLogos=(list,cwList)=>{
+      // Re-key on save (Decision 2): stamp the stable color_way_id from the label match so
+      // resolution survives CW renames; blank entries become the is_default "all garments" logo.
+      const clean=normalizeWebLogos(list,cwList||art.color_ways||[]);
+      const def=(clean.find(w=>w.is_default||!((w.color_way||'').trim()))||clean[0]||{}).url||'';
+      if(saveArt)custSOs.forEach(so=>{let changed=false;const updArt=(so.art_files||[]).map(a=>{if(_rowMatch(a,so.customer_id)){changed=true;return{...a,web_logos:clean,web_logo_url:def}}return a});if(changed)saveArt({...so,art_files:updArt,updated_at:new Date().toLocaleString()})});
       const hadLib=updateLibArt(a=>({...a,web_logos:clean,web_logo_url:def}));
       if(!hadLib){const lib=customer.art_files||[];const newCust={...customer,art_files:[...lib,{id:art.id,name:art.name||'Logo',deco_type:art.deco_type||'screen_print',color_ways:art.color_ways||[],files:art.files||[],mockup_files:art.mockup_files||[],web_logos:clean,web_logo_url:def,kind:art.kind||'art',status:art.status||'approved',uploaded:new Date().toLocaleDateString()}]};setCustLocal(newCust);onRefreshCustomer(newCust)}
       setCustArtDetail(d=>d?{...d,web_logos:clean,web_logo_url:def}:d);
     };
+    // Tie one cutout URL to a set of color ways (reuse — no re-uploading the same file per
+    // CW): replace this URL's web-logo entries with one per chosen color way (+ an
+    // "all garments" default when asDefault). Other cutouts are untouched.
+    const setUrlCws=(url,names,asDefault)=>{
+      // Preserve this cutout's own metadata (e.g. source:'rep') on the rebuilt entries.
+      const src=(webLogos.find(w=>w.url===url)||{}).source;
+      const mk=(extra)=>{const e={url,...extra};if(src)e.source=src;return e};
+      // Only ONE cutout may be the "all garments" default — when we set it here, drop it
+      // from every other cutout so two images can't both claim the default.
+      const others=webLogos.filter(w=>w.url!==url).filter(w=>asDefault?!(w.is_default||!((w.color_way||'').trim())):true);
+      const entries=[];
+      if(asDefault)entries.push(mk({color_way:'',is_default:true}));
+      (names||[]).forEach(nm=>{const n=(nm||'').trim();if(n)entries.push(mk({color_way:n}))});
+      saveWebLogos([...others,...entries]);
+    };
+    // Open the multi-CW picker for an existing cutout, pre-checked with what it already covers.
+    const openAssign=(g)=>setCwPrompt({title:'Garment colors this logo covers',multi:true,initialNames:g.labels,initialDefault:g.isDefault,onPickMany:(names,asDefault)=>{setUrlCws(g.url,names,asDefault);setCwPrompt(null)}});
     const addWebLogoFile=async(file)=>{
       if(!file)return;
       const ok=file.type?.startsWith('image/')||/\.(svg|png)$/i.test(file.name||'');
       if(!ok){nf&&nf('Use a transparent PNG or SVG for the web logo','error');return}
       nf&&nf('Uploading '+file.name+'...');
       let url;try{url=await fileUpload(file,'nsa-store-art')}catch(e){nf&&nf('Upload failed: '+e.message,'error');return}
-      // Prompt for the color way this web logo is for (or create a new one), then save.
-      const _assign=(cwName)=>{saveWebLogos([...webLogos,{url,color_way:cwName||''}]);setCwPrompt(null);nf&&nf('Web logo added'+(cwName?' — '+cwName:''))};
-      setCwPrompt({title:'Which color way is this web logo for?',onPick:_assign,onPickNew:(name)=>{persistColorWays([...(art.color_ways||[]),{id:'cw'+Date.now(),garment_color:name,inks:['']}]);_assign(name)}});
+      // One cutout can cover several color ways — pick any number (pre-checked with the CWs
+      // still missing a logo), or "All garments". Reuse means no re-uploading per CW.
+      setCwPrompt({title:'Which garment colors is this logo for?',multi:true,initialNames:_missingCws,onPickMany:(names,asDefault)=>{setUrlCws(url,names,asDefault);setCwPrompt(null);const cnt=(names||[]).length+(asDefault?1:0);nf&&nf('Web logo added'+(cnt?(' — covers '+cnt+' color'+(cnt===1?'':'s')):''))}});
     };
     const pickWebLogoAdd=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.svg,image/png,image/svg+xml';inp.onchange=()=>{const f=inp.files&&inp.files[0];if(f)addWebLogoFile(f)};inp.click()};
-    const setWebLogoCw=(i,cw)=>saveWebLogos(webLogos.map((w,x)=>x===i?{...w,color_way:cw}:w));
-    const removeWebLogoAt=(i)=>saveWebLogos(webLogos.filter((_,x)=>x!==i));
     // Add a web logo straight to a named color way (the per-CW empty-slot path) — no
     // "which color way?" prompt, since the slot already says which one it's for.
     const addWebLogoForCw=async(file,cwName)=>{
@@ -1089,9 +1280,13 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     // artist nudge + the empty slots below so every color way gets a clean cutout for
     // webstore + order mockups (a blank-color-way "default" covers the rest as a fallback).
     const _cwNames=cws.map(c=>(c.garment_color||'').trim()).filter(Boolean);
-    const _haveCwLogo=new Set(webLogos.map(w=>(w.color_way||'').trim().toLowerCase()).filter(Boolean));
+    // Coverage counts BOTH keying schemes: legacy label tags and stable color_way_id tags.
+    const _haveCwLogo=new Set();
+    webLogos.forEach(w=>{const l=(w.color_way||'').trim().toLowerCase();if(l)_haveCwLogo.add(l);const c=w.color_way_id&&cws.find(x=>x&&x.id===w.color_way_id);const cl=c?(c.garment_color||'').trim().toLowerCase():'';if(cl)_haveCwLogo.add(cl)});
     const _missingCws=_cwNames.filter(n=>!_haveCwLogo.has(n.toLowerCase()));
-    const _hasDefaultWebLogo=webLogos.some(w=>w.url&&!((w.color_way||'').trim()));
+    const _hasDefaultWebLogo=webLogos.some(w=>w.url&&(w.is_default||!((w.color_way||'').trim())));
+    // Group web logos by cutout URL so one image shows every color way it covers (reuse).
+    const _byUrl=[];{const _m=new Map();webLogos.forEach(w=>{if(!w||!w.url)return;let g=_m.get(w.url);if(!g){g={url:w.url,labels:[],isDefault:false,repMade:false};_m.set(w.url,g);_byUrl.push(g)}const lbl=(w.color_way||'').trim();if(w.source==='rep')g.repMade=true;if(w.is_default||!lbl)g.isDefault=true;else if(!g.labels.some(x=>x.toLowerCase()===lbl.toLowerCase()))g.labels.push(lbl)})}
     return<div className="modal-overlay" onClick={()=>setCustArtDetail(null)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
       <div className="modal-header">{isOwnLib?<input value={art.name||''} onChange={e=>editLib({name:e.target.value})} placeholder="Art group name…" style={{flex:1,fontSize:18,fontWeight:800,border:'1px solid #e2e8f0',borderRadius:8,padding:'5px 10px',marginRight:10,outline:'none',color:'#0f172a'}}/>:<h2>{art.name||'Untitled'}</h2>}<button className="modal-close" onClick={()=>setCustArtDetail(null)}>x</button></div>
       <div className="modal-body">
@@ -1141,7 +1336,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {/* Web logos — clean transparent cutouts for webstore placement, one per color way */}
         <div style={{marginBottom:16}}>
           <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8}}>
-            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logos <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG per color way — placed on webstore garments</span></div>
+            <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>Web Logos <span style={{fontSize:10,fontWeight:500,color:'#94a3b8'}}>Clean PNG/SVG per garment color — placed on webstore garments</span></div>
             {saveArt&&<button className="btn btn-sm btn-primary" style={{fontSize:11}} onClick={pickWebLogoAdd}><Icon name="plus" size={11}/> Add web logo</button>}
           </div>
           {/* Coverage nudge — flag color ways with no web PNG (cleanest webstore + order mockups). */}
@@ -1152,18 +1347,24 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{fontWeight:500,marginTop:2,color:_hasDefaultWebLogo?'#b45309':'#b91c1c'}}>{_hasDefaultWebLogo?'These fall back to the default web logo on webstores & order mockups — add a per-color-way transparent PNG for the cleanest result.':'Add a transparent PNG for each so this art places cleanly on webstore garments and order mockups.'}</div>
             </div>
           </div>}
-          {webLogos.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
-            {webLogos.map((w,wi)=><div key={wi} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
-              <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:'#f0fdf4',position:'relative'}}>
-                <img src={w.url} alt="" style={{maxWidth:'82%',maxHeight:'82%',objectFit:'contain'}}/>
-                {saveArt&&<button onClick={()=>removeWebLogoAt(wi)} title="Remove" style={{position:'absolute',top:4,right:4,width:20,height:20,borderRadius:10,border:'none',background:'rgba(220,38,38,0.9)',color:'#fff',cursor:'pointer',fontSize:12,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
+          {_byUrl.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(190px,1fr))',gap:8,marginBottom:saveArt?8:0}}>
+            {_byUrl.map((g)=>{const _cols=(g.labels||[]).map(garmentHex);const _cardBg=!_cols.length?'repeating-conic-gradient(#eef2f7 0 25%, #ffffff 0 50%) 50% / 16px 16px':_cols.length===1?_cols[0]:('linear-gradient(135deg, '+_cols[0]+' 0 50%, '+_cols[1]+' 50% 100%)');return <div key={g.url} style={{border:'1px solid #bbf7d0',borderRadius:8,overflow:'hidden',background:'#fff'}}>
+              <div style={{height:84,display:'flex',alignItems:'center',justifyContent:'center',background:_cardBg,position:'relative',boxShadow:'inset 0 0 0 1px rgba(0,0,0,.06)'}}>
+                <img src={g.url} alt="" style={{maxWidth:'82%',maxHeight:'82%',objectFit:'contain'}}/>
+                {g.repMade&&<span title="Made by a rep (recolored) — an artist can replace it with a cleaner cutout" style={{position:'absolute',top:4,left:4,fontSize:8.5,fontWeight:800,color:'#92400e',background:'#fef3c7',border:'1px solid #fde68a',borderRadius:5,padding:'1px 5px'}}>REP</span>}
+                {saveArt&&<button onClick={()=>saveWebLogos(webLogos.filter(w=>w.url!==g.url))} title="Remove this cutout" style={{position:'absolute',top:4,right:4,width:20,height:20,borderRadius:10,border:'none',background:'rgba(220,38,38,0.9)',color:'#fff',cursor:'pointer',fontSize:12,lineHeight:1,display:'flex',alignItems:'center',justifyContent:'center'}}>×</button>}
               </div>
               <div style={{padding:'6px 7px',borderTop:'1px solid #ecfdf5'}}>
-                {saveArt
-                  ?<input list={'cw-names-'+art.id} value={w.color_way||''} onChange={e=>setWebLogoCw(wi,e.target.value)} placeholder="All garments (default)" title="Assign this logo to a color way" style={{width:'100%',boxSizing:'border-box',fontSize:11,fontWeight:600,color:'#166534',border:'1px solid #d1fae5',borderRadius:6,background:'#fff',padding:'3px 6px',outline:'none'}}/>
-                  :<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{w.color_way||'All garments'}</div>}
+                {saveArt?<>
+                  <div style={{fontSize:8.5,fontWeight:700,textTransform:'uppercase',letterSpacing:0.3,color:'#94a3b8',marginBottom:4}}>Covers</div>
+                  <div style={{display:'flex',flexWrap:'wrap',gap:4}}>
+                    {g.isDefault&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}>All garments<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.is_default||!((w.color_way||'').trim())))))} title="Stop using as the default" style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>}
+                    {g.labels.map(lbl=><span key={lbl} style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:10,fontWeight:700,color:'#166534',background:'#dcfce7',border:'1px solid #bbf7d0',borderRadius:6,padding:'2px 4px 2px 6px'}}><span style={{width:9,height:9,borderRadius:'50%',background:garmentHex(lbl),border:'1px solid rgba(0,0,0,.2)',flexShrink:0}}/>{lbl}<button onClick={()=>saveWebLogos(webLogos.filter(w=>!(w.url===g.url&&(w.color_way||'').trim().toLowerCase()===lbl.toLowerCase())))} title={'Stop covering '+lbl} style={{border:'none',background:'none',cursor:'pointer',color:'#16a34a',fontSize:11,lineHeight:1,padding:0}}>×</button></span>)}
+                    <button onClick={()=>openAssign(g)} title="Add more garment colors this cutout covers" style={{fontSize:10,fontWeight:700,color:'#2563eb',background:'#eff6ff',border:'1px dashed #bfdbfe',borderRadius:6,padding:'2px 6px',cursor:'pointer'}}>+ color</button>
+                  </div>
+                </>:<div style={{fontSize:11,fontWeight:600,color:'#166534'}}>{[...(g.isDefault?['All garments']:[]),...g.labels].join(', ')||'All garments'}</div>}
               </div>
-            </div>)}
+            </div>;})}
           </div>}
           {/* One empty slot per color way still missing a web logo — uploading pre-tags that CW. */}
           {saveArt&&_missingCws.length>0&&<div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(170px,1fr))',gap:8,marginBottom:8}}>
@@ -1175,10 +1376,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               <div style={{height:84,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,color:'#94a3b8'}}>
                 <Icon name="plus" size={18}/><span style={{fontSize:10,fontWeight:600}}>Add web PNG</span>
               </div>
-              <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</div>
+              <div style={{padding:'6px 7px',borderTop:'1px solid #eef2f7',fontSize:11,fontWeight:700,color:'#64748b',display:'flex',alignItems:'center',gap:5,overflow:'hidden'}}><span style={{width:11,height:11,borderRadius:'50%',background:garmentHex(nm),border:'1px solid rgba(0,0,0,.2)',flexShrink:0}}/><span style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{nm}</span></div>
             </div>)}
           </div>}
-          {saveArt&&<datalist id={'cw-names-'+art.id}>{cws.map((cw,ci)=>cw.garment_color?<option key={ci} value={cw.garment_color}/>:null)}</datalist>}
           {saveArt?<div style={{border:'2px dashed #bbf7d0',borderRadius:6,padding:10,textAlign:'center',cursor:'pointer',background:'#f0fdf4'}}
             onClick={pickWebLogoAdd}
             onDragOver={e=>{e.preventDefault();e.currentTarget.style.background='#dcfce7';e.currentTarget.style.borderColor='#22c55e'}}
@@ -1262,7 +1462,8 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         {isOwnLib&&<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5',marginRight:isP&&!art._appliesToAll?0:'auto'}} onClick={delLib}><Icon name="trash" size={12}/> Delete</button>}
         <button className="btn btn-secondary" onClick={()=>setCustArtDetail(null)}>Close</button></div>
     </div>
-    {cwPrompt&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
+    {cwPrompt&&cwPrompt.multi&&<CwMultiPrompt title={cwPrompt.title} cws={cws} initialNames={cwPrompt.initialNames} initialDefault={cwPrompt.initialDefault} onApply={(names,def)=>cwPrompt.onPickMany&&cwPrompt.onPickMany(names,def)} onClose={()=>setCwPrompt(null)}/>}
+    {cwPrompt&&!cwPrompt.multi&&<div className="modal-overlay" style={{zIndex:60}} onClick={(e)=>{e.stopPropagation();setCwPrompt(null)}}>
       <div className="modal" style={{maxWidth:430}} onClick={e=>e.stopPropagation()}>
         <div className="modal-header"><h2 style={{fontSize:16}}>{cwPrompt.title||'Apply to color way'}</h2><button className="modal-close" onClick={()=>setCwPrompt(null)}>x</button></div>
         <div className="modal-body">
@@ -1282,6 +1483,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
     </div>}
     </div>})()}
   {tab==='catalog'&&<CoachCatalogAccess customer={customer} nf={nf} onUpdateCustomer={(nc)=>{setCustLocal(nc);onRefreshCustomer&&onRefreshCustomer(nc)}}/>}
+  {tab==='roster'&&<RosterOrdersStaff customer={customer} nf={nf} onNewEst={onNewEst}/>}
   {tab==='reporting'&&(()=>{
     // Pull every invoice-type row out of allOrders for this customer (or parent+subs).
     // allOrders already merges portal invs with NetSuite hist_invoices, so hist rows
@@ -1565,7 +1767,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
 
           {/* Artwork details — pantones, sizes, locations */}
           {af2&&(()=>{const _fallback2=(af2.ink_colors||af2.thread_colors||'').split(/[,\n]/).map(c3=>c3.trim()).filter(Boolean);const _isE2=af2.deco_type==='embroidery';
-            const _dp2=new Set();const numDecos2=[];const _cwColors2=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(it)safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id===j.art_file_id){if(d.position)_dp2.add(d.position);if(d.color_way_id&&af2.color_ways){const cw=af2.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors2.add(c.trim())})}}if(d.kind==='numbers')numDecos2.push(d)})});
+            const _dp2=new Set();const numDecos2=[];const _cwColors2=new Set();(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;const _dis2=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis2&&!_dis2.includes(di))return;/* only THIS job's decos — the numbers job's spec stays off sibling art jobs */if(d.kind==='art'&&d.art_file_id===j.art_file_id){if(d.position)_dp2.add(d.position);if(d.color_way_id&&af2.color_ways){const cw=af2.color_ways.find(c=>c.id===d.color_way_id);if(cw)cw.inks?.forEach(c=>{if(c&&c.trim())_cwColors2.add(c.trim())})}}if(d.kind==='numbers')numDecos2.push(d)})});
             const _gcColors2=new Set();(j.items||[]).forEach(gi=>{const gk2=gi.sku+'|'+(gi.color||'');const gc2=af2.garment_colors?.[gk2]||{};Object.values(gc2).flat().forEach(c=>{if(c&&c.trim())_gcColors2.add(c.trim())})});
             // Final fallback: union of all CW inks on the art file. Covers SOs where CWs are defined but
             // decorations don't carry an explicit color_way_id link — without this, colors render as empty.
@@ -1621,21 +1823,56 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>)}
 
-          {/* Approve / Reject */}
-          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {/* Approve / Reject — routed through the SAME guarded server transaction as the real
+              coach portal (portal-action → apply_coach_art_decision). This preview used to write
+              the decision locally with a hand-mirrored (and drifted) write set: no state guard,
+              no atomicity, reject missing the coach_approved_at clear (audit A4). Server first;
+              the local update below is just a cache mirror of what the RPC committed. */}
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Not sent to the coach yet — this proof is still in internal review. To approve it internally, use the job's Approve Artwork button on the order.</div>}
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                const artId=j.art_file_id;if(artId&&onSaveSO){const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'production_files_needed',coach_approved_at:new Date().toISOString()}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
-                setPortalJobView(null)}}>✅ Approve</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                if(portalComment.trim()){
-                  const artId=j.art_file_id;if(artId&&onSaveSO){
-                    const rej={reason:portalComment.trim(),by:'Coach',at:new Date().toISOString()};
-                    const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',rejections:[...(jj.rejections||[]),rej]}:jj);
-                    const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'waiting_for_art'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
-                    onSaveSO(updatedSO)}
-                  setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment explaining what needs to change.')}
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                {/* Re-derive the LIVE SO: `so` was captured when the row was clicked, and the
+                    await below leaves a real window for other saves to land — mirroring a stale
+                    snapshot would silently revert them (the F5 class). */}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
+                if(!jArtIds.length)return;
+                const _mm=skusMissingMockups(liveJob,liveSO);
+                if(_mm.length>0){alert('No mockup yet for: '+_mm.join(', ')+' — complete the proof before approving.');return}
+                {/* Deco-specific prod-files stage (dtf→transfers, embroidery→emb files); confirmed
+                    seps (checkbox / approved-art .dst) skip straight to art_complete — matches the
+                    coach portal's derivation. */}
+                const _apArts=jArtIds.map(id=>(liveSO.art_files||[]).find(af3=>af3.id===id)).filter(Boolean);
+                const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apArts[0]?.deco_type||liveJob.deco_type);
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'approve',comment:portalComment.trim()||null,art_ids:jArtIds,approved_status:_apSt}});
+                if(!_res.ok){alert(_res.error||'Could not record the approval — please refresh and try again.');return}
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:portalComment.trim()||jj.coach_approval_comment,coach_rejected:false}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                onSaveSO(updatedSO);
+                setPortalComment('');setPortalJobView(null)}}>✅ Approve</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
+                if(!portalComment.trim()){alert('Please add a comment explaining what needs to change.');return}
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
+                const _fb=portalComment.trim();
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'reject',comment:_fb,art_ids:jArtIds}});
+                if(!_res.ok){alert(_res.error||'Could not record the change request — please refresh and try again.');return}
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
+                const _rejAt=new Date().toISOString();
+                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                onSaveSO(updatedSO);
+                setPortalComment('');setPortalJobView(null)
               }}>❌ Request Changes</button>
             </div>
             <textarea className="form-input" rows={2} placeholder="Tell us what needs to change..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{marginTop:8,fontSize:12,resize:'vertical'}}/>

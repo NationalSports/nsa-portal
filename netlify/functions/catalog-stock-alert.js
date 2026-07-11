@@ -11,6 +11,11 @@ exports.handler = async (event) => {
     const body = JSON.parse(event.body || '{}');
     const email = String(body.email || '').trim().slice(0, 200);
     const sku = String(body.sku || '').trim().slice(0, 40);
+    // Allowlist SKU characters so it can't break out of the PostgREST filter
+    // built downstream in catalog-stock-alert-check.js.
+    if (sku && !/^[A-Za-z0-9._-]+$/.test(sku)) {
+      return { statusCode: 400, headers, body: JSON.stringify({ ok: false, error: 'Invalid SKU' }) };
+    }
     const size = String(body.size || '').trim().slice(0, 20) || null;
     const style_name = String(body.style_name || '').trim().slice(0, 160) || null;
     const color = String(body.color || '').trim().slice(0, 120) || null;
