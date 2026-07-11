@@ -33,6 +33,13 @@ const C = {
 const F_DISP = "'Saira Condensed','Barlow Condensed','Arial Narrow',sans-serif";
 const F_BODY = "'Source Sans 3','Segoe UI',system-ui,sans-serif";
 
+// When the standalone /uniform-builder route is iframed onto the marketing site
+// (nationalsportsapparel.com) under its own header — same pattern as /team-stores
+// and /livelook (.../uniform-builder?embed=1) — the marketing header already
+// provides site nav, so we drop our own top-left "back" button (it has nowhere
+// to go on the public route) and let the builder sit cleanly as page content.
+const EMBEDDED = (() => { try { return new URLSearchParams(window.location.search).get('embed') === '1'; } catch { return false; } })();
+
 // 12-color team palette (+ sky, kept selectable so the Argentina demo maps to
 // real swatches rather than a "custom" hex).
 // Admin-managed via Settings → Uniform Builder; hydrated from Supabase on
@@ -1219,9 +1226,11 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
     <div style={{ position: 'fixed', inset: 0, background: '#fff', display: 'flex', flexDirection: 'column', fontFamily: F_BODY, zIndex: 40 }}>
       {/* TOP BAR */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: narrow ? '0 14px' : '0 28px', height: narrow ? 56 : 64, borderBottom: '1px solid ' + C.light, flexShrink: 0 }}>
-        <button onClick={onExit} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-          <span style={{ fontSize: 16 }}>←</span> {narrow ? 'Exit' : onExit ? 'Exit Builder' : 'Team Stores'}
-        </button>
+        {(onExit || !EMBEDDED) ? (
+          <button onClick={onExit} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 16 }}>←</span> {narrow ? 'Exit' : onExit ? 'Exit Builder' : 'Team Stores'}
+          </button>
+        ) : <div />}
         <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 15 : 18, letterSpacing: 1, color: C.navy, textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
           Uniform Builder {!narrow && <span style={{ color: C.textLight, fontWeight: 700, fontSize: 12 }}>National Sports</span>}
         </div>
