@@ -27,6 +27,17 @@ const MAX_COLORS_PER_STYLE = 60;
 
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+// sanmar.com abbreviates variant color codes by dropping letters from the full
+// color name ("HeatheredDeepRoyal" → "HthrdDpRyl", "OliveDrabGreen" →
+// "OlvDrabGn"), so an in-order subsequence test recovers the pairing that exact
+// comparison misses. Require the code to be at least a third of the name so a
+// tiny code can't match everything.
+const isAbbrevOf = (code, name) => {
+  if (!code || !name || code.length > name.length || code.length * 3 < name.length) return false;
+  let i = 0;
+  for (const ch of name) { if (ch === code[i]) i++; if (i === code.length) return true; }
+  return false;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
@@ -93,7 +104,10 @@ async function scrapeStyle(coveo, style, log = console.log, wantedColors = null)
   if (!found) return null;
   const baseHtml = await fetchText('https://www.sanmar.com' + found.path);
   let variantIds = [...new Set(baseHtml.match(new RegExp(found.groupId + '_[A-Za-z0-9]+', 'g')) || [])].slice(0, MAX_COLORS_PER_STYLE);
-  if (wantedColors) variantIds = variantIds.filter((vid) => wantedColors.has(norm(vid.slice(found.groupId.length + 1))));
+  if (wantedColors) variantIds = variantIds.filter((vid) => {
+    const code = norm(vid.slice(found.groupId.length + 1));
+    return wantedColors.has(code) || [...wantedColors].some((w) => isAbbrevOf(code, w));
+  });
   const byColor = {};
   for (const vid of variantIds) {
     await sleep(PAGE_DELAY_MS);
@@ -168,9 +182,16 @@ exports.handler = async (event) => {
         if (byColor) {
           for (const p of byStyle[style] || []) {
             // Our sku suffix ("TrueRoyal", "WHITE") and color name ("True Royal")
-            // both normalize onto sanmar.com's variant color code.
+            // both normalize onto sanmar.com's variant color code — exactly, or as
+            // its abbreviation. When several codes abbreviate the same name (rare:
+            // "HthrdRed" vs "HthrdDpRed"), the longest code is the specific one.
             const codeFromSku = norm(String(p.sku || '').split('-').slice(1).join('-'));
-            const imgs = byColor[codeFromSku] || byColor[norm(p.color)];
+            const nameNorm = norm(p.color);
+            let imgs = byColor[codeFromSku] || byColor[nameNorm];
+            if (!imgs) {
+              const cands = Object.keys(byColor).filter((c) => isAbbrevOf(c, codeFromSku) || isAbbrevOf(c, nameNorm));
+              if (cands.length) imgs = byColor[cands.sort((a, b) => b.length - a.length)[0]];
+            }
             if (!imgs || !imgs.front) continue;
             const body = { image_flat_front_url: imgs.front };
             if (imgs.back) body.image_flat_back_url = imgs.back;
