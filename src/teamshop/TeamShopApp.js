@@ -11,6 +11,7 @@ import CartPage from './CartPage';
 import CheckoutPage from './CheckoutPage';
 import AccountPage from './AccountPage';
 import { useCart } from './cart';
+import useCoachSession from './useCoachSession';
 import {
   ensureTeamShopStyles, NAVY, NAVY_DARK, RED, BORDER, TEXT_MUTED, FONT_BODY, displayType,
 } from './theme';
@@ -118,6 +119,7 @@ export default function TeamShopApp() {
   const [accountSection, setAccountSection] = useState(null); // which AccountPage section to scroll to, if any
 
   const { lines: cartLines, addLine } = useCart(orderCustomer && orderCustomer.id);
+  const { signedIn: coachSignedIn } = useCoachSession(); // header sign-in label only
 
   useEffect(() => { ensureTeamShopStyles(); }, []);
 
@@ -249,13 +251,20 @@ export default function TeamShopApp() {
               <span aria-hidden="true" style={{ color: NAVY, display: 'flex' }}>
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
               </span>
+              {/* Coach sign-in must be VISIBLE, not an unlabeled icon — signing in
+                  unlocks team pricing, so the label sells the reason to do it. */}
               <button
                 className="nts-navlink"
                 aria-label="Account"
                 onClick={() => goAccount()}
-                style={{ color: route === 'account' ? RED : NAVY, display: 'flex', background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}
+                style={{ color: route === 'account' ? RED : NAVY, display: 'flex', alignItems: 'center', gap: 8, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}
               >
                 <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
+                <span className="nts-signin-label" style={{ fontSize: 13.5, fontWeight: 600, lineHeight: 1.15, textAlign: 'left' }}>
+                  {coachSignedIn ? 'My account' : (
+                    <>Coach sign-in<span style={{ display: 'block', fontSize: 11, fontWeight: 500, color: TEXT_MUTED }}>for team pricing</span></>
+                  )}
+                </span>
               </button>
               <button
                 className="nts-navlink"
