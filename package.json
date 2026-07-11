@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@sentry/react": "^7.120.4",
     "@sparticuz/chromium": "^131.0.1",
     "@stripe/react-stripe-js": "^5.6.0",

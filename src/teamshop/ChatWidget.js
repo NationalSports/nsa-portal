@@ -6,15 +6,27 @@ import {
   NAVY, NAVY_DARK, RED, BORDER, TEXT, TEXT_MUTED, TEXT_FAINT, FONT_BODY, displayType,
 } from './theme';
 
-// Team Shop chat assistant widget — v1. A floating, rule-based (no AI
-// backend) launcher + panel mounted ONCE in TeamShopApp.js, outside the
-// route switch, so it's available on every storefront view without
-// blocking page interaction when closed (it renders only a small
-// bottom-right button in that state).
+// Team Shop chat assistant widget — v2: Claude-powered free text with the
+// v1 rule-based flow kept intact as the offline fallback. A floating
+// launcher + panel mounted ONCE in TeamShopApp.js, outside the route
+// switch, so it's available on every storefront view without blocking page
+// interaction when closed (it renders only a small bottom-right button in
+// that state).
 //
-// Intents are canned/client-side (see INTENT_* handlers below); free text
-// routes by keyword regex (routeIntent). "Track my order" is the one intent
-// that talks to the network — it reuses fetchTeamShopOrders (the SAME
+// Free-text messages go to netlify/functions/teamshop-assistant.js (Claude
+// Sonnet grounded in the shared FAQ facts + order tools). If that endpoint
+// returns { fallback: true } (no ANTHROPIC_API_KEY configured) or errors,
+// the v1 keyword router (routeIntent) answers instead — v1 is never
+// deleted, it IS the offline mode. Quick-reply chips stay canned/instant
+// (they're navigation, not questions). AI order card hints render through
+// the SAME OrderCard component the v1 track intent uses.
+//
+// Signed-out "Track my order" additionally offers a family lookup (order
+// number + checkout email, two inputs) that goes through the AI endpoint's
+// lookup_order_for_family tool — the tokenless status_token tracker link
+// comes back on the card.
+//
+// Coach "Track my order" (chip) still reuses fetchTeamShopOrders (the SAME
 // helper AccountPage.js's "Recent orders" section calls), never a forked
 // fetch. "Talk to a human" has no general coach-inquiry endpoint to post to
 // (netlify/functions/teamshop-orders.js and teamshop-context.js are both
@@ -64,6 +76,28 @@ function routeIntent(text) {
 
 let uid = 0;
 const nextId = () => 'm' + (uid += 1);
+
+// Ask the AI endpoint. Returns { text, cards } or null — null means "use the
+// v1 rule-based flow" (endpoint missing/erroring, fallback:true, empty text).
+// The server enforces the real caps; we mirror them client-side to keep
+// payloads small (last 12 text turns).
+const AI_MAX_TURNS = 12;
+async function askAssistant({ messages, accessToken, customerId }) {
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+    const res = await fetch('/.netlify/functions/teamshop-assistant', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ messages, customer_id: customerId || undefined }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.fallback || !json.ok || !String(json.text || '').trim()) return null;
+    return { text: String(json.text), cards: Array.isArray(json.cards) ? json.cards : [] };
+  } catch {
+    return null;
+  }
+}
 
 // ── Small presentational pieces ──────────────────────────────────────
 function TypingDots() {
@@ -266,6 +300,53 @@ function HumanCard({ onSent }) {
   );
 }
 
+// Family order lookup — two inputs (order number + checkout email) that go
+// through the AI endpoint's lookup_order_for_family tool. Rendered from the
+// signed-out "Track my order" flow.
+function LookupCard({ onSubmit }) {
+  const [orderNumber, setOrderNumber] = useState('');
+  const [email, setEmail] = useState('');
+  const ready = orderNumber.trim() && email.trim();
+  const inputStyle = {
+    width: '100%', boxSizing: 'border-box', border: `1px solid ${BORDER}`, borderRadius: 8,
+    padding: 8, fontSize: 13, fontFamily: 'inherit',
+  };
+  return (
+    <CardShell>
+      <p style={{ fontSize: 12.5, color: TEXT_MUTED, margin: '0 0 8px', lineHeight: 1.5 }}>
+        Enter your order number and the email you used at checkout.
+      </p>
+      <input
+        value={orderNumber}
+        onChange={(e) => setOrderNumber(e.target.value)}
+        placeholder="Order number"
+        aria-label="Order number"
+        inputMode="numeric"
+        style={{ ...inputStyle, marginBottom: 8 }}
+      />
+      <input
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="Email used at checkout"
+        aria-label="Email used at checkout"
+        type="email"
+        style={inputStyle}
+      />
+      <button
+        type="button"
+        onClick={() => { if (ready) onSubmit(orderNumber.trim(), email.trim()); }}
+        disabled={!ready}
+        style={{
+          marginTop: 8, background: RED, color: '#fff', border: 'none', borderRadius: 8, padding: '8px 16px',
+          fontSize: 13, fontWeight: 700, cursor: ready ? 'pointer' : 'default', opacity: ready ? 1 : 0.5, fontFamily: 'inherit',
+        }}
+      >
+        Look up order
+      </button>
+    </CardShell>
+  );
+}
+
 // ── Main widget ───────────────────────────────────────────────────────
 export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }) {
   const [open, setOpen] = useState(() => {
@@ -306,9 +387,16 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
     if (!signedIn) {
       push({
         from: 'bot', kind: 'text',
-        text: "Sign in and I can show you live status on your most recent order. Until then, I can't look it up here.",
+        text: "Sign in and I can show you live status on your team's orders — or, if you ordered from a team store, I can look up a single order with its order number and the email you used at checkout.",
       });
-      push({ from: 'bot', kind: 'chips', chips: [{ label: 'Sign in', action: 'open-account' }, { label: 'Email us', action: 'mailto' }] });
+      push({
+        from: 'bot', kind: 'chips',
+        chips: [
+          { label: 'Look up with order # + email', action: 'family-lookup' },
+          { label: 'Sign in', action: 'open-account' },
+          { label: 'Email us', action: 'mailto' },
+        ],
+      });
       return;
     }
     if (!customer || !customer.id) {
@@ -370,14 +458,56 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
       if (typeof window !== 'undefined') window.location.href = `mailto:${SUPPORT_EMAIL}`;
       return;
     }
+    if (chip.action === 'family-lookup') {
+      push({ from: 'user', kind: 'text', text: chip.label });
+      push({ from: 'bot', kind: 'lookup-card' });
+      return;
+    }
     sendIntent(chip.intent, chip.label);
+  };
+
+  // Transcript for the AI endpoint: the plain text turns so far plus the new
+  // user text (the `messages` state hasn't re-rendered yet when this runs).
+  const transcriptWith = (text) => [
+    ...(messages || [])
+      .filter((m) => m.kind === 'text' && (m.from === 'user' || m.from === 'bot'))
+      .map((m) => ({ role: m.from === 'user' ? 'user' : 'assistant', text: m.text })),
+    { role: 'user', text },
+  ].slice(-AI_MAX_TURNS);
+
+  // Free text — AI first, v1 keyword routing as the fallback. The v1 path is
+  // NEVER removed: it's what answers when the endpoint is unconfigured
+  // (fallback:true), errors, or is unreachable.
+  const sendFreeText = async (text) => {
+    push({ from: 'user', kind: 'text', text });
+    setTyping(true);
+    const ai = await askAssistant({
+      messages: transcriptWith(text),
+      accessToken,
+      customerId: customer && customer.id ? customer.id : null,
+    });
+    setTyping(false);
+    if (ai) {
+      push({ from: 'bot', kind: 'text', text: ai.text });
+      ai.cards.forEach((c) => {
+        if (c && c.type === 'order' && c.order) push({ from: 'bot', kind: 'order-card', order: c.order });
+      });
+      return;
+    }
+    respondFor(routeIntent(text)); // offline v1 behavior
+  };
+
+  const handleLookup = (orderNumber, email) => {
+    // Goes through the AI endpoint; its lookup_order_for_family tool needs
+    // both values, so hand them over in the message itself.
+    sendFreeText(`Look up my order — order number ${orderNumber}, checkout email ${email}.`);
   };
 
   const handleSend = () => {
     const text = draft.trim();
     if (!text) return;
     setDraft('');
-    sendIntent(routeIntent(text), text);
+    sendFreeText(text);
   };
 
   if (!open) {
@@ -436,7 +566,7 @@ export default function ChatWidget({ customer, onOpenAccount, onOpenDecoration }
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto', background: '#F5F7FB', padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         <div style={{ textAlign: 'center', fontSize: 11, color: TEXT_FAINT, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', margin: '2px 0 4px' }}>Today</div>
         {(messages || []).map((m) => (
-          <MessageRow key={m.id} m={m} onChip={handleChip} onOpenDecoration={onOpenDecoration} />
+          <MessageRow key={m.id} m={m} onChip={handleChip} onOpenDecoration={onOpenDecoration} onLookup={handleLookup} />
         ))}
         {typing && <TypingDots />}
       </div>
@@ -480,12 +610,13 @@ const FALLBACK_CHIPS = [
   { label: 'Talk to a human', intent: 'human' },
 ];
 
-function MessageRow({ m, onChip, onOpenDecoration }) {
+function MessageRow({ m, onChip, onOpenDecoration, onLookup }) {
   if (m.kind === 'chips') return <QuickReplies chips={m.chips} onPick={onChip} />;
   if (m.kind === 'order-card') return <OrderCard order={m.order} />;
   if (m.kind === 'sizing-card') return <SizingCard />;
   if (m.kind === 'decoration-card') return <DecorationCard onOpenDecoration={onOpenDecoration || (() => {})} />;
   if (m.kind === 'human-card') return <HumanCard onSent={() => {}} />;
+  if (m.kind === 'lookup-card') return <LookupCard onSubmit={onLookup || (() => {})} />;
   const isUser = m.from === 'user';
   return (
     <div

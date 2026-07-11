@@ -56,7 +56,7 @@ async function listOrders(admin, body, coach) {
   if (!acc.ok) return bad(403, 'Not authorized for this customer');
 
   const { data: orderRows, error: oErr } = await admin.from('webstore_orders')
-    .select('id,created_at,status,total,buyer_name,status_token,so_id,customer_id,order_source')
+    .select('id,order_number,created_at,status,total,buyer_name,status_token,so_id,customer_id,order_source')
     .eq('order_source', 'teamshop')
     .eq('customer_id', customerId)
     .order('created_at', { ascending: false })
@@ -108,6 +108,9 @@ async function listOrders(admin, body, coach) {
       : null;
     return {
       id: o.id,
+      // Customer-facing running number (00177). Pre-00177 orders keep null —
+      // consumers fall back to the id, same as the storefront.
+      order_number: o.order_number || null,
       created_at: o.created_at,
       status: o.status,
       total: o.total,
