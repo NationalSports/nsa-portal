@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
+import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
@@ -769,19 +770,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Same friendly status vocabulary as src/teamshop/AccountPage.js's
   // statusChipLabel — intentionally a small standalone copy (CoachPortal.js
   // sits outside the teamshop chunk, no shared module between them).
-  const ntsStatusLabel=(o)=>{
-    if(o.status==='cancelled')return'Cancelled';
-    if(o.status==='refunded')return'Refunded';
-    if(o.status==='pending_payment')return'Awaiting payment';
-    if(o.status==='unpaid')return'PO review';
-    const stage=o.production&&o.production.stage;
-    if(stage==='shipped')return'Shipped';
-    if(stage==='decorated')return'Decorated';
-    if(stage==='in production')return'In production';
-    if(stage==='queued')return'Queued';
-    if(stage==='received')return'Received';
-    return'Processing';
-  };
+  const ntsStatusLabel=(o)=>statusChipLabel(o); // shared: src/lib/teamshopOrderStatus.js
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no

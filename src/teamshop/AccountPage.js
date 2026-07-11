@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import CoachGate from './CoachGate';
 import TeamPicker from './TeamPicker';
 import LogoPicker from './LogoPicker';
+import { statusChipLabel } from '../lib/teamshopOrderStatus';
 import useCoachSession from './useCoachSession';
 import {
   NAVY, NAVY_DARK, RED, RED_SOFT, BORDER, TEXT_MUTED, TEXT_FAINT, displayType,
@@ -69,19 +70,7 @@ const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumF
 // derived from so_jobs/webstore_shipments) -> one friendly chip. Production
 // stage — once the order has converted to a Sales Order — takes priority over
 // the raw 'paid'/'batched' status, same as the tokenless tracker's story.
-function statusChipLabel(order) {
-  if (order.status === 'cancelled') return 'Cancelled';
-  if (order.status === 'refunded') return 'Refunded';
-  if (order.status === 'pending_payment') return 'Awaiting payment';
-  if (order.status === 'unpaid') return 'PO review';
-  const stage = order.production && order.production.stage;
-  if (stage === 'shipped') return 'Shipped';
-  if (stage === 'decorated') return 'Decorated';
-  if (stage === 'in production') return 'In production';
-  if (stage === 'queued') return 'Queued';
-  if (stage === 'received') return 'Received';
-  return 'Processing';
-}
+// Shared with CoachPortal's Team Shop orders card — src/lib/teamshopOrderStatus.js.
 
 function StatusChip({ order }) {
   const label = statusChipLabel(order);
