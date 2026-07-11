@@ -33,6 +33,13 @@ const DECO = require('../../src/lib/decoPricing');
 // legacy DECO.dP tables below so the storefront keeps pricing correctly before
 // the migration is applied. See the transitional-fallback note in _teamshopRates.js.
 const { loadRates, flatDecoSell } = require('./_teamshopRates');
+// Delivery-timeline estimates (00203) — "Ships in ~X weeks" display metadata
+// attached to each quote line + the quote (order-level = slowest line).
+// NEVER money and NEVER a hash input: normalizeAndHash whitelists its fields,
+// so an attached `timeline` cannot flip a quote hash, and teamshop-checkout's
+// requestLines whitelist strips it from echoed lines before re-pricing.
+// Pre-00203 computeTimelines returns all-null and the UI hides the estimate.
+const { computeTimelines } = require('./_teamshopTimeline');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
@@ -189,7 +196,7 @@ async function buildQuote(admin, { customerId, lines }) {
   const ids = [...new Set(lines.map((l) => l && l.product_id).filter(Boolean))];
   if (!ids.length) return { status: 400, error: 'Every line needs a product_id' };
   const { data: prods, error: pErr } = await admin.from('products')
-    .select('id,sku,name,brand,category,retail_price,catalog_sell_price,pricing_group,nsa_cost,is_clearance,clearance_cost')
+    .select('id,sku,name,brand,category,retail_price,catalog_sell_price,pricing_group,nsa_cost,is_clearance,clearance_cost,inventory_source')
     .in('id', ids);
   if (pErr) return { status: 500, error: pErr.message };
   const byId = {};
@@ -247,6 +254,18 @@ async function buildQuote(admin, { customerId, lines }) {
     outLines.push({ product_id: p.id, sku: p.sku, name: p.name, size, color, qty, unit_sell: unit, decorations: decos, line_total: lineTotal });
   }
 
+  // Delivery-timeline estimate per line + order-level (slowest line) — pure
+  // display metadata computed AFTER pricing and OUTSIDE the hash (see the
+  // whitelist note on normalizeAndHash): a stock or timeline-rule change must
+  // never 409 an open quote. Null everywhere pre-00203 / on any failure.
+  const tl = await computeTimelines(admin, outLines.map((l) => ({
+    product_id: l.product_id,
+    size: l.size,
+    qty: l.qty,
+    deco_types: (l.decorations || []).map((d) => d.type),
+  })), byId);
+  outLines.forEach((l, i) => { l.timeline = tl.lines[i]; });
+
   // Deterministic v3 hash over the normalized line set + totals (see
   // normalizeAndHash above). Order placement recomputes it via the same export.
   const { quote_hash, hash_version } = normalizeAndHash(outLines, {
@@ -262,6 +281,7 @@ async function buildQuote(admin, { customerId, lines }) {
       tier: cust.adidas_ua_tier || 'B',
       lines: outLines,
       subtotal,
+      timeline: tl.order, // order-level estimate = slowest line (display only)
       total: subtotal, // goods + deco only; tax/shipping are applied at order placement
       hash: quote_hash, // legacy alias of quote_hash (kept for response-shape compat)
       quote_hash,

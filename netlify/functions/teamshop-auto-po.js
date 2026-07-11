@@ -47,6 +47,11 @@
 // Degrades gracefully pre-migration: a missing table/RPC returns
 // { enabled:false } so the queue UI shows a banner, never a blank page.
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
+// Warehouse on-hand allocation — ONE implementation shared with the delivery-
+// timeline in-stock check (extracted from this file's computeNeeds; see
+// _teamshopTimeline.js). Same semantics as before: per (product, size),
+// mutated as items claim it.
+const { makeOnHandAllocator } = require('./_teamshopTimeline');
 
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(body) });
@@ -85,11 +90,7 @@ function computeNeeds({ soItems, products, inventory, settings, vendorStock }) {
   // Remaining warehouse on-hand per (product, size) — mutated as items claim
   // it, so two SO lines sharing a product+size never both subtract the same
   // units (under-ordering is the dangerous direction).
-  const onHand = {};
-  (inventory || []).forEach((r) => {
-    const k = (r.product_id || '') + '\u0000' + String(r.size || '').trim().toUpperCase();
-    onHand[k] = (onHand[k] || 0) + (Number(r.quantity) || 0);
-  });
+  const alloc = makeOnHandAllocator(inventory);
 
   const stockByKey = {};
   (vendorStock || []).forEach((r) => {
@@ -110,9 +111,7 @@ function computeNeeds({ soItems, products, inventory, settings, vendorStock }) {
       const qty = Math.max(0, Math.round(Number(rawQty) || 0));
       if (qty <= 0) continue;
       const sizeKey = String(size).trim().toUpperCase();
-      const invKey = (it.product_id || '') + '\u0000' + sizeKey;
-      const take = it.product_id ? Math.min(onHand[invKey] || 0, qty) : 0;
-      if (take > 0) onHand[invKey] -= take;
+      const take = alloc.take(it.product_id, size, qty);
       const needed = qty - take;
 
       // Per-size cost (011 size_costs) falling back to nsa_cost — dollars in

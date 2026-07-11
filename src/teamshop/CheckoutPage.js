@@ -349,6 +349,11 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Subtotal</span><span>{money(totals ? totals.subtotal : quote.subtotal)}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b' }}><span>Shipping</span><span>{totals ? money(totals.shipping) : '—'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b' }}><span>Sales tax{totals && totals.tax_state ? ` (${totals.tax_state})` : ''}</span><span>{totals ? money(totals.tax) : 'Calculated at address'}</span></div>
+          {/* Server-resolved delivery estimate (slowest line, 00203) — display
+              only, hidden when the server sent none (pre-migration). */}
+          {quote.timeline && quote.timeline.label && (
+            <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748b' }}><span>Estimated ship</span><span>{quote.timeline.label}</span></div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 17, fontWeight: 800, marginTop: 6 }}><span>Total</span><span>{totals ? money(totals.total) : '—'}</span></div>
         </div>
       </div>

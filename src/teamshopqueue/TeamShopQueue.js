@@ -719,6 +719,210 @@ function RateCardSection() {
   );
 }
 
+// Delivery timelines (00203) — the staff-editable "Ships in ~X weeks" bands
+// the storefront product page / cart / checkout display. Rules are rows:
+// in-stock, per-source bands, and deco overrides (applied as max() — a deco
+// override never SHORTENS an estimate). Staff edit min/max weeks, the label
+// shown verbatim to shoppers, and active per row; the rule itself (which
+// sources / which deco) is shown read-only. Same interaction style as
+// RateCardSection, including the explicit-patch save on the Active toggle
+// (the stale-closure fix from 8dbfda3 — never re-read edits after setEdits).
+const timelineRuleDesc = (row) => {
+  if (row.rule_type === 'in_stock') return 'NSA warehouse — full line in stock';
+  if (row.rule_type === 'deco') return `Decoration override — ${row.deco_type || '?'} (never shortens; longer band wins)`;
+  return `Blanks from: ${(row.inventory_sources || []).join(', ') || '(no sources)'}`;
+};
+
+function DeliveryTimelineSection() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [edits, setEdits] = useState({}); // id -> partial field overrides
+  const [savingId, setSavingId] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const load = useCallback(() => {
+    setErr(null);
+    return supabase
+      .from('teamshop_delivery_timelines')
+      .select('*')
+      .order('sort_order', { ascending: true })
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error) {
+          if (isMissingRelation(error)) { setMissing(true); return; }
+          setErr(error.message || String(error));
+          return;
+        }
+        setMissing(false);
+        setRows(data || []);
+      });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fieldFor = (row, key) => {
+    const e = edits[row.id];
+    return e && Object.prototype.hasOwnProperty.call(e, key) ? e[key] : row[key];
+  };
+
+  const setField = (row, key, value) => {
+    setEdits((prev) => ({ ...prev, [row.id]: { ...(prev[row.id] || {}), [key]: value } }));
+  };
+
+  const isDirty = (row) => !!edits[row.id] && Object.keys(edits[row.id]).length > 0;
+
+  const saveRow = (row, patchOverride) => {
+    const patch = patchOverride || edits[row.id];
+    if (!patch) return;
+    const minRaw = Object.prototype.hasOwnProperty.call(patch, 'min_weeks') ? patch.min_weeks : row.min_weeks;
+    const maxRaw = Object.prototype.hasOwnProperty.call(patch, 'max_weeks') ? patch.max_weeks : row.max_weeks;
+    const update = {
+      label: Object.prototype.hasOwnProperty.call(patch, 'label') ? patch.label : row.label,
+      min_weeks: Number(minRaw) || 0,
+      max_weeks: Number(maxRaw) || 0,
+      active: Object.prototype.hasOwnProperty.call(patch, 'active') ? patch.active : row.active,
+    };
+    if (!String(update.label || '').trim()) { showToast('Timeline save: label is required'); return; }
+    if (update.max_weeks < update.min_weeks) { showToast('Timeline save: max weeks must be ≥ min weeks'); return; }
+    setSavingId(row.id);
+    // Optimistic update.
+    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, ...update } : r)));
+    supabase.from('teamshop_delivery_timelines').update(update).eq('id', row.id).then(({ error }) => {
+      setSavingId(null);
+      if (error) {
+        showToast('Timeline save failed: ' + (error.message || 'unknown error'));
+        load();
+        return;
+      }
+      setEdits((prev) => { const n = { ...prev }; delete n[row.id]; return n; });
+    });
+  };
+
+  const toggleActive = (row) => {
+    // Active is a simple flip — save immediately. The merged patch is built
+    // here and passed explicitly (the 8dbfda3 rule): waiting on setEdits and
+    // re-reading state from this render's closure would see the pre-flip
+    // value and skip the save when the row had no other pending edit.
+    const patch = { ...(edits[row.id] || {}), active: !fieldFor(row, 'active') };
+    setEdits((prev) => ({ ...prev, [row.id]: patch }));
+    saveRow(row, patch);
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>Loading delivery timelines…</div>;
+
+  if (missing) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        Delivery timelines migration (00203) not applied yet.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        The delivery estimates shoppers see on the product page, cart, and checkout.
+        Changes take effect within a minute. Estimates resolve: warehouse in-stock → blank source → decoration override (longer band wins).
+      </div>
+      {err && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          Failed to load delivery timelines: {err}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#475569', fontSize: 11, textTransform: 'uppercase' }}>
+              <th style={{ padding: '4px 8px' }}>Rule</th>
+              <th style={{ padding: '4px 8px' }}>Label shown</th>
+              <th style={{ padding: '4px 8px' }}>Min weeks</th>
+              <th style={{ padding: '4px 8px' }}>Max weeks</th>
+              <th style={{ padding: '4px 8px' }}>Active</th>
+              <th style={{ padding: '4px 8px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr key={row.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                <td style={{ padding: '4px 8px' }}>
+                  <div>{timelineRuleDesc(row)}</div>
+                  {row.notes && <div style={{ fontSize: 11, color: '#94a3b8' }}>{row.notes}</div>}
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <input
+                    type="text"
+                    aria-label={'tl-label-' + row.id}
+                    value={fieldFor(row, 'label') || ''}
+                    onChange={(e) => setField(row, 'label', e.target.value)}
+                    style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 130 }}
+                  />
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    aria-label={'tl-min-' + row.id}
+                    value={fieldFor(row, 'min_weeks')}
+                    onChange={(e) => setField(row, 'min_weeks', e.target.value)}
+                    style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 70 }}
+                  />
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    aria-label={'tl-max-' + row.id}
+                    value={fieldFor(row, 'max_weeks')}
+                    onChange={(e) => setField(row, 'max_weeks', e.target.value)}
+                    style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 70 }}
+                  />
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <input
+                    type="checkbox"
+                    aria-label={'tl-active-' + row.id}
+                    checked={!!fieldFor(row, 'active')}
+                    onChange={() => toggleActive(row)}
+                  />
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <button
+                    type="button"
+                    aria-label={'save-tl-' + row.id}
+                    disabled={!isDirty(row) || savingId === row.id}
+                    onClick={() => saveRow(row)}
+                    style={{
+                      padding: '4px 10px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
+                      background: isDirty(row) ? '#1d4ed8' : '#e2e8f0', color: isDirty(row) ? '#fff' : '#94a3b8',
+                      cursor: isDirty(row) ? 'pointer' : 'not-allowed',
+                    }}
+                  >
+                    {savingId === row.id ? 'Saving…' : 'Save'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function PoEligibilitySection() {
   const [q, setQ] = useState('');
   const [results, setResults] = useState([]);
@@ -916,6 +1120,11 @@ function TeamShopSettings() {
       <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
         <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Deco rate card</h2>
         <RateCardSection />
+      </section>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Delivery timelines</h2>
+        <DeliveryTimelineSection />
       </section>
 
       <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>

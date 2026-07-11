@@ -8,7 +8,7 @@
  * ever rendered (only "Pricing…"/"Pricing unavailable" placeholders absent
  * a mocked fetch — see the price-endpoint tests below for the real number). */
 import React from 'react';
-import { render, screen, fireEvent, within, act } from '@testing-library/react';
+import { render, screen, fireEvent, within, act, waitFor } from '@testing-library/react';
 import ProductPage from '../teamshop/ProductPage';
 import { validateSpec } from '../teamshop/decoSpec';
 
@@ -185,6 +185,35 @@ describe('ProductPage (product builder)', () => {
     await act(async () => { fireEvent.click(screen.getByText('Add to order')); });
     expect(onAddToOrder).not.toHaveBeenCalled();
     expect(screen.getByText(/Add a logo and placement first/i)).toBeTruthy();
+  });
+
+  test('delivery-estimate chip renders when the server sends a timeline, verbatim', async () => {
+    const TL = { min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks' };
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        lines: [{ unit_garment: 10, unit_deco: 0, unit_total: 10, line_total: 10, timeline: TL }],
+        subtotal: 10,
+        timeline: TL,
+      }),
+    }));
+    render(<ProductPage product={PRODUCT} onBack={() => {}} />);
+    // Chip + the footer line both show the server band once the debounced
+    // quote resolves (never a client-computed estimate).
+    await waitFor(() => expect(screen.getAllByText(/Ships in ~1\.5–2 weeks/).length).toBeGreaterThan(0), { timeout: 3000 });
+    expect(screen.queryByText(/Ships in 5–7 days/)).toBeNull();
+  });
+
+  test('no timeline from the server → no chip, generic footer only', async () => {
+    global.fetch = jest.fn(() => Promise.resolve({
+      ok: true,
+      json: async () => ({ ok: true, lines: [{ unit_garment: 10, unit_deco: 0, unit_total: 10, line_total: 10, timeline: null }], subtotal: 10, timeline: null }),
+    }));
+    render(<ProductPage product={PRODUCT} onBack={() => {}} />);
+    await waitFor(() => expect(screen.getAllByText(/\$10\.00/).length).toBeGreaterThan(0), { timeout: 3000 });
+    expect(screen.queryByText(/Ships in ~/)).toBeNull();
+    expect(screen.getByText(/Ships in 5–7 days/)).toBeTruthy();
   });
 
   test('no client-side price is ever rendered — the header shows a neutral placeholder absent a resolved fetch', () => {

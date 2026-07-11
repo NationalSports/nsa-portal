@@ -350,3 +350,44 @@ describe('flat deco rate card (mocked teamshop_deco_rates)', () => {
     expect(rej.statusCode).toBe(409);
   });
 });
+
+describe('delivery-timeline estimates on the coach quote (00203)', () => {
+  const TL_ROWS = [
+    { rule_key: 'source_sanmar_ss', rule_type: 'source', inventory_sources: ['sanmar'], deco_type: null, min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks', sort_order: 10, active: true },
+  ];
+  const SANMAR_TEE = { ...PLAIN_TEE, inventory_source: 'sanmar' };
+
+  beforeEach(() => require('../../netlify/functions/_teamshopTimeline')._clearCache());
+
+  test('quote lines + quote carry the server-resolved timeline when 00203 is live', async () => {
+    const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', size: 'M', qty: 2 }] }, {
+      tables: baseTables({
+        products: { data: [SANMAR_TEE], error: null },
+        teamshop_delivery_timelines: { data: TL_ROWS, error: null },
+        product_inventory: { data: [], error: null },
+      }),
+    });
+    const json = JSON.parse(r.body);
+    expect(json.ok).toBe(true);
+    expect(json.quote.lines[0].timeline).toEqual({ min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks' });
+    expect(json.quote.timeline).toEqual({ min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks' });
+  });
+
+  test('the timeline is NOT a hash input — the same cart hashes identically with and without 00203', async () => {
+    const body = { customer_id: 'cust1', lines: [{ product_id: 'p2', size: 'M', qty: 2 }] };
+    const withTl = JSON.parse((await call(body, {
+      tables: baseTables({
+        products: { data: [SANMAR_TEE], error: null },
+        teamshop_delivery_timelines: { data: TL_ROWS, error: null },
+        product_inventory: { data: [], error: null },
+      }),
+    })).body);
+    require('../../netlify/functions/_teamshopTimeline')._clearCache();
+    const withoutTl = JSON.parse((await call(body, {
+      tables: baseTables({ products: { data: [SANMAR_TEE], error: null } }),
+    })).body);
+    expect(withTl.quote.timeline).not.toBeNull();
+    expect(withoutTl.quote.timeline).toBeNull();
+    expect(withTl.quote.quote_hash).toBe(withoutTl.quote.quote_hash);
+  });
+});

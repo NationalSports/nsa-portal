@@ -60,6 +60,13 @@ const RATE_ROW = {
 
 const STORE_ROW = { id: 'store-1', flat_shipping: 0 };
 
+const TL_ROW = {
+  id: 't1', rule_key: 'source_sanmar_ss', rule_type: 'source',
+  inventory_sources: ['sanmar', 'nike', 'ss_activewear'], deco_type: null,
+  min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks', sort_order: 10,
+  active: true, notes: null,
+};
+
 const setMocks = (handlers) => {
   global.__mockSession = SESSION;
   global.__mockHandlers = { ...emptyQueueHandlers(), ...handlers };
@@ -225,4 +232,68 @@ test('pre-migration: missing store row hides shipping', async () => {
   });
   await openSettings();
   await waitFor(() => expect(screen.getByText(/Team Shop store row .* not found/i)).toBeTruthy());
+});
+
+// ── Delivery timelines section (00203) ──────────────────────────────────────
+const tlHandlers = (tlHandler) => ({
+  teamshop_deco_rates: () => ({ data: [], error: null }),
+  customers: () => ({ data: [], error: null }),
+  webstores: () => ({ data: STORE_ROW, error: null }),
+  teamshop_delivery_timelines: tlHandler,
+});
+
+test('renders the Delivery timelines section with the rule description and editable fields', async () => {
+  setMocks(tlHandlers(() => ({ data: [TL_ROW], error: null })));
+  await openSettings();
+  await waitFor(() => expect(screen.getByText('Delivery timelines')).toBeTruthy());
+  await waitFor(() => expect(screen.getByDisplayValue('~1.5–2 weeks')).toBeTruthy());
+  expect(screen.getByText('Blanks from: sanmar, nike, ss_activewear')).toBeTruthy();
+});
+
+test('editing min weeks + Save issues the full explicit update patch', async () => {
+  const updateSpy = jest.fn(() => ({ data: null, error: null }));
+  setMocks(tlHandlers((state) => (state.op === 'update' ? updateSpy(state) : { data: [TL_ROW], error: null })));
+  await openSettings();
+  await waitFor(() => expect(screen.getByLabelText('tl-min-t1')).toBeTruthy());
+
+  fireEvent.change(screen.getByLabelText('tl-min-t1'), { target: { value: '1' } });
+  fireEvent.click(screen.getByLabelText('save-tl-t1'));
+
+  await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+  const call = updateSpy.mock.calls[0][0];
+  expect(call.filters.id).toBe('t1');
+  expect(call.patch).toEqual({ label: '~1.5–2 weeks', min_weeks: 1, max_weeks: 2, active: true });
+});
+
+test('Active checkbox alone issues the update (explicit patch — no stale-closure skip)', async () => {
+  const updateSpy = jest.fn(() => ({ data: null, error: null }));
+  setMocks(tlHandlers((state) => (state.op === 'update' ? updateSpy(state) : { data: [TL_ROW], error: null })));
+  await openSettings();
+  await waitFor(() => expect(screen.getByLabelText('tl-active-t1')).toBeTruthy());
+
+  fireEvent.click(screen.getByLabelText('tl-active-t1'));
+
+  await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+  const call = updateSpy.mock.calls[0][0];
+  expect(call.filters.id).toBe('t1');
+  expect(call.patch).toEqual({ label: '~1.5–2 weeks', min_weeks: 1.5, max_weeks: 2, active: false });
+});
+
+test('max < min is rejected client-side with a toast and no update', async () => {
+  const updateSpy = jest.fn(() => ({ data: null, error: null }));
+  setMocks(tlHandlers((state) => (state.op === 'update' ? updateSpy(state) : { data: [TL_ROW], error: null })));
+  await openSettings();
+  await waitFor(() => expect(screen.getByLabelText('tl-max-t1')).toBeTruthy());
+
+  fireEvent.change(screen.getByLabelText('tl-max-t1'), { target: { value: '1' } });
+  fireEvent.click(screen.getByLabelText('save-tl-t1'));
+
+  await waitFor(() => expect(screen.getByText(/max weeks must be/i)).toBeTruthy());
+  expect(updateSpy).not.toHaveBeenCalled();
+});
+
+test('pre-migration: missing timelines table shows the 00203 banner', async () => {
+  setMocks(tlHandlers(() => ({ data: null, error: { code: '42P01', message: 'relation "teamshop_delivery_timelines" does not exist' } })));
+  await openSettings();
+  await waitFor(() => expect(screen.getByText(/Delivery timelines migration \(00203\) not applied yet/i)).toBeTruthy());
 });

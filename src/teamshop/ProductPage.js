@@ -260,6 +260,10 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
   const [quoteState, setQuoteState] = useState('idle'); // idle|loading|ready|error
   const [priceLines, setPriceLines] = useState(null); // normalized: [{unit_garment,unit_deco,unit_total,line_total}]
   const [subtotal, setSubtotal] = useState(null);
+  // Server-computed delivery estimate ({ min_weeks, max_weeks, label } or
+  // null) — rides both price endpoints' responses. Rendered verbatim, never
+  // computed here; null (pre-migration / unknown source) hides the chip.
+  const [timeline, setTimeline] = useState(null);
   const [quoteError, setQuoteError] = useState('');
   const timerRef = useRef(null);
   const reqIdRef = useRef(0);
@@ -272,7 +276,7 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
   useEffect(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     const productId = product && product.id;
-    if (!productId) { setPriceLines(null); setSubtotal(null); setQuoteState('idle'); return undefined; }
+    if (!productId) { setPriceLines(null); setSubtotal(null); setTimeline(null); setQuoteState('idle'); return undefined; }
     timerRef.current = setTimeout(async () => {
       const myReq = ++reqIdRef.current;
       setQuoteState('loading');
@@ -288,7 +292,7 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
         const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
         const json = await res.json().catch(() => ({}));
         if (reqIdRef.current !== myReq) return;
-        if (!res.ok || (useAuthed ? !json.ok : !json.ok)) { setQuoteError((json && json.error) || 'Could not get a price'); setQuoteState('error'); return; }
+        if (!res.ok || (useAuthed ? !json.ok : !json.ok)) { setQuoteError((json && json.error) || 'Could not get a price'); setQuoteState('error'); setTimeline(null); return; }
         if (useAuthed) {
           // quickorder-quote.js's line shape: unit_sell (garment) + decorations[].unit_sell.
           const lines = (json.quote.lines || []).map((l) => {
@@ -297,15 +301,18 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
           });
           setPriceLines(lines);
           setSubtotal(json.quote.subtotal);
+          setTimeline((json.quote && json.quote.timeline) || null);
         } else {
           setPriceLines(json.lines || []);
           setSubtotal(json.subtotal);
+          setTimeline(json.timeline || null);
         }
         setQuoteState('ready');
       } catch {
         if (reqIdRef.current !== myReq) return;
         setQuoteError('Network error — try again');
         setQuoteState('error');
+        setTimeline(null); // never keep promising a ship band we can't back
       }
     }, DEBOUNCE_MS);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
@@ -464,6 +471,14 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
             {signedIn && quoteState === 'ready' && (
               <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: NAVY, background: OFF_WHITE, border: `1px solid ${BORDER}`, padding: '3px 9px', borderRadius: 999 }}>
                 Your team pricing
+              </span>
+            )}
+            {/* Delivery estimate chip — only when the server sent a resolved
+                timeline (staff-editable bands, 00203); never computed here. */}
+            {quoteState === 'ready' && timeline && timeline.label && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: NAVY, background: OFF_WHITE, border: `1px solid ${BORDER}`, padding: '5px 12px', borderRadius: 999 }}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={NAVY} strokeWidth="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v4l3 2" /></svg>
+                Ships in {timeline.label}
               </span>
             )}
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase', color: GREEN, background: '#EAF3EE', border: '1px solid #D4E7DC', padding: '5px 12px', borderRadius: 999 }}>
@@ -772,7 +787,9 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
             </button>
           )}
           <p style={{ fontSize: 12, color: TEXT_FAINT, marginTop: 14 }}>
-            Decorated in-house · Ships in 5–7 days* · Low minimums*
+            {/* The generic 5–7 day claim yields to the real server estimate
+                whenever one exists — never show two conflicting promises. */}
+            Decorated in-house · {timeline && timeline.label ? `Ships in ${timeline.label}` : 'Ships in 5–7 days*'} · Low minimums*
           </p>
         </div>
       </section>

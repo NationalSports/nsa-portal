@@ -183,6 +183,11 @@ export default function CartPage({ customer, onKeepShopping, onCheckout }) {
                   <>
                     <div style={{ fontSize: 12, color: '#64748b' }}>{money(q.unit_sell)} ea</div>
                     <div style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>{money(q.line_total)}</div>
+                    {/* Server-resolved delivery estimate (00203) — rendered
+                        verbatim, hidden when the server sent none. */}
+                    {q.timeline && q.timeline.label && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>Est. ship {q.timeline.label}</div>
+                    )}
                   </>
                 ) : (
                   <div style={{ fontSize: 13, color: '#94a3b8' }}>{quoteState === 'loading' ? 'Pricing…' : '—'}</div>
@@ -222,6 +227,10 @@ export default function CartPage({ customer, onKeepShopping, onCheckout }) {
           <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a' }}>
             Subtotal: {quote ? money(quote.subtotal) : '—'}
           </div>
+          {/* Order-level estimate = the SLOWEST line (server-computed). */}
+          {quote && quote.timeline && quote.timeline.label && (
+            <div style={{ fontSize: 13, color: '#475569', marginTop: 2 }}>Estimated ship: {quote.timeline.label}</div>
+          )}
         </div>
         <button
           type="button"

@@ -32,10 +32,13 @@ function fakeSb(tables) {
 const PLAIN_TEE = { id: 'p2', sku: 'PC61', name: 'Port Tee', brand: 'Port & Company', category: 'Apparel', retail_price: 10, catalog_sell_price: null, pricing_group: null, nsa_cost: 4, is_clearance: false, clearance_cost: null };
 const ADIDAS_TEE = { id: 'p1', sku: 'ADI-1', name: 'Adidas Tee', brand: 'Adidas', category: 'Apparel', retail_price: 40, catalog_sell_price: null, pricing_group: null, nsa_cost: 15, is_clearance: false, clearance_cost: null };
 
-const call = (body, { products = [PLAIN_TEE, ADIDAS_TEE] } = {}) => {
-  mockAdmin = fakeSb({ products: { data: products, error: null } });
+const call = (body, { products = [PLAIN_TEE, ADIDAS_TEE], tables = {} } = {}) => {
+  mockAdmin = fakeSb({ products: { data: products, error: null }, ...tables });
   return priceFn.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify(body) });
 };
+
+// The 60s timeline-rule cache would otherwise leak canned rows between tests.
+beforeEach(() => require('../../netlify/functions/_teamshopTimeline')._clearCache());
 
 test('requires no auth header at all — no bearer token needed', async () => {
   const r = await call({ lines: [{ product_id: 'p2', qty: 1 }] });
@@ -118,4 +121,66 @@ test('response never includes any customer/coach fields', async () => {
   const str = JSON.stringify(json);
   expect(str).not.toMatch(/customer/i);
   expect(str).not.toMatch(/coach/i);
+});
+
+// ── Delivery-timeline estimates (00203) riding the price response ──────────
+const TL_ROWS = [
+  { rule_key: 'in_stock', rule_type: 'in_stock', inventory_sources: [], deco_type: null, min_weeks: 1, max_weeks: 1, label: '~1 week', sort_order: 0, active: true },
+  { rule_key: 'source_sanmar_ss', rule_type: 'source', inventory_sources: ['sanmar', 'nike', 'ss_activewear'], deco_type: null, min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks', sort_order: 10, active: true },
+  { rule_key: 'deco_screen_print', rule_type: 'deco', inventory_sources: [], deco_type: 'screen_print', min_weeks: 2, max_weeks: 3, label: '~2–3 weeks', sort_order: 40, active: true },
+];
+const SANMAR_TEE = { ...PLAIN_TEE, id: 'p3', sku: 'SM1', inventory_source: 'sanmar' };
+
+test('timeline fields ride the response: source band when not in stock, order-level = slowest', async () => {
+  const r = await call({ lines: [{ product_id: 'p3', size: 'M', qty: 5 }] }, {
+    products: [SANMAR_TEE],
+    tables: {
+      teamshop_delivery_timelines: { data: TL_ROWS, error: null },
+      product_inventory: { data: [], error: null },
+    },
+  });
+  const json = JSON.parse(r.body);
+  expect(json.ok).toBe(true);
+  expect(json.lines[0].timeline).toEqual({ min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks' });
+  expect(json.timeline).toEqual({ min_weeks: 1.5, max_weeks: 2, label: '~1.5–2 weeks' });
+});
+
+test('a fully stocked line reports the in-stock band', async () => {
+  const r = await call({ lines: [{ product_id: 'p3', size: 'M', qty: 5 }] }, {
+    products: [SANMAR_TEE],
+    tables: {
+      teamshop_delivery_timelines: { data: TL_ROWS, error: null },
+      product_inventory: { data: [{ product_id: 'p3', size: 'M', quantity: 5 }], error: null },
+    },
+  });
+  const json = JSON.parse(r.body);
+  expect(json.lines[0].timeline).toEqual({ min_weeks: 1, max_weeks: 1, label: '~1 week' });
+});
+
+test('screen print lengthens the band via max() — never a price change', async () => {
+  const qty = 24;
+  const plain = await call({ lines: [{ product_id: 'p3', size: 'M', qty }] }, {
+    products: [SANMAR_TEE],
+    tables: { teamshop_delivery_timelines: { data: TL_ROWS, error: null }, product_inventory: { data: [], error: null } },
+  });
+  const sp = await call({ lines: [{ product_id: 'p3', size: 'M', qty, decorations: [{ type: 'screen_print', colors: 1 }] }] }, {
+    products: [SANMAR_TEE],
+    tables: { teamshop_delivery_timelines: { data: TL_ROWS, error: null }, product_inventory: { data: [], error: null } },
+  });
+  const spJson = JSON.parse(sp.body);
+  expect(spJson.lines[0].timeline).toEqual({ min_weeks: 2, max_weeks: 3, label: '~2–3 weeks' });
+  // The timeline never touches money: garment price identical with/without it.
+  expect(spJson.lines[0].unit_garment).toBe(JSON.parse(plain.body).lines[0].unit_garment);
+});
+
+test('pre-migration (00203 absent) → timeline null everywhere, pricing unaffected', async () => {
+  const r = await call({ lines: [{ product_id: 'p3', size: 'M', qty: 5 }] }, {
+    products: [SANMAR_TEE],
+    tables: { teamshop_delivery_timelines: { data: null, error: { code: '42P01', message: 'relation "teamshop_delivery_timelines" does not exist' } } },
+  });
+  const json = JSON.parse(r.body);
+  expect(json.ok).toBe(true);
+  expect(json.lines[0].timeline).toBeNull();
+  expect(json.timeline).toBeNull();
+  expect(json.lines[0].unit_garment).toBeGreaterThan(0);
 });

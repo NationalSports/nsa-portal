@@ -27,6 +27,11 @@ const DECO = require('../../src/lib/decoPricing');
 // legacy DECO.dP tables when the rate table isn't live yet (loadRates → null);
 // see the transitional-fallback note in _teamshopRates.js.
 const { loadRates, flatDecoSell } = require('./_teamshopRates');
+// Delivery-timeline estimates (00203) — display metadata riding the same
+// response ("Ships in ~X weeks"), resolved server-side only. Pre-migration
+// computeTimelines returns all-null and the storefront hides the estimate;
+// it can never block or change pricing. See _teamshopTimeline.js.
+const { computeTimelines } = require('./_teamshopTimeline');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
@@ -44,7 +49,7 @@ async function buildPublicQuote(admin, { lines }) {
   const ids = [...new Set(lines.map((l) => l && l.product_id).filter(Boolean))];
   if (!ids.length) return { status: 400, error: 'Every line needs a product_id' };
   const { data: prods, error: pErr } = await admin.from('products')
-    .select('id,sku,name,retail_price,catalog_sell_price,pricing_group,nsa_cost,is_clearance,clearance_cost,brand,category')
+    .select('id,sku,name,retail_price,catalog_sell_price,pricing_group,nsa_cost,is_clearance,clearance_cost,brand,category,inventory_source')
     .in('id', ids);
   if (pErr) return { status: 500, error: pErr.message };
   const byId = {};
@@ -53,6 +58,7 @@ async function buildPublicQuote(admin, { lines }) {
   const T = DECO.DEFAULTS; // fallback tables — same ones quickorder-quote.js falls back to
   const rates = await loadRates(admin); // flat rate card (00198); null → dP fallback
   const outLines = [];
+  const timelineInputs = []; // parallel to outLines: { product_id, size, qty, deco_types }
   let subtotal = 0;
   for (const l of lines) {
     const p = l && byId[l.product_id];
@@ -64,9 +70,11 @@ async function buildPublicQuote(admin, { lines }) {
     // AU tier / default catalog_markup (1.65): exactly public retail.
     const unitGarment = unitSell(p, null);
     let unitDeco = 0;
+    const decoTypes = [];
     for (const rawDeco of (Array.isArray(l.decorations) ? l.decorations : [])) {
       const d = cleanDeco(rawDeco);
       if (!d) return { status: 400, error: 'Unsupported decoration type — use embroidery, dtf, vinyl, silicone_patch, or screen_print' };
+      decoTypes.push(d.type);
       if (rates) {
         // Rate card live — the IDENTICAL flatDecoSell path buildQuote prices
         // with, so the anon estimate always equals the coach quote's deco.
@@ -94,9 +102,16 @@ async function buildPublicQuote(admin, { lines }) {
       product_id: p.id, sku: p.sku, size, qty,
       unit_garment: unitGarment, unit_deco: unitDeco, unit_total: unitTotal, line_total: lineTotal,
     });
+    timelineInputs.push({ product_id: p.id, size, qty, deco_types: decoTypes });
   }
 
-  return { quote: { lines: outLines, subtotal, generated_at: new Date().toISOString() } };
+  // Delivery-timeline estimate per line + order-level (slowest line) — pure
+  // display metadata (never money). Null everywhere pre-00203 / on any
+  // failure; the builder simply hides the "Ships in ~X" chip.
+  const tl = await computeTimelines(admin, timelineInputs, byId);
+  outLines.forEach((l, i) => { l.timeline = tl.lines[i]; });
+
+  return { quote: { lines: outLines, subtotal, timeline: tl.order, generated_at: new Date().toISOString() } };
 }
 
 exports.handler = async (event) => {
