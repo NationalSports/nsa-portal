@@ -85,8 +85,15 @@ exports.handler = async (event) => {
             .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
           const _tso = _ts && _ts[0];
           if (_tso && _tso.order_source === 'teamshop' && !_tso.so_id && _tso.status === 'paid') {
-            const { error: convErr } = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: _tso.id });
-            if (convErr) console.error('[stripe-webhook] teamshop conversion failed (order stays paid; convert_order/staff batch will retry):', convErr.message);
+            const { data: convData, error: convErr } = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: _tso.id });
+            if (convErr) {
+              console.error('[stripe-webhook] teamshop conversion failed (order stays paid; convert_order/staff batch will retry):', convErr.message);
+            } else if (convData && convData.so_id) {
+              // Best-effort auto-PO generation (Phase 3, 00202) — idempotent
+              // (client_ref + needs-row marker); a failure never fails the
+              // webhook, and staff can sweep from the Auto POs tab.
+              await require('./teamshop-auto-po').generateForSoSafe(sb, convData.so_id, 'stripe-webhook', 'stripe-webhook');
+            }
           }
         } catch (e) {
           console.error('[stripe-webhook] teamshop conversion error:', e.message);

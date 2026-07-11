@@ -1078,6 +1078,187 @@ function PoReviewSection() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Auto POs — DRAFT supplier purchase orders the auto-PO engine (00202 +
+// netlify/functions/teamshop-auto-po.js) generated from converted Team Shop
+// orders. Auto-SUBMIT is off: nothing is sent to a supplier from here — staff
+// key/send the order themselves and click "Mark submitted" (records who/when
+// via the service role; 00193 gives clients no write path). All money shown
+// is server-stored integer cents (00193) — this section only formats it.
+// Degrades gracefully pre-00193/00202: the function reports enabled:false and
+// this section shows a banner, never a blank page.
+const fmtCents = (c) => '$' + ((Number(c) || 0) / 100).toFixed(2);
+
+function AutoPoSection() {
+  const [state, setState] = useState({ loading: true, enabled: true, pos: [], unmapped: [], error: null });
+  const [busyId, setBusyId] = useState(null);
+  const [toast, setToast] = useState(null);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 5000);
+  };
+
+  const callFn = useCallback(async (payload) => {
+    const { data } = await supabase.auth.getSession();
+    const token = data && data.session && data.session.access_token;
+    const res = await fetch('/.netlify/functions/teamshop-auto-po', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+      body: JSON.stringify(payload),
+    });
+    const json = await res.json().catch(() => ({}));
+    return { status: res.status, ...json };
+  }, []);
+
+  const load = useCallback(() => {
+    callFn({ action: 'list' })
+      .then((r) => {
+        if (r.error) { setState({ loading: false, enabled: true, pos: [], unmapped: [], error: r.error }); return; }
+        setState({ loading: false, enabled: r.enabled !== false, pos: r.pos || [], unmapped: r.unmapped || [], error: null });
+      })
+      .catch((e) => setState({ loading: false, enabled: true, pos: [], unmapped: [], error: e.message || String(e) }));
+  }, [callFn]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const markSubmitted = (po) => {
+    setBusyId(po.id);
+    callFn({ action: 'mark_submitted', po_id: po.id }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Mark submitted failed: ' + r.error); load(); return; }
+      showToast('PO ' + (po.po_number || '') + ' marked submitted');
+      load();
+    });
+  };
+
+  const runSweep = () => {
+    setBusyId('sweep');
+    callFn({ action: 'sweep' }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Sweep failed: ' + r.error); return; }
+      const n = (r.swept || []).length;
+      showToast(n ? 'Sweep evaluated ' + n + ' order' + (n === 1 ? '' : 's') : 'Sweep: nothing pending');
+      load();
+    });
+  };
+
+  if (state.loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading auto POs…</div>;
+
+  return (
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: 0 }}>Team Shop — Auto POs</h1>
+        {state.enabled && (
+          <button
+            type="button"
+            aria-label="auto-po-sweep"
+            disabled={busyId === 'sweep'}
+            onClick={runSweep}
+            style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {busyId === 'sweep' ? 'Sweeping…' : 'Sweep unevaluated orders'}
+          </button>
+        )}
+      </div>
+      {!state.enabled && (
+        <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+          Auto-PO migration (00202) not applied yet — nothing to review.
+        </div>
+      )}
+      {state.error && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+          Failed to load: {state.error}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+          {toast}
+        </div>
+      )}
+      {state.enabled && !state.error && state.pos.length === 0 && (
+        <div style={{ fontSize: 13, color: '#94a3b8' }}>No auto-generated purchase orders yet.</div>
+      )}
+      {state.pos.map((po) => (
+        <div key={po.id} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 14, marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'baseline' }}>
+            <span style={{ fontWeight: 700, fontSize: 13 }}>{po.po_number || String(po.id).slice(0, 8)}</span>
+            <span style={{ fontSize: 13, color: '#334155' }}>{po.vendor || '—'}</span>
+            <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtCents(po.totals_cents)}</span>
+            <span style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 4,
+              background: po.status === 'draft' ? '#fef3c7' : po.status === 'created' ? '#dcfce7' : '#fee2e2',
+              color: po.status === 'draft' ? '#92400e' : po.status === 'created' ? '#166534' : '#991b1b',
+            }}>
+              {po.status === 'created' ? 'submitted' : po.status}
+            </span>
+            <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(po.created_at)}</span>
+          </div>
+          <div style={{ overflowX: 'auto', marginTop: 8 }}>
+            <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 12 }}>
+              <thead>
+                <tr style={{ textAlign: 'left', color: '#475569', fontSize: 10, textTransform: 'uppercase' }}>
+                  <th style={{ padding: '2px 8px' }}>SO</th>
+                  <th style={{ padding: '2px 8px' }}>SKU</th>
+                  <th style={{ padding: '2px 8px' }}>Size</th>
+                  <th style={{ padding: '2px 8px' }}>Qty</th>
+                  <th style={{ padding: '2px 8px' }}>Unit cost</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(po.lines || []).map((l) => (
+                  <tr key={l.id} style={{ borderTop: '1px solid #f1f5f9' }}>
+                    <td style={{ padding: '2px 8px', color: '#64748b' }}>{l.so_id || '—'}</td>
+                    <td style={{ padding: '2px 8px' }}>{l.sku || '—'}</td>
+                    <td style={{ padding: '2px 8px' }}>{l.size || '—'}</td>
+                    <td style={{ padding: '2px 8px', fontWeight: 700 }}>{l.qty}</td>
+                    <td style={{ padding: '2px 8px' }}>{fmtCents(l.unit_cost_cents)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            {po.status === 'draft' ? (
+              <button
+                type="button"
+                aria-label={'mark-submitted-' + po.id}
+                disabled={busyId === po.id}
+                onClick={() => markSubmitted(po)}
+                style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#15803d', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                {busyId === po.id ? 'Working…' : 'Mark submitted'}
+              </button>
+            ) : po.submitted_at ? (
+              <span style={{ fontSize: 12, color: '#64748b' }}>
+                Submitted {fmtAge(po.submitted_at)}{po.submitted_by ? ' by ' + po.submitted_by : ''}
+              </span>
+            ) : null}
+          </div>
+        </div>
+      ))}
+      {state.enabled && state.unmapped.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+            Needs manual ordering ({state.unmapped.length})
+          </h2>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+            Lines with no supplier mapping (custom items, or vendors not wired for auto-PO) — order these by hand.
+          </div>
+          {state.unmapped.map((n, i) => (
+            <div key={n.so_id + '/' + (n.sku || '') + '/' + (n.size || '') + '/' + i} style={{ display: 'flex', gap: 12, padding: '6px 10px', borderBottom: '1px solid #e2e8f0', fontSize: 13, flexWrap: 'wrap' }}>
+              <span style={{ color: '#64748b' }}>{n.so_id}</span>
+              <span style={{ fontWeight: 600 }}>{n.sku || '—'}</span>
+              <span>{n.size}</span>
+              <span style={{ fontWeight: 700 }}>× {n.qty_needed}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TeamShopQueueTabs({ email }) {
   const [tab, setTab] = useState('queue');
 
@@ -1101,9 +1282,13 @@ function TeamShopQueueTabs({ email }) {
       <div style={{ display: 'flex', gap: 8, padding: '12px 20px 0', background: '#f8fafc' }}>
         {tabBtn('queue', 'Queue')}
         {tabBtn('po', 'PO review')}
+        {tabBtn('autopo', 'Auto POs')}
         {tabBtn('settings', 'Settings')}
       </div>
-      {tab === 'queue' ? <TeamShopQueueBoard email={email} /> : tab === 'po' ? <PoReviewSection /> : <TeamShopSettings />}
+      {tab === 'queue' ? <TeamShopQueueBoard email={email} />
+        : tab === 'po' ? <PoReviewSection />
+        : tab === 'autopo' ? <AutoPoSection />
+        : <TeamShopSettings />}
     </div>
   );
 }

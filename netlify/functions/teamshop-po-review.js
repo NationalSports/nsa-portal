@@ -126,6 +126,12 @@ async function approve(admin, body, staff) {
     console.error('[teamshop-po-review] convert after approve failed:', rpc.error.message);
     return bad(502, 'PO approved, but creating the production order failed — retry approve: ' + rpc.error.message);
   }
+  // Best-effort auto-PO generation (Phase 3, 00202): School-PO orders convert
+  // here instead of convert_order/stripe-webhook. Idempotent; a failure never
+  // fails the approval (staff can sweep from the Auto POs tab).
+  if (rpc.data && rpc.data.so_id) {
+    await require('./teamshop-auto-po').generateForSoSafe(admin, rpc.data.so_id, 'po-review-approve', 'teamshop-po-review');
+  }
   return ok({ ok: true, ...(rpc.data || {}) });
 }
 

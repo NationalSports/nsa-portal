@@ -487,6 +487,13 @@ async function convertOrder(sb, body) {
     console.error('[teamshop-checkout] convert_order failed:', rpc.error.message);
     return bad(502, 'Could not create the production order: ' + rpc.error.message);
   }
+  // Best-effort auto-PO generation (Phase 3, 00202) — same posture as the
+  // conversion itself: idempotent (client_ref + needs-row marker), and a
+  // failure never fails the conversion; staff can sweep from the Auto POs tab.
+  const soId = rpc.data && rpc.data.so_id;
+  if (soId) {
+    await require('./teamshop-auto-po').generateForSoSafe(sb, soId, 'teamshop-convert', 'teamshop-checkout');
+  }
   return ok({ ok: true, ...(rpc.data || {}) });
 }
 
