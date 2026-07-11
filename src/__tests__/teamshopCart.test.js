@@ -118,7 +118,11 @@ describe('CartPage quote flow', () => {
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(screen.getByText('$10.00 ea')).toBeTruthy();
-    expect(screen.getByText('$20.00')).toBeTruthy();
+    // $20.00 now renders in three places (line total, order summary
+    // subtotal, and order summary estimated total) — restyled cart shows
+    // the same server-quoted figure in each, so assert it's present
+    // everywhere it should be rather than requiring a single node.
+    expect(screen.getAllByText('$20.00').length).toBe(3);
     expect(screen.getByText(/Quote updates automatically/)).toBeTruthy();
   });
 
@@ -140,7 +144,7 @@ describe('CartPage quote flow', () => {
     expect(global.fetch).toHaveBeenCalledTimes(2);
     const secondBody = JSON.parse(global.fetch.mock.calls[1][1].body);
     expect(secondBody.lines[0].qty).toBe(2);
-    expect(screen.getByText('$20.00')).toBeTruthy();
+    expect(screen.getAllByText('$20.00').length).toBe(3);
   });
 
   test('"Also add without decoration" duplicates the line with decorations: []', async () => {

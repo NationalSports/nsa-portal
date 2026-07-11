@@ -66,6 +66,12 @@ const CSS = `
 @media (max-width: 480px) { .nts-category-grid { grid-template-columns: 1fr; } }
 .nts-category-tile { transition: box-shadow 180ms ease, transform 180ms ease; }
 .nts-category-tile:hover { box-shadow: 0 18px 48px rgba(15,26,56,0.16); transform: translateY(-2px); }
+/* Cart (CartPage.js): line items + sticky order summary, two columns down
+   to tablet width, one column (summary below items) on anything narrower. */
+.nts-cart-layout { display: grid; grid-template-columns: minmax(0, 1.62fr) minmax(300px, 1fr); gap: clamp(28px, 3.5vw, 52px); align-items: start; }
+@media (max-width: 860px) { .nts-cart-layout { grid-template-columns: 1fr; } }
+.nts-cart-summary { position: sticky; top: 150px; }
+@media (max-width: 860px) { .nts-cart-summary { position: static; } }
 /* Chat widget (ChatWidget.js): pop-in panel, bouncing typing dots, and
    chips that invert to navy on hover, per the approved design. */
 @keyframes nts-chat-pop-in { from { opacity: 0; transform: translateY(16px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
