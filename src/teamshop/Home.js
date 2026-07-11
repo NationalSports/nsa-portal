@@ -176,7 +176,7 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
             for mobile autoplay. */}
         <img src="/teamshop/hero-sideline.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
         <video
-          src="/teamshop/hero-embroidery-loop.mp4"
+          src="/teamshop/hero-sideline-loop.mp4"
           poster="/teamshop/hero-sideline.jpg"
           autoPlay
           muted
