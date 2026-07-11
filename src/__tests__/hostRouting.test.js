@@ -2,7 +2,7 @@
  * src/index.js uses to send nationalteamshop.com visitors (and /teamshop paths
  * on any host) to the Team Shop chunk instead of the portal login. */
 
-const { isTeamShopHost } = require('../lib/hostRouting');
+const { isTeamShopHost, isFloorStationPath } = require('../lib/hostRouting');
 
 describe('isTeamShopHost', () => {
   // ── Hostname matches (any path) ────────────────────────────────────────────
@@ -89,5 +89,20 @@ describe('isTeamShopHost', () => {
   test('team-shop hostname still wins with degenerate path', () => {
     expect(isTeamShopHost('nationalteamshop.com', null)).toBe(true);
     expect(isTeamShopHost('nationalteamshop.com', undefined)).toBe(true);
+  });
+});
+
+// The index.js routing branch for the shop-floor scan station chunk — exact
+// path match with optional trailing slash, same shape as isTeamShopQueue.
+describe('isFloorStationPath', () => {
+  test.each(['/floor-station', '/floor-station/'])('true for %s', (path) => {
+    expect(isFloorStationPath(path)).toBe(true);
+  });
+  test.each([
+    '/', '', '/floor-station/extra', '/floor-stations', '/x/floor-station',
+    '/FLOOR-STATION', // case-sensitive like every index.js path check
+    null, undefined,
+  ])('false for %s', (path) => {
+    expect(isFloorStationPath(path)).toBe(false);
   });
 });

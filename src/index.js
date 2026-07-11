@@ -7,7 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
-import { isTeamShopHost } from './lib/hostRouting';
+import { isTeamShopHost, isFloorStationPath } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -79,8 +79,14 @@ const TeamShopApp = React.lazy(() => import('./teamshop/TeamShopApp'));
 // host; checked (below) BEFORE the isTeamShop hostname/path check so it wins
 // over the consumer storefront's own /teamshop path match.
 const TeamShopQueue = React.lazy(() => import('./teamshopqueue/TeamShopQueue'));
+// Shop-floor scan station (scan a job ticket at the embroidery machine / DTF /
+// heat press → the job + its production file + one next-stage button). Staff
+// sign-in or ?token= station mode; see src/floorstation/FloorStation.js.
+// Matched by path like /teamshop-queue, predicate in src/lib/hostRouting.js.
+const FloorStation = React.lazy(() => import('./floorstation/FloorStation'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
 const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/';
+const isFloorStation = isFloorStationPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 // /adidas is the canonical path. /livelook is the same catalog, served at
@@ -245,6 +251,8 @@ root.render(
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
         : isTeamShopQueue
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>
+        : isFloorStation
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><FloorStation /></React.Suspense>
         : isTeamShop
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopApp /></React.Suspense>
         : <MainApp />}

@@ -12,6 +12,11 @@
 // Body: { code, event, actor?, so_id?, job_id?, expected?, payload? }
 //   code    — the scanned string (DST filename, DG-####, or BX-#### box plate)
 //   event   — one of the advance_job_stage events (release, start_run, decorated, …)
+//             OR 'resolve': a READ-ONLY lookup that returns the resolved job (stage,
+//             deco, units, art/production file links) WITHOUT calling
+//             advance_job_stage — used by the floor scan station (src/floorstation)
+//             to show the job before the operator confirms a stage move. Same auth
+//             gate as the write path; never mutates anything.
 //   so_id   — optional: scope the job index to one SO (faster; disambiguates)
 //   job_id  — optional: required when a box scan maps to more than one active job
 //   expected — optional prod_status the scanner believes the job is in (optimistic guard)
@@ -23,6 +28,10 @@ const VALID_EVENTS = new Set([
   'release', 'start_run', 'decorated', 'packed', 'art_resolved',
   'digitizing_sent', 'digitizing_received', 'goods_received', 'po_evaluated', 'hold',
 ]);
+// Non-mutating lookup event — accepted alongside VALID_EVENTS but never reaches
+// the advance_job_stage RPC (kept out of VALID_EVENTS so the write path's set
+// stays exactly the RPC's event list).
+const RESOLVE_EVENT = 'resolve';
 
 // prod_status values that count as an "active" job worth indexing for a scan.
 const ACTIVE_STATUSES = ['hold', 'ready', 'staging', 'in_process', 'completed'];
@@ -43,6 +52,57 @@ const fileName = (f) => {
   try { return decodeURIComponent(s.split('/').pop().split('?')[0]); }
   catch { return s.split('/').pop().split('?')[0]; }
 };
+// Stored art files already carry a full download URL (Cloudinary / public
+// artwork bucket, 00191 keeps public_read_artwork) — same accessor
+// emb-machine-manifest.js uses; no signing needed here.
+const fileUrl = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
+
+// Detail for the 'resolve' (read-only) event: the job row the scanner should
+// display plus its art/production file links. prod_files first — those are the
+// run-ready files (DSTs, print files); `files` after as the general art pool.
+async function fetchJobDetail(db, soId, jobId) {
+  const { data: job, error: jErr } = await db.from('so_jobs')
+    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at')
+    .eq('so_id', soId).eq('id', jobId).maybeSingle();
+  if (jErr) throw jErr;
+  if (!job) return null;
+
+  const artIds = (Array.isArray(job._art_ids) && job._art_ids.length ? job._art_ids : [job.art_file_id]).filter(Boolean);
+  const files = [];
+  const seen = new Set();
+  if (artIds.length) {
+    const { data: arts, error: aErr } = await db.from('so_art_files')
+      .select('so_id, id, name, files, prod_files')
+      .eq('so_id', soId).in('id', artIds);
+    if (aErr) throw aErr;
+    for (const art of arts || []) {
+      for (const [src, f] of [
+        ...(art.prod_files || []).map((x) => ['prod', x]),
+        ...(art.files || []).map((x) => ['art', x]),
+      ]) {
+        const url = fileUrl(f);
+        const name = fileName(f);
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        files.push({ name, url, source: src });
+      }
+    }
+  }
+
+  // Deliberately no money/cost fields — this feeds shop-floor screens.
+  return {
+    so_id: job.so_id,
+    job_id: job.id,
+    art_name: job.art_name || '',
+    deco_type: job.deco_type || null,
+    prod_status: job.prod_status || null,
+    positions: job.positions || null,
+    total_units: job.total_units || 0,
+    digitizing_needed: !!job.digitizing_needed,
+    packed_at: job.packed_at || null,
+    files,
+  };
+}
 
 // Build the { jobs, boxes } index the resolver needs, from so_jobs + so_art_files
 // (+ boxes for BX plates). Optionally scoped to one SO.
@@ -128,7 +188,7 @@ exports.handler = async (event) => {
   const code = String(body.code || '').trim();
   const evt = String(body.event || '').trim();
   if (!code) return { statusCode: 400, headers: cors(), body: JSON.stringify({ ok: false, error: 'code required' }) };
-  if (!VALID_EVENTS.has(evt)) {
+  if (evt !== RESOLVE_EVENT && !VALID_EVENTS.has(evt)) {
     return { statusCode: 400, headers: cors(), body: JSON.stringify({ ok: false, error: 'invalid event' }) };
   }
   if (body.actor) actor = String(body.actor);
@@ -166,6 +226,15 @@ exports.handler = async (event) => {
     }
     if (body.job_id) jobId = String(body.job_id); // explicit override always wins
     if (body.so_id) soId = String(body.so_id);
+
+    // Read-only lookup: return the job + file links, never touch the RPC.
+    if (evt === RESOLVE_EVENT) {
+      const job = await fetchJobDetail(db, soId, jobId);
+      if (!job) {
+        return { statusCode: 409, headers: cors(), body: JSON.stringify({ ok: false, reason: 'job_not_found', resolution: res }) };
+      }
+      return { statusCode: 200, headers: cors(), body: JSON.stringify({ ok: true, resolution: res, job }) };
+    }
 
     const payload = { ...(body.payload && typeof body.payload === 'object' ? body.payload : {}), source: 'scan', scanned_code: code };
     const { data, error } = await db.rpc('advance_job_stage', {

@@ -24,4 +24,13 @@ function isTeamShopHost(hostname, pathname) {
   return path === '/teamshop' || path.indexOf('/teamshop/') === 0;
 }
 
-module.exports = { isTeamShopHost };
+// Should this visit load the shop-floor scan station chunk
+// (src/floorstation/FloorStation.js)? Path-exact on any host, with or without
+// a trailing slash — the same shape as index.js's isTeamShopQueue check, kept
+// here so it's unit-testable without a DOM.
+function isFloorStationPath(pathname) {
+  const path = String(pathname || '');
+  return path === '/floor-station' || path === '/floor-station/';
+}
+
+module.exports = { isTeamShopHost, isFloorStationPath };

@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
+import { useStaffSession } from '../lib/useStaffSession';
+import { fetchTicketArts, openTicket } from './ticket';
 
 // Team Shop — Fast Turn Queue. A staff-only lazy chunk, routed at
 // /teamshop-queue by src/index.js. This is the fast-turn production board for
@@ -88,25 +90,8 @@ const familyForType = (type) => (
 
 const TEAMSHOP_STORE_SLUG = 'nationalteamshop';
 
-// Session tracker for the main staff client — mirrors
-// src/teamshop/useCoachSession.js, but against `supabase` (staff auth), not
-// the isolated supabaseCoach client.
-function useStaffSession() {
-  const [session, setSession] = useState(undefined); // undefined = loading, null = signed out
-
-  useEffect(() => {
-    let alive = true;
-    supabase.auth.getSession().then(({ data }) => { if (alive) setSession((data && data.session) || null); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, sess) => { if (alive) setSession(sess || null); });
-    return () => { alive = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
-  }, []);
-
-  return {
-    loading: session === undefined,
-    signedIn: !!session,
-    email: (session && session.user && session.user.email) || null,
-  };
-}
+// Session tracker for the main staff client — extracted to
+// src/lib/useStaffSession.js so the floor scan station chunk shares it.
 
 // Fetches the queue data set: teamshop orders (paid/batched), their linked
 // sales_orders + so_jobs, and a per-order item count.
@@ -148,7 +133,7 @@ async function fetchQueue() {
   };
 }
 
-function JobCard({ job, order, onAction, actionsDisabled, actionBusy }) {
+function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }) {
   const status = normProdStatus(job.prod_status);
   const buyer = order ? (order.buyer_name || order.buyer_email || '') : '';
   const busy = actionBusy === job.id;
@@ -186,20 +171,34 @@ function JobCard({ job, order, onAction, actionsDisabled, actionBusy }) {
           </span>
         )}
       </div>
-      {actionFor && (
+      <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        {actionFor && (
+          <button
+            type="button"
+            disabled={actionsDisabled || busy}
+            onClick={() => onAction(job, actionFor.event, status)}
+            style={{
+              padding: '6px 12px', fontSize: 12, fontWeight: 700,
+              background: actionsDisabled ? '#e2e8f0' : '#1d4ed8', color: actionsDisabled ? '#94a3b8' : '#fff',
+              border: 'none', borderRadius: 6, cursor: actionsDisabled ? 'not-allowed' : 'pointer',
+            }}
+          >
+            {busy ? 'Working…' : actionFor.label}
+          </button>
+        )}
         <button
           type="button"
-          disabled={actionsDisabled || busy}
-          onClick={() => onAction(job, actionFor.event, status)}
+          aria-label={'ticket-' + job.id}
+          onClick={() => onTicket(job)}
           style={{
-            marginTop: 8, padding: '6px 12px', fontSize: 12, fontWeight: 700,
-            background: actionsDisabled ? '#e2e8f0' : '#1d4ed8', color: actionsDisabled ? '#94a3b8' : '#fff',
-            border: 'none', borderRadius: 6, cursor: actionsDisabled ? 'not-allowed' : 'pointer',
+            padding: '6px 12px', fontSize: 12, fontWeight: 700,
+            background: '#fff', color: '#334155', border: '1px solid #cbd5e1',
+            borderRadius: 6, cursor: 'pointer',
           }}
         >
-          {busy ? 'Working…' : actionFor.label}
+          Ticket
         </button>
-      )}
+      </div>
     </div>
   );
 }
@@ -271,6 +270,18 @@ function TeamShopQueueBoard({ email }) {
     });
     return m;
   }, [filteredJobs]);
+
+  // "Ticket" — print-ready job ticket with a scannable Code 128 barcode (see
+  // ./ticket.js). Art rows are fetched on demand: the board itself never needs
+  // so_art_files, so we don't widen fetchQueue for a per-click action.
+  const handleTicket = useCallback((job) => {
+    fetchTicketArts(job.so_id)
+      .then((arts) => {
+        const opened = openTicket(job, orderBySoId[job.so_id], arts);
+        if (!opened) showToast('Ticket window blocked — allow pop-ups for this site');
+      })
+      .catch((e) => showToast('Ticket failed: ' + (e.message || String(e))));
+  }, [orderBySoId]); // showToast only touches stable setters/refs — any render's instance works
 
   const handleAction = useCallback((job, event, expected) => {
     setActionBusy(job.id);
@@ -392,6 +403,7 @@ function TeamShopQueueBoard({ email }) {
                 job={job}
                 order={orderBySoId[job.so_id]}
                 onAction={handleAction}
+                onTicket={handleTicket}
                 actionsDisabled={rpcMissing}
                 actionBusy={actionBusy}
               />
