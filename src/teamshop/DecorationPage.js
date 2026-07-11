@@ -41,6 +41,7 @@ const METHODS = {
     heroBg: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)',
     heroInk: '#5A6075',
     heroCaption: 'Macro Photo — Embroidery stitching detail',
+    heroImage: '/teamshop/deco-embroidery-macro.jpg',
     processHeading: 'Your art becomes a stitch file, then thread on fabric.',
     steps: [
       { n: '01', title: 'Digitize', body: 'We convert your logo into a stitch file — mapping every path, fill, and thread color.' },
@@ -65,6 +66,7 @@ const METHODS = {
     heroBg: 'linear-gradient(150deg,#F0EDEE,#E6DADB)',
     heroInk: '#7A5C60',
     heroCaption: 'Macro Photo — DTF full-color detail',
+    heroImage: '/teamshop/deco-dtf-macro.jpg',
     processHeading: 'Full-color art, printed to film, pressed to fabric.',
     steps: [
       { n: '01', title: 'Print', body: 'Your artwork is printed onto transfer film in full color, with a white ink base for opacity.' },
@@ -89,6 +91,7 @@ const METHODS = {
     heroBg: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)',
     heroInk: '#5A6075',
     heroCaption: 'Macro Photo — Heat application detail',
+    heroImage: '/teamshop/deco-heat-macro.jpg',
     processHeading: 'Precision-cut material, heat-sealed to the garment.',
     steps: [
       { n: '01', title: 'Cut', body: 'Names, numbers, and marks are precision-cut from premium heat-transfer material.' },
@@ -105,7 +108,16 @@ const METHODS = {
   },
 };
 
-function PhotoPlaceholder({ gradient, ink, caption, style }) {
+function PhotoPlaceholder({ gradient, ink, caption, image, style }) {
+  // A real image (generated macro, owner-approved) renders as the photo; the
+  // labeled gradient block remains the placeholder for slots without one.
+  if (image) {
+    return (
+      <div style={{ position: 'relative', background: gradient, overflow: 'hidden', ...style }}>
+        <img src={image} alt={caption} loading="lazy" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} />
+      </div>
+    );
+  }
   return (
     <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: gradient, color: ink, overflow: 'hidden', ...style }}>
       <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 16l-5-5-9 8" /></svg>
@@ -151,7 +163,7 @@ function OtherMethodCard({ methodKey, onSelectMethod }) {
       onClick={() => onSelectMethod(methodKey)}
       style={{ textAlign: 'left', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', cursor: 'pointer', fontFamily: 'inherit', padding: 0 }}
     >
-      <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} style={{ aspectRatio: '16 / 9' }} />
+      <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} image={data.heroImage} style={{ aspectRatio: '16 / 9' }} />
       <div style={{ padding: '22px 24px 26px' }}>
         <h3 style={displayType(21, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.01em' })}>{data.title}</h3>
         <p style={{ margin: '0 0 14px', color: TEXT_MUTED, fontSize: 14, lineHeight: 1.55 }}>{data.bestFor}</p>
@@ -201,7 +213,7 @@ export default function DecorationPage({ method, onSelectMethod, onShopMethod })
             </button>
           </div>
           <div style={{ position: 'relative' }}>
-            <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} style={{ aspectRatio: '4 / 3', borderRadius: 16 }} />
+            <PhotoPlaceholder gradient={data.heroBg} ink={data.heroInk} caption={data.heroCaption} image={data.heroImage} style={{ aspectRatio: '4 / 3', borderRadius: 16 }} />
             <span aria-hidden="true" style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 4, background: RED, borderRadius: '0 0 16px 16px' }} />
           </div>
         </div>

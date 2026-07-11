@@ -116,6 +116,16 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
   const name = (product && (product.name || product.sku)) || '';
   const sku = product && product.sku;
   const colorName = product && product.color;
+  // TODO(product-colorways): colorways.js/Catalog.js/CatalogCard.js now group
+  // same-style rows into style cards with a colorway picker. Doing the same
+  // here (accept an optional `siblings` prop, render the pill row, swap the
+  // shown product client-side) was assessed and skipped for THIS pass: nearly
+  // every derived value below (sizes, zones, sku, colorName, the quote fetch's
+  // dependency array, the cart line built in handleAddToOrder) is keyed off
+  // `product`, so "switch the shown product" is a real refactor of this
+  // file's data flow, not a small additive change — and this file has
+  // existing coverage (productPage.test.js) that assumes a single product
+  // prop. Left as a real follow-up rather than a half-wired feature.
   // Breadcrumb: the launch-category label (categories.js) this product
   // belongs to, so the crumb reads like the catalog's own category chips —
   // falls back to 'All Products' for anything outside the launch set.

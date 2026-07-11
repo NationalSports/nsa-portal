@@ -7,8 +7,16 @@ import {
   BORDER_DARK, TEXT, TEXT_MUTED, TEXT_FAINT, displayType,
 } from './theme';
 import { LAUNCH_CATEGORIES, categoryByKey, inLaunchCategories } from './categories';
+import { groupByStyle, familyForVariant, COLOR_FAMILIES } from './colorways';
 
-const PAGE_SIZE = 24;
+// Raised from 24: each style now bundles many colorway rows into one card
+// (see colorways.js groupByStyle), so a page of raw rows condenses down to
+// far fewer style cards than before — 200 raw rows keeps a similar number of
+// VISIBLE cards to the old 24-row page. TODO(server-pagination): this is
+// still a single client-side page under the hood; a real "load more"/
+// server-paginated fetch is the right fix once catalog size grows past what
+// one generous page comfortably covers.
+const PAGE_SIZE = 200;
 
 // Debounce a fast-changing value (the search box) so the RPC below doesn't
 // fire on every keystroke.
@@ -70,6 +78,7 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
   const [search, setSearch] = useState('');
   const debounced = useDebounced(search, 300);
   const [selectedBrands, setSelectedBrands] = useState([]); // multi-select; empty = all
+  const [selectedFamilies, setSelectedFamilies] = useState([]); // Color pills; multi-select; empty = all
   // Category chip state — key into LAUNCH_CATEGORIES, or null for 'All'.
   const [categoryKey, setCategoryKey] = useState(initialCategory || null);
   const activeCategory = categoryKey ? categoryByKey(categoryKey) : null;
@@ -128,21 +137,49 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
     // activeCategory is derived from categoryKey, so depending on categoryKey covers it.
   }, [debounced, categoryKey]);
 
-  // Per-brand counts come from the currently loaded result page.
+  // Colorway grouping (src/teamshop/colorways.js): fold the loaded rows —
+  // one raw `products` row per colorway — back into one card per style.
+  // Brand/category/sort/filter logic below all operate on these groups, not
+  // the raw rows (see the task's "operate on groups" requirement).
+  const groups = useMemo(() => groupByStyle(products), [products]);
+
+  // Per-brand counts (style count, not raw-row count) come from the
+  // currently loaded result page.
   // TODO(brand-counts): real whole-catalog counts need a server aggregate.
   const brandCounts = useMemo(() => {
     const counts = new Map();
-    products.forEach((p) => { if (p.brand) counts.set(p.brand, (counts.get(p.brand) || 0) + 1); });
+    groups.forEach((g) => { if (g.brand) counts.set(g.brand, (counts.get(g.brand) || 0) + 1); });
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [products]);
+  }, [groups]);
 
-  const visible = useMemo(
-    () => (selectedBrands.length ? products.filter((p) => selectedBrands.includes(p.brand)) : products),
-    [products, selectedBrands],
-  );
+  // Color family counts: how many loaded STYLES have at least one variant in
+  // that family. Only families actually present render as pills.
+  const familyCounts = useMemo(() => {
+    const counts = new Map();
+    groups.forEach((g) => {
+      const seen = new Set();
+      g.variants.forEach((v) => seen.add(familyForVariant(v)));
+      seen.forEach((fam) => counts.set(fam, (counts.get(fam) || 0) + 1));
+    });
+    return COLOR_FAMILIES
+      .map((f) => ({ ...f, count: counts.get(f.key) || 0 }))
+      .filter((f) => f.count > 0);
+  }, [groups]);
+
+  const visible = useMemo(() => groups.filter((g) => {
+    if (selectedBrands.length && !selectedBrands.includes(g.brand)) return false;
+    if (selectedFamilies.length && !g.variants.some((v) => selectedFamilies.includes(familyForVariant(v)))) return false;
+    return true;
+  }), [groups, selectedBrands, selectedFamilies]);
+
+  const colorwayCount = useMemo(() => visible.reduce((sum, g) => sum + g.variants.length, 0), [visible]);
 
   const toggleBrand = (b) => setSelectedBrands((prev) => (
     prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]
+  ));
+
+  const toggleFamily = (key) => setSelectedFamilies((prev) => (
+    prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]
   ));
 
   // Sort. search_products returns rows in relevance/DB order, which reads as
@@ -163,6 +200,11 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
     if (cost != null) return (Number(cost) || 0) * 1.65;
     return Number(p.retail_price) || 0;
   };
+  // A style's price-sort basis is its CHEAPEST colorway variant — matches the
+  // "from —" card slot, which is meant to read as the style's starting price.
+  const groupPrice = (g) => g.variants.reduce((min, v) => Math.min(min, listPrice(v)), Infinity);
+  // is_featured for a style: true if ANY colorway is featured.
+  const groupFeatured = (g) => g.variants.some((v) => v.is_featured);
 
   const sorted = useMemo(() => {
     const byName = (a, b) => String(a.name || '').localeCompare(String(b.name || ''));
@@ -170,10 +212,10 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
     switch (sortBy) {
       case 'name': arr.sort(byName); break;
       case 'brand': arr.sort((a, b) => String(a.brand || '').localeCompare(String(b.brand || '')) || byName(a, b)); break;
-      case 'price_asc': arr.sort((a, b) => listPrice(a) - listPrice(b) || byName(a, b)); break;
-      case 'price_desc': arr.sort((a, b) => listPrice(b) - listPrice(a) || byName(a, b)); break;
+      case 'price_asc': arr.sort((a, b) => groupPrice(a) - groupPrice(b) || byName(a, b)); break;
+      case 'price_desc': arr.sort((a, b) => groupPrice(b) - groupPrice(a) || byName(a, b)); break;
       case 'featured':
-      default: arr.sort((a, b) => (b.is_featured ? 1 : 0) - (a.is_featured ? 1 : 0) || byName(a, b)); break;
+      default: arr.sort((a, b) => (groupFeatured(b) ? 1 : 0) - (groupFeatured(a) ? 1 : 0) || byName(a, b)); break;
     }
     return arr;
   }, [visible, sortBy]);
@@ -317,6 +359,32 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
               <span aria-hidden="true" style={{ width: 1, height: 22, background: BORDER, margin: '0 4px' }} />
             </>
           )}
+          {familyCounts.length > 0 && (
+            <>
+              <span style={displayType(13, { letterSpacing: '0.08em', color: TEXT_FAINT })}>Color</span>
+              {familyCounts.map((f) => {
+                const active = selectedFamilies.includes(f.key);
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => toggleFamily(f.key)}
+                    aria-pressed={active}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 13, fontWeight: 600,
+                      padding: '7px 13px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
+                      background: active ? NAVY : '#fff', color: active ? '#fff' : NAVY,
+                      border: `1px solid ${active ? NAVY : BORDER_DARK}`,
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ width: 12, height: 12, borderRadius: 999, background: f.hex, border: '1px solid rgba(15,26,56,0.18)' }} />
+                    {f.label} <span style={{ fontSize: 11, fontWeight: 600, color: active ? 'rgba(255,255,255,0.65)' : TEXT_FAINT }}>{f.count}</span>
+                  </button>
+                );
+              })}
+              <span aria-hidden="true" style={{ width: 1, height: 22, background: BORDER, margin: '0 4px' }} />
+            </>
+          )}
           <span style={displayType(13, { letterSpacing: '0.08em', color: TEXT_FAINT })}>Decoration</span>
           {/* Decoration filter — VISUAL ONLY per the mockup's spec.
               TODO(decoration-filter): wire to a real decoration-capability
@@ -342,7 +410,9 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
         {/* Count + sort */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 24, paddingTop: 18, borderTop: `1px solid ${BORDER}` }}>
           <span style={{ fontSize: 14, color: TEXT_MUTED }}>
-            <strong style={{ color: NAVY, fontWeight: 600 }}>{visible.length}</strong> products
+            <strong style={{ color: NAVY, fontWeight: 600 }}>{visible.length}</strong> styles
+            {' · '}
+            <strong style={{ color: NAVY, fontWeight: 600 }}>{colorwayCount}</strong> colorways
             {rosterTotal > 0 ? ` · sized for your roster of ${rosterTotal}` : ''}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -372,10 +442,19 @@ export default function Catalog({ onSelectProduct, onAddBlank, initialCategory }
           </div>
         )}
 
-        {/* Product grid: full-width, 4-across (nts-product-grid, theme.js). */}
+        {/* Product grid: full-width, 4-across (nts-product-grid, theme.js).
+            One card per STYLE group; the card itself resolves stock for
+            whichever colorway variant is currently selected. */}
         <div className="nts-product-grid">
-          {sorted.map((p) => (
-            <CatalogCard key={p.id} product={p} stock={stock.get(p.id)} onSelect={onSelectProduct} onAddBlank={onAddBlank} />
+          {sorted.map((g) => (
+            <CatalogCard
+              key={g.key}
+              group={g}
+              stockMap={stock}
+              activeFamilies={selectedFamilies}
+              onSelect={onSelectProduct}
+              onAddBlank={onAddBlank}
+            />
           ))}
         </div>
       </section>

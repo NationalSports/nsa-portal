@@ -95,9 +95,9 @@ const HOW_IT_WORKS = [
 ];
 
 const DECORATION_METHODS = [
-  { n: '01', method: 'embroidery', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", photoLabel: 'Macro Photo — Embroidery stitching', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
-  { n: '02', method: 'dtf', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', photoLabel: 'Macro Photo — DTF detail', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
-  { n: '03', method: 'heat', title: 'Heat Applications', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', photoLabel: 'Macro Photo — Heat application detail', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
+  { n: '01', method: 'embroidery', title: 'Embroidery', body: "Best for polos, caps, and jackets — a durable, textured finish that reads premium up close.", image: '/teamshop/deco-embroidery-macro.jpg', imageAlt: 'Macro of red and white embroidery stitching on navy fabric', gradient: 'linear-gradient(150deg,#EEF1F6,#E1E6F0)' },
+  { n: '02', method: 'dtf', title: 'DTF Print', body: 'Ideal for full-color logos and gradients on tees and performance wear, with soft-hand detail.', image: '/teamshop/deco-dtf-macro.jpg', imageAlt: 'Macro of a full-color DTF printed graphic on heather fabric', gradient: 'linear-gradient(150deg,#F0EDEE,#E6DADB)' },
+  { n: '03', method: 'heat', title: 'Heat Applications', body: 'The fast, clean choice for names, numbers, and single-color marks on team uniforms.', image: '/teamshop/deco-heat-macro.jpg', imageAlt: 'Macro of a heat-applied white number on a navy jersey', gradient: 'linear-gradient(150deg,#E7EBF2,#DBE1EC)' },
 ];
 
 const BRAND_STRIP = ['adidas', 'Augusta · Holloway', 'Richardson', 'Nike', 'Under Armour'];
@@ -158,12 +158,10 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
 
       {/* ============ HERO ============ */}
       <section style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
-        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg,#0F1A38 0%,#192853 52%,#1c2d4f 100%)' }} />
-        <span aria-hidden="true" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 'clamp(90px, 18%, 300px)', background: '#22335c' }} />
-        {/* Photo placeholder — real lifestyle photography arrives at launch. */}
-        <PhotoLabel style={{ position: 'absolute', top: 0, left: 0, padding: '22px 26px', letterSpacing: '0.18em', color: 'rgba(255,255,255,0.34)', pointerEvents: 'none' }}>
-          Lifestyle Photo — Athlete in logo&apos;d gear
-        </PhotoLabel>
+        {/* Real hero photo (generated, owner-approved) under a navy gradient
+            so the headline/CTAs stay legible at every width. */}
+        <img src="/teamshop/hero-sideline.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
+        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg, rgba(15,26,56,0.88) 0%, rgba(25,40,83,0.55) 48%, rgba(15,26,56,0.35) 100%)' }} />
         <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
           <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
         </span>
@@ -212,8 +210,9 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
       {/* ============ BIG CATEGORY PANELS ============ */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 0 }}>
         <a href="/team-stores" style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#1c2d4f,#192853 60%,#0F1A38)', overflow: 'hidden', textDecoration: 'none' }}>
-          <PhotoLabel style={{ position: 'absolute', top: 20, right: 24, color: 'rgba(255,255,255,0.35)' }}>Photo — Team store hero</PhotoLabel>
-          <div>
+          <img src="/teamshop/panel-teamstores.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+          <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(15,26,56,0.15) 30%, rgba(15,26,56,0.82) 100%)' }} />
+          <div style={{ position: 'relative', zIndex: 1 }}>
             <div style={{ ...displayType('clamp(2.6rem, 4.2vw, 3.6rem)', { fontWeight: 700, lineHeight: 0.96, color: '#fff' }), marginBottom: 14, letterSpacing: '0.01em' }}>Team Stores</div>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 16, color: '#fff' }}>
               Shop now <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
@@ -221,9 +220,10 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
           </div>
         </a>
         <button type="button" onClick={() => onBrowseCatalog()} style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#F7F8FB,#EEF1F6 60%,#E4E8F0)', overflow: 'hidden', textAlign: 'left', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
-          <PhotoLabel style={{ position: 'absolute', top: 20, right: 24, color: BORDER_DARK }}>Photo — New arrivals flat-lay</PhotoLabel>
-          <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: RED }} />
-          <div>
+          <img src="/teamshop/panel-newdrops.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
+          <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(247,248,251,0.05) 35%, rgba(247,248,251,0.88) 100%)' }} />
+          <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: RED, zIndex: 1 }} />
+          <div style={{ position: 'relative', zIndex: 1 }}>
             <div style={{ ...displayType('clamp(2.6rem, 4.2vw, 3.6rem)', { fontWeight: 700, lineHeight: 0.96, color: NAVY }), marginBottom: 14, letterSpacing: '0.01em' }}>New Drops</div>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 16, color: NAVY }}>
               Shop now <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
@@ -320,9 +320,8 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
                 onClick={() => onOpenDecoration && onOpenDecoration(m.method)}
                 style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, overflow: 'hidden', boxShadow: '0 1px 2px rgba(15,26,56,0.06)', textAlign: 'left', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}
               >
-                <div style={{ aspectRatio: '4 / 3', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: m.gradient, color: TEXT_MUTED }}>
-                  <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 16l-5-5-9 8" /></svg>
-                  <PhotoLabel>{m.photoLabel}</PhotoLabel>
+                <div style={{ aspectRatio: '4 / 3', background: m.gradient, overflow: 'hidden' }}>
+                  <img src={m.image} alt={m.imageAlt} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
                 </div>
                 <div style={{ padding: '22px 24px 26px' }}>
                   <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 13, fontWeight: 600, letterSpacing: '0.1em', color: RED, marginBottom: 6 }}>{m.n}</div>
@@ -367,7 +366,12 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
           {!productsLoading && !!products.length && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 24 }}>
               {products.map((p) => (
-                <CatalogCard key={p.id} product={p} />
+                // CatalogCard now takes a colorways.js style-group (see
+                // Catalog.js) rather than a single product row. This featured
+                // strip has no grouping of its own (no colorway UI needed
+                // here) — wrap each row as its own single-variant group so
+                // the card renders exactly as it did before that change.
+                <CatalogCard key={p.id} group={{ key: p.id, brand: p.brand, name: p.name, variants: [p] }} />
               ))}
             </div>
           )}
