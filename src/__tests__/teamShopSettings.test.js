@@ -108,6 +108,27 @@ test('editing a rate row issues the expected update', async () => {
   expect(call.patch).toEqual({ label: 'Embroidery', price: 9.5, cost: null, min_qty: 1, active: true });
 });
 
+test('Active checkbox alone issues the update (regression: stale-closure skip)', async () => {
+  // Toggling Active with no other pending edit must still hit the DB — the
+  // original implementation re-read edits state from a stale closure and
+  // silently skipped the save, leaving a "deactivated" rate live.
+  const updateSpy = jest.fn(() => ({ data: null, error: null }));
+  setMocks({
+    teamshop_deco_rates: (state) => (state.op === 'update' ? updateSpy(state) : { data: [RATE_ROW], error: null }),
+    customers: () => ({ data: [], error: null }),
+    webstores: () => ({ data: STORE_ROW, error: null }),
+  });
+  await openSettings();
+  await waitFor(() => expect(screen.getByLabelText('active-r1')).toBeTruthy());
+
+  fireEvent.click(screen.getByLabelText('active-r1'));
+
+  await waitFor(() => expect(updateSpy).toHaveBeenCalledTimes(1));
+  const call = updateSpy.mock.calls[0][0];
+  expect(call.filters.id).toBe('r1');
+  expect(call.patch).toEqual({ label: 'Embroidery', price: 8, cost: null, min_qty: 1, active: false });
+});
+
 test('add-option inserts a new row with the derived family', async () => {
   const insertSpy = jest.fn(() => ({ data: null, error: null }));
   setMocks({

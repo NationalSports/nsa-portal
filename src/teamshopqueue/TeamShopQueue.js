@@ -461,8 +461,8 @@ function RateCardSection() {
 
   const isDirty = (row) => !!edits[row.id] && Object.keys(edits[row.id]).length > 0;
 
-  const saveRow = (row) => {
-    const patch = edits[row.id];
+  const saveRow = (row, patchOverride) => {
+    const patch = patchOverride || edits[row.id];
     if (!patch) return;
     const priceVal = Object.prototype.hasOwnProperty.call(patch, 'price') ? patch.price : row.price;
     const costRaw = Object.prototype.hasOwnProperty.call(patch, 'cost') ? patch.cost : row.cost;
@@ -489,9 +489,13 @@ function RateCardSection() {
   };
 
   const toggleActive = (row) => {
-    setEdits((prev) => ({ ...prev, [row.id]: { ...(prev[row.id] || {}), active: !fieldFor(row, 'active') } }));
-    // Active is a simple flip — save immediately, no separate button state needed.
-    setTimeout(() => saveRow(row), 0);
+    // Active is a simple flip — save immediately. The merged patch is built
+    // here and passed explicitly: waiting on setEdits and re-reading state
+    // from this render's closure would see the pre-flip value (and skip the
+    // save entirely when the row had no other pending edit).
+    const patch = { ...(edits[row.id] || {}), active: !fieldFor(row, 'active') };
+    setEdits((prev) => ({ ...prev, [row.id]: patch }));
+    saveRow(row, patch);
   };
 
   const addOption = () => {
