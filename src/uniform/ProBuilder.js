@@ -1460,8 +1460,8 @@ export default function ProBuilder({ onExit, onCreateOrder }) {
                   </RailCard>
                   <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'crew' ? 'Crew Neck' : config.neckStyle === 'newbase' ? 'Sahrul ★' : config.neckStyle === 'vikram' ? 'Vikram ★' : 'V-Neck'}>
                     <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' },
-                      // Head-to-head artist test bases — soccer only for now.
-                      ...(config.sport === 'soccer' ? [{ id: 'newbase', label: 'Sahrul ★' }, { id: 'vikram', label: 'Vikram ★' }] : [])]}
+                      // Head-to-head artist test bases — shown on every sport while we evaluate.
+                      { id: 'newbase', label: 'Sahrul ★' }, { id: 'vikram', label: 'Vikram ★' }]}
                       active={config.neckStyle || 'vneck'} onPick={(v) => set({ neckStyle: v })} />
                     {(config.neckStyle === 'newbase' || config.neckStyle === 'vikram') && <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Artist test base — 3D preview is the upgrade; the 2D proof is still a placeholder.</div>}
                   </RailCard>
