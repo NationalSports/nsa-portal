@@ -7199,9 +7199,16 @@ const colorFamilyOf = (hex) => {
   for (const f of _COLOR_FAMILIES) { const d = (f.rgb[0] - rgb[0]) ** 2 + (f.rgb[1] - rgb[1]) ** 2 + (f.rgb[2] - rgb[2]) ** 2; if (d < bd) { bd = d; best = f; } }
   return best;
 };
+// Neutral garment colors nearly every team wears regardless of school colors
+// (black, white, grey) — auto-included alongside the team's palette so the
+// "School colors" filter doesn't hide, e.g., black shorts for a red/gold team.
+// Sourced from the family table above so the word lists stay in sync.
+const _NEUTRAL_WORDS = ['white', 'black', 'grey'].flatMap((fam) => (_COLOR_FAMILIES.find((f) => f.fam === fam) || {}).words || []);
 const storeColorWords = (pantone) => {
-  const words = new Set();
-  for (const pc of (pantone || [])) { const f = colorFamilyOf(pc && pc.hex); if (f) f.words.forEach((w) => words.add(w)); }
+  const list = (pantone || []).filter((pc) => pc && pc.hex);
+  if (!list.length) return []; // no team colors set → don't force-restrict at all (unchanged)
+  const words = new Set(_NEUTRAL_WORDS);
+  for (const pc of list) { const f = colorFamilyOf(pc.hex); if (f) f.words.forEach((w) => words.add(w)); }
   return [...words];
 };
 // Match a product's PRIMARY (first) color segment so "Team Green / White" (green-led)
