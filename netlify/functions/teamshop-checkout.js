@@ -14,6 +14,14 @@
 //     (idempotencyKey 'wsorder_'+order.id, same as webstore-checkout), and
 //     returns the clientSecret. clientRef idempotency, replay, and rollback
 //     compensation are webstore-checkout's own exported implementations.
+//   place_order_ach — same chain as place_order, but the PaymentIntent is
+//     restricted to payment_method_types ['us_bank_account'] (Stripe ACH
+//     debit). SETTLE-THEN-PRODUCE (owner decision): ACH takes ~4 business
+//     days to clear, so the order stays 'pending_payment' until the
+//     stripe-webhook sees payment_intent.succeeded — a processing ACH
+//     payment is NOT paid, and neither convert_order (paid pre-guard below)
+//     nor create_teamshop_sales_order (00196/00199 status guard) will start
+//     production before settlement. The client NEVER calls convert for ACH.
 //   place_order_po — School-PO checkout for rep-approved programs
 //     (customers.teamshop_po_allowed, 00200/00201): same verification chain
 //     as place_order, PO number + PDF instead of Stripe, order lands 'unpaid'
@@ -117,8 +125,14 @@ async function quoteTotals(sb, body, coach) {
   return ok({ ok: true, quote: rq.quote, quote_hash: rq.quote.quote_hash, totals });
 }
 
-// ── place_order ──────────────────────────────────────────────────────
-async function placeOrder(sb, body, coach) {
+// ── place_order / place_order_ach ────────────────────────────────────
+// opts.ach = true → the Stripe leg creates a us_bank_account-only intent
+// (place_order_ach). Everything else — auth, replay, quote-hash re-price,
+// order row (status 'pending_payment'), rollback — is byte-identical to the
+// card path, so ACH orders read as normal awaiting-payment webstore orders
+// until the webhook settles them.
+async function placeOrder(sb, body, coach, opts) {
+  const ach = !!(opts && opts.ach);
   const customerId = String(body.customer_id || '').trim();
   if (!customerId) return bad(400, 'customer_id required');
   const acc = await coachHasCustomerAccess(sb, coach, customerId);
@@ -156,7 +170,7 @@ async function placeOrder(sb, body, coach) {
   const quote = rq.quote;
 
   const totals = await computeTotals(store, quote, ship);
-  if (Math.round(totals.total * 100) < 50) return bad(409, 'Card payments must be at least $0.50.');
+  if (Math.round(totals.total * 100) < 50) return bad(409, (ach ? 'Payments' : 'Card payments') + ' must be at least $0.50.');
 
   // Order row — webstore-checkout's field set (so every downstream reader:
   // finalize, stripe-webhook, refunds, OrderTrack, emails, reports sees a
@@ -236,25 +250,32 @@ async function placeOrder(sb, body, coach) {
   // same order returns the same intent). Any failure past this point rolls the
   // committed order back via webstore-checkout's own compensation delete.
   const sk = process.env.STRIPE_SECRET_KEY;
-  if (!sk) { await ws.rollbackOrder(sb, order.id); return bad(500, 'Card payment isn’t configured.'); }
+  if (!sk) { await ws.rollbackOrder(sb, order.id); return bad(500, (ach ? 'Bank' : 'Card') + ' payment isn’t configured.'); }
   let intent;
   try {
     intent = await stripe(sk).paymentIntents.create({
       amount: Math.round(totals.total * 100),
       currency: 'usd',
-      automatic_payment_methods: { enabled: true },
+      // ACH intents are LOCKED to us_bank_account — never automatic methods —
+      // so stripe-webhook's payment_failed handler can identify an ACH-path
+      // intent by payment_method_types === ['us_bank_account'] alone, and a
+      // card-capable intent can never take this settle-then-produce path by
+      // accident (nor vice versa).
+      ...(ach
+        ? { payment_method_types: ['us_bank_account'] }
+        : { automatic_payment_methods: { enabled: true } }),
       receipt_email: order.buyer_email || undefined,
       metadata: { webstore_order_id: order.id, store_slug: store.slug, source: 'nsa_teamshop' },
       description: `National Team Shop — order ${order.id}`,
     }, { idempotencyKey: 'wsorder_' + order.id });
   } catch (e) {
     await ws.rollbackOrder(sb, order.id);
-    return bad(502, 'Could not start the card payment: ' + e.message);
+    return bad(502, `Could not start the ${ach ? 'bank' : 'card'} payment: ` + e.message);
   }
   const { error: piErr } = await sb.from('webstore_orders').update({ stripe_pi_id: intent.id }).eq('id', order.id);
   if (piErr) { await ws.rollbackOrder(sb, order.id); return bad(502, 'Could not link the payment: ' + piErr.message); }
 
-  return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id });
+  return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id, ...(ach ? { ach: true } : {}) });
 }
 
 // ── place_order_po (School-PO checkout, 00200/00201) ─────────────────
@@ -485,6 +506,7 @@ exports.handler = async (event) => {
 
     if (body.action === 'quote_totals') return await quoteTotals(admin, body, v.coach);
     if (body.action === 'place_order') return await placeOrder(admin, body, v.coach);
+    if (body.action === 'place_order_ach') return await placeOrder(admin, body, v.coach, { ach: true });
     if (body.action === 'place_order_po') return await placeOrderPo(admin, body, v.coach);
     if (body.action === 'convert_order') return await convertOrder(admin, body);
     return bad(400, 'Unknown action.');

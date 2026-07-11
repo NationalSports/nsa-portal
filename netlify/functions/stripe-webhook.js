@@ -6,7 +6,10 @@
 //   1. Add STRIPE_WEBHOOK_SECRET (from the Stripe dashboard endpoint) to env.
 //   2. In Stripe → Developers → Webhooks, add endpoint:
 //        https://<your-site>/.netlify/functions/stripe-webhook
-//      subscribed to: payment_intent.succeeded, charge.refunded, charge.dispute.created
+//      subscribed to: payment_intent.succeeded, payment_intent.payment_failed,
+//      charge.refunded, charge.dispute.created (payment_failed drives the
+//      Team Shop ACH failure path below — without it a bounced ACH order
+//      sits in 'pending_payment' forever)
 //   Also requires STRIPE_SECRET_KEY, REACT_APP_SUPABASE_URL (or SUPABASE_URL),
 //   and SUPABASE_SERVICE_ROLE_KEY.
 const stripe = require('stripe');
@@ -94,6 +97,64 @@ exports.handler = async (event) => {
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
         // idempotent — the portal call, this one, and Stripe retries can't double-apply the surcharge.
         await reconcileInvoiceFromIntent(sb, pi);
+      }
+    } else if (evt.type === 'payment_intent.payment_failed') {
+      // Team Shop ACH (settle-then-produce): an ACH debit can fail days after
+      // the coach confirmed (insufficient funds, closed account, dispute of the
+      // debit). The order sat in 'pending_payment' the whole time — it was
+      // never converted to a Sales Order (00196/00199 only convert paid /
+      // po_verified) — so failing it is pure bookkeeping, not a production
+      // recall. Scope guards, in order:
+      //   * intents we created with payment_method_types EXACTLY
+      //     ['us_bank_account'] (teamshop-checkout place_order_ach). A card
+      //     intent (automatic_payment_methods) also fires payment_failed on
+      //     every declined attempt while the buyer retries in the open
+      //     Payment Element — those must never cancel the order, and their
+      //     payment_method_types list is never exactly this one.
+      //   * order_source 'teamshop' + status 'pending_payment' only, via a
+      //     compare-and-set — a paid/refunded/cancelled order is never touched,
+      //     and a redelivered event no-ops (so the reason message below is
+      //     written at most once).
+      // 'cancelled' is the stack's existing "no money collected" terminal (the
+      // exact transition teamshop-po-review's reject uses): excluded from
+      // revenue/batching (Webstores.js), refused by the convert guard, labeled
+      // 'Cancelled' for the coach, and never resurrected — the succeeded
+      // handler above only flips pending_payment orders.
+      const pi = evt.data.object;
+      const isAchOnly = pi && Array.isArray(pi.payment_method_types)
+        && pi.payment_method_types.length === 1 && pi.payment_method_types[0] === 'us_bank_account';
+      if (sb && pi && pi.id && isAchOnly) {
+        const { data: _rows } = await sb.from('webstore_orders')
+          .select('id,order_source,status,buyer_name,so_id').eq('stripe_pi_id', pi.id).limit(1);
+        const _ord = _rows && _rows[0];
+        if (_ord && _ord.order_source === 'teamshop' && _ord.status === 'pending_payment') {
+          const failMsg = (pi.last_payment_error && pi.last_payment_error.message) || 'The bank payment could not be completed.';
+          const { data: _claimed } = await sb.from('webstore_orders')
+            .update({ status: 'cancelled' })
+            .eq('id', _ord.id).eq('status', 'pending_payment')
+            .select('id').limit(1);
+          if (_claimed && _claimed.length) {
+            // Failure reason where staff (Messages center) and the coach (the
+            // order's tracker thread) already look — the same messages thread
+            // webstore-checkout's loadThread/postMessage use. Best-effort: the
+            // cancel above is the money-state fix; a lost message only costs
+            // the note, and the Stripe dashboard still has the full story.
+            try {
+              const now = new Date();
+              await sb.from('messages').insert({
+                id: 'm' + now.getTime() + Math.random().toString(36).slice(2, 7),
+                entity_type: 'webstore_order', entity_id: String(_ord.id),
+                so_id: null, author_id: null, author: 'NSA Payments',
+                text: 'Bank transfer (ACH) payment failed — the order was cancelled before production. Stripe reason: ' + failMsg + ' The coach can place the order again with another payment method.',
+                ts: now.toLocaleString(), dept: 'store',
+                tagged_members: [], from_customer: false, read_by_staff: false,
+              });
+            } catch (e) {
+              console.error('[stripe-webhook] ACH failure note failed (order already cancelled):', e.message);
+            }
+            console.error('[stripe-webhook] teamshop ACH payment failed — order cancelled:', JSON.stringify({ order: _ord.id, pi: pi.id, reason: failMsg }));
+          }
+        }
       }
     } else if (evt.type === 'charge.refunded') {
       // A refund issued from the Stripe dashboard (or the app). Record each refund

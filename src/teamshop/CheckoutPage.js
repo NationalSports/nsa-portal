@@ -66,7 +66,7 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   // (flag absent, fetch failure, pre-migration server) — the card flow is
   // always available.
   const [poAllowed, setPoAllowed] = useState(false);
-  const [payMethod, setPayMethod] = useState('card'); // 'card' | 'po'
+  const [payMethod, setPayMethod] = useState('card'); // 'card' | 'ach' | 'po'
   const [poNumber, setPoNumber] = useState('');
   const [poFile, setPoFile] = useState(null);
   useEffect(() => {
@@ -156,12 +156,21 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   const validInfo = contact.name.trim() && /.+@.+\..+/.test(contact.email)
     && ship.street1 && ship.city && ship.state && ship.zip;
 
+  // Bank transfer (ACH) — settle-then-produce. place_order_ach returns a
+  // clientSecret for a us_bank_account-only PaymentIntent; the same Payment
+  // Element renders the bank flow. After confirmation the intent is
+  // 'processing' for a few business days — the order stays 'pending_payment'
+  // ('Awaiting payment' in order history) and NOTHING converts to production
+  // until the Stripe webhook sees payment_intent.succeeded. This client never
+  // calls finalize/convert_order for a processing ACH payment.
+  const achMode = payMethod === 'ach';
+
   const startPayment = async () => {
     setErr(''); setPriceNotice(false);
     if (!validInfo) { setErr('Please complete your contact info and shipping address.'); return; }
     setBusy(true);
     const r = await call({
-      action: 'place_order', customer_id: customerId,
+      action: achMode ? 'place_order_ach' : 'place_order', customer_id: customerId,
       lines: quote.lines, quote_hash: quote.quote_hash,
       contact, ship: { ...ship, name: ship.name || contact.name },
       client_ref: orderRef(),
@@ -242,6 +251,16 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
     setDoneOrder(order);
   };
 
+  // ACH confirmed but NOT settled (intent 'processing', or awaiting
+  // micro-deposit verification): show the pending screen. Deliberately NO
+  // finalize and NO convert_order — the order must stay 'pending_payment'
+  // until the webhook sees the payment actually succeed (settle-then-produce).
+  const achSubmitted = (order, verifying) => {
+    refState.current = { key: '', ref: '' };
+    clearCart(customerId);
+    setDoneOrder({ ...order, __achProcessing: true, __achVerifying: !!verifying });
+  };
+
   if (!quote || !Array.isArray(quote.lines) || !quote.lines.length) {
     return (
       <div style={{ padding: '48px 32px', textAlign: 'center' }}>
@@ -263,6 +282,30 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
           </p>
           <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 20px' }}>
             If we can’t verify the PO, we’ll email {doneOrder.buyer_email} with the reason and the order will be cancelled.
+          </p>
+          {doneOrder.status_token && (
+            <a href={`/shop/order/${doneOrder.status_token}`} style={{ ...btnDark, display: 'inline-block', textDecoration: 'none' }}>
+              Track your order
+            </a>
+          )}
+        </div>
+      );
+    }
+    if (doneOrder.__achProcessing) {
+      return (
+        <div style={{ padding: '48px 32px', textAlign: 'center', maxWidth: 560, margin: '0 auto' }}>
+          <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 8px' }}>Order received — bank payment processing</h1>
+          <p style={{ fontSize: 15, color: '#0f172a', margin: '0 0 6px' }}>Your order number is <b>#{num}</b>.</p>
+          <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 6px' }}>
+            Bank transfers (ACH) usually take about 4 business days to clear. We’ll start production as soon as your payment clears — nothing goes into production before then.
+          </p>
+          {doneOrder.__achVerifying && (
+            <p style={{ fontSize: 13, color: '#92400e', margin: '0 0 6px' }}>
+              Your bank needs an extra verification step — check {doneOrder.buyer_email} for an email from Stripe with instructions.
+            </p>
+          )}
+          <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 20px' }}>
+            If the payment can’t be completed, we’ll cancel the order and let you know so you can place it again.
           </p>
           {doneOrder.status_token && (
             <a href={`/shop/order/${doneOrder.status_token}`} style={{ ...btnDark, display: 'inline-block', textDecoration: 'none' }}>
@@ -325,9 +368,10 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
         <Field l="ZIP"><input style={inp} value={ship.zip} disabled={locked} onChange={(e) => setShip({ ...ship, zip: e.target.value })} /></Field>
       </div>
 
-      {/* Payment method — the School PO option appears ONLY for rep-approved
-          programs (poAllowed); everyone else sees the card flow unchanged. */}
-      {poAllowed && !clientSecret && (
+      {/* Payment method — card and bank transfer (ACH) for every signed-in
+          coach; the School PO option appears ONLY for rep-approved programs
+          (poAllowed). */}
+      {!clientSecret && (
         <div style={{ margin: '12px 0 4px' }}>
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1, color: '#64748b', marginBottom: 8 }}>Payment</div>
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
@@ -336,10 +380,21 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
               Pay by card
             </label>
             <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-              <input type="radio" name="nts-pay-method" checked={payMethod === 'po'} onChange={() => setPayMethod('po')} />
-              School purchase order
+              <input type="radio" name="nts-pay-method" checked={payMethod === 'ach'} onChange={() => setPayMethod('ach')} />
+              Bank transfer (ACH)
             </label>
+            {poAllowed && (
+              <label style={{ fontSize: 13, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                <input type="radio" name="nts-pay-method" checked={payMethod === 'po'} onChange={() => setPayMethod('po')} />
+                School purchase order
+              </label>
+            )}
           </div>
+          {payMethod === 'ach' && (
+            <div style={{ background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: '#475569', marginTop: 10 }}>
+              Pay directly from a US bank account. ACH payments take about 4 business days to clear — production starts once the payment clears.
+            </div>
+          )}
         </div>
       )}
 
@@ -366,7 +421,11 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
       ) : clientSecret && stripePromise ? (
         <>
           <Elements stripe={stripePromise} options={{ clientSecret, appearance: { theme: 'stripe' } }}>
-            <CardForm onPaid={(piId) => finalizeOrder(pendingOrder, piId)} />
+            <CardForm
+              ach={achMode}
+              onPaid={(piId) => finalizeOrder(pendingOrder, piId)}
+              onProcessing={(verifying) => achSubmitted(pendingOrder, verifying)}
+            />
           </Elements>
           {/* Escape hatch: editing re-runs place_order; the same client_ref
               resumes the SAME order + PaymentIntent, never a duplicate. */}
@@ -381,12 +440,17 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
           {busy ? 'Starting…' : 'Continue to payment'}
         </button>
       )}
-      {!stripePromise && clientSecret && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>Card payment isn’t available right now — please try again shortly.</div>}
+      {!stripePromise && clientSecret && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 10 }}>Payment isn’t available right now — please try again shortly.</div>}
     </div>
   );
 }
 
-function CardForm({ onPaid }) {
+// Shared confirm form (card + ACH — the Payment Element renders whichever
+// method the PaymentIntent allows). For ACH the confirmed intent is
+// 'processing' (or awaiting micro-deposit verification) for a few business
+// days: that goes to onProcessing — NEVER onPaid, so finalize/convert are
+// never called on an unsettled bank payment.
+function CardForm({ onPaid, onProcessing, ach }) {
   const stripe = useStripe();
   const elements = useElements();
   const [busy, setBusy] = useState(false);
@@ -396,14 +460,20 @@ function CardForm({ onPaid }) {
     setBusy(true); setErr('');
     const { error, paymentIntent } = await stripe.confirmPayment({ elements, redirect: 'if_required' });
     if (error) { setErr(error.message || 'Payment failed.'); setBusy(false); return; }
-    if (paymentIntent && paymentIntent.status === 'succeeded') { await onPaid(paymentIntent.id); }
-    else { setErr('Payment not completed.'); setBusy(false); }
+    const status = paymentIntent && paymentIntent.status;
+    if (status === 'succeeded') { await onPaid(paymentIntent.id); return; }
+    if (ach && onProcessing && status === 'processing') { onProcessing(false); return; }
+    if (ach && onProcessing && status === 'requires_action'
+      && paymentIntent.next_action && paymentIntent.next_action.type === 'verify_with_microdeposits') {
+      onProcessing(true); return;
+    }
+    setErr('Payment not completed.'); setBusy(false);
   };
   return (
     <div style={{ marginTop: 14 }}>
       <PaymentElement />
       {err && <div style={{ color: '#b91c1c', fontSize: 13, marginTop: 8 }}>{err}</div>}
-      <button onClick={pay} disabled={busy} style={{ ...btnDark, width: '100%', marginTop: 14, opacity: busy ? 0.5 : 1 }}>{busy ? 'Processing…' : 'Pay now'}</button>
+      <button onClick={pay} disabled={busy} style={{ ...btnDark, width: '100%', marginTop: 14, opacity: busy ? 0.5 : 1 }}>{busy ? 'Processing…' : (ach ? 'Pay from bank account' : 'Pay now')}</button>
     </div>
   );
 }
