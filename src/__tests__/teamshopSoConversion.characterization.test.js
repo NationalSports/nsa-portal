@@ -1,4 +1,4 @@
-/* Stage 7 — create_teamshop_sales_order (migration 00192) characterization.
+/* Stage 7 — create_teamshop_sales_order (migration 00196) characterization.
  *
  * The RPC writes sales_orders / so_items / so_item_decorations / so_jobs /
  * job_stage_events rows that MUST load cleanly through the staff portal's save
@@ -22,13 +22,13 @@ const path = require('path');
 const { _soCols, _itemCols, _decoCols, _jobCols } = require('../constants');
 
 const SQL = fs.readFileSync(
-  path.join(__dirname, '../../supabase/migrations/00192_create_teamshop_sales_order.sql'),
+  path.join(__dirname, '../../supabase/migrations/00196_create_teamshop_sales_order.sql'),
   'utf8'
 );
-// 00195 CREATE OR REPLACEs the same RPC, keeping every 00192 behavior and
+// 00199 CREATE OR REPLACEs the same RPC, keeping every 00196 behavior and
 // adding the conversion invoice (money-of-record for commissions/A-R).
 const SQL195 = fs.readFileSync(
-  path.join(__dirname, '../../supabase/migrations/00195_teamshop_conversion_invoice.sql'),
+  path.join(__dirname, '../../supabase/migrations/00199_teamshop_conversion_invoice.sql'),
   'utf8'
 );
 
@@ -75,7 +75,7 @@ function insertValues(table, sql = SQL) {
   return splitTopLevel(body);
 }
 
-describe('00192 migration structure', () => {
+describe('00196 migration structure', () => {
   test('adds the additive nullable so_jobs.digitizing_needed column', () => {
     expect(SQL).toMatch(/alter table public\.so_jobs add column if not exists digitizing_needed boolean;/);
     // additive + nullable: no NOT NULL, no DEFAULT rewrite
@@ -119,7 +119,7 @@ describe('00192 migration structure', () => {
   });
 });
 
-describe('00192 column sets vs the client save engine', () => {
+describe('00196 column sets vs the client save engine', () => {
   // ── sales_orders ── fixture derived from App.js webstoreCreateSO's newSO
   // (minus client-only members: items/jobs/art_files/firm_dates are child
   // tables; created_by is the signed-in staff user — none exists server-side;
@@ -276,8 +276,8 @@ describe('00192 column sets vs the client save engine', () => {
     });
   });
 
-  // ── job_stage_events ── the 00188 log, same transaction, source 'teamshop'.
-  test("job_stage_events insert matches 00188's column list, event 'created', source 'teamshop'", () => {
+  // ── job_stage_events ── the 00192 log, same transaction, source 'teamshop'.
+  test("job_stage_events insert matches 00192's column list, event 'created', source 'teamshop'", () => {
     const cols = insertColumns('job_stage_events');
     expect(cols).toEqual(['so_id', 'job_id', 'event', 'from_state', 'to_state', 'actor', 'source', 'payload']);
     const vals = insertValues('job_stage_events');
@@ -299,12 +299,12 @@ describe('00192 column sets vs the client save engine', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// 00195 — conversion invoice (money-of-record). CREATE OR REPLACEs the RPC:
-// every 00192 write must survive byte-for-byte in column shape, plus the
+// 00199 — conversion invoice (money-of-record). CREATE OR REPLACEs the RPC:
+// every 00196 write must survive byte-for-byte in column shape, plus the
 // invoice block mirroring App.js createAndSettleWebstoreInvoice (~12238).
 // ═════════════════════════════════════════════════════════════════════════════
-describe('00195 preserves the 00192 write shapes', () => {
-  test('every 00192 insert column list is unchanged in the replaced function', () => {
+describe('00199 preserves the 00196 write shapes', () => {
+  test('every 00196 insert column list is unchanged in the replaced function', () => {
     ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events'].forEach((t) => {
       expect(insertColumns(t, SQL195)).toEqual(insertColumns(t, SQL));
     });
@@ -324,7 +324,7 @@ describe('00195 preserves the 00192 write shapes', () => {
     expect(SQL195).toMatch(/v_is_po := \(v_ord\.status = 'po_verified'\)/);
   });
 
-  test('service_role-only grants identical to 00192, with rollback notes', () => {
+  test('service_role-only grants identical to 00196, with rollback notes', () => {
     expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from public;/);
     expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from anon;/);
     expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from authenticated;/);
@@ -333,7 +333,7 @@ describe('00195 preserves the 00192 write shapes', () => {
   });
 });
 
-describe('00195 invoice vs createAndSettleWebstoreInvoice (App.js ~12238)', () => {
+describe('00199 invoice vs createAndSettleWebstoreInvoice (App.js ~12238)', () => {
   // Fixture = the client inv object's field set ∩ dbEngine's _invCols
   // allowlist (dbEngine.js:1632 — what _dbSaveInvoiceInner actually persists).
   // payments/items are child tables (invoice_payments / invoice_items).
@@ -434,11 +434,11 @@ describe('00195 invoice vs createAndSettleWebstoreInvoice (App.js ~12238)', () =
     expect(SQL195).toMatch(/select r\.cost into v_deco_cost\s*from teamshop_deco_rates r/);
     expect(SQL195).toMatch(/r\.option_key = coalesce\(nullif\(v_deco->>'option', ''\), 'standard'\)/);
     expect(SQL195).toMatch(/and r\.active/);
-    // cost_each = coalesce(rate cost, 0) — 0 is 00192's value; missing cost never blocks conversion
+    // cost_each = coalesce(rate cost, 0) — 0 is 00196's value; missing cost never blocks conversion
     const cols = insertColumns('so_item_decorations', SQL195);
     const vals = insertValues('so_item_decorations', SQL195);
     expect(vals[cols.indexOf('cost_each')]).toBe('coalesce(v_deco_cost, 0)');
-    // sells stay suppressed like 00192
+    // sells stay suppressed like 00196
     expect(vals[cols.indexOf('sell_override')]).toBe('0');
     expect(vals[cols.indexOf('sell_each')]).toBe('0');
   });

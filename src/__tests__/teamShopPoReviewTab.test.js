@@ -107,10 +107,10 @@ test('Reject requires a reason, then posts the reject action with it', async () 
   await waitFor(() => expect(screen.getByText(/PO rejected — coach emailed/)).toBeTruthy());
 });
 
-test('pre-migration (enabled:false) shows the 00197 banner, never a blank page', async () => {
+test('pre-migration (enabled:false) shows the 00201 banner, never a blank page', async () => {
   mockFetch({ list: () => ({ ok: true, enabled: false, orders: [] }) });
   await openPoTab();
-  await waitFor(() => expect(screen.getByText(/School-PO checkout migration \(00197\) not applied yet/)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/School-PO checkout migration \(00201\) not applied yet/)).toBeTruthy());
 });
 
 test('list failure shows an error banner', async () => {

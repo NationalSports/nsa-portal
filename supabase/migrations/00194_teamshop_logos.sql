@@ -1,7 +1,7 @@
 -- Team Shop logo library (Stage 3): logos a coach uploads through the Team Shop
 -- storefront, one row per uploaded file. The file itself lands in the `artwork`
 -- storage bucket under teamshop/<customer_id>/<uuid>.<ext>, written ONLY by the
--- service-role function netlify/functions/teamshop-art.js — 00187 made artwork
+-- service-role function netlify/functions/teamshop-art.js — 00191 made artwork
 -- bucket writes staff-only, so coach browsers can never write storage directly.
 --
 -- Deliberately separate from customers.art_files (the staff-maintained art
@@ -10,7 +10,7 @@
 -- their own table; the Team Shop "list" action UNIONS both sources read-only.
 --
 -- Writes: NONE via RLS on purpose (no insert/update/delete policies) — the
--- service-role key bypasses RLS, mirroring 00189 purchase_orders.
+-- service-role key bypasses RLS, mirroring 00193 purchase_orders.
 
 create table if not exists public.teamshop_logos (
   id           uuid primary key default gen_random_uuid(),
@@ -31,7 +31,7 @@ create index if not exists idx_teamshop_logos_customer
 alter table public.teamshop_logos enable row level security;
 
 -- Staff SELECT — same predicate as the lockdown migrations (00173 is_team_member,
--- reused verbatim by 00189 purchase_orders_staff_read).
+-- reused verbatim by 00193 purchase_orders_staff_read).
 drop policy if exists teamshop_logos_staff_read on public.teamshop_logos;
 create policy teamshop_logos_staff_read on public.teamshop_logos
   for select to authenticated using (public.is_team_member());
@@ -58,7 +58,7 @@ create policy teamshop_logos_coach_read on public.teamshop_logos
   ));
 
 -- No INSERT/UPDATE/DELETE policies on purpose: writes go through the
--- service-role teamshop-art function only (service_role bypasses RLS) — 00189 pattern.
+-- service-role teamshop-art function only (service_role bypasses RLS) — 00193 pattern.
 revoke select, insert, update, delete on public.teamshop_logos from anon;
 
 -- ── Rollback ────────────────────────────────────────────────────────────────

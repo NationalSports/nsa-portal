@@ -205,7 +205,7 @@ describe('cleanDeco round trip — the spec IS the pricing input', () => {
   });
 });
 
-// ── Method families (owner-approved taxonomy, mirrors 00194 seeds) ────
+// ── Method families (owner-approved taxonomy, mirrors 00198 seeds) ────
 describe('METHOD_FAMILIES', () => {
   test('three families: embroidery, heat (with kinds), screen_print (24 min)', () => {
     expect(METHOD_FAMILIES.map((f) => f.key)).toEqual(['embroidery', 'heat', 'screen_print']);

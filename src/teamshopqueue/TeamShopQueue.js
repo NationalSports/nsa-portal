@@ -3,8 +3,8 @@ import { supabase } from '../lib/supabase';
 
 // Team Shop — Fast Turn Queue. A staff-only lazy chunk, routed at
 // /teamshop-queue by src/index.js. This is the fast-turn production board for
-// Team Shop orders ONLY (webstore_orders.order_source='teamshop', see 00191 /
-// 00192) — a small, separate view from the main warehouse jobs board in
+// Team Shop orders ONLY (webstore_orders.order_source='teamshop', see 00195 /
+// 00196) — a small, separate view from the main warehouse jobs board in
 // App.js, which this chunk does not touch or import.
 //
 // Data model (client-side join, no server view exists for this):
@@ -19,7 +19,7 @@ import { supabase } from '../lib/supabase';
 // staff (00173+ lockdown); a signed-out visitor sees a plain gate, no login
 // form (staff sign in through the normal portal at '/').
 //
-// Stage moves go through the advance_job_stage RPC (00188) exclusively — this
+// Stage moves go through the advance_job_stage RPC (00192) exclusively — this
 // chunk never writes prod_status directly. If the migration hasn't been
 // applied yet to whatever DB this build points at, the RPC call fails with a
 // Postgres "function does not exist" error; we detect that and disable the
@@ -34,7 +34,7 @@ const COLUMNS = [
   { key: 'completed', label: 'Completed' },
 ];
 
-// Mirrors advance_job_stage's own normalization (00188: legacy 'ready' -> 'hold').
+// Mirrors advance_job_stage's own normalization (00192: legacy 'ready' -> 'hold').
 const normProdStatus = (s) => {
   const v = s || 'hold';
   return v === 'ready' ? 'hold' : v;
@@ -70,7 +70,7 @@ const isStaleState = (error) => !!error && /NSA_STALE_STATE/.test(error.message 
 
 // Postgres "relation does not exist" (42P01) or "column does not exist"
 // (42703) — both surface as PostgREST schema-cache misses too, for
-// migrations (00194 rates, 00196 teamshop_po_allowed) that may not be
+// migrations (00198 rates, 00200 teamshop_po_allowed) that may not be
 // applied yet to whatever DB this build points at.
 const isMissingRelation = (error) => {
   if (!error) return false;
@@ -405,8 +405,8 @@ function TeamShopQueueBoard({ email }) {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Settings — Team Shop money knobs a rep/manager can edit without an
-// engineering ticket: the deco rate card (00194), per-customer School-PO
-// eligibility (00196), and the flat shipping fee (webstores.flat_shipping,
+// engineering ticket: the deco rate card (00198), per-customer School-PO
+// eligibility (00200), and the flat shipping fee (webstores.flat_shipping,
 // read by teamshop-checkout.js's shipFee(), same helper webstore-checkout.js
 // uses). Each sub-section degrades independently if its migration hasn't
 // landed on this DB yet — a missing table/column never blanks the page.
@@ -529,7 +529,7 @@ function RateCardSection() {
   if (missing) {
     return (
       <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
-        Rate card migration (00194) not applied yet.
+        Rate card migration (00198) not applied yet.
       </div>
     );
   }
@@ -767,7 +767,7 @@ function PoEligibilitySection() {
   if (hidden) {
     return (
       <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
-        School-PO eligibility migration (00196) not applied yet — this section is hidden.
+        School-PO eligibility migration (00200) not applied yet — this section is hidden.
       </div>
     );
   }
@@ -859,7 +859,7 @@ function ShippingSection() {
   if (hidden) {
     return (
       <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
-        Team Shop store row (nationalteamshop, 00191) not found — shipping fee is hidden.
+        Team Shop store row (nationalteamshop, 00195) not found — shipping fee is hidden.
       </div>
     );
   }
@@ -925,9 +925,9 @@ function TeamShopSettings() {
 // go through netlify/functions/teamshop-po-review.js with the staff JWT — the
 // PDF lives in the PRIVATE po-docs bucket and only that function (service
 // role) can mint the short-lived signed URL. Approve flips the order to
-// 'po_verified' and converts it through create_teamshop_sales_order (00195's
+// 'po_verified' and converts it through create_teamshop_sales_order (00199's
 // open-invoice branch); Reject records a reason, cancels the order, and
-// emails the coach. Degrades gracefully pre-00197: the function reports
+// emails the coach. Degrades gracefully pre-00201: the function reports
 // enabled:false and this section shows a banner, never a blank page.
 function PoReviewSection() {
   const [state, setState] = useState({ loading: true, enabled: true, orders: [], error: null });
@@ -994,7 +994,7 @@ function PoReviewSection() {
       <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: '0 0 16px' }}>Team Shop — PO review</h1>
       {!state.enabled && (
         <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
-          School-PO checkout migration (00197) not applied yet — nothing to review.
+          School-PO checkout migration (00201) not applied yet — nothing to review.
         </div>
       )}
       {state.error && (

@@ -16,13 +16,13 @@
 //         the server). NEVER written here: the staff client save engine
 //         whole-value rewrites that column, so a server-side append would be
 //         silently clobbered. Tagged source:'art_library'.
-//     (b) teamshop_logos rows (coach uploads, migration 00190), tagged
+//     (b) teamshop_logos rows (coach uploads, migration 00194), tagged
 //         source:'teamshop'.
 //
 // upload { customer_id, name, file_base64, mime, deco_hint? }
 //   Validates mime (png/jpg/jpeg/svg+xml/pdf) and decoded size (≤ 10 MB), then
 //   writes to the `artwork` bucket with the SERVICE-ROLE client — migration
-//   00187 made artwork-bucket writes staff-only, so coach uploads must go
+//   00191 made artwork-bucket writes staff-only, so coach uploads must go
 //   through here (service_role bypasses storage RLS). The storage path is
 //   SERVER-CONSTRUCTED only (teamshop/<customer_id>/<uuid>.<ext>); no
 //   client-supplied path ever reaches storage. PNG/JPEG dimensions are probed

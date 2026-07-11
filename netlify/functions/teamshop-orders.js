@@ -20,7 +20,7 @@
 // trackOrder) are UNTOUCHED — this is an additive, parallel read.
 //
 // Production stage (only meaningful once the order has converted to a Sales
-// Order — migration 00192's so_id): fetches that SO's so_jobs (00188's
+// Order — migration 00196's so_id): fetches that SO's so_jobs (00192's
 // prod_status vocabulary: hold|staging|in_process|completed) and summarizes
 // the WHOLE order with the least-advanced-first rule production already uses
 // elsewhere (OrderTrack's `reached = min(...)`):

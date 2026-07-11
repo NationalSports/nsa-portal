@@ -72,7 +72,7 @@ exports.handler = async (event) => {
           if (order.buyer_email) await sendOrderConfirmation(sb, order);
         }
 
-        // Team Shop order → production conversion (Stage 7, migration 00192).
+        // Team Shop order → production conversion (Stage 7, migration 00196).
         // Best-effort and STRICTLY guarded: webhook processing must never fail
         // because of conversion — the RPC is idempotent (so_id replay + paid
         // re-guard), and CheckoutPage's convert_order call / a staff batch can

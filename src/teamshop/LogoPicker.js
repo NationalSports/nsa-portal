@@ -5,7 +5,7 @@ import useCoachSession from './useCoachSession';
 // art library and prior Team Shop uploads, from netlify/functions/teamshop-art.js
 // (coach-JWT-authed, same bearer pattern as TeamPicker). Coaches can also
 // upload a new logo here: the file is base64-encoded client-side and written
-// by the service-role function (00187 made artwork-bucket writes staff-only,
+// by the service-role function (00191 made artwork-bucket writes staff-only,
 // so the browser never touches storage directly).
 //
 // TODO(stage-4): the real garment → logo placement flow mounts this from the

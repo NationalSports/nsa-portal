@@ -1,6 +1,6 @@
 /* Team Shop flat deco rate card (netlify/functions/_teamshopRates.js) — the
  * money path for storefront decoration pricing. Covers loadRates' transitional
- * fallback contract (null when the 00194 table is missing/unreadable/empty so
+ * fallback contract (null when the 00198 table is missing/unreadable/empty so
  * callers fall back to decoPricing.dP), rateFor/flatDecoSell for every seed
  * type + option, and min_qty enforcement (screen print 24+). */
 
@@ -14,7 +14,7 @@ const { loadRates, rateFor, flatDecoSell } = require('../../netlify/functions/_t
 const priceFn = require('../../netlify/functions/teamshop-public-price');
 const DECO = require('../lib/decoPricing');
 
-// The 00194 seed rows, verbatim (family/type/option_key/label/price/min_qty).
+// The 00198 seed rows, verbatim (family/type/option_key/label/price/min_qty).
 const SEED = [
   { id: 'r1', family: 'embroidery', type: 'embroidery', option_key: 'standard', label: 'Embroidery', price: 8, cost: null, min_qty: 1, sort_order: 0, active: true },
   { id: 'r2', family: 'heat', type: 'dtf', option_key: 'standard', label: 'DTF Transfer', price: 6, cost: null, min_qty: 1, sort_order: 10, active: true },
@@ -44,7 +44,7 @@ describe('loadRates — transitional fallback contract', () => {
     expect(await loadRates(fakeAdmin({ data: SEED, error: null }))).toEqual(SEED);
   });
 
-  test('query error (00194 not applied) → null + a warn, never a throw', async () => {
+  test('query error (00198 not applied) → null + a warn, never a throw', async () => {
     const rates = await loadRates(fakeAdmin({ data: null, error: { message: 'relation "teamshop_deco_rates" does not exist' } }));
     expect(rates).toBeNull();
     expect(warnSpy).toHaveBeenCalled();
@@ -106,7 +106,7 @@ describe('flatDecoSell — every seed type/option prices at its flat rate', () =
   });
 });
 
-describe('fallback-to-dP path when loadRates nulls (pre-00194 deploys)', () => {
+describe('fallback-to-dP path when loadRates nulls (pre-00198 deploys)', () => {
   // Drive the REAL caller: teamshop-public-price with no rates table mocked —
   // loadRates → null → the endpoint must price via decoPricing.dP exactly as
   // it did before the rate card existed.

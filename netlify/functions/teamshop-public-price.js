@@ -22,7 +22,7 @@
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
 const { unitSell, cleanDeco } = require('./quickorder-quote');
 const DECO = require('../../src/lib/decoPricing');
-// The SAME flat rate-card pricer quickorder-quote.js's buildQuote uses (00194)
+// The SAME flat rate-card pricer quickorder-quote.js's buildQuote uses (00198)
 // — anon and coach deco prices must agree by construction. Falls back to the
 // legacy DECO.dP tables when the rate table isn't live yet (loadRates → null);
 // see the transitional-fallback note in _teamshopRates.js.
@@ -51,7 +51,7 @@ async function buildPublicQuote(admin, { lines }) {
   (prods || []).forEach((p) => { byId[p.id] = p; });
 
   const T = DECO.DEFAULTS; // fallback tables — same ones quickorder-quote.js falls back to
-  const rates = await loadRates(admin); // flat rate card (00194); null → dP fallback
+  const rates = await loadRates(admin); // flat rate card (00198); null → dP fallback
   const outLines = [];
   let subtotal = 0;
   for (const l of lines) {
@@ -79,7 +79,7 @@ async function buildPublicQuote(admin, { lines }) {
         if (fr.error) return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
         unitDeco = r2(unitDeco + fr.sell);
       } else {
-        // dP fallback (00194 not applied yet) — legacy pricing; the new heat
+        // dP fallback (00198 not applied yet) — legacy pricing; the new heat
         // kinds have no dP price, so reject rather than estimate $0.
         if (d.type === 'vinyl' || d.type === 'silicone_patch') {
           return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };

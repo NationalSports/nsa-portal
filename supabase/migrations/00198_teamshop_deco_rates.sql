@@ -10,7 +10,7 @@
 --            It shapes the builder's method tiles and never routes production.
 --   type   = the CONCRETE PRODUCTION IDENTITY ('embroidery' | 'dtf' | 'vinyl' |
 --            'silicone_patch' | 'screen_print'). This is what flows into cart
---            lines → webstore_order_items.decorations jsonb → 00192's
+--            lines → webstore_order_items.decorations jsonb → 00196's
 --            so_item_decorations/so_jobs, so a DTF job routes to the DTF
 --            printer and a vinyl job to the cutter. Never collapse types into
 --            their family.
@@ -23,7 +23,7 @@
 -- legacy decoPricing.dP tables until this migration is applied.
 --
 -- RLS: staff SELECT + staff INSERT/UPDATE via public.is_team_member() (00173
--- predicate, reused verbatim by 00189/00190) — staff WILL edit rates from the
+-- predicate, reused verbatim by 00193/00194) — staff WILL edit rates from the
 -- future settings page with their own JWT. No anon/coach policies on purpose:
 -- shoppers only ever see prices through the pricing functions (service role
 -- bypasses RLS). No DELETE policy — retire a rate with active = false.

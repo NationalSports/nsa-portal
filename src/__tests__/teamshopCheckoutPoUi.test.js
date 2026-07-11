@@ -1,7 +1,7 @@
 /* Team Shop consumer checkout — School-PO option gating (src/teamshop/CheckoutPage.js).
  *
  * The PO payment option must appear ONLY when teamshop-context reports the
- * active customer's teamshop_po_allowed = true (rep-gated, 00196); it defaults
+ * active customer's teamshop_po_allowed = true (rep-gated, 00200); it defaults
  * hidden on false/absent/fetch failure. The flag is cosmetic — place_order_po
  * re-verifies server-side (covered in teamshopCheckout.test.js). Also pins the
  * coach-facing label for the pending status: 'unpaid' → 'PO review'
@@ -65,7 +65,7 @@ test('not approved (flag false): no PO option, card flow untouched', async () =>
   expect(screen.queryByText('School purchase order')).toBeFalsy();
 });
 
-test('flag absent from the server response (pre-00196 backend): default hidden', async () => {
+test('flag absent from the server response (pre-00200 backend): default hidden', async () => {
   mockFetch({ poAllowed: undefined });
   render(<CheckoutPage customer={CUSTOMER} quote={QUOTE} onBack={() => {}} />);
   await waitFor(() => expect(screen.getByText('Continue to payment')).toBeTruthy());

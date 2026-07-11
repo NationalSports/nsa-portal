@@ -18,7 +18,7 @@
 --     _webstore_fundraise 0 (Team Shop has no fundraising), source 'webstore'
 --     (so every staff read — pricing.js tax, App.js report filters — treats it
 --     exactly like a batched webstore SO), webstore_id = the seeded
---     'nationalteamshop' store (00191). webstore_batch_no is assigned by the
+--     'nationalteamshop' store (00195). webstore_batch_no is assigned by the
 --     00177 trigger on insert, same as the client path. created_at/updated_at are
 --     TEXT columns; the client writes new Date().toLocaleString() — we write the
 --     same 'M/D/YYYY, H:MM:SS AM' shape so fmtCreatedAt/Date.parse behave identically.
@@ -45,15 +45,15 @@
 --     the client's job matcher preserves these jobs on the first staff re-sync),
 --     art_status 'needs_art' (the entry state for art-less decos in both
 --     builders), item_status 'need_to_order', prod_status 'hold' (born on hold —
---     00188 contract), items jsonb in buildJobs' per-item shape, _auto true,
+--     00192 contract), items jsonb in buildJobs' per-item shape, _auto true,
 --     ship_method 'ship_customer' (syncJobs' default for non-rep-delivery),
 --     created_at date-only text (syncJobs writes toLocaleDateString()).
 --     digitizing_needed (new, additive) = true when the job decorates a
 --     coach-uploaded logo (logo_source 'teamshop') with embroidery.
 --   * job_stage_events      — one 'created' row per job, source 'teamshop', in
---     the SAME transaction (00188's append-only log).
+--     the SAME transaction (00192's append-only log).
 --
--- Idempotency / guards (NSA_* codes, 00171/00188/00189 conventions):
+-- Idempotency / guards (NSA_* codes, 00171/00192/00193 conventions):
 --   * row lock (FOR UPDATE) on the webstore order serializes concurrent callers;
 --   * so_id already set → {so_id, replayed:true}, no writes;
 --   * order_source must be 'teamshop'  → NSA_BAD_SOURCE;
@@ -420,7 +420,7 @@ begin
       v_job.digitizing
     );
 
-    -- 00188 event log, same transaction.
+    -- 00192 event log, same transaction.
     insert into job_stage_events (so_id, job_id, event, from_state, to_state, actor, source, payload)
     values (
       v_so_id, v_job_id, 'created',

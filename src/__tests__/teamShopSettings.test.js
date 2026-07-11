@@ -197,14 +197,14 @@ test('shipping save updates the store row', async () => {
   expect(call.patch).toEqual({ flat_shipping: 12.5 });
 });
 
-test('pre-migration: missing rate card table shows the 00194 banner', async () => {
+test('pre-migration: missing rate card table shows the 00198 banner', async () => {
   setMocks({
     teamshop_deco_rates: () => ({ data: null, error: { code: '42P01', message: 'relation "teamshop_deco_rates" does not exist' } }),
     customers: () => ({ data: [], error: null }),
     webstores: () => ({ data: STORE_ROW, error: null }),
   });
   await openSettings();
-  await waitFor(() => expect(screen.getByText(/Rate card migration \(00194\) not applied yet/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/Rate card migration \(00198\) not applied yet/i)).toBeTruthy());
 });
 
 test('pre-migration: missing teamshop_po_allowed column hides the PO section', async () => {
@@ -214,7 +214,7 @@ test('pre-migration: missing teamshop_po_allowed column hides the PO section', a
     webstores: () => ({ data: STORE_ROW, error: null }),
   });
   await openSettings();
-  await waitFor(() => expect(screen.getByText(/School-PO eligibility migration \(00196\) not applied yet/i)).toBeTruthy());
+  await waitFor(() => expect(screen.getByText(/School-PO eligibility migration \(00200\) not applied yet/i)).toBeTruthy());
 });
 
 test('pre-migration: missing store row hides shipping', async () => {

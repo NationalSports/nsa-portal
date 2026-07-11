@@ -15,7 +15,7 @@
 //     returns the clientSecret. clientRef idempotency, replay, and rollback
 //     compensation are webstore-checkout's own exported implementations.
 //   place_order_po — School-PO checkout for rep-approved programs
-//     (customers.teamshop_po_allowed, 00196/00197): same verification chain
+//     (customers.teamshop_po_allowed, 00200/00201): same verification chain
 //     as place_order, PO number + PDF instead of Stripe, order lands 'unpaid'
 //     pending staff verification (teamshop-po-review.js).
 //
@@ -47,13 +47,13 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(body) });
 
-// The seeded Team Shop store row (migration 00191). Missing row = the
+// The seeded Team Shop store row (migration 00195). Missing row = the
 // migration hasn't been applied; checkout must fail loudly, never invent one.
 async function loadStore(sb) {
   const { data, error } = await sb.from('webstores').select('*').eq('slug', TEAMSHOP_SLUG).limit(1);
   if (error) return { error: error.message };
   const store = data && data[0];
-  if (!store) return { error: 'Team Shop store is not provisioned (migration 00191).' };
+  if (!store) return { error: 'Team Shop store is not provisioned (migration 00195).' };
   return { store };
 }
 
@@ -160,7 +160,7 @@ async function placeOrder(sb, body, coach) {
 
   // Order row — webstore-checkout's field set (so every downstream reader:
   // finalize, stripe-webhook, refunds, OrderTrack, emails, reports sees a
-  // normal webstore order) plus the Team Shop identity columns from 00191.
+  // normal webstore order) plus the Team Shop identity columns from 00195.
   // Storefront-only money fields are explicit zeros, not omissions, so the
   // order row always sums: subtotal + shipping_fee + tax = total.
   const orderRow = {
@@ -184,7 +184,7 @@ async function placeOrder(sb, body, coach) {
     total: totals.total,
     coupon_code: null,
     discount_amt: 0,
-    // Team Shop identity (00191)
+    // Team Shop identity (00195)
     order_source: 'teamshop',
     coach_id: coach.id,
     customer_id: customerId,
@@ -212,7 +212,7 @@ async function placeOrder(sb, body, coach) {
   // ONE transaction (00171): order + items commit together or not at all.
   // Made-to-order: NO number claims, NO stock holds — both arrays empty.
   // No legacy sequential-write fallback here (unlike webstore-checkout):
-  // Team Shop launches after 00171/00191, so a missing RPC or column is a
+  // Team Shop launches after 00171/00195, so a missing RPC or column is a
   // provisioning error to surface, not a path to paper over.
   let order = null;
   const rpc = await sb.rpc('place_webstore_order', {
@@ -257,18 +257,18 @@ async function placeOrder(sb, body, coach) {
   return ok({ order: { ...order, stripe_pi_id: intent.id }, totals, clientSecret: intent.client_secret, intentId: intent.id });
 }
 
-// ── place_order_po (School-PO checkout, 00196/00197) ─────────────────
+// ── place_order_po (School-PO checkout, 00200/00201) ─────────────────
 // Card checkout's verification chain (auth → replay → store open → contact/
 // ship → quote-hash re-price) verbatim, with the Stripe leg replaced by:
 // an eligibility gate (customers.teamshop_po_allowed, rep-gated), a PO number
 // + PDF upload into the PRIVATE po-docs bucket, and status 'unpaid' — the
-// existing "no card collected" value, which 00195's convert guard refuses
+// existing "no card collected" value, which 00199's convert guard refuses
 // until staff approval flips it to 'po_verified' (teamshop-po-review.js).
 // NO Stripe involvement anywhere on this path.
-const PO_MAX_PDF_BYTES = 10 * 1024 * 1024; // bucket cap (00197) mirrored here for a clean 4xx
+const PO_MAX_PDF_BYTES = 10 * 1024 * 1024; // bucket cap (00201) mirrored here for a clean 4xx
 const PO_NUMBER_MAX = 64;
 
-// The teamshop_po_allowed column ships in 00196; before that migration the
+// The teamshop_po_allowed column ships in 00200; before that migration the
 // select fails with 42703/schema-cache — a "feature not enabled" state, not
 // an eligible one. Same detection shape as webstore-checkout's
 // isMissingColumnErr.
@@ -330,9 +330,9 @@ async function placeOrderPo(sb, body, coach) {
   const pdf = decodePoPdf(body.po_pdf_base64);
   if (pdf.error) return bad(400, pdf.error);
 
-  // Eligibility gate — rep-controlled per customer (00196), re-read server-
+  // Eligibility gate — rep-controlled per customer (00200), re-read server-
   // side on every attempt; the UI flag is cosmetic only. Read defensively:
-  // pre-00196 the column doesn't exist, which means the feature isn't enabled
+  // pre-00200 the column doesn't exist, which means the feature isn't enabled
   // anywhere yet — a distinct, non-retryable code, never a fallback to allowed.
   const { data: custRows, error: custErr } = await sb.from('customers')
     .select('id,teamshop_po_allowed').eq('id', customerId).limit(1);
@@ -354,7 +354,7 @@ async function placeOrderPo(sb, body, coach) {
   const totals = await computeTotals(store, quote, ship);
 
   // Order row — place_order's field set with the card-specific values swapped:
-  // status 'unpaid' (pending staff PO verification; 00195 refuses to convert
+  // status 'unpaid' (pending staff PO verification; 00199 refuses to convert
   // it), payment_mode 'unpaid' (no card collected), po_number carried into the
   // same 00171 transaction. po_doc_path is written AFTER the upload below —
   // the storage path is scoped by the order id, which doesn't exist yet.
@@ -409,7 +409,7 @@ async function placeOrderPo(sb, body, coach) {
       const winner = await ws.findOrderByClientRef(sb, clientRef);
       if (winner) return ws.replayOrder(winner);
     }
-    // 00196 applied but 00197 not: the po_number column is missing — same
+    // 00200 applied but 00201 not: the po_number column is missing — same
     // "feature not enabled" state as the eligibility read above.
     if (isMissingPoColumnErr(rpc.error)) return bad(422, 'School PO checkout isn’t enabled yet.', { code: 'po_not_enabled' });
     return bad(502, 'Could not create the order: ' + msg);
@@ -417,7 +417,7 @@ async function placeOrderPo(sb, body, coach) {
   const order = rpc.data && rpc.data.order;
   if (!order) return bad(502, 'Could not create the order.');
 
-  // PDF into the PRIVATE po-docs bucket (00197), service-role write, path
+  // PDF into the PRIVATE po-docs bucket (00201), service-role write, path
   // scoped by order. upsert so a retried attempt for the same order can't
   // fail on "already exists". Any failure past order creation compensates
   // with webstore-checkout's own rollback delete — same contract as the
@@ -440,7 +440,7 @@ async function placeOrderPo(sb, body, coach) {
 
 // ── convert_order (Stage 7) ──────────────────────────────────────────
 // Best-effort post-payment trigger for the create_teamshop_sales_order RPC
-// (migration 00192): CheckoutPage calls this right after webstore-checkout's
+// (migration 00196): CheckoutPage calls this right after webstore-checkout's
 // finalize succeeds. Coach JWT is sufficient here because nothing is trusted
 // from the client beyond the order id — this function re-reads the order and
 // verifies it is a PAID Team Shop order before invoking the RPC, and the RPC

@@ -59,7 +59,7 @@ export default function CheckoutPage({ customer, quote: initialQuote, onBack }) 
   const [stripePromise, setStripePromise] = useState(null);
   useEffect(() => { getStripePromise().then((p) => setStripePromise(p || null)); }, []);
 
-  // School-PO option (rep-gated per program, 00196/00197). The flag is fetched
+  // School-PO option (rep-gated per program, 00200/00201). The flag is fetched
   // fresh from teamshop-context — never trusted from the possibly-stale
   // localStorage customer object — and is COSMETIC only: place_order_po
   // re-verifies eligibility server-side on every attempt. Default hidden

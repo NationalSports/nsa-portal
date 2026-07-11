@@ -22,7 +22,7 @@ export const NUDGE_LIMIT = 8; // ± percent points on x and y
 export const SCALE_MIN = 0.6; // × zone default width
 export const SCALE_MAX = 1.4; // × zone default width
 
-// ── Method taxonomy (owner-approved, mirrors migration 00194's seed rows) ────
+// ── Method taxonomy (owner-approved, mirrors migration 00198's seed rows) ────
 // The storefront groups methods into three FAMILIES: Embroidery, Heat
 // Applications (a family with multiple kinds — DTF, Vinyl, Silicone Patch),
 // and Screen Print (24-piece minimum). `family` is STOREFRONT GROUPING ONLY;

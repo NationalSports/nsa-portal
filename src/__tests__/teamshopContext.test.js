@@ -86,12 +86,12 @@ describe('customer resolution', () => {
     expect(r.statusCode).toBe(200);
     const body = JSON.parse(r.body);
     expect(body.coach).toEqual({ id: 'coach1', email: 'coach@team.com', name: 'Coach' });
-    // teamshop_po_allowed rides along (00196; false when unset) — it gates the
+    // teamshop_po_allowed rides along (00200; false when unset) — it gates the
     // School-PO checkout option in CheckoutPage.js, cosmetically only.
     expect(body.customers).toEqual([{ id: 'custA', name: 'Central High', teamshop_po_allowed: false }]);
   });
 
-  test('pre-00196 backend: teamshop_po_allowed column missing → retries without it, flag reads false', async () => {
+  test('pre-00200 backend: teamshop_po_allowed column missing → retries without it, flag reads false', async () => {
     const r = await call({
       tables: baseTables({
         customers: [

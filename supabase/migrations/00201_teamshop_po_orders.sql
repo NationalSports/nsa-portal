@@ -1,6 +1,6 @@
--- Team Shop — School-PO checkout (owner-approved flow, follow-up to 00196).
+-- Team Shop — School-PO checkout (owner-approved flow, follow-up to 00200).
 --
--- Eligible programs (customers.teamshop_po_allowed = true, 00196) may check
+-- Eligible programs (customers.teamshop_po_allowed = true, 00200) may check
 -- out with a School PO number + a PDF of the PO instead of paying by card.
 -- The PO is verified MANUALLY by staff after the order is placed
 -- (netlify/functions/teamshop-po-review.js). This migration adds the two
@@ -10,7 +10,7 @@
 --      Writes are service-role only (teamshop-checkout.js's place_order_po
 --      uploads with the service key, which bypasses RLS) — no INSERT/UPDATE/
 --      DELETE policy is created on purpose. Staff may read directly
---      (is_team_member(), same gate as 00187's artwork lockdown); coaches and
+--      (is_team_member(), same gate as 00191's artwork lockdown); coaches and
 --      anon get NO direct read — coach/staff-facing links are short-lived
 --      signed URLs minted by functions using the service role.
 --
@@ -19,12 +19,12 @@
 --
 --        place_order_po  -> status 'unpaid'      (existing storefront value for
 --                                                 a no-card order; NOT convertible
---                                                 — 00195's guard only accepts
+--                                                 — 00199's guard only accepts
 --                                                 'paid'/'po_verified'; the coach
 --                                                 label map src/lib/
 --                                                 teamshopOrderStatus.js already
 --                                                 renders 'unpaid' as 'PO review')
---        staff approve   -> status 'po_verified' (the exact value 00195's
+--        staff approve   -> status 'po_verified' (the exact value 00199's
 --                                                 create_teamshop_sales_order
 --                                                 accepts defensively and invoices
 --                                                 OPEN — the RPC then sets

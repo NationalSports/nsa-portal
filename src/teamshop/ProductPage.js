@@ -67,7 +67,7 @@ const TEXT_MIN_PCT = 70;
 const TEXT_MAX_PCT = 170;
 
 // Owner-approved method taxonomy (decoSpec.METHOD_FAMILIES, mirroring the
-// 00194 rate-card seed rows): three family tiles — Embroidery, Heat
+// 00198 rate-card seed rows): three family tiles — Embroidery, Heat
 // Applications (a family of kinds: DTF / Vinyl / Silicone Patch), Screen
 // Print (24-piece minimum). The FAMILY is storefront grouping only; the
 // concrete kind (`type`) is the production identity that reaches the cart

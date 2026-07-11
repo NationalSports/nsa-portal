@@ -245,7 +245,7 @@ describe('quote hash (v3)', () => {
   });
 });
 
-// ── Flat deco rate card (00194) — WS2 money path ─────────────────────────────
+// ── Flat deco rate card (00198) — WS2 money path ─────────────────────────────
 // With teamshop_deco_rates mocked live, buildQuote must price decorations at
 // the flat rate (not the dP tables), enforce per-line min_qty, and hash the
 // resolved price (v3) so a staff rate edit invalidates open quotes. The public

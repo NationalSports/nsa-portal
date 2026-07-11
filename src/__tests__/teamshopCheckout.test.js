@@ -296,15 +296,15 @@ describe('place_order', () => {
     expect(res.statusCode).toBe(409);
   });
 
-  test('missing seeded store row (pre-00191) fails loudly', async () => {
+  test('missing seeded store row (pre-00195) fails loudly', async () => {
     const sb = fakeSb({ 'webstores.select': [{ data: [], error: null }] });
     const res = await ts.placeOrder(sb, placeBody({ quote_hash: 'x' }), COACH);
     expect(res.statusCode).toBe(500);
-    expect(JSON.parse(res.body).error).toMatch(/00191/);
+    expect(JSON.parse(res.body).error).toMatch(/00195/);
   });
 });
 
-// School-PO checkout (00196/00197) — place_order_po. Same verification chain
+// School-PO checkout (00200/00201) — place_order_po. Same verification chain
 // as place_order (auth → replay → store → quote hash), plus the rep-gated
 // eligibility read, PDF magic-byte/size validation, and the po-docs upload —
 // and NO Stripe anywhere on the path.
@@ -338,7 +338,7 @@ describe('place_order_po', () => {
 
     const rpcCall = sb.calls.find((c) => c.op === 'rpc');
     const o = rpcCall.payload.p_order;
-    expect(o.status).toBe('unpaid');          // pending staff verification; 00195 refuses to convert it
+    expect(o.status).toBe('unpaid');          // pending staff verification; 00199 refuses to convert it
     expect(o.payment_mode).toBe('unpaid');    // no card collected
     expect(o.po_number).toBe('PO-2026-0042');
     expect(o.order_source).toBe('teamshop');
@@ -366,7 +366,7 @@ describe('place_order_po', () => {
     expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'insert' || c.op === 'upload')).toHaveLength(0);
   });
 
-  test('pre-00196 (teamshop_po_allowed column missing) → 422 po_not_enabled, never a fallback to allowed', async () => {
+  test('pre-00200 (teamshop_po_allowed column missing) → 422 po_not_enabled, never a fallback to allowed', async () => {
     const { quote_hash } = await freshQuote();
     const sb = fakeSb(poScript({
       'customers.select': [{ data: null, error: { message: 'column customers.teamshop_po_allowed does not exist' } }],
@@ -453,7 +453,7 @@ describe('place_order_po', () => {
   });
 });
 
-// Stage 7 — convert_order → create_teamshop_sales_order RPC (migration 00192).
+// Stage 7 — convert_order → create_teamshop_sales_order RPC (migration 00196).
 // The RPC re-guards everything inside its transaction; these tests pin the
 // function-level pre-guards (paid + teamshop + replay) and the retry contract.
 describe('convert_order', () => {

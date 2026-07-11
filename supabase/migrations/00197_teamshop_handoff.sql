@@ -12,7 +12,7 @@
 --
 -- Writes/reads: NONE via RLS on purpose (no policies at all) — only the
 -- service-role teamshop-handoff function touches this table (service_role
--- bypasses RLS), mirroring the 00189 purchase_orders / 00190 teamshop_logos
+-- bypasses RLS), mirroring the 00193 purchase_orders / 00194 teamshop_logos
 -- pattern. Not even staff read: the hashes are useless to humans and the
 -- table is pure machinery.
 
@@ -31,7 +31,7 @@ create index if not exists idx_teamshop_handoff_codes_expires
   on public.teamshop_handoff_codes (expires_at);
 
 alter table public.teamshop_handoff_codes enable row level security;
--- No policies on purpose: service-role only (00189/00190 pattern).
+-- No policies on purpose: service-role only (00193/00194 pattern).
 revoke select, insert, update, delete on public.teamshop_handoff_codes from anon, authenticated;
 
 -- ── Rollback ────────────────────────────────────────────────────────────────

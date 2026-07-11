@@ -6,7 +6,7 @@
 -- changes), stripe-webhook confirmation, refunds, and the OrderTrack portal
 -- all keep working unchanged for both order sources.
 --
--- Nothing here is required by existing code paths: pre-00191 the Team Shop
+-- Nothing here is required by existing code paths: pre-00195 the Team Shop
 -- checkout function simply fails to find the store (or the new columns) and
 -- returns an error — no storefront behavior changes either way.
 
@@ -15,7 +15,7 @@
 -- (NULL = storefront, matching every existing row without a backfill).
 -- coach_id / customer_id record WHO placed the order and FOR WHICH team —
 -- coach_accounts.id is uuid, customers.id is text (same types as
--- teamshop_logos, 00190). quote_hash stores the v2 quote hash the coach
+-- teamshop_logos, 00194). quote_hash stores the v2 quote hash the coach
 -- approved (quickorder-quote.js normalizeAndHash) for auditability.
 alter table public.webstore_orders add column if not exists order_source text;
 alter table public.webstore_orders add column if not exists coach_id uuid;

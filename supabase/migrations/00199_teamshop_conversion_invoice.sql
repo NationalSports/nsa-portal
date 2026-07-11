@@ -1,12 +1,12 @@
 -- Team Shop conversion invoice (Coach Crossover Workstream 5 — money-of-record).
 --
--- 00192's create_teamshop_sales_order converts a paid Team Shop order into a
+-- 00196's create_teamshop_sales_order converts a paid Team Shop order into a
 -- Sales Order + jobs but created NO invoices row — so teamshop revenue was
 -- invisible to commissions (CommissionsPage.js buildCommLines only reads
 -- paid/partial invoices joined to SOs) and to rep A/R (open-invoice digests).
 -- The staff webstore batch path proves the intended behavior: App.js
 -- createAndSettleWebstoreInvoice (~12238) auto-creates a settled invoice per
--- converted order. This migration CREATE OR REPLACEs the RPC with the 00192
+-- converted order. This migration CREATE OR REPLACEs the RPC with the 00196
 -- body kept byte-for-byte in behavior for everything it already did, plus:
 --
 --   1. INVOICE — after the SO/items/decos/jobs writes, mint an invoice id and
@@ -14,7 +14,7 @@
 --        * id mint  — the exact client rule (App.js nextInvId, line 165):
 --          'INV-' + (max(first digit run of any existing id via /(\d+)/,
 --          floored at 1000) + 1), under pg_advisory_xact_lock — the same
---          technique 00192 uses for SO ids.
+--          technique 00196 uses for SO ids.
 --        * columns  — the client inv object ∩ dbEngine's _invCols allowlist
 --          (dbEngine.js:1632): id/customer_id/so_id/type 'invoice'/inv_type
 --          'full'/date (en-CA YYYY-MM-DD)/due_date (date + customer terms
@@ -25,7 +25,7 @@
 --        * line_items — the batch path's shape per SO item: {desc: sku+' '+
 --          name+(' — '+color), qty: Σsizes, rate: unit_sell, amount:
 --          round(qty*unit_sell,2), _sku,_name,_color}; total = Σ amount.
---          Since 00192 prices unit_sell = collected(garment+deco) ÷ units,
+--          Since 00196 prices unit_sell = collected(garment+deco) ÷ units,
 --          the invoice total reconciles to the goods+deco the buyer paid;
 --          tax/shipping/processing ride on the store order, not the invoice
 --          (tax_exempt true — same reconciliation as the batch path).
@@ -49,12 +49,12 @@
 --          payment_method column (traced — none exists), so the branch keys
 --          on status alone.
 --        * _version  — NOT set: 00180's DEFAULT 1 + trigger own it (same
---          contract as sales_orders._version in 00192). _rep is NOT
+--          contract as sales_orders._version in 00196). _rep is NOT
 --          persisted: it is client-state only (absent from _invCols).
 --   2. DECO COST — so_item_decorations.cost_each is populated from
 --      teamshop_deco_rates.cost matched by (type, option_key) on active rows
---      (00194; option defaults 'standard' like _teamshopRates.rateFor). A
---      missing rate row or NULL cost falls back to 0 (00192's value) and the
+--      (00198; option defaults 'standard' like _teamshopRates.rateFor). A
+--      missing rate row or NULL cost falls back to 0 (00196's value) and the
 --      conversion still succeeds — cost is staff-completable later via the
 --      rates table. TRACED CAVEAT: today's GP math (App.js dP, used by
 --      CommissionsPage calcGP) derives cost for kind='art' decos from the
@@ -74,9 +74,9 @@
 --      staff-batched SO or a concurrent writer can never get a second one.
 --
 -- Result jsonb gains: invoice_id (null if the guard skipped it), no_rep.
--- Replay result is unchanged from 00192 ({so_id, replayed:true}).
+-- Replay result is unchanged from 00196 ({so_id, replayed:true}).
 --
--- Grants: identical to 00192 (service_role only).
+-- Grants: identical to 00196 (service_role only).
 
 create or replace function public.create_teamshop_sales_order(
   p_webstore_order_id uuid
@@ -329,9 +329,9 @@ begin
                       else 'url:' || coalesce(v_deco->>'art_url', '')
                     end;
 
-      -- Cost of record (00194 rate card): matched by (type, option_key) on
+      -- Cost of record (00198 rate card): matched by (type, option_key) on
       -- active rows — the same lookup _teamshopRates.rateFor makes (option
-      -- defaults 'standard'). NULL rate/cost → 0 (00192's value); a missing
+      -- defaults 'standard'). NULL rate/cost → 0 (00196's value); a missing
       -- rate must never block conversion.
       select r.cost into v_deco_cost
         from teamshop_deco_rates r
@@ -471,7 +471,7 @@ begin
       v_job.digitizing
     );
 
-    -- 00188 event log, same transaction.
+    -- 00192 event log, same transaction.
     insert into job_stage_events (so_id, job_id, event, from_state, to_state, actor, source, payload)
     values (
       v_so_id, v_job_id, 'created',
@@ -614,7 +614,7 @@ revoke all on function public.create_teamshop_sales_order(uuid) from authenticat
 grant execute on function public.create_teamshop_sales_order(uuid) to service_role;
 
 -- ── Rollback ────────────────────────────────────────────────────────────────
---   Re-apply migration 00192's create or replace function body (this file only
+--   Re-apply migration 00196's create or replace function body (this file only
 --   replaces the function; no DDL to undo). Invoices already created remain —
 --   to un-invoice one conversion:
 --     delete from invoice_payments where invoice_id = <'INV-…'>;

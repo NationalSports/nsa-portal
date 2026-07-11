@@ -1,12 +1,12 @@
 // Team Shop decoration rate card — server-side loader + flat-rate pricer.
 //
 // Single source of the flat per-piece deco rates the Team Shop storefront
-// charges (table: public.teamshop_deco_rates, migration 00194). Consumed by
+// charges (table: public.teamshop_deco_rates, migration 00198). Consumed by
 // BOTH quickorder-quote.js (coach quotes + teamshop-checkout's recompute) and
 // teamshop-public-price.js (anonymous builder estimates) so the two paths can
 // never disagree on a deco price.
 //
-// Taxonomy (owner-approved, see 00194):
+// Taxonomy (owner-approved, see 00198):
 //   family     — storefront grouping only ('embroidery' | 'heat' | 'screen_print')
 //   type       — CONCRETE PRODUCTION IDENTITY ('embroidery' | 'dtf' | 'vinyl' |
 //                'silicone_patch' | 'screen_print'); routes the job to the right
@@ -14,14 +14,14 @@
 //   option_key — sub-option within a type ('standard' | 'number' | 'name_number').
 //
 // ── TRANSITIONAL FALLBACK (read this before touching pricing) ───────────────
-// Migration 00194 may not be applied yet when this code deploys. loadRates()
+// Migration 00198 may not be applied yet when this code deploys. loadRates()
 // returns null when the table is missing/unreadable OR has no active rows, and
 // BOTH callers then fall back to the legacy decoPricing.dP tables (the exact
 // pricing the storefront charged before this rate card existed), logging a
 // console.warn. The storefront therefore keeps pricing correctly — at the OLD
-// rates — until 00194 is applied. The new heat kinds ('vinyl',
+// rates — until 00198 is applied. The new heat kinds ('vinyl',
 // 'silicone_patch') have NO dP price, so in fallback mode the callers reject
-// them rather than charge $0. Once 00194 is live everywhere this fallback can
+// them rather than charge $0. Once 00198 is live everywhere this fallback can
 // be retired.
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
@@ -35,11 +35,11 @@ async function loadRates(admin) {
       .select('id,family,type,option_key,label,price,cost,min_qty,sort_order,active')
       .eq('active', true);
     if (error) {
-      console.warn('[teamshopRates] rate table unreadable (00194 applied?) — falling back to decoPricing.dP:', error.message);
+      console.warn('[teamshopRates] rate table unreadable (00198 applied?) — falling back to decoPricing.dP:', error.message);
       return null;
     }
     if (!Array.isArray(data) || !data.length) {
-      console.warn('[teamshopRates] no active rate rows (00194 applied?) — falling back to decoPricing.dP');
+      console.warn('[teamshopRates] no active rate rows (00198 applied?) — falling back to decoPricing.dP');
       return null;
     }
     return data;

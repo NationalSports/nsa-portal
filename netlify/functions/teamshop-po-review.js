@@ -6,12 +6,12 @@
 // Actions (POST, Authorization: Bearer <staff Supabase session JWT>):
 //   list    — pending PO orders (order_source='teamshop', status='unpaid',
 //             po_number present) with customer/coach names and a SHORT-LIVED
-//             signed URL for each PO PDF (private po-docs bucket, 00197 —
+//             signed URL for each PO PDF (private po-docs bucket, 00201 —
 //             the service role mints the URL; nobody reads the bucket
-//             directly). Pre-00197 (po_number column missing) this returns
+//             directly). Pre-00201 (po_number column missing) this returns
 //             { ok:true, enabled:false } so the queue UI shows a banner
 //             instead of blanking.
-//   approve — flip 'unpaid' -> 'po_verified' (the exact status 00195's
+//   approve — flip 'unpaid' -> 'po_verified' (the exact status 00199's
 //             create_teamshop_sales_order accepts and invoices OPEN), then
 //             invoke that RPC — the same conversion path card orders take,
 //             which sets status 'batched' + so_id in its own transaction.
@@ -25,7 +25,7 @@
 //             sendOrderConfirmation) — a missing key or send failure never
 //             fails the rejection.
 //
-// Status lifecycle (documented in 00197): unpaid -> po_verified -> batched,
+// Status lifecycle (documented in 00201): unpaid -> po_verified -> batched,
 // or unpaid -> cancelled. All transitions here are compare-and-set updates
 // (.eq('status', ...)) so two staff tabs can't double-approve or
 // approve-after-reject.
@@ -37,7 +37,7 @@ const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stri
 const SIGNED_URL_SECONDS = 600; // 10 minutes — review-session length, not a share link
 const REASON_MAX = 500;
 
-// Pre-00197: the po columns don't exist yet (42703 / PostgREST schema-cache
+// Pre-00201: the po columns don't exist yet (42703 / PostgREST schema-cache
 // miss). Same detection shape the Team Shop settings UI uses.
 const isMissingPoColumnErr = (e) => !!e
   && /po_number|po_doc_path|po_rejected_reason|po_reviewed/.test(e.message || '')
@@ -117,7 +117,7 @@ async function approve(admin, body, staff) {
     return bad(409, `Order is not awaiting PO review (status: ${order.status}).`);
   }
 
-  // Same conversion path card orders take (00192/00195): SO + jobs + an OPEN
+  // Same conversion path card orders take (00196/00199): SO + jobs + an OPEN
   // invoice (the RPC's po_verified branch), status -> 'batched'. Idempotent by
   // RPC design. On failure the order stays 'po_verified' — approve can simply
   // be retried; nothing is lost.
@@ -180,7 +180,7 @@ async function reject(admin, body, staff) {
   if (order.status !== 'unpaid') return bad(409, `Order is not awaiting PO review (status: ${order.status}).`);
 
   // Terminal, compare-and-set. 'cancelled' is the stack's existing terminal
-  // value: 00195 refuses to convert it and the coach label map shows Cancelled.
+  // value: 00199 refuses to convert it and the coach label map shows Cancelled.
   const { data: upd, error: updErr } = await admin.from('webstore_orders')
     .update({
       status: 'cancelled',

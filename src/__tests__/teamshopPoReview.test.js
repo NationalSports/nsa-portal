@@ -90,7 +90,7 @@ describe('list', () => {
     expect(JSON.stringify(out.orders[0])).not.toContain('po_doc_path');
   });
 
-  test('pre-00197 (po column missing) → enabled:false, not an error', async () => {
+  test('pre-00201 (po column missing) → enabled:false, not an error', async () => {
     const sb = fakeSb({
       'webstore_orders.select': [{ data: null, error: { message: 'column webstore_orders.po_number does not exist' } }],
     });
@@ -103,7 +103,7 @@ describe('list', () => {
 });
 
 describe('approve', () => {
-  test('unpaid → guarded flip to po_verified, then create_teamshop_sales_order (00195 open-invoice branch)', async () => {
+  test('unpaid → guarded flip to po_verified, then create_teamshop_sales_order (00199 open-invoice branch)', async () => {
     const sb = fakeSb({
       'webstore_orders.select': [{ data: [PENDING], error: null }],
       'webstore_orders.update': [{ data: [{ id: 'ordpo1' }], error: null }],

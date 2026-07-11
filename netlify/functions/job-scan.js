@@ -1,5 +1,5 @@
 // job-scan — resolve a scanned shop-floor code to a production job and advance
-// its stage through the advance_job_stage RPC (migration 00188), source:'scan'.
+// its stage through the advance_job_stage RPC (migration 00192), source:'scan'.
 //
 // Auth (two trust levels, like emb-machine-manifest.js but a SEPARATE token so
 // this can't weaken the embroidery feed's):

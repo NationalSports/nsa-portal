@@ -28,7 +28,7 @@ const crypto = require('crypto');
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
 const { verifyCoach, coachHasCustomerAccess } = require('./_coachAuth');
 const DECO = require('../../src/lib/decoPricing');
-// Team Shop flat deco rate card (00194) — when the rates table is live, deco
+// Team Shop flat deco rate card (00198) — when the rates table is live, deco
 // pricing comes from it; when it isn't (loadRates → null), we FALL BACK to the
 // legacy DECO.dP tables below so the storefront keeps pricing correctly before
 // the migration is applied. See the transitional-fallback note in _teamshopRates.js.
@@ -61,7 +61,7 @@ function unitSell(p, cust) {
 // prices. `type` is the concrete PRODUCTION identity (embroidery | dtf | vinyl
 // | silicone_patch | screen_print — a DTF job routes to the DTF printer, vinyl
 // to the cutter; 'heat' is a storefront FAMILY, never a type); `option` is the
-// rate-card sub-option (00194 option_key, whitelisted below, defaulting to
+// rate-card sub-option (00198 option_key, whitelisted below, defaulting to
 // 'standard'). colors/underbase, stitches and dtf_size still pass through:
 // when the flat rate card is active they are PRODUCTION METADATA only (not
 // price inputs); in dP-fallback mode they price exactly as before. Everything
@@ -196,7 +196,7 @@ async function buildQuote(admin, { customerId, lines }) {
   (prods || []).forEach((p) => { byId[p.id] = p; });
 
   const T = DECO.DEFAULTS; // fallback tables (see below) — server never reads browser overrides
-  // Flat deco rate card (00194). null → the table isn't live yet, and deco
+  // Flat deco rate card (00198). null → the table isn't live yet, and deco
   // pricing falls back to the legacy DECO.dP tables so pre-migration deploys
   // keep charging exactly what they charged before (transitional fallback —
   // see _teamshopRates.js).
@@ -231,7 +231,7 @@ async function buildQuote(admin, { customerId, lines }) {
         }
         sell = fr.sell;
       } else {
-        // dP fallback (00194 not applied yet): the exact legacy pricing. The
+        // dP fallback (00198 not applied yet): the exact legacy pricing. The
         // new heat kinds have no dP price — reject rather than charge $0.
         if (d.type === 'vinyl' || d.type === 'silicone_patch') {
           return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
