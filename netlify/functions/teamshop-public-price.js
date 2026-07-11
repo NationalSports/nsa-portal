@@ -22,6 +22,11 @@
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
 const { unitSell, cleanDeco } = require('./quickorder-quote');
 const DECO = require('../../src/lib/decoPricing');
+// The SAME flat rate-card pricer quickorder-quote.js's buildQuote uses (00194)
+// — anon and coach deco prices must agree by construction. Falls back to the
+// legacy DECO.dP tables when the rate table isn't live yet (loadRates → null);
+// see the transitional-fallback note in _teamshopRates.js.
+const { loadRates, flatDecoSell } = require('./_teamshopRates');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
@@ -45,7 +50,8 @@ async function buildPublicQuote(admin, { lines }) {
   const byId = {};
   (prods || []).forEach((p) => { byId[p.id] = p; });
 
-  const T = DECO.DEFAULTS; // standard default pricing tables — same ones quickorder-quote.js prices with
+  const T = DECO.DEFAULTS; // fallback tables — same ones quickorder-quote.js falls back to
+  const rates = await loadRates(admin); // flat rate card (00194); null → dP fallback
   const outLines = [];
   let subtotal = 0;
   for (const l of lines) {
@@ -60,9 +66,26 @@ async function buildPublicQuote(admin, { lines }) {
     let unitDeco = 0;
     for (const rawDeco of (Array.isArray(l.decorations) ? l.decorations : [])) {
       const d = cleanDeco(rawDeco);
-      if (!d) return { status: 400, error: 'Unsupported decoration type — use screen_print, embroidery, or dtf' };
-      const dp = DECO.dP(T, d, qty);
-      unitDeco = r2(unitDeco + r2(dp.sell));
+      if (!d) return { status: 400, error: 'Unsupported decoration type — use embroidery, dtf, vinyl, silicone_patch, or screen_print' };
+      if (rates) {
+        // Rate card live — the IDENTICAL flatDecoSell path buildQuote prices
+        // with, so the anon estimate always equals the coach quote's deco.
+        const fr = flatDecoSell(rates, d, qty);
+        if (fr.error === 'MIN_QTY') {
+          // Clear per-line minimum error the builder can show verbatim
+          // (e.g. 'Screen print requires 24+ pieces').
+          return { status: 422, error: `${fr.label} requires ${fr.min}+ pieces`, extra: { code: 'MIN_QTY', min: fr.min, type: d.type } };
+        }
+        if (fr.error) return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
+        unitDeco = r2(unitDeco + fr.sell);
+      } else {
+        // dP fallback (00194 not applied yet) — legacy pricing; the new heat
+        // kinds have no dP price, so reject rather than estimate $0.
+        if (d.type === 'vinyl' || d.type === 'silicone_patch') {
+          return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
+        }
+        unitDeco = r2(unitDeco + r2(DECO.dP(T, d, qty).sell));
+      }
     }
     const unitTotal = r2(unitGarment + unitDeco);
     const lineTotal = r2(unitTotal * qty);
@@ -88,7 +111,7 @@ exports.handler = async (event) => {
     try { body = JSON.parse(event.body || '{}'); } catch { return bad(400, 'Invalid JSON'); }
 
     const res = await buildPublicQuote(admin, { lines: body.lines });
-    if (!res.quote) return bad(res.status, res.error);
+    if (!res.quote) return bad(res.status, res.error, res.extra);
     return { statusCode: 200, headers, body: JSON.stringify({ ok: true, ...res.quote }) };
   } catch (e) {
     return bad(500, e.message);

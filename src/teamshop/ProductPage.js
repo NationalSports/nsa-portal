@@ -5,7 +5,7 @@ import {
 import DecoOverlay from '../lib/decoOverlay';
 import {
   zonesForGarment, clampPlacement, buildDecoSpec, specToOverlayProps, validateSpec,
-  SCALE_MIN, SCALE_MAX, DEFAULT_STITCHES,
+  SCALE_MIN, SCALE_MAX, DEFAULT_STITCHES, METHOD_FAMILIES, MAX_SP_COLORS,
 } from './decoSpec';
 import LogoPicker from './LogoPicker';
 import { categoryForProduct } from './categories';
@@ -66,18 +66,25 @@ const SIZE_MAX_PCT = Math.round(SCALE_MAX * 100); // 140
 const TEXT_MIN_PCT = 70;
 const TEXT_MAX_PCT = 170;
 
-// Real, priced methods only — the exact 3 PlacementPicker.js already offers.
-// TODO(method-mapping): the approved mockup's 3rd tile was "Heat Press
-// (Names/#s)". decoPricing.js/decoSpec.js model exactly 3 priced methods —
-// screen_print, embroidery, dtf — there is no "heat press" method to wire up.
-// This renders the real 3rd method (Screen Print) instead of inventing an
-// unpriced option; label/notes reflect what actually prices, not the mockup's copy.
-const METHODS = [
-  { key: 'embroidery', label: 'Embroidery', note: 'Textured stitching' },
-  { key: 'dtf', label: 'DTF Print', note: 'Full-color, no color limit' },
-  { key: 'screen_print', label: 'Screen Print', note: 'Names & numbers' },
-];
-const METHOD_PILL_LABEL = { embroidery: 'Embroidered', dtf: 'DTF Print', screen_print: 'Screen Print' };
+// Owner-approved method taxonomy (decoSpec.METHOD_FAMILIES, mirroring the
+// 00194 rate-card seed rows): three family tiles — Embroidery, Heat
+// Applications (a family of kinds: DTF / Vinyl / Silicone Patch), Screen
+// Print (24-piece minimum). The FAMILY is storefront grouping only; the
+// concrete kind (`type`) is the production identity that reaches the cart
+// line's decoSpec. Prices shown still come ONLY from the server price
+// endpoints — this structure just shapes the controls.
+const FAMILY_NOTES = {
+  embroidery: 'Textured stitching',
+  heat: 'DTF · Vinyl · Silicone patch',
+  screen_print: 'Requires 24+ pieces',
+};
+const HEAT_FAMILY = METHOD_FAMILIES.find((f) => f.key === 'heat');
+const SCREEN_PRINT_MIN = (METHOD_FAMILIES.find((f) => f.key === 'screen_print') || {}).minQty || 24;
+const VINYL_OPTION_LABEL = { standard: 'Standard', number: 'Player number', name_number: 'Name + number' };
+const METHOD_PILL_LABEL = {
+  embroidery: 'Embroidered', dtf: 'DTF Transfer', vinyl: 'Vinyl',
+  silicone_patch: 'Silicone Patch', screen_print: 'Screen Print',
+};
 
 // Cosmetic-only garment-color backgrounds for the live preview card. Real
 // product color data is a single `color` string (see the TODO(colors) note
@@ -144,7 +151,15 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
 
   const [logo, setLogo] = useState(null);
   const [logoScalePct, setLogoScalePct] = useState(100);
-  const [method, setMethod] = useState('embroidery');
+  // Method selection: a FAMILY tile (embroidery / heat / screen_print), plus
+  // the concrete heat KIND when the Heat Applications family is chosen, the
+  // vinyl option chip, and the screen-print color count. The concrete
+  // production type is derived below as `method`.
+  const [family, setFamily] = useState('embroidery');
+  const [heatKind, setHeatKind] = useState('dtf');
+  const [vinylOption, setVinylOption] = useState('standard');
+  const [spColors, setSpColors] = useState(1);
+  const method = family === 'heat' ? heatKind : family; // concrete production type
   const [line1, setLine1] = useState('');
   const [line2, setLine2] = useState('');
   const [textScalePct, setTextScalePct] = useState(100);
@@ -176,14 +191,18 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
   const options = useMemo(() => {
     if (method === 'embroidery') return { stitches: DEFAULT_STITCHES };
     if (method === 'dtf') return { dtf_size: 0 };
-    if (method === 'screen_print') return { colors: 1 };
-    return {};
-  }, [method]);
+    if (method === 'screen_print') return { colors: spColors };
+    return {}; // vinyl / silicone_patch: flat rate-card pricing, no extra fields
+  }, [method, spColors]);
 
   const spec = useMemo(() => {
     if (!zone || !logo || !placement) return null;
     try {
-      const built = buildDecoSpec({ zone, placement, logo, method, options, side: zone.side });
+      const built = buildDecoSpec({
+        zone, placement, logo, type: method,
+        option: method === 'vinyl' ? vinylOption : 'standard',
+        options, side: zone.side,
+      });
       const check = validateSpec(built);
       if (!check.ok) return null;
       // TEXT-UNDER-LOGO: a new feature the pricing/production backend does
@@ -200,7 +219,7 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
     } catch {
       return null;
     }
-  }, [zone, logo, placement, method, options, line1, line2, textScalePct]);
+  }, [zone, logo, placement, method, vinylOption, options, line1, line2, textScalePct]);
 
   const overlayProps = spec ? specToOverlayProps(spec, colorName) : null;
   const showDecoChrome = !!(spec && spec.side === view);
@@ -580,26 +599,109 @@ export default function ProductPage({ product, customer, onBack, onCustomize, on
             )}
           </div>
 
-          {/* Decoration method */}
+          {/* Decoration method — the three method FAMILIES. Heat Applications
+              expands into a kind selector (DTF / Vinyl / Silicone patch —
+              the concrete production identity); vinyl adds its option chips;
+              Screen Print keeps its color-count chips and stays disabled
+              (with the 24+ hint) until the size run reaches the minimum. */}
           <div style={{ marginBottom: 26 }}>
             <span style={displayType(14, { letterSpacing: '0.08em', color: NAVY, display: 'block', marginBottom: 12 })}>Decoration method</span>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
-              {METHODS.map((m) => (
-                <button
-                  key={m.key}
-                  type="button"
-                  onClick={() => setMethod(m.key)}
-                  style={{
-                    display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: '13px 8px', borderRadius: 10,
-                    background: method === m.key ? NAVY : '#fff', color: method === m.key ? '#fff' : NAVY,
-                    border: `1.5px solid ${method === m.key ? NAVY : BORDER}`, cursor: 'pointer', fontFamily: 'inherit',
-                  }}
-                >
-                  <span style={displayType(15, { letterSpacing: '0.04em' })}>{m.label}</span>
-                  <span style={{ fontSize: 11, color: method === m.key ? 'rgba(255,255,255,0.75)' : TEXT_MUTED, marginTop: 2 }}>{m.note}</span>
-                </button>
-              ))}
+              {METHOD_FAMILIES.map((f) => {
+                const selected = family === f.key;
+                // Screen print requires SCREEN_PRINT_MIN pieces in the size
+                // run: disabled (with the hint) under it, auto-enabled at it.
+                const locked = f.key === 'screen_print' && totalPieces < SCREEN_PRINT_MIN;
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    disabled={locked}
+                    title={locked ? `Requires ${SCREEN_PRINT_MIN}+ pieces` : undefined}
+                    onClick={() => setFamily(f.key)}
+                    style={{
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', padding: '13px 8px', borderRadius: 10,
+                      background: selected ? NAVY : '#fff', color: selected ? '#fff' : NAVY,
+                      border: `1.5px solid ${selected ? NAVY : BORDER}`, cursor: locked ? 'not-allowed' : 'pointer', fontFamily: 'inherit',
+                      opacity: locked ? 0.45 : 1,
+                    }}
+                  >
+                    <span style={displayType(15, { letterSpacing: '0.04em' })}>{f.label}</span>
+                    <span style={{ fontSize: 11, color: selected ? 'rgba(255,255,255,0.75)' : TEXT_MUTED, marginTop: 2 }}>{FAMILY_NOTES[f.key]}</span>
+                  </button>
+                );
+              })}
             </div>
+
+            {family === 'heat' && HEAT_FAMILY && (
+              <div style={{ marginTop: 14 }}>
+                <p style={{ fontSize: 13, color: TEXT_MUTED, margin: '0 0 8px' }}>Heat application type</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {HEAT_FAMILY.types.map((t) => (
+                    <button
+                      key={t.type}
+                      type="button"
+                      onClick={() => setHeatKind(t.type)}
+                      style={{
+                        border: `1px solid ${heatKind === t.type ? NAVY : BORDER_DARK}`,
+                        background: heatKind === t.type ? NAVY : '#fff',
+                        color: heatKind === t.type ? '#fff' : NAVY,
+                        borderRadius: 999, padding: '7px 15px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                      }}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                {heatKind === 'vinyl' && (
+                  <div style={{ marginTop: 12 }}>
+                    <p style={{ fontSize: 13, color: TEXT_MUTED, margin: '0 0 8px' }}>Vinyl option</p>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {(HEAT_FAMILY.types.find((t) => t.type === 'vinyl') || { options: [] }).options.map((o) => (
+                        <button
+                          key={o}
+                          type="button"
+                          onClick={() => setVinylOption(o)}
+                          style={{
+                            border: `1px solid ${vinylOption === o ? NAVY : BORDER_DARK}`,
+                            background: vinylOption === o ? NAVY : '#fff',
+                            color: vinylOption === o ? '#fff' : NAVY,
+                            borderRadius: 999, padding: '6px 13px', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                          }}
+                        >
+                          {VINYL_OPTION_LABEL[o] || o}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {family === 'screen_print' && (
+              <div style={{ marginTop: 14 }}>
+                <p style={{ fontSize: 13, color: TEXT_MUTED, margin: '0 0 8px' }}>Number of colors</p>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {Array.from({ length: MAX_SP_COLORS }, (_, i) => i + 1).map((n) => (
+                    <button
+                      key={n}
+                      type="button"
+                      aria-label={`${n} color${n === 1 ? '' : 's'}`}
+                      onClick={() => setSpColors(n)}
+                      style={{
+                        width: 34, height: 34, borderRadius: 999,
+                        border: `1px solid ${spColors === n ? NAVY : BORDER_DARK}`,
+                        background: spColors === n ? NAVY : '#fff',
+                        color: spColors === n ? '#fff' : NAVY,
+                        fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+                      }}
+                    >
+                      {n}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Size run */}

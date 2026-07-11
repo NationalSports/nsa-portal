@@ -202,12 +202,12 @@ describe('cart line shape (Stage 5)', () => {
   });
 });
 
-describe('quote hash (v2)', () => {
+describe('quote hash (v3)', () => {
   const hashOf = async (lines) => (await getQuote(lines)).quote_hash;
 
-  test('response carries quote_hash + hash_version v2 (hash kept as alias)', async () => {
+  test('response carries quote_hash + hash_version v3 (hash kept as alias)', async () => {
     const q = await getQuote([cartLine()]);
-    expect(q.hash_version).toBe('v2');
+    expect(q.hash_version).toBe('v3');
     expect(q.quote_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(q.hash).toBe(q.quote_hash);
   });
@@ -239,8 +239,114 @@ describe('quote hash (v2)', () => {
     const totals = { customer_id: q.customer_id, tier: q.tier, subtotal: q.subtotal };
     const r1 = quote.normalizeAndHash(q.lines, totals);
     const r2 = quote.normalizeAndHash(JSON.parse(JSON.stringify(q.lines)), { ...totals });
-    expect(r1.hash_version).toBe('v2');
+    expect(r1.hash_version).toBe('v3');
     expect(r1.quote_hash).toBe(r2.quote_hash);
     expect(r1.quote_hash).toBe(q.quote_hash);
+  });
+});
+
+// ── Flat deco rate card (00194) — WS2 money path ─────────────────────────────
+// With teamshop_deco_rates mocked live, buildQuote must price decorations at
+// the flat rate (not the dP tables), enforce per-line min_qty, and hash the
+// resolved price (v3) so a staff rate edit invalidates open quotes. The public
+// endpoint must price the identical number for the same deco (anon/coach parity).
+const publicPrice = require('../../netlify/functions/teamshop-public-price');
+
+const RATES = [
+  { id: 'r1', family: 'embroidery', type: 'embroidery', option_key: 'standard', label: 'Embroidery', price: 8, cost: null, min_qty: 1, sort_order: 0, active: true },
+  { id: 'r2', family: 'heat', type: 'dtf', option_key: 'standard', label: 'DTF Transfer', price: 6, cost: null, min_qty: 1, sort_order: 10, active: true },
+  { id: 'r3', family: 'heat', type: 'vinyl', option_key: 'standard', label: 'Vinyl', price: 5, cost: null, min_qty: 1, sort_order: 20, active: true },
+  { id: 'r4', family: 'heat', type: 'vinyl', option_key: 'number', label: 'Player number (vinyl)', price: 4, cost: null, min_qty: 1, sort_order: 21, active: true },
+  { id: 'r5', family: 'heat', type: 'vinyl', option_key: 'name_number', label: 'Name + number (vinyl)', price: 7, cost: null, min_qty: 1, sort_order: 22, active: true },
+  { id: 'r6', family: 'heat', type: 'silicone_patch', option_key: 'standard', label: 'Silicone patch', price: 9, cost: null, min_qty: 1, sort_order: 30, active: true },
+  { id: 'r7', family: 'screen_print', type: 'screen_print', option_key: 'standard', label: 'Screen print', price: 5, cost: null, min_qty: 24, sort_order: 40, active: true },
+];
+const ratedTables = (rates = RATES, over = {}) => baseTables({ teamshop_deco_rates: { data: rates, error: null }, ...over });
+
+describe('flat deco rate card (mocked teamshop_deco_rates)', () => {
+  test('embroidery prices $8 flat regardless of stitches (stitches stay as production metadata)', async () => {
+    for (const stitches of [1000, 8000, 60000]) {
+      const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty: 6, decorations: [{ type: 'embroidery', stitches }] }] }, { tables: ratedTables() });
+      expect(r.statusCode).toBe(200);
+      const d = JSON.parse(r.body).quote.lines[0].decorations[0];
+      expect(d.unit_sell).toBe(8);
+      expect(d.stitches).toBe(stitches); // metadata flows through, unpriced
+      expect(d.option).toBe('standard');
+    }
+  });
+
+  test('vinyl name_number prices at its own $7 option rate', async () => {
+    const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty: 12, decorations: [{ type: 'vinyl', option: 'name_number' }] }] }, { tables: ratedTables() });
+    expect(r.statusCode).toBe(200);
+    const d = JSON.parse(r.body).quote.lines[0].decorations[0];
+    expect(d).toMatchObject({ type: 'vinyl', option: 'name_number', unit_sell: 7 });
+  });
+
+  test('an un-whitelisted option falls back to the standard rate, never a client-picked one', async () => {
+    const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty: 12, decorations: [{ type: 'vinyl', option: 'free' }] }] }, { tables: ratedTables() });
+    const d = JSON.parse(r.body).quote.lines[0].decorations[0];
+    expect(d).toMatchObject({ type: 'vinyl', option: 'standard', unit_sell: 5 });
+  });
+
+  test('screen print under its 24-piece minimum → per-line MIN_QTY error, no quote', async () => {
+    const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty: 10, decorations: [{ type: 'screen_print', colors: 2 }] }] }, { tables: ratedTables() });
+    expect(r.statusCode).toBe(422);
+    const body = JSON.parse(r.body);
+    expect(body.error).toBe('Screen print requires 24+ pieces');
+    expect(body.code).toBe('MIN_QTY');
+    expect(body.min).toBe(24);
+  });
+
+  test('screen print at 24+ prices at the flat rate; colors stay as metadata', async () => {
+    const r = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty: 24, decorations: [{ type: 'screen_print', colors: 4 }] }] }, { tables: ratedTables() });
+    expect(r.statusCode).toBe(200);
+    const d = JSON.parse(r.body).quote.lines[0].decorations[0];
+    expect(d.unit_sell).toBe(5);
+    expect(d.colors).toBe(4);
+  });
+
+  test('hash v3 flips when a rate price changes (staff edit invalidates open quotes)', async () => {
+    const line = { product_id: 'p2', qty: 6, decorations: [{ type: 'embroidery', stitches: 8000 }] };
+    const at = async (price) => {
+      const rates = RATES.map((x) => (x.type === 'embroidery' ? { ...x, price } : x));
+      const r = await call({ customer_id: 'cust1', lines: [line] }, { tables: ratedTables(rates) });
+      expect(r.statusCode).toBe(200);
+      return JSON.parse(r.body).quote.quote_hash;
+    };
+    expect(await at(8)).not.toBe(await at(9));
+    expect(await at(8)).toBe(await at(8)); // deterministic at a fixed rate
+  });
+
+  test('public vs coach endpoint deco parity: same mocked rates → same unit_deco', async () => {
+    const lines = [{ product_id: 'p2', qty: 12, decorations: [{ type: 'vinyl', option: 'name_number' }, { type: 'dtf' }] }];
+    const coachRes = await call({ customer_id: 'cust1', lines }, { tables: ratedTables() });
+    expect(coachRes.statusCode).toBe(200);
+    const coachLine = JSON.parse(coachRes.body).quote.lines[0];
+    const coachUnitDeco = Math.round(coachLine.decorations.reduce((s, d) => s + d.unit_sell, 0) * 100) / 100;
+
+    mockAdmin = fakeSb(ratedTables(), null);
+    const pubRes = await publicPrice.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ lines }) });
+    expect(pubRes.statusCode).toBe(200);
+    const pubLine = JSON.parse(pubRes.body).lines[0];
+
+    expect(coachUnitDeco).toBe(13); // 7 (vinyl name_number) + 6 (dtf)
+    expect(pubLine.unit_deco).toBe(coachUnitDeco);
+  });
+
+  test('the public endpoint surfaces the same MIN_QTY line error the coach path gets', async () => {
+    mockAdmin = fakeSb(ratedTables(), null);
+    const r = await publicPrice.handler({ httpMethod: 'POST', headers: {}, body: JSON.stringify({ lines: [{ product_id: 'p2', qty: 10, decorations: [{ type: 'screen_print', colors: 1 }] }] }) });
+    expect(r.statusCode).toBe(422);
+    expect(JSON.parse(r.body).error).toBe('Screen print requires 24+ pieces');
+  });
+
+  test('fallback: with no rates table, legacy types still price via dP and new heat kinds are rejected', async () => {
+    const qty = 24;
+    const ok = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty, decorations: [{ type: 'dtf', dtf_size: 0 }] }] });
+    expect(ok.statusCode).toBe(200);
+    expect(JSON.parse(ok.body).quote.lines[0].decorations[0].unit_sell)
+      .toBe(Math.round(DECO.dP(DECO.DEFAULTS, { type: 'dtf', dtf_size: 0 }, qty).sell * 100) / 100);
+    const rej = await call({ customer_id: 'cust1', lines: [{ product_id: 'p2', qty, decorations: [{ type: 'silicone_patch' }] }] });
+    expect(rej.statusCode).toBe(409);
   });
 });

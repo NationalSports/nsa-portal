@@ -28,6 +28,11 @@ const crypto = require('crypto');
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
 const { verifyCoach, coachHasCustomerAccess } = require('./_coachAuth');
 const DECO = require('../../src/lib/decoPricing');
+// Team Shop flat deco rate card (00194) — when the rates table is live, deco
+// pricing comes from it; when it isn't (loadRates → null), we FALL BACK to the
+// legacy DECO.dP tables below so the storefront keeps pricing correctly before
+// the migration is applied. See the transitional-fallback note in _teamshopRates.js.
+const { loadRates, flatDecoSell } = require('./_teamshopRates');
 
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
@@ -52,15 +57,26 @@ function unitSell(p, cust) {
   return DECO.rQ((Number(repCost) || 0) * mk);
 }
 
-// Normalize a client decoration to the plain type-based shape dP prices without
-// art files (screen_print / embroidery / dtf / names / numbers pass through on
-// their documented fields). Everything else — overrides especially — is dropped:
-// a coach caller must never set its own price.
+// Normalize a client decoration to the plain type-based shape the server
+// prices. `type` is the concrete PRODUCTION identity (embroidery | dtf | vinyl
+// | silicone_patch | screen_print — a DTF job routes to the DTF printer, vinyl
+// to the cutter; 'heat' is a storefront FAMILY, never a type); `option` is the
+// rate-card sub-option (00194 option_key, whitelisted below, defaulting to
+// 'standard'). colors/underbase, stitches and dtf_size still pass through:
+// when the flat rate card is active they are PRODUCTION METADATA only (not
+// price inputs); in dP-fallback mode they price exactly as before. Everything
+// else — overrides especially — is dropped: a coach caller must never set its
+// own price.
+const DECO_OPTION_KEYS = ['standard', 'number', 'name_number'];
+const cleanOption = (d) => (DECO_OPTION_KEYS.includes(d && d.option) ? d.option : 'standard');
 function cleanDeco(d) {
   const t = String((d && d.type) || '').trim();
-  if (t === 'screen_print') return { type: 'screen_print', colors: Math.min(5, Math.max(1, parseInt(d.colors, 10) || 1)), underbase: !!d.underbase };
-  if (t === 'embroidery') return { type: 'embroidery', stitches: Math.min(999999, Math.max(1, parseInt(d.stitches, 10) || 8000)) };
-  if (t === 'dtf') return { type: 'dtf', dtf_size: DECO.DTF[parseInt(d.dtf_size, 10)] ? parseInt(d.dtf_size, 10) : 0 };
+  const option = cleanOption(d);
+  if (t === 'screen_print') return { type: 'screen_print', option, colors: Math.min(5, Math.max(1, parseInt(d.colors, 10) || 1)), underbase: !!d.underbase };
+  if (t === 'embroidery') return { type: 'embroidery', option, stitches: Math.min(999999, Math.max(1, parseInt(d.stitches, 10) || 8000)) };
+  if (t === 'dtf') return { type: 'dtf', option, dtf_size: DECO.DTF[parseInt(d.dtf_size, 10)] ? parseInt(d.dtf_size, 10) : 0 };
+  if (t === 'vinyl') return { type: 'vinyl', option };
+  if (t === 'silicone_patch') return { type: 'silicone_patch', option };
   return null;
 }
 
@@ -73,6 +89,10 @@ function decoMeta(d) {
   const out = {};
   if (d.placement != null && String(d.placement).trim()) out.placement = String(d.placement).trim();
   if (d.side === 'front' || d.side === 'back') out.side = d.side;
+  // option is also normalized by cleanDeco (same whitelist) — echoing it here
+  // keeps the two whitelists agreeing by construction: an un-whitelisted client
+  // option can never overwrite cleanDeco's normalized 'standard'.
+  if (DECO_OPTION_KEYS.includes(d.option)) out.option = d.option;
   for (const k of ['x', 'y', 'w']) {
     const n = Number(d[k]);
     if (d[k] != null && d[k] !== '' && Number.isFinite(n)) out[k] = n;
@@ -84,7 +104,7 @@ function decoMeta(d) {
   return out;
 }
 
-// ── Quote hash (v2) — THE single normalization + hash implementation ─────────
+// ── Quote hash (v3) — THE single normalization + hash implementation ─────────
 //
 // CONTRACT (Stage 6 checkout): the order-placement function MUST NOT reimplement
 // this. It requires this module and recomputes the hash from the quote lines the
@@ -96,17 +116,25 @@ function decoMeta(d) {
 //   if (quote_hash !== clientSuppliedHash) reject; // quote drifted → re-quote
 //
 // `lines` is the priced/echoed quote line shape this function produces:
-//   { product_id, sku, size, qty, unit_sell, decorations: [{ type,
-//     colors/underbase | stitches | dtf_size, placement?, side?, x?, y?, w?,
-//     teamshop_logo_id? | art_file_id? }] }
+//   { product_id, sku, size, qty, unit_sell, decorations: [{ type, option,
+//     unit_sell, colors/underbase | stitches | dtf_size (production metadata),
+//     placement?, side?, x?, y?, w?, teamshop_logo_id? | art_file_id? }] }
 // `totals` is { customer_id, tier, subtotal }.
 //
 // Hashed per normalized line: product_id, sku, size, qty, unit garment sell,
-// and per decoration the full pricing-relevant set (type + colors/underbase |
-// stitches | dtf_size) PLUS placement identity (placement zone id, logo
-// reference, side, x, y, w) — so a placement nudge, zone change, or logo swap
-// invalidates the quote. The version string is inside the hashed payload.
-const HASH_VERSION = 'v2';
+// and per decoration the pricing identity as of the RATE-CARD model (v3):
+//   pr = [type, option, resolvedPrice]
+// where resolvedPrice is the server-priced per-unit deco sell (d.unit_sell).
+// A staff rate edit therefore flips every open quote's hash (409
+// totals_changed at checkout → re-quote), and in dP-fallback mode a
+// colors/stitches/dtf_size change still flips it through the resolved price.
+// Placement identity (placement zone id, logo reference, side, x, y, w) is
+// hashed as before — a placement nudge, zone change, or logo swap invalidates
+// the quote. The version string is inside the hashed payload.
+// v2 → v3: pr was [colors, underbase] | [stitches] | [dtf_size]; it is now
+// [type, option, resolvedPrice]. teamshop-checkout's compare works unchanged —
+// it recomputes through this same export.
+const HASH_VERSION = 'v3';
 function normalizeAndHash(lines, totals) {
   const t = totals || {};
   const str = (v) => (v == null || String(v) === '' ? null : String(v));
@@ -126,10 +154,11 @@ function normalizeAndHash(lines, totals) {
       u: Number(l.unit_sell) || 0,
       d: (Array.isArray(l.decorations) ? l.decorations : []).map((d) => ({
         t: str(d.type),
-        // full pricing-relevant set for the type
-        pr: d.type === 'screen_print' ? [Number(d.colors) || 1, d.underbase ? 1 : 0]
-          : d.type === 'embroidery' ? [Number(d.stitches) || 0]
-            : [Number(d.dtf_size) || 0],
+        // v3 pricing identity: [type, option, resolvedPrice] — see the
+        // contract comment above. resolvedPrice is the server-priced per-unit
+        // deco sell, so a rate-card edit (or any dP-fallback input change)
+        // flips the hash.
+        pr: [str(d.type), str(d.option) || 'standard', Number(d.unit_sell) || 0],
         // placement identity
         pl: str(d.placement),
         lg: d.teamshop_logo_id != null ? `teamshop:${d.teamshop_logo_id}`
@@ -166,7 +195,12 @@ async function buildQuote(admin, { customerId, lines }) {
   const byId = {};
   (prods || []).forEach((p) => { byId[p.id] = p; });
 
-  const T = DECO.DEFAULTS; // server always prices at the default tables
+  const T = DECO.DEFAULTS; // fallback tables (see below) — server never reads browser overrides
+  // Flat deco rate card (00194). null → the table isn't live yet, and deco
+  // pricing falls back to the legacy DECO.dP tables so pre-migration deploys
+  // keep charging exactly what they charged before (transitional fallback —
+  // see _teamshopRates.js).
+  const rates = await loadRates(admin);
   const outLines = [];
   let subtotal = 0;
   for (const l of lines) {
@@ -181,9 +215,29 @@ async function buildQuote(admin, { customerId, lines }) {
     // decorations: [] (or absent) is a plain retail line — garment-only price.
     for (const rawDeco of (Array.isArray(l.decorations) ? l.decorations : [])) {
       const d = cleanDeco(rawDeco);
-      if (!d) return { status: 400, error: 'Unsupported decoration type — use screen_print, embroidery, or dtf' };
-      const dp = DECO.dP(T, d, qty);
-      const sell = r2(dp.sell);
+      if (!d) return { status: 400, error: 'Unsupported decoration type — use embroidery, dtf, vinyl, silicone_patch, or screen_print' };
+      let sell;
+      if (rates) {
+        // Rate card live: flat per-piece sell by type + option, with the
+        // row's min_qty enforced at THIS LINE's quantity. stitches/dtf_size/
+        // colors are production metadata here, never price inputs.
+        const fr = flatDecoSell(rates, d, qty);
+        if (fr.error === 'MIN_QTY') {
+          return { status: 422, error: `${fr.label} requires ${fr.min}+ pieces`, extra: { code: 'MIN_QTY', min: fr.min, type: d.type } };
+        }
+        if (fr.error) {
+          // No active rate row — REJECT, never price at $0.
+          return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
+        }
+        sell = fr.sell;
+      } else {
+        // dP fallback (00194 not applied yet): the exact legacy pricing. The
+        // new heat kinds have no dP price — reject rather than charge $0.
+        if (d.type === 'vinyl' || d.type === 'silicone_patch') {
+          return { status: 409, error: 'This decoration isn’t available right now — please pick another method.' };
+        }
+        sell = r2(DECO.dP(T, d, qty).sell);
+      }
       decoEach = r2(decoEach + sell);
       // pricing fields (cleanDeco) + priced sell + placement/logo metadata echo.
       decos.push({ ...d, unit_sell: sell, ...decoMeta(rawDeco) });
@@ -193,7 +247,7 @@ async function buildQuote(admin, { customerId, lines }) {
     outLines.push({ product_id: p.id, sku: p.sku, name: p.name, size, color, qty, unit_sell: unit, decorations: decos, line_total: lineTotal });
   }
 
-  // Deterministic v2 hash over the normalized line set + totals (see
+  // Deterministic v3 hash over the normalized line set + totals (see
   // normalizeAndHash above). Order placement recomputes it via the same export.
   const { quote_hash, hash_version } = normalizeAndHash(outLines, {
     customer_id: cust.id,
@@ -238,7 +292,7 @@ exports.handler = async (event) => {
     if (!acc.ok) return bad(403, 'Not authorized for this customer');
 
     const res = await buildQuote(admin, { customerId, lines: body.lines });
-    if (!res.quote) return bad(res.status, res.error);
+    if (!res.quote) return bad(res.status, res.error, res.extra);
     return { statusCode: 200, headers, body: JSON.stringify({ ok: true, quote: res.quote }) };
   } catch (e) {
     return bad(500, e.message);

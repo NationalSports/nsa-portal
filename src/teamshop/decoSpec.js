@@ -22,8 +22,56 @@ export const NUDGE_LIMIT = 8; // ± percent points on x and y
 export const SCALE_MIN = 0.6; // × zone default width
 export const SCALE_MAX = 1.4; // × zone default width
 
-// Decoration methods the quote function prices (cleanDeco rejects anything else).
-export const DECO_METHODS = ['screen_print', 'embroidery', 'dtf'];
+// ── Method taxonomy (owner-approved, mirrors migration 00194's seed rows) ────
+// The storefront groups methods into three FAMILIES: Embroidery, Heat
+// Applications (a family with multiple kinds — DTF, Vinyl, Silicone Patch),
+// and Screen Print (24-piece minimum). `family` is STOREFRONT GROUPING ONLY;
+// `type` is the concrete PRODUCTION identity that flows into cart lines →
+// order-item decorations jsonb → so_item_decorations/so_jobs (a DTF job routes
+// to the DTF printer, vinyl to the cutter). This static structure only shapes
+// the builder's controls — the labels/prices the coach SEES come from the live
+// server price endpoints (quickorder-quote / teamshop-public-price), never
+// from here.
+export const OPTION_KEYS = ['standard', 'number', 'name_number'];
+export const METHOD_FAMILIES = [
+  {
+    key: 'embroidery',
+    label: 'Embroidery',
+    types: [{ type: 'embroidery', label: 'Embroidery', options: ['standard'] }],
+  },
+  {
+    key: 'heat',
+    label: 'Heat Applications',
+    types: [
+      { type: 'dtf', label: 'DTF Transfer', options: ['standard'] },
+      { type: 'vinyl', label: 'Vinyl', options: ['standard', 'number', 'name_number'] },
+      { type: 'silicone_patch', label: 'Silicone Patch', options: ['standard'] },
+    ],
+  },
+  {
+    key: 'screen_print',
+    label: 'Screen Print',
+    minQty: 24,
+    types: [{ type: 'screen_print', label: 'Screen Print', options: ['standard'] }],
+  },
+];
+// family key for a concrete production type ('dtf' → 'heat'), null when unknown.
+export const familyOfType = (type) => {
+  const fam = METHOD_FAMILIES.find((f) => f.types.some((t) => t.type === type));
+  return fam ? fam.key : null;
+};
+const _typeEntry = (type) => {
+  for (const f of METHOD_FAMILIES) {
+    const t = f.types.find((x) => x.type === type);
+    if (t) return t;
+  }
+  return null;
+};
+
+// Concrete production types the quote function prices (cleanDeco rejects
+// anything else). Kept flat for backward compatibility — 'dtf' remains a valid
+// spec type even though the UI now reaches it through the 'heat' family.
+export const DECO_METHODS = ['screen_print', 'embroidery', 'dtf', 'vinyl', 'silicone_patch'];
 export const DEFAULT_STITCHES = 8000; // cleanDeco's own fallback — keep in sync
 export const MAX_STITCHES = 999999;
 export const MAX_SP_COLORS = 5;
@@ -106,6 +154,9 @@ function _pricingFields(type, options) {
     const i = parseInt(o.dtf_size, 10);
     return { dtf_size: DECO.DTF[i] ? i : 0 };
   }
+  // vinyl / silicone_patch: flat rate-card pricing only — no per-method
+  // pricing fields beyond the option key handled in buildDecoSpec.
+  if (type === 'vinyl' || type === 'silicone_patch') return {};
   return null;
 }
 
@@ -115,14 +166,23 @@ function _pricingFields(type, options) {
 //   zone      — an entry from zonesForGarment()
 //   placement — optional {x,y,w} nudge (clamped to the zone)
 //   logo      — teamshop-art.js entry: { id, url, name?, source: 'art_library'|'teamshop' }
-//   method    — 'screen_print' (or 'screenprint') | 'embroidery' | 'dtf'
+//   type      — concrete production type: 'embroidery' | 'dtf' | 'vinyl' |
+//               'silicone_patch' | 'screen_print' (preferred over `method`)
+//   family    — optional storefront family key; derived from the type when
+//               omitted (and ignored when it doesn't match — the type wins,
+//               because the type is the production identity)
+//   option    — optional rate-card option_key ('standard' | 'number' |
+//               'name_number'); must be offered by the type, else 'standard'
+//   method    — legacy alias of `type` ('screen_print'/'screenprint' | 'embroidery' | 'dtf')
 //   options   — { colors?, underbase?, stitches?, dtf_size? } per method
 //   side      — optional 'front'|'back' override (defaults to the zone's side)
-export function buildDecoSpec({ zone, placement, logo, method, options, side } = {}) {
+export function buildDecoSpec({ zone, placement, logo, type: rawType, option, method, options, side } = {}) {
   if (!zone || !zone.id) throw new Error('buildDecoSpec: zone required');
   if (!logo || !logo.url) throw new Error('buildDecoSpec: logo with a url required');
-  const type = _method(method);
-  if (!DECO_METHODS.includes(type)) throw new Error(`buildDecoSpec: unsupported method "${method}"`);
+  const type = _method(rawType != null ? rawType : method);
+  if (!DECO_METHODS.includes(type)) throw new Error(`buildDecoSpec: unsupported method "${rawType != null ? rawType : method}"`);
+  const entry = _typeEntry(type);
+  const opt = entry && entry.options.includes(option) ? option : 'standard';
   const s = side || zone.side || 'front';
   if (s !== 'front' && s !== 'back') throw new Error(`buildDecoSpec: bad side "${side}"`);
   const pos = clampPlacement(zone, placement);
@@ -140,8 +200,14 @@ export function buildDecoSpec({ zone, placement, logo, method, options, side } =
     // Provenance — which logo record this came from, for later stages.
     logo_source: logo.source || 'art_library',
     ...idField,
-    // Pricing fields — exactly what cleanDeco accepts.
+    // Pricing identity — exactly what cleanDeco accepts. `type` is the
+    // concrete production identity; `family` is derived storefront grouping
+    // (a caller-passed family that disagrees with the type is ignored — the
+    // type wins, and the server drops family anyway); `option` is the
+    // rate-card option_key.
     type,
+    family: familyOfType(type),
+    option: opt,
     ..._pricingFields(type, options),
   };
 }
@@ -173,6 +239,14 @@ export function validateSpec(spec) {
   if (!Number.isFinite(y) || Math.abs(y - zone.y) > NUDGE_LIMIT) return _fail('y outside the zone nudge range');
   if (!Number.isFinite(w) || w < zone.w * SCALE_MIN || w > zone.w * SCALE_MAX) return _fail('w outside the zone scale range');
   if (!DECO_METHODS.includes(spec.type)) return _fail(`unsupported type "${spec.type}"`);
+  // family/option are OPTIONAL for backward compatibility — pre-rate-card
+  // specs (e.g. a plain { type: 'dtf', dtf_size } spec) stay valid. When
+  // present they must be coherent with the type.
+  if (spec.family != null && spec.family !== familyOfType(spec.type)) return _fail(`family "${spec.family}" does not match type "${spec.type}"`);
+  if (spec.option != null) {
+    const entry = _typeEntry(spec.type);
+    if (!entry || !entry.options.includes(spec.option)) return _fail(`option "${spec.option}" not offered for "${spec.type}"`);
+  }
   if (spec.type === 'screen_print' && !(_isInt(spec.colors) && spec.colors >= 1 && spec.colors <= MAX_SP_COLORS)) return _fail('screen_print needs colors 1-5');
   if (spec.type === 'embroidery' && !(_isInt(spec.stitches) && spec.stitches >= 1 && spec.stitches <= MAX_STITCHES)) return _fail('embroidery needs a stitch count');
   if (spec.type === 'dtf' && !(_isInt(spec.dtf_size) && DECO.DTF[spec.dtf_size])) return _fail('dtf needs a valid dtf_size');

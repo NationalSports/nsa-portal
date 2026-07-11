@@ -16,6 +16,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 import {
   zonesForGarment, clampPlacement, buildDecoSpec, specToOverlayProps, validateSpec,
   NUDGE_LIMIT, SCALE_MIN, SCALE_MAX, DECO_METHODS, DEFAULT_STITCHES, DTF_SIZES,
+  METHOD_FAMILIES, familyOfType, OPTION_KEYS,
 } from '../teamshop/decoSpec';
 import { ART_PLACEMENTS, placementById } from '../lib/artPlacements';
 import { garmentTypeOf } from '../lib/artGrid';
@@ -155,7 +156,7 @@ describe('buildDecoSpec', () => {
   test('programming errors throw: no zone, no logo url, unknown method, bad side', () => {
     expect(() => buildDecoSpec({ logo: LIB_LOGO, method: 'dtf' })).toThrow(/zone/);
     expect(() => buildDecoSpec({ zone, logo: { id: 'x' }, method: 'dtf' })).toThrow(/logo/);
-    expect(() => buildDecoSpec({ zone, logo: LIB_LOGO, method: 'vinyl' })).toThrow(/unsupported/);
+    expect(() => buildDecoSpec({ zone, logo: LIB_LOGO, method: 'laser_etch' })).toThrow(/unsupported/);
     expect(() => buildDecoSpec({ zone, logo: LIB_LOGO, method: 'dtf', side: 'left' })).toThrow(/side/);
   });
 });
@@ -179,9 +180,10 @@ describe('cleanDeco round trip — the spec IS the pricing input', () => {
     expect(cleaned).not.toBeNull();
     expect(cleaned.type).toBe(method);
     // cleanDeco must not renormalize anything — the persisted spec is already canonical
-    if (method === 'screen_print') expect(cleaned).toEqual({ type: 'screen_print', colors: spec.colors, underbase: spec.underbase });
-    if (method === 'embroidery') expect(cleaned).toEqual({ type: 'embroidery', stitches: spec.stitches });
-    if (method === 'dtf') expect(cleaned).toEqual({ type: 'dtf', dtf_size: spec.dtf_size });
+    // (option defaults to 'standard' on both sides of the wire).
+    if (method === 'screen_print') expect(cleaned).toEqual({ type: 'screen_print', option: 'standard', colors: spec.colors, underbase: spec.underbase });
+    if (method === 'embroidery') expect(cleaned).toEqual({ type: 'embroidery', option: 'standard', stitches: spec.stitches });
+    if (method === 'dtf') expect(cleaned).toEqual({ type: 'dtf', option: 'standard', dtf_size: spec.dtf_size });
     // and the shared pricing engine actually prices it
     const priced = DECO.dP(DECO.DEFAULTS, cleaned, 24);
     expect(Number(priced.sell)).toBeGreaterThan(0);
@@ -191,6 +193,74 @@ describe('cleanDeco round trip — the spec IS the pricing input', () => {
     for (const m of DECO_METHODS) {
       expect(cleanDeco({ type: m })).not.toBeNull();
     }
+  });
+
+  test('the new heat kinds round-trip with their option (flat rate-card types — no dP price)', () => {
+    for (const [type, option] of [['vinyl', 'standard'], ['vinyl', 'number'], ['vinyl', 'name_number'], ['silicone_patch', 'standard']]) {
+      const spec = buildDecoSpec({ zone, logo: LIB_LOGO, type, option });
+      expect(validateSpec(spec)).toEqual({ ok: true });
+      expect(spec).toMatchObject({ type, option, family: 'heat' });
+      expect(cleanDeco(spec)).toEqual({ type, option });
+    }
+  });
+});
+
+// ── Method families (owner-approved taxonomy, mirrors 00194 seeds) ────
+describe('METHOD_FAMILIES', () => {
+  test('three families: embroidery, heat (with kinds), screen_print (24 min)', () => {
+    expect(METHOD_FAMILIES.map((f) => f.key)).toEqual(['embroidery', 'heat', 'screen_print']);
+    const heat = METHOD_FAMILIES.find((f) => f.key === 'heat');
+    expect(heat.label).toBe('Heat Applications');
+    expect(heat.types.map((t) => t.type)).toEqual(['dtf', 'vinyl', 'silicone_patch']);
+    expect(heat.types.find((t) => t.type === 'vinyl').options).toEqual(['standard', 'number', 'name_number']);
+    expect(METHOD_FAMILIES.find((f) => f.key === 'screen_print').minQty).toBe(24);
+  });
+
+  test('every family type is a priceable DECO_METHOD and every option is whitelisted', () => {
+    for (const f of METHOD_FAMILIES) {
+      for (const t of f.types) {
+        expect(DECO_METHODS).toContain(t.type);
+        expect(familyOfType(t.type)).toBe(f.key);
+        for (const o of t.options) expect(OPTION_KEYS).toContain(o);
+      }
+    }
+  });
+
+  test('familyOfType: dtf is a heat KIND (not top-level); unknown types are null', () => {
+    expect(familyOfType('dtf')).toBe('heat');
+    expect(familyOfType('embroidery')).toBe('embroidery');
+    expect(familyOfType('screen_print')).toBe('screen_print');
+    expect(familyOfType('laser')).toBeNull();
+  });
+
+  test('buildDecoSpec stamps family from the TYPE (production identity wins over a bogus family)', () => {
+    const s = buildDecoSpec({ zone: zoneById('Team Cotton Tee', 'left_chest'), logo: LIB_LOGO, family: 'screen_print', type: 'dtf' });
+    expect(s.family).toBe('heat');
+    expect(s.type).toBe('dtf');
+  });
+
+  test('backward compat: a pre-family spec (bare type dtf, no family/option) still validates', () => {
+    const zone = zoneById('Team Cotton Tee', 'left_chest');
+    const legacy = buildDecoSpec({ zone, logo: LIB_LOGO, method: 'dtf' });
+    delete legacy.family;
+    delete legacy.option;
+    expect(validateSpec(legacy)).toEqual({ ok: true });
+    expect(cleanDeco(legacy)).toEqual({ type: 'dtf', option: 'standard', dtf_size: 0 });
+  });
+
+  test('validateSpec rejects an incoherent family or an option the type does not offer', () => {
+    const zone = zoneById('Team Cotton Tee', 'left_chest');
+    const vinyl = buildDecoSpec({ zone, logo: LIB_LOGO, type: 'vinyl', option: 'number' });
+    expect(validateSpec({ ...vinyl, family: 'screen_print' }).ok).toBe(false);
+    expect(validateSpec({ ...vinyl, option: 'gigantic' }).ok).toBe(false);
+    const emb = buildDecoSpec({ zone, logo: LIB_LOGO, type: 'embroidery' });
+    expect(validateSpec({ ...emb, option: 'name_number' }).ok).toBe(false); // embroidery offers standard only
+  });
+
+  test('buildDecoSpec normalizes an unknown option to standard', () => {
+    const zone = zoneById('Team Cotton Tee', 'left_chest');
+    expect(buildDecoSpec({ zone, logo: LIB_LOGO, type: 'vinyl', option: 'nope' }).option).toBe('standard');
+    expect(buildDecoSpec({ zone, logo: LIB_LOGO, type: 'embroidery', option: 'number' }).option).toBe('standard');
   });
 });
 
@@ -254,7 +324,7 @@ describe('validateSpec', () => {
     reject({ x: NaN }, /x outside/);
   });
   test('rejects unpriceable methods and bad pricing fields', () => {
-    reject({ type: 'vinyl' }, /type/);
+    reject({ type: 'laser_etch' }, /type/);
     reject({ colors: 0 }, /colors/);
     reject({ colors: 6 }, /colors/);
     reject({ colors: 2.5 }, /colors/);
