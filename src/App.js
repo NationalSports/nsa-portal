@@ -1175,9 +1175,12 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
 
   return{
     id:j.id,rush,methodName,crest,garmentFill:'#22345c',
-    // Pick list only for clubstore / National Team Shop online-store orders
-    // (SOs created from a webstore or OMG store); contract/bulk jobs skip it.
-    includePickList:!!(so.webstore_id||so.omg_store_id),
+    // The item-fulfillment pick list is only meaningful when the order carries
+    // names & numbers (a per-player roster) — that's what turns a job into a
+    // per-person fulfillment. A bulk decoration job with no names/numbers —
+    // even one placed through an OMG / webstore team store (e.g. a screen-print
+    // team order) — prints as a clean single-page work order, no pick list.
+    includePickList:!!roster,
     barcodeLabel:j.id+(alpha?' · '+alpha:''),
     footerLeft:'Printed '+printed+' · '+station,
     companyLine:'National Team Shop · A National Sports Apparel company',

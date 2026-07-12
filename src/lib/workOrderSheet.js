@@ -196,10 +196,11 @@ export function buildWorkOrderDoc(data) {
   const hasRoster = !!(d.roster && d.roster.groups && d.roster.groups.length);
   const rushMethod = `<div style="margin-top:6px;display:inline-flex;align-items:center;gap:7px">${d.rush ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#fff;background:${C.red};padding:3px 8px;border-radius:4px">Rush</span>` : ''}<span style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${C.navy};border:1px solid #C9CFDD;padding:3px 8px;border-radius:4px">${esc(d.methodName)}</span></div>`;
 
-  // The Line Items & Pick List is an item-fulfillment concern — include it only
-  // for clubstore / National Team Shop online-store orders (each line is an
-  // individual buyer's order), on its own "IF" page. A contract/bulk deco job
-  // doesn't need it. The roster page is independent (names/numbers only).
+  // The Line Items & Pick List is an item-fulfillment concern, rendered on its
+  // own "IF" page only when the caller sets includePickList (see
+  // buildWorkOrderOpts: set for names/numbers orders that need per-person
+  // fulfillment). A plain bulk decoration job doesn't get it. The roster page is
+  // independent.
   const showPick = !!d.includePickList;
   // page count for footers
   const totalPages = 1 + (showPick ? 1 : 0) + (hasRoster ? 1 : 0);
