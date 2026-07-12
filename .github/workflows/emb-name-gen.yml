@@ -16,6 +16,12 @@ on:
         description: 'JSON plan: {"job_id","fingerprint","pieces":[{seq,size,kind,text,font,heightIn,filename}]} — leave empty for selftest'
         required: false
         default: ''
+  # TEMPORARY, remove after first selftest passes: workflow_dispatch only works
+  # once this file is on the default branch, so validate via push on the feature
+  # branch (fires the selftest — empty payload).
+  push:
+    branches: [claude/nice-lamport-vqpjaq]
+    paths: ['scripts/emb-name-gen/**', '.github/workflows/emb-name-gen.yml']
 
 jobs:
   generate:
