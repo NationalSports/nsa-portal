@@ -77,28 +77,78 @@ const _soJobsSearchHay=(so)=>safeJobs(so).map(j=>((j.id||'')+' '+(j.art_name||''
 // received-quantity map so backordered sizes hold their parents at on-order.
 // Returns null when there's no linked SO. Reuses calcSOStatus for the stage so
 // it matches the rest of the app exactly.
+// ── OMG/webstore item ↔ SO matching normalizers (audit fix #5) ──────────
+// Report SKUs/sizes drift from the SO catalog values: empty SKUs, junk
+// suffixes ("JY2503 - 4", "410700 BLACK - 4"), size vocab ("Mens Large" vs
+// "M", 'L 7"' inseams), and names carrying the SKU as a trailing (sometimes
+// duplicated) token. Normalize both sides and match through a ladder of keys
+// so receiving-based status sync still finds the right SO bucket.
+const _wsNormSize=(s)=>{
+  let v=String(s||'').toUpperCase().replace(/[’']/g,'').trim().replace(/\s+/g,' ');
+  v=v.replace(/\s+\d+(\.\d+)?"?$/,'').trim();            // strip trailing inseam: 'L 7"'
+  let y='';
+  if(/^YOUTH\s+/.test(v)){y='Y';v=v.replace(/^YOUTH\s+/,'')}
+  v=v.replace(/^(MENS|WOMENS|LADIES|UNISEX|ADULT)\s+/,'');
+  const MAP={'X-SMALL':'XS','XSMALL':'XS','SMALL':'S','MEDIUM':'M','LARGE':'L','X-LARGE':'XL','XLARGE':'XL','XX-LARGE':'2XL','XXL':'2XL','2X-LARGE':'2XL','2X':'2XL','XXXL':'3XL','3X':'3XL','3X-LARGE':'3XL','4X':'4XL','4X-LARGE':'4XL'};
+  return y+(MAP[v]||v);
+};
+const _wsNormSku=(s)=>String(s||'').toUpperCase().trim().replace(/\s+/g,' ').replace(/\s*-\s*\d+$/,''); // 'JY2503 - 4' → 'JY2503'
+// SKU-ish tokens of a product name (has a digit, or 4+ all-caps
+// alphanumerics), trailing token first: "Sport-Tek Repeat 7\" Short ST485
+// ST485" → [ST485]; "…FULL-ZIP JACKET - BLACK A268 BLACK" → [A268]. These are
+// only lookup CANDIDATES — a token only links if it equals an actual SO SKU.
+const _wsSkuTokens=(name)=>{
+  const toks=String(name||'').trim().split(/\s+/).reverse();
+  const out=[];
+  for(const t of toks){
+    if(/^[A-Z0-9-]{3,12}$/i.test(t)&&(/\d/.test(t)||(t===t.toUpperCase()&&t.length>=4))){
+      const u=t.toUpperCase();if(!out.includes(u))out.push(u);
+    }
+  }
+  return out;
+};
+const _wsNormName=(name)=>String(name||'').toUpperCase().replace(/\s+/g,' ').trim();
+// Candidate lookup keys for an order line, most → least specific.
+const _wsLineKeys=(i)=>{
+  const sz=_wsNormSize(i.size);const keys=[];
+  const sku=_wsNormSku(i.sku);
+  if(sku){keys.push(sku+'|'+sz);const tok=sku.split(' ')[0];if(tok&&tok!==sku&&tok.length>=3)keys.push(tok+'|'+sz)}
+  _wsSkuTokens(i.name).forEach(tk=>{if(tk!==sku)keys.push(tk+'|'+sz)});
+  const nm=_wsNormName(i.name);if(nm)keys.push('N:'+nm+'|'+sz);
+  return keys;
+};
 const computeOmgSoSync=(so)=>{
   if(!so)return null;
   const soStatus=calcSOStatus(so);
   // SO status → parent store stage. 'shipped' is never set here (ShipStation
   // owns it). Jobs-all-done (ready_to_invoice/complete) = 'bagging'.
+  // waiting_receive/needs_pull map to 'received' so PARTIAL receiving shows:
+  // the per-item allocation below only advances lines whose SKU+size is
+  // actually covered by pulled picks + PO receipts, and holds the rest at
+  // on-order — this is what makes the guide's "backordered sizes stay at On
+  // order" real during the receiving window (audit fix #4).
   const storeStage=
     (soStatus==='ready_to_invoice'||soStatus==='complete')?'bagging':
     (soStatus==='in_production')?'in_production':
-    (soStatus==='items_received')?'received':
-    null; // need_order / waiting_receive / booking → leave parents at on-order
+    (soStatus==='items_received'||soStatus==='waiting_receive'||soStatus==='needs_pull')?'received':
+    null; // need_order / booking → leave parents at on-order
   // Per-SKU+size received qty = pulled picks + PO receipts (matches calcSOStatus).
-  const recvBySkuSize={};
+  // aliasKeys maps alternate lookup keys (e.g. name-based) → the canonical
+  // SKU|SIZE bucket so allocation always draws from ONE quantity pool.
+  const recvBySkuSize={};const aliasKeys={};
   safeItems(so).forEach(it=>{
-    const sk=(it.sku||'').trim().toUpperCase();if(!sk)return;
+    const sk=_wsNormSku(it.sku);if(!sk)return;
+    const nm=_wsNormName(it.name);
     Object.keys(safeSizes(it)).forEach(sz=>{
-      const k=sk+'|'+String(sz).toUpperCase();
+      const szN=_wsNormSize(sz);
+      const k=sk+'|'+szN;
       const pulled=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);
       const rcvd=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);
       recvBySkuSize[k]=(recvBySkuSize[k]||0)+pulled+rcvd;
+      if(nm){const ak='N:'+nm+'|'+szN;if(!(ak in aliasKeys))aliasKeys[ak]=k}
     });
   });
-  return { soId:so.id, soStatus, storeStage, recvBySkuSize };
+  return { soId:so.id, soStatus, storeStage, recvBySkuSize, aliasKeys };
 };
 // Auto-push the computed OMG status onto the linked parent order items. Called
 // from savSO whenever an OMG-linked SO changes (receiving, jobs, picks), so the
@@ -114,15 +164,23 @@ const _OMG_STAGE_LABEL = ['pending','received','in_production','bagging','shippe
 // line, never downgrades; never touches shipped/cancelled; holds a not-yet-
 // received SKU/size at on-order so backordered lines don't jump ahead.
 const _applyWebstoreStageSync=async(sync,items)=>{
-  const norm=x=>String(x||'').trim().toUpperCase();
   const storeIdx=_OMG_STAGE_ORD[sync.storeStage]??0;
+  const aliases=sync.aliasKeys||{};
   const used={};const byLs={};
   (items||[]).forEach(i=>{
     if(i.line_status==='shipped'||i.line_status==='cancelled')return; // ShipStation/cancel own these
-    const k=norm(i.sku)+'|'+norm(i.size);const qty=i.qty||1;
-    const recvAvail=sync.recvBySkuSize[k]||0;used[k]=used[k]||0;
-    const isReceived=(used[k]+qty)<=recvAvail;used[k]+=qty;
-    const targetIdx=isReceived?storeIdx:0; // not received → hold at on-order
+    // Resolve the line to its canonical SO SKU|SIZE bucket through the key
+    // ladder (raw sku → sku token → sku-from-name → product name).
+    let k=null;
+    for(const cand of _wsLineKeys(i)){
+      if(cand in sync.recvBySkuSize){k=cand;break}
+      if(cand in aliases){k=aliases[cand];break}
+    }
+    const qty=i.qty||1;
+    const recvAvail=k?(sync.recvBySkuSize[k]||0):0;
+    if(k)used[k]=used[k]||0;
+    const isReceived=k?(used[k]+qty)<=recvAvail:false;if(k)used[k]+=qty;
+    const targetIdx=isReceived?storeIdx:0; // not received/unmatched → hold at on-order
     const curIdx=_OMG_STAGE_ORD[i.line_status]??0;
     if(targetIdx>curIdx){const ls=_OMG_STAGE_LABEL[targetIdx];(byLs[ls]=byLs[ls]||[]).push(i.id)}
   });
