@@ -91,7 +91,10 @@ function _dPInner(T,d,q,artFiles,cq){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(T,art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+    // Heat-transfer designs (transfer_code decos, batched club/team stores) carry their
+    // real cost-of-record on cost_each (webstore_transfers.unit_cost, 00204) — prefer it
+    // over the generic DTF matrix cost, which was never the actual transfer price.
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
   // Team Shop conversion decos (00199): kind 'art' with NO art_file_id and a rate-card
   // cost_each stamped at conversion (00198 teamshop_deco_rates.cost) — cost_each is the
   // cost-of-record. Sell stays as written (0): deco revenue is already folded into

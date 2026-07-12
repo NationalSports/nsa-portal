@@ -123,3 +123,39 @@ describe('numbers/names sell_override=0 is honored (nullish, all dP copies)', ()
     expect(appSrc).toContain("const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6))");
   });
 });
+
+// Batched heat-transfer decos (Webstores.js batchOrders) carry art_file_id (the shared
+// 'xfer_<code>' pseudo art file) so they hit dP's ART branch, not the no-art-file
+// cost_each branch — the art dtf/heat_press branch must therefore ALSO prefer
+// cost_each on transfer_code decos (real cost from webstore_transfers.unit_cost, 00204)
+// over the generic DTF matrix cost, which was never the actual transfer price.
+describe('art-branch transfer decos use cost_each as cost-of-record', () => {
+  const xferArt = { id: 'xfer_FALL24', deco_type: 'heat_press', dtf_size: 0 };
+  const xferDeco = {
+    kind: 'art', art_file_id: 'xfer_FALL24', type: 'heat_press',
+    transfer_code: 'FALL24', sell_override: 0, sell_each: 0, cost_each: 1.85,
+  };
+
+  test('decoPricing: transfer deco cost = unit_cost, not DTF matrix', () => {
+    const r = DECO.dP(DECO.DEFAULTS, xferDeco, 24, [xferArt]);
+    expect(r.cost).toBe(1.85);
+    expect(r.sell).toBe(DECO.DTF[0].sell); // sell side unchanged (0 is falsy → t.sell)
+  });
+
+  test('businessLogic: same', () => {
+    const r = BL.dP(xferDeco, 24, [xferArt]);
+    expect(r.cost).toBe(1.85);
+  });
+
+  test('non-transfer art dtf decos keep the DTF matrix cost', () => {
+    const plain = { kind: 'art', art_file_id: 'A9', cost_each: 99 }; // no transfer_code
+    const art = { id: 'A9', deco_type: 'dtf', dtf_size: 1 };
+    const r = DECO.dP(DECO.DEFAULTS, plain, 24, [art]);
+    expect(r.cost).toBe(DECO.DTF[1].cost); // 4.5 — cost_each ignored without transfer_code
+  });
+
+  test('App.js art branch carries the same guard (source-text pin)', () => {
+    const appSrc = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
+    expect(appSrc).toContain("cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost");
+  });
+});

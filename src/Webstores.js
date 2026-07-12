@@ -2746,7 +2746,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // we can emit a logo deco for it on the SO (numbers/names already carry via
     // `personalize`). Keyed by product_id to match byProduct.
     const xferLabel = {};
-    (detail.transfers || []).forEach((t) => { if (t && t.code) xferLabel[t.code] = t.label || t.code; });
+    // Transfer cost-of-record (webstore_transfers.unit_cost, 00204): staff set it from
+    // their bulk transfer buys; each batched application carries it as cost_each so GP/
+    // commissions see real transfer cost (dP's art branch prefers cost_each on
+    // transfer_code decos — previously these rows hit the generic DTF matrix cost).
+    const xferCost = {};
+    (detail.transfers || []).forEach((t) => { if (t && t.code) { xferLabel[t.code] = t.label || t.code; if (t.unit_cost != null && Number.isFinite(Number(t.unit_cost))) xferCost[t.code] = Number(t.unit_cost); } });
     const bundleXfersByPid = {};
     (detail.bundleItems || []).forEach((b) => {
       if (!b.product_id || !b.transfer_code) return;
@@ -2844,7 +2849,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
-        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0 });
       });
       // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
       // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
