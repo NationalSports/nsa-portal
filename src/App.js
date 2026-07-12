@@ -93,11 +93,19 @@ const _wsNormSize=(s)=>{
   return y+(MAP[v]||v);
 };
 const _wsNormSku=(s)=>String(s||'').toUpperCase().trim().replace(/\s+/g,' ').replace(/\s*-\s*\d+$/,''); // 'JY2503 - 4' → 'JY2503'
-// Trailing token of a product name when it looks like a SKU (has a digit, or
-// is 4+ all-caps alphanumerics): "Sport-Tek Repeat 7\" Short ST485 ST485" → ST485.
-const _wsSkuFromName=(name)=>{
-  const t=String(name||'').trim().split(/\s+/);const last=t[t.length-1]||'';
-  return(/^[A-Z0-9-]{3,12}$/i.test(last)&&(/\d/.test(last)||(last===last.toUpperCase()&&last.length>=4)))?last.toUpperCase():'';
+// SKU-ish tokens of a product name (has a digit, or 4+ all-caps
+// alphanumerics), trailing token first: "Sport-Tek Repeat 7\" Short ST485
+// ST485" → [ST485]; "…FULL-ZIP JACKET - BLACK A268 BLACK" → [A268]. These are
+// only lookup CANDIDATES — a token only links if it equals an actual SO SKU.
+const _wsSkuTokens=(name)=>{
+  const toks=String(name||'').trim().split(/\s+/).reverse();
+  const out=[];
+  for(const t of toks){
+    if(/^[A-Z0-9-]{3,12}$/i.test(t)&&(/\d/.test(t)||(t===t.toUpperCase()&&t.length>=4))){
+      const u=t.toUpperCase();if(!out.includes(u))out.push(u);
+    }
+  }
+  return out;
 };
 const _wsNormName=(name)=>String(name||'').toUpperCase().replace(/\s+/g,' ').trim();
 // Candidate lookup keys for an order line, most → least specific.
@@ -105,7 +113,7 @@ const _wsLineKeys=(i)=>{
   const sz=_wsNormSize(i.size);const keys=[];
   const sku=_wsNormSku(i.sku);
   if(sku){keys.push(sku+'|'+sz);const tok=sku.split(' ')[0];if(tok&&tok!==sku&&tok.length>=3)keys.push(tok+'|'+sz)}
-  const nSku=_wsSkuFromName(i.name);if(nSku&&nSku!==sku)keys.push(nSku+'|'+sz);
+  _wsSkuTokens(i.name).forEach(tk=>{if(tk!==sku)keys.push(tk+'|'+sz)});
   const nm=_wsNormName(i.name);if(nm)keys.push('N:'+nm+'|'+sz);
   return keys;
 };

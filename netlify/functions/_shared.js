@@ -272,7 +272,14 @@ function skuFromCatalogName(productName, catalog) {
     const nm = String(p.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
     if (nm.length >= 8 && p.sku && hay.includes(nm)) skus.add(String(p.sku).toUpperCase().trim());
   }
-  return skus.size === 1 ? skus.values().next().value : '';
+  if (skus.size === 1) return skus.values().next().value;
+  if (skus.size > 1) return '';
+  // No name containment — try tokens: a whitespace token of the line name that
+  // equals a catalog SKU ("…FULL-ZIP JACKET - BLACK A268 BLACK" → A268).
+  // Unique-or-nothing, same as above.
+  const catSkus = new Set((catalog || []).map((p) => String(p.sku || '').toUpperCase().trim()).filter(Boolean));
+  const hits = new Set(hay.split(' ').filter((t) => catSkus.has(t)));
+  return hits.size === 1 ? hits.values().next().value : '';
 }
 
 async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
