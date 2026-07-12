@@ -18,7 +18,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser, syncOrderItems } = require('./_shared');
+const { verifyUser, syncOrderItems, skuFromProductName } = require('./_shared');
 
 // Columns copied onto an existing line when re-ingesting. Excludes the (sku,size) match key
 // and the fulfillment columns (line_status/shipped_qty/missing_qty), which must survive.
@@ -174,7 +174,7 @@ exports.handler = async (event) => {
 
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
-          const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
+          const sku = extractSku(row.color) || (row.sku || '').toUpperCase() || skuFromProductName(row.product);
           // row.quantity is the store-wide total for this SKU/size, not the
           // per-order quantity. Use 1 per line; presence (> 0) is the signal.
           const ordered = row.quantity > 0;

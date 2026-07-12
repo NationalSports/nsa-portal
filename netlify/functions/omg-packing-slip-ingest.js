@@ -21,7 +21,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser, syncOrderItems } = require('./_shared');
+const { verifyUser, syncOrderItems, skuFromProductName } = require('./_shared');
 
 // Content columns updated on re-ingest, excluding the (sku,size) match key and the
 // fulfillment columns (line_status/shipped_qty/missing_qty). See omg-player-report-ingest.
@@ -133,7 +133,7 @@ exports.handler = async (event) => {
       const items = Array.isArray(o.items) ? o.items.filter((i) => (i.product || i.color) && (i.qty || 1) > 0) : [];
       if (items.length) {
         const lineItems = items.map((i) => {
-          const sku = extractSku(i.color) || '';
+          const sku = extractSku(i.color) || skuFromProductName(i.product);
           return {
             sku,
             name: i.product || '',

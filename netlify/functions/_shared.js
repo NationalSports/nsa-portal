@@ -244,6 +244,20 @@ async function reconcileInvoiceFromIntent(admin, pi) {
 // so a shipment link is never orphaned. `contentKeys` are the columns copied from each lineItem
 // onto a matched row (must exclude the fulfillment columns). Each lineItem must include `sku`
 // and `size` (the match key) plus the columns needed to insert a brand-new row.
+// OMG report product names often end with the SKU, sometimes duplicated by the
+// report ("Sport-Tek Repeat 7\" Short ST485 ST485" → ST485). Fallback for rows
+// whose color string carries no "(SKU)" suffix, so parent order lines don't
+// land with an empty SKU (which breaks receiving-based status sync — see
+// OMG_TRACKING_AUDIT_2026-07-11.md fix #5). SKU-ish = 3-12 alphanumerics
+// containing a digit, or 4+ all-caps characters.
+function skuFromProductName(name) {
+  const toks = String(name || '').trim().split(/\s+/);
+  const last = toks[toks.length - 1] || '';
+  const skuish = /^[A-Za-z0-9-]{3,12}$/.test(last)
+    && (/\d/.test(last) || (last === last.toUpperCase() && last.length >= 4));
+  return skuish ? last.toUpperCase() : '';
+}
+
 async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const key = (o) => `${String(o.sku || '').toUpperCase()}|${String(o.size || '')}`;
@@ -305,4 +319,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
