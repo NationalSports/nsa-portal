@@ -308,3 +308,102 @@ describe('stripe-webhook × teamshop ACH', () => {
     expect(sb.calls.filter((c) => c.op === 'update' || c.op === 'insert')).toHaveLength(0);
   });
 });
+
+// ── stripe-webhook honesty (Team Shop backend hardening #4): a failed
+// paid-flip or conversion RPC now makes Stripe retry (500) instead of the
+// old silent-200-and-log. Both writes are idempotent, so a retry can never
+// double-apply. Signature failures and unrecognized events are unaffected —
+// covered here too as a regression check on the "current codes" contract.
+describe('stripe-webhook honesty — DB-write/RPC failures return 500', () => {
+  test('signature verification failure still returns 400 (unaffected by the honesty change)', async () => {
+    createClient.mockReturnValue(fakeSb({}));
+    stripeMock.__wh.constructEvent.mockImplementation(() => { throw new Error('bad signature'); });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(400);
+  });
+
+  test('an unrecognized event type still returns 200 (unaffected by the honesty change)', async () => {
+    const sb = fakeSb({});
+    createClient.mockReturnValue(sb);
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'customer.created', data: { object: {} } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(200);
+  });
+
+  test('paid-flip write failure returns 500 so Stripe retries', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [{ id: 'ord1', total: TOTAL }], error: null }], // pending check
+      'webstore_orders.update': [{ data: null, error: { message: 'connection reset by peer' } }], // flip FAILS
+    });
+    createClient.mockReturnValue(sb);
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'payment_intent.succeeded', data: { object: ACH_PI() } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(500);
+    // The flip was still attempted exactly once — a genuine write failure, not skipped.
+    const flip = sb.calls.find((c) => c.op === 'update' && c.payload && c.payload.status === 'paid');
+    expect(flip).toBeTruthy();
+  });
+
+  test('teamshop conversion RPC failure returns 500 (RPC is so_id-replay idempotent, safe to retry)', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [
+        { data: [{ id: 'ord1', total: TOTAL }], error: null },
+        { data: [{ id: 'ord1', order_source: 'teamshop', so_id: null, status: 'paid' }], error: null },
+      ],
+      'webstore_orders.update': [
+        { data: null, error: null },  // flip succeeds
+        { data: [], error: null },    // confirmation already claimed elsewhere
+      ],
+      'rpc.create_teamshop_sales_order': [{ data: null, error: { message: 'duplicate key value violates unique constraint' } }],
+    });
+    createClient.mockReturnValue(sb);
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'payment_intent.succeeded', data: { object: ACH_PI() } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(500);
+  });
+
+  test('club conversion RPC failure returns 500', async () => {
+    const CLUB_PI = { id: 'pi_club_1', amount: Math.round(TOTAL * 100), payment_method_types: ['card'] };
+    const sb = fakeSb({
+      'webstore_orders.select': [
+        { data: [{ id: 'ord2', total: TOTAL }], error: null },
+        { data: [{ id: 'ord2', order_source: 'club', so_id: null, status: 'paid' }], error: null }, // teamshop check (no match)
+        { data: [{ id: 'ord2', order_source: 'club', so_id: null, status: 'paid' }], error: null }, // club check
+      ],
+      'webstore_orders.update': [
+        { data: null, error: null },
+        { data: [], error: null },
+      ],
+      'rpc.create_club_sales_order': [{ data: null, error: { message: 'insufficient inventory' } }],
+    });
+    createClient.mockReturnValue(sb);
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'payment_intent.succeeded', data: { object: CLUB_PI } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(500);
+  });
+
+  test('a fully successful reconcile (no failures) still returns 200', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [
+        { data: [{ id: 'ord1', total: TOTAL }], error: null },
+        { data: [{ id: 'ord1', order_source: 'teamshop', so_id: null, status: 'paid' }], error: null },
+      ],
+      'webstore_orders.update': [
+        { data: null, error: null },
+        { data: [], error: null },
+      ],
+      'rpc.create_teamshop_sales_order': [{ data: { so_id: 'SO-9001' }, error: null }],
+    });
+    createClient.mockReturnValue(sb);
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'payment_intent.succeeded', data: { object: ACH_PI() } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(200);
+  });
+
+  test('an unexpected exception in the reconcile path returns 500 (Stripe retries)', async () => {
+    createClient.mockReturnValue({ from: () => { throw new Error('unexpected client failure'); } });
+    stripeMock.__wh.constructEvent.mockReturnValue({ type: 'payment_intent.succeeded', data: { object: ACH_PI() } });
+    const res = await webhook.handler(WH_EVENT);
+    expect(res.statusCode).toBe(500);
+  });
+});

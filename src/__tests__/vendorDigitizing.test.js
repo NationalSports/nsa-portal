@@ -230,6 +230,7 @@ describe('upload', () => {
     const body = JSON.parse(r.body);
     expect(body.ok).toBe(true);
     expect(body.auto_completed).toBe(true);
+    expect(body.flip_error).toBeUndefined(); // no error on the happy path — key is omitted, not null
 
     const artUpdate = mockAdmin._updates.find((u) => u.table === 'so_art_files');
     expect(artUpdate.patch.prod_files).toEqual([{ url: 'https://cdn.test/dst/DG648617.dst', name: 'DG648617.dst' }]);
@@ -237,6 +238,26 @@ describe('upload', () => {
 
     const jobUpdate = mockAdmin._updates.find((u) => u.table === 'so_jobs');
     expect(jobUpdate.patch).toEqual({ art_status: 'art_complete' });
+  });
+
+  test('auto-complete flip failure is logged and surfaced as flip_error, never silently swallowed (hardening #4)', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const r = await withEnvToken(() => call({
+      body: uploadBody,
+      tables: baseTables({ so_jobs: { data: [QUEUE_JOB], error: null, updateError: { message: 'could not serialize access due to concurrent update' } } }),
+    }));
+    // The DST upload itself already succeeded (so_art_files write) — only the
+    // art_status flip failed, so this still 200s with the upload recorded.
+    expect(r.statusCode).toBe(200);
+    const body = JSON.parse(r.body);
+    expect(body.uploaded).toBe(true);
+    expect(body.auto_completed).toBe(false);
+    expect(body.flip_error).toBe('could not serialize access due to concurrent update');
+    expect(consoleSpy).toHaveBeenCalledWith(
+      '[vendor-digitizing] auto-complete art_status flip failed:',
+      expect.stringContaining('could not serialize access due to concurrent update'),
+    );
+    consoleSpy.mockRestore();
   });
 
   test('multi-design job: one DST uploaded, the other design still pending — no auto-complete', async () => {

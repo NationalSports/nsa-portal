@@ -198,12 +198,23 @@ async function handleUpload(admin, body) {
     return hasDst(a);
   });
   let autoCompleted = false;
+  let flipError = null;
   if (allReady) {
     const { error: jErr } = await admin.from('so_jobs')
       .update({ art_status: 'art_complete' }).eq('so_id', soId).eq('id', jobId).eq('art_status', 'upload_emb_files');
-    if (!jErr) autoCompleted = true;
+    if (!jErr) {
+      autoCompleted = true;
+    } else {
+      // Was silently swallowed (jErr was set but never logged or returned) —
+      // Team Shop backend hardening #4. The DST upload above already
+      // succeeded, so this only leaves art_status stuck at upload_emb_files;
+      // the vendor UI can ignore flip_error (it's not the vendor's problem to
+      // fix), but our own logs need it to be visible instead of silent.
+      console.error('[vendor-digitizing] auto-complete art_status flip failed:', JSON.stringify({ so_id: soId, job_id: jobId, error: jErr.message }));
+      flipError = jErr.message;
+    }
   }
-  return ok({ uploaded: true, auto_completed: autoCompleted });
+  return ok({ uploaded: true, auto_completed: autoCompleted, ...(flipError ? { flip_error: flipError } : {}) });
 }
 
 async function handleComplete(admin, body) {

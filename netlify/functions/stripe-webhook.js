@@ -2,6 +2,21 @@
 // without a matching order (e.g. the buyer closed the tab right after paying).
 // On payment_intent.succeeded we flip the matching pending order to "paid".
 //
+// Webhook honesty (Team Shop backend hardening #4): the paid-flip update and
+// the teamshop/club conversion RPCs used to have their {error} discarded or
+// only logged, so a failed DB write looked identical to success from Stripe's
+// side — Stripe never retried, and the money-state fix depended entirely on a
+// human noticing the log line. Both are idempotent (the flip is a compare-
+// and-set .eq('status','pending_payment'); both conversion RPCs replay
+// cleanly via so_id), so retrying is always safe. This handler now tracks a
+// single `hardFailure` flag: set when either of those specific writes errors,
+// checked once at the end to return 500 instead of 200 so Stripe retries the
+// event. Signature-verification failures (400, above the try block) and
+// unrecognized event types (fall through with no flag set) are UNCHANGED —
+// only these two DB-write/RPC failure paths, plus the catch-all below, flip
+// to 500. Every other best-effort branch in this file (refund apply, dispute
+// alert, ACH-cancel note, invoice reconciliation) is intentionally untouched.
+//
 // Setup:
 //   1. Add STRIPE_WEBHOOK_SECRET (from the Stripe dashboard endpoint) to env.
 //   2. In Stripe → Developers → Webhooks, add endpoint:
@@ -39,6 +54,10 @@ exports.handler = async (event) => {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const sb = (url && key) ? createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } }) : null;
 
+  // Set true only by the paid-flip update or a conversion RPC failing — see
+  // the header note. Checked once at the very end.
+  let hardFailure = false;
+
   try {
     if (evt.type === 'payment_intent.succeeded') {
       const pi = evt.data.object;
@@ -53,7 +72,11 @@ exports.handler = async (event) => {
         const _po = _pend && _pend[0];
         if (_po) {
           if (Number(pi.amount) === Math.round((Number(_po.total) || 0) * 100)) {
-            await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', _po.id).eq('status', 'pending_payment');
+            const { error: flipErr } = await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', _po.id).eq('status', 'pending_payment');
+            if (flipErr) {
+              console.error('[stripe-webhook] paid-flip write failed (Stripe will retry):', JSON.stringify({ order: _po.id, pi: pi.id, error: flipErr.message }));
+              hardFailure = true;
+            }
           } else {
             console.error('[stripe-webhook] PI amount != order total — NOT marking paid:', JSON.stringify({ order: _po.id, pi: pi.id, pi_amount: pi.amount, expected_cents: Math.round((Number(_po.total) || 0) * 100) }));
           }
@@ -76,10 +99,12 @@ exports.handler = async (event) => {
         }
 
         // Team Shop order → production conversion (Stage 7, migration 00196).
-        // Best-effort and STRICTLY guarded: webhook processing must never fail
-        // because of conversion — the RPC is idempotent (so_id replay + paid
-        // re-guard), and CheckoutPage's convert_order call / a staff batch can
-        // pick it up later. Only fires for paid, unconverted teamshop orders.
+        // Idempotent (so_id replay + paid re-guard) and STRICTLY guarded: a
+        // failure here sets hardFailure (webhook-honesty hardening, see file
+        // header) so Stripe retries the event, but never throws —
+        // CheckoutPage's convert_order call, a staff batch, or teamshop-
+        // stuck-sweep's alert can all still pick a stuck one up if the retry
+        // doesn't land either. Only fires for paid, unconverted teamshop orders.
         try {
           const { data: _ts } = await sb.from('webstore_orders')
             .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
@@ -87,7 +112,8 @@ exports.handler = async (event) => {
           if (_tso && _tso.order_source === 'teamshop' && !_tso.so_id && _tso.status === 'paid') {
             const { data: convData, error: convErr } = await sb.rpc('create_teamshop_sales_order', { p_webstore_order_id: _tso.id });
             if (convErr) {
-              console.error('[stripe-webhook] teamshop conversion failed (order stays paid; convert_order/staff batch will retry):', convErr.message);
+              console.error('[stripe-webhook] teamshop conversion failed (Stripe will retry; RPC is so_id-replay idempotent):', convErr.message);
+              hardFailure = true;
             } else if (convData && convData.so_id) {
               // Best-effort auto-PO generation (Phase 3, 00202) — idempotent
               // (client_ref + needs-row marker); a failure never fails the
@@ -111,7 +137,8 @@ exports.handler = async (event) => {
           if (_cso && _cso.order_source === 'club' && !_cso.so_id && _cso.status === 'paid') {
             const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: _cso.id });
             if (convErr) {
-              console.error('[stripe-webhook] club conversion failed (order stays paid; next webhook/retry will pick it up):', convErr.message);
+              console.error('[stripe-webhook] club conversion failed (Stripe will retry; RPC is so_id-replay idempotent):', convErr.message);
+              hardFailure = true;
             }
           }
         } catch (e) {
@@ -222,8 +249,15 @@ exports.handler = async (event) => {
       }
     }
   } catch (e) {
-    // Don't 500 on a downstream error — that would make Stripe retry forever.
-    console.error('[stripe-webhook] reconcile error:', e.message);
+    // An unexpected exception here (network blip, client bug) is exactly the
+    // kind of failure Stripe retrying can heal — every write in this handler
+    // is idempotent, so a retry is always safe (see the header note).
+    console.error('[stripe-webhook] reconcile error (Stripe will retry):', e.message);
+    return { statusCode: 500, body: JSON.stringify({ error: 'reconcile failed, retry' }) };
+  }
+
+  if (hardFailure) {
+    return { statusCode: 500, body: JSON.stringify({ error: 'paid-flip or conversion write failed, retry' }) };
   }
 
   return { statusCode: 200, body: JSON.stringify({ received: true }) };
