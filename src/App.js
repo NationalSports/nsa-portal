@@ -9702,6 +9702,18 @@ export default function App(){
   const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'});
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
+  // jobFilters.rep initializes from _initRepF, which reads localStorage('nsa_user') at App mount.
+  // On a fresh login that key isn't set yet, so the jobs rep filter locks to 'all' (every rep) and
+  // never re-derives once the user arrives. Re-apply the role-appropriate default once cu is known:
+  // sales-facing roles default to their own jobs; ops roles (warehouse/production/art) keep 'all'
+  // since they work across every rep. Runs once, so it never clobbers a rep the user picks later.
+  const _jobRepDefaulted=useRef(false);
+  useEffect(()=>{
+    if(!cu||_jobRepDefaulted.current)return;
+    _jobRepDefaulted.current=true;
+    const mine=['rep','admin','super_admin','gm'].includes(cu.role);
+    _setJobFilters(prev=>({...prev,rep:mine?'_me_':'all'}));
+  },[cu]);
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
   const[jobTrackModal,setJobTrackModal]=useState(null);// enriched job row whose inbound tracking popup is open
   const _defaultSavedFilters=[
@@ -9733,7 +9745,9 @@ export default function App(){
       return{billed,pulledStock,billedCov,ifCov}};
     // Build flat jobs list
     const allJobs=[];
-    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
+    // Skip cancelled and soft-deleted orders — their jobs aren't real production work. Same guard the
+    // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
+    sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
@@ -9742,8 +9756,9 @@ export default function App(){
     let fj=allJobs;
     const jf=jobFilters;
     // Legacy 'ready' prod_status folds into 'hold' (same normalization the run-with badge uses) so
-    // those jobs aren't invisible to the Hold chip.
-    const _normSt=s=>s==='ready'?'hold':s;
+    // those jobs aren't invisible to the Hold chip. 'shipped' folds into 'completed' so the Completed
+    // chip is the single "done" bucket — a shipped job is finished production too.
+    const _normSt=s=>s==='ready'?'hold':s==='shipped'?'completed':s;
     // True production readiness per the floor's rule: art finalized (incl. production files) AND
     // every garment picked/received — and the job hasn't already started running.
     const _isReadyToRun=j=>(_normSt(j.prod_status)==='hold')&&isJobReady(j,j.so);
@@ -9751,12 +9766,20 @@ export default function App(){
     // files, or goods. This is the "what's coming" pipeline view.
     const _isNotReadyYet=j=>(_normSt(j.prod_status)==='hold')&&!isJobReady(j,j.so);
     if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(_normSt(j.prod_status)));
+    // Default view (no production-status chip selected) hides finished jobs — completed and shipped —
+    // so the page shows active production work. Click the Completed chip to bring them back.
+    else fj=fj.filter(j=>_normSt(j.prod_status)!=='completed');
     if(jf.readyF==='ready')fj=fj.filter(_isReadyToRun);
     else if(jf.readyF==='not_ready')fj=fj.filter(_isNotReadyYet);
     const jfRepId=jf.rep==='_me_'?cu?.id:jf.rep;
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
     if(jf.artSt!=='all')fj=fj.filter(j=>j.art_status===jf.artSt);
+    // Pure default view (no prod-status or ready-state chip active) also hides jobs that still need
+    // art — Art TBD / unassigned (art_status 'needs_art') — so the list is real production work. They
+    // resurface under the Needs Art chip (same predicate) and stay in the Not Ready pipeline view.
+    // Selecting any chip shows the honest subset so chip counts and the list agree.
+    else if(jf.statuses.length===0&&jf.readyF==='all')fj=fj.filter(j=>j.art_status!=='needs_art');
     // Waiting IF: garments aren't all in yet, but every missing unit sits on a reserved pick line
     // awaiting the warehouse Inventory Fulfillment pull — nothing left to order or receive.
     const _isWaitingIF=j=>j.total_units>0&&j.fulfilled_units<j.total_units&&j.ifCov>=j.total_units;
