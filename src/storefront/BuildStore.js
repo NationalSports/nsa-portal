@@ -285,7 +285,7 @@ export default function StoreBuilder({ mode = 'public', customer = null, rep = n
     let cancel = false;
     (async () => {
       const [tplRes, cfgRes] = await Promise.all([
-        supabase.from('webstores').select('id,name').eq('is_template', true).order('name'),
+        supabase.from('webstore_templates_public').select('id,name').order('name'),
         supabase.from('coach_store_config').select('max_fundraise').eq('id', 1).maybeSingle(),
       ]);
       if (cancel) return;

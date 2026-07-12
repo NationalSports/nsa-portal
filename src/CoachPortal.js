@@ -134,20 +134,20 @@ function CoachStore({ customer, storeIds }) {
     (async () => {
       const ids = _storeIdKey ? _storeIdKey.split(',') : [];
       if (!ids.length) { setLoaded(true); return; }
-      const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
+      const { data: ws, error } = await supabase.from('coach_webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
       setStores(ws);
       const out = {};
       for (const s of ws) {
         const [o, r] = await Promise.all([
-          supabase.from('webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
+          supabase.from('coach_webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
           supabase.from('webstore_roster').select('*').eq('store_id', s.id),
         ]);
         const orders = o.data || [];
         const orderIds = orders.map((x) => x.id);
         let items = [];
-        if (orderIds.length) { const it = await supabase.from('webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
+        if (orderIds.length) { const it = await supabase.from('coach_webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
         out[s.id] = { orders, items, roster: r.data || [] };
       }
       if (!cancel) { setData(out); setLoaded(true); }
@@ -697,7 +697,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>{let cancel=false;(async()=>{
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
-    const{data}=await supabase.from('webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
+    const{data}=await supabase.from('coach_webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
     if(!cancel)setCpStores(data||[]);
   })();return()=>{cancel=true;};},[_cpStoreKey]);
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
