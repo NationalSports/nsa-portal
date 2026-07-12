@@ -14561,7 +14561,7 @@ export default function App(){
         if(!_portalImported)reasons.push('Import parent orders in the Parent Order Portal');
         return{ok:reasons.length===0,reasons};
       })();
-      const createOmgSO=(force=false)=>{
+      const createOmgSO=async(force=false)=>{
               if(!force&&sos.some(so=>so.omg_store_id===s.id)){nf('Already pulled — SO exists for this store','error');return}
               if(!s.customer_id){nf('Link this store to a customer first (top of the page).','error');return}
               if(!s.rep_id){nf('Assign a sales rep to this store first — use the rep dropdown next to the customer at the top.','error');return}
@@ -14637,6 +14637,16 @@ export default function App(){
                   pick_lines:[],po_lines:[],
                 };
               });
+              // Resolve the shadow webstore BEFORE building the SO so webstore_id
+              // persists with the row itself through the normal save path. The old
+              // post-hoc UPDATE raced the autosave insert and silently matched 0
+              // rows, leaving the status-sync trigger (migration 037) disconnected
+              // for most OMG stores (see OMG_TRACKING_AUDIT_2026-07-11.md).
+              let _shadowWs=null;
+              if(supabase&&s._omg_sale_code){try{
+                const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
+                _shadowWs=ws||null;
+              }catch(e){console.warn('[OMG] shadow store lookup failed:',e.message)}}
               const newSO={id:generatedId,customer_id:s.customer_id,memo:'OMG Store: '+s.store_name+(s._omg_sale_code?' ('+s._omg_sale_code+')':''),status:'need_order',
                 created_by:cu.id,created_at:new Date().toLocaleString(),updated_at:new Date().toLocaleString(),
                 expected_date:'',production_notes:'OMG Store '+s.store_name+' — '+soItems.length+' items imported from report. Deco cost is $0 (bundled in store price).'
@@ -14653,25 +14663,21 @@ export default function App(){
                 shipping_type:'flat',shipping_value:s._omg_shipping||0,
                 tax_rate:0,tax_exempt:true,
                 ship_to_id:'default',firm_dates:[],art_files:artFiles,
-                jobs:[],items:soItems,omg_store_id:s.id,
+                jobs:[],items:soItems,omg_store_id:s.id,webstore_id:_shadowWs?.id||null,
                 _omg_shipping:s._omg_shipping||0,_omg_processing:s._omg_processing||0,_omg_tax:s._omg_tax||0,_omg_fundraise:s._omg_fundraise||0,_omg_grand_total:s._omg_grand_total||0,
                 _omg_omg_fees:s._omg_omg_fees||0,_omg_cc_fees:s._omg_cc_fees||0,_omg_acct_collected:s._omg_acct_collected||0};
               setSOs(prev=>[newSO,...prev]);setESO(newSO);setESOC(c||null);setPg('orders');
               // OMG funds are already collected, so invoice + settle at port —
               // paid in full when the net remit covers it, partial otherwise.
               createAndSettleOmgInvoice(newSO);
-              // Link the OMG parent orders (shadow webstore) to this SO so the
-              // status-sync trigger drives their tracking from receiving/jobs/SO.
-              // Sets sales_orders.webstore_id + each webstore_orders.so_id, keyed
-              // by the OMG sale code. Best-effort: tracking still works manually
-              // if this fails (e.g. orders not imported yet).
-              if(supabase&&s._omg_sale_code){(async()=>{try{
-                const{data:ws}=await supabase.from('webstores').select('id').eq('omg_sale_code',s._omg_sale_code).eq('source','omg').maybeSingle();
-                if(ws&&ws.id){
-                  await supabase.from('sales_orders').update({webstore_id:ws.id}).eq('id',generatedId);
-                  await supabase.from('webstore_orders').update({so_id:generatedId}).eq('store_id',ws.id);
-                }
-              }catch(e){console.warn('[OMG] SO link failed:',e.message)}})()}
+              // Link the OMG parent orders (shadow webstore) to this SO via their
+              // so_id. webstore_id itself now rides the SO object through the
+              // normal save path (set at construction above), so no direct
+              // sales_orders write is needed here. Best-effort: tracking still
+              // works manually if this fails (e.g. orders not imported yet).
+              if(supabase&&_shadowWs?.id){(async()=>{try{
+                await supabase.from('webstore_orders').update({so_id:generatedId}).eq('store_id',_shadowWs.id);
+              }catch(e){console.warn('[OMG] parent order link failed:',e.message)}})()}
               // OMG store fundraising becomes Fundraiser Dollars on the customer — a CASH
               // credit line (spent dollar-for-dollar via Apply Credit), not promo funds.
               // Also counted as revenue on this SO for GP/commissions.
