@@ -194,3 +194,12 @@
 # per session (deadline_reminded_at).
 [functions."roster-deadline-reminders"]
   schedule = "0 17 * * *"
+
+# Team Shop / Club stuck-order sweep — hourly. Flags paid-but-unconverted, stuck
+# pending_payment, art stuck 5+ business days, and no-PO-but-need_to_order jobs;
+# emails ONE alert to STUCK_SWEEP_ALERT_EMAIL only when something is stuck (never
+# on a clean sweep). Also callable on demand — staff POST { action:'run' } with a
+# bearer session token from the Team Shop queue UI. See
+# netlify/functions/teamshop-stuck-sweep.js.
+[functions."teamshop-stuck-sweep"]
+  schedule = "50 * * * *"
