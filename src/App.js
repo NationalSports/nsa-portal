@@ -5529,15 +5529,36 @@ export default function App(){
     nf('Box '+id+' didn\'t update ('+(lastErr?.message||lastErr)+') — it shows stale status/location for everyone','error');
     return false;
   };
-  // Mint a plate + persist a box for what a pull just physically boxed. Returns the row only
-  // when it persisted (the label should carry the plate) — null means print today's IF label.
-  const createBoxForPull=async({ifId,soId,contents})=>{
+  // Mint a plate + persist a box of `kind` for what a flow just physically boxed.
+  // Returns the row only when it persisted (the label should carry the plate) —
+  // null means the caller prints its legacy IF/PO-coded label. Generalized from
+  // the pull path so receiving boxes (kind='receiving', 00185) share ONE mint.
+  const createBoxFor=async({kind='fulfillment',ifId=null,soId=null,poId=null,contents})=>{
     if(!supabase||_boxesMissing.current||!(contents||[]).length)return null;
     let plate=null;
     try{const n=await _nextCounter('box_plate');if(n)plate=plateFromCounter(n)}catch(e){/* fall through */}
     if(!plate)plate='BX-'+Date.now().toString(36).toUpperCase().slice(-6);// counter RPC not deployed — unique (non-sequential) plate
-    const row=makeBoxRow({id:plate,contents,soId,ifId,createdBy:cu?.id||'warehouse'});
-    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between pull-click and label print
+    const row=makeBoxRow({id:plate,kind,contents,soId,ifId,poId,createdBy:cu?.id||'warehouse'});
+    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between the action and label print
+  };
+  // Pull path — behavior identical to before (kind='fulfillment', IF+SO refs).
+  const createBoxForPull=({ifId,soId,contents})=>createBoxFor({kind:'fulfillment',ifId,soId,contents});
+  // Receiving-box contents from a just-received line array ([{sku,name,color,sizes,soId}]);
+  // drops zero cells, carries per-line so_id so a multi-SO PO's box stays traceable.
+  const _recvBoxContents=(lines,poId)=>(lines||[]).map(l=>({sku:l.sku||'',name:l.name||'',color:l.color||'',so_id:l.soId||'',po_id:poId||'',sizes:Object.fromEntries(Object.entries(l.sizes||{}).filter(([,v])=>(+v||0)>0))})).filter(e=>Object.keys(e.sizes).length>0);
+  // Box the goods a PO receive just put away (kind='receiving', source_refs=[{PO}]) and
+  // print its SCANNABLE plate label (buildBoxLabel — resolves via ?scan= after the box-scan
+  // fix). When box tracking isn't deployed (createBoxFor → null), runs printFallback so
+  // receiving degrades to today's PO-scan label exactly like the pull path.
+  const receiveBoxAndPrint=async({poId,soId,lines,program,rep,printFallback})=>{
+    const contents=_recvBoxContents(lines,poId);
+    let box=null;
+    try{if(contents.length)box=await createBoxFor({kind:'receiving',soId:soId||null,poId,contents})}catch(e){/* best-effort */}
+    if(box){
+      const _lbl=buildBoxLabel(box,{program:program||'',scanBase:window.location.origin+window.location.pathname});
+      printQrLabel({..._lbl,rep:rep||'',note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534'});
+    } else if(typeof printFallback==='function'){printFallback()}
+    return box;
   };
   // Resolve a scanned BX code → freshest row, following merged_into redirects (max 5 hops).
   const lookupBox=async(code)=>{
@@ -11766,6 +11787,7 @@ export default function App(){
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
+                  const _recvLines=[]; // actual received qtys per line — box contents (not ordered sizes)
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -11787,6 +11809,7 @@ export default function App(){
                         const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
+                        if(_rcvd>0)_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -11802,7 +11825,10 @@ export default function App(){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
                   } else {
                     const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes,customer:it2.customer,soId:it2.soId}));
-                    printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                    // Box the received goods (kind='receiving', scannable plate) from the ACTUAL received
+                    // qtys; fall back to the PO-scan label when box tracking isn't deployed.
+                    const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
+                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
@@ -17083,9 +17109,12 @@ export default function App(){
                       const n=batchMatch.source_pos.length;
                       printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
-                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
+                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered,soId:it.soId}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
+                      // Box tracking v1: the received goods get a kind='receiving' box (source_refs=[{PO}])
+                      // and a SCANNABLE plate label; falls back to the PO-scan label above when boxes aren't deployed.
+                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
