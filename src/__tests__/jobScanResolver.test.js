@@ -11,6 +11,12 @@ describe('classifyScan', () => {
     expect(classifyScan('BX-2001')).toEqual({ type: 'box', value: 'BX-2001' });
     expect(classifyScan('bx2001')).toEqual({ type: 'box', value: 'BX-2001' });
   });
+  test('alphanumeric fallback plate (minted when the counter RPC is absent) still classifies as a box', () => {
+    // boxTracking mints BX-<base36 timestamp> when next_counter isn't available;
+    // the server-minted DTF/receive boxes use the same scheme. Must scan as a box.
+    expect(classifyScan('BX-K9Z3A1')).toEqual({ type: 'box', value: 'BX-K9Z3A1' });
+    expect(classifyScan('https://portal.app/?scan=BX-K9Z3A1')).toEqual({ type: 'box', value: 'BX-K9Z3A1' });
+  });
   test('DST filename (bare or full URL) → dst', () => {
     expect(classifyScan('EAGLES_LC_DG12345.dst')).toEqual({ type: 'dst', value: 'EAGLES_LC_DG12345.dst' });
     const c = classifyScan('https://cdn/artwork/EAGLES%20LC.DST?token=x');

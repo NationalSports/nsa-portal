@@ -40,7 +40,7 @@ const JOB_ROW = {
 };
 const JOB_DETAIL_ROW = {
   ...JOB_ROW, positions: 'Left Chest', total_units: 12, digitizing_needed: false, packed_at: null,
-  notes: 'Rush — heat set at 320F',
+  notes: 'Rush — heat set at 320F', dtf_prints_status: 'received',
   items: [{ item_idx: 0, sizes: { M: 5, S: 2 } }, { item_idx: 1, sizes: { M: 3, XL: 2 } }],
 };
 const ART_ROW = {
@@ -54,6 +54,7 @@ const fnTables = () => ({
   'so_jobs:single': { data: JOB_DETAIL_ROW, error: null },
   so_art_files: { data: [ART_ROW], error: null },
   boxes: { data: [], error: null },
+  'teamshop_dtf_print_needs:single': { data: { bin: 'A-12' }, error: null },
 });
 
 const makeEvent = (body, headers = {}) => ({
@@ -94,6 +95,13 @@ describe('job-scan event:resolve (read-only)', () => {
     const body = JSON.parse(r.body);
     expect(body.job.notes).toBe('Rush — heat set at 320F');
     expect(body.job.size_breakdown).toEqual({ S: 2, M: 8, XL: 2 }); // M summed across both items
+  });
+
+  test('resolve returns dtf_prints_status + the received bin (00212)', async () => {
+    const r = await handler(makeEvent({ code: 'DG-12345', event: 'resolve' }, { 'x-machine-token': 'station-secret' }));
+    const body = JSON.parse(r.body);
+    expect(body.job.dtf_prints_status).toBe('received');
+    expect(body.job.dtf_bin).toBe('A-12'); // looked up from the DTF need row
   });
 
   test('resolve works with the station token (unattended read path, no staff JWT)', async () => {
@@ -202,6 +210,7 @@ const RESOLVED_DTF_JOB = {
   prod_status: 'staging', positions: 'Full Front', total_units: 8,
   digitizing_needed: false, packed_at: null,
   notes: 'Left-chest print, no back', size_breakdown: { S: 2, M: 6 },
+  dtf_prints_status: 'received', dtf_bin: 'A-12',
   files: [{ name: 'tigers-print.png', url: 'https://cdn/tigers-print.png', source: 'prod' }],
 };
 
@@ -257,6 +266,10 @@ describe('FloorStation UI', () => {
     expect(screen.getByText('Sizes')).toBeTruthy();
     expect(screen.getByText('S')).toBeTruthy();
     expect(screen.getByText('M')).toBeTruthy();
+    // DTF prints status chip + bin
+    expect(screen.getByText('DTF prints')).toBeTruthy();
+    expect(screen.getByText('RECEIVED')).toBeTruthy();
+    expect(screen.getByText('· BIN A-12')).toBeTruthy();
   });
 
   test('advance sends expected=<shown stage> and NSA_STALE_STATE re-resolves with a notice', async () => {

@@ -196,7 +196,9 @@ function fakeSb(script) {
         order() { return builder; },
         limit() { return builder; },
         update(payload) { call.op = 'update'; call.payload = payload; return builder; },
+        insert(payload) { call.op = 'insert'; call.payload = payload; return builder; },
         upsert(payload, opts) { call.op = 'upsert'; call.payload = payload; call.opts = opts; return builder; },
+        maybeSingle() { return Promise.resolve(nextResult(table + '.' + call.op, call)); },
         then(resolve, reject) {
           return Promise.resolve(nextResult(table + '.' + call.op, call)).then(resolve, reject);
         },
@@ -499,6 +501,61 @@ describe('sweepDtf', () => {
     const r = await autoPo.sweepDtf(sb, 'schedule');
     expect(r.enabled).toBe(false);
     expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+  });
+});
+
+describe('receiveDtf (00212 — prints into a bin)', () => {
+  const recvScript = (over = {}) => ({
+    'teamshop_dtf_print_needs.select': [{ data: [{ id: 5, so_id: 'SO-1', job_id: 'JOB-1', qty: 120, vendor: 'DTF Transfers' }], error: null }],
+    'teamshop_dtf_print_needs.update': [{ data: [{ id: 5 }], error: null }],
+    'so_jobs.update': [{ data: null, error: null }],
+    'purchase_orders.select': [{ data: { po_number: 'NSA 900' }, error: null }],
+    'boxes.insert': [{ data: { id: 'BX-ABC123' }, error: null }],
+    ...over,
+  });
+
+  test('marks needs received (+bin), stamps so_jobs.dtf_prints_status, and boxes the prints', async () => {
+    const sb = fakeSb(recvScript());
+    const res = await autoPo.receiveDtf(sb, { po_id: 'po-dtf-uuid', bin: 'A-12' }, 'tm-1');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, received: 1, bin: 'A-12', box_id: 'BX-ABC123' });
+
+    const upd = sb.calls.find((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs');
+    expect(upd.payload).toMatchObject({ status: 'received', bin: 'A-12' });
+    expect(upd.filters).toEqual(expect.arrayContaining([['eq', 'status', 'ordered']])); // compare-and-set
+
+    const soUpd = sb.calls.find((c) => c.op === 'update' && c.table === 'so_jobs');
+    expect(soUpd.payload).toEqual({ dtf_prints_status: 'received' });
+
+    const box = sb.calls.find((c) => c.op === 'insert' && c.table === 'boxes');
+    expect(box.payload).toMatchObject({ kind: 'receiving', po_id: 'NSA 900', bin: 'A-12', status: 'staged' });
+    expect(box.payload.source_refs).toEqual([{ type: 'PO', id: 'NSA 900' }]);
+  });
+
+  test('double-receive (no ordered needs left) is a clean 409, no writes', async () => {
+    const sb = fakeSb(recvScript({ 'teamshop_dtf_print_needs.select': [{ data: [], error: null }] }));
+    const res = await autoPo.receiveDtf(sb, { po_id: 'po-dtf-uuid', bin: 'A-12' }, 'tm-1');
+    expect(res.statusCode).toBe(409);
+    expect(sb.calls.some((c) => c.op === 'update')).toBe(false);
+    expect(sb.calls.some((c) => c.op === 'insert')).toBe(false);
+  });
+
+  test('box creation is best-effort: a missing boxes table still reports received', async () => {
+    const sb = fakeSb(recvScript({ 'boxes.insert': [{ data: null, error: { code: '42P01', message: 'relation "boxes" does not exist' } }] }));
+    const res = await autoPo.receiveDtf(sb, { po_id: 'po-dtf-uuid', bin: 'A-12' }, 'tm-1');
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ ok: true, received: 1, box_id: null });
+  });
+});
+
+// ── Migration 00212 static characterization ──────────────────────────
+describe('migration 00212 (DTF prints readiness)', () => {
+  const SQL = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/00212_so_jobs_dtf_prints_status.sql'), 'utf8');
+  test('adds so_jobs.dtf_prints_status (checked enum, nullable) + teamshop_dtf_print_needs.bin', () => {
+    expect(SQL).toMatch(/add column if not exists dtf_prints_status text/);
+    expect(SQL).toMatch(/in \('needed', 'ordered', 'received'\)/);
+    expect(SQL).toMatch(/teamshop_dtf_print_needs add column if not exists bin/);
+    expect(SQL).toMatch(/Rollback/);
   });
 });
 

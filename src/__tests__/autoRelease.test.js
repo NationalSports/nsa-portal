@@ -16,7 +16,7 @@ jest.mock('../../netlify/functions/_shared', () => ({
 
 const rel = require('../../netlify/functions/teamshop-auto-release');
 const {
-  artRecordProdReady, jobArtReady, jobFulfillment, jobReleasable, jobArtIds, hasDst, runRelease,
+  artRecordProdReady, jobArtReady, jobFulfillment, jobReleasable, jobArtIds, hasDst, runRelease, jobDtfReady,
 } = rel;
 
 // ── Pure: art readiness ─────────────────────────────────────────────────────
@@ -95,6 +95,34 @@ test('jobReleasable requires BOTH gates', () => {
   expect(jobReleasable(job, artOk, ctxFull).ready).toBe(true);
   expect(jobReleasable(job, artOk, ctxShort).ready).toBe(false);
   expect(jobReleasable(job, () => ({ status: 'approved' }), ctxFull).ready).toBe(false); // art not prod-ready
+});
+
+// ── DTF prints gate (00212) ──────────────────────────────────────────────────
+describe('jobDtfReady / DTF prints release gate', () => {
+  test('non-DTF jobs never block; only received frees a tracked need', () => {
+    expect(jobDtfReady({})).toBe(true);
+    expect(jobDtfReady({ deco_type: 'embroidery' })).toBe(true);
+    expect(jobDtfReady({ dtf_prints_status: 'received' })).toBe(true);
+    expect(jobDtfReady({ dtf_prints_status: 'needed' })).toBe(false);
+    expect(jobDtfReady({ dtf_prints_status: 'ordered' })).toBe(false);
+  });
+
+  test('a DTF-deco job is held even with a null status (before the lane records the need)', () => {
+    expect(jobDtfReady({ deco_type: 'dtf' })).toBe(false);
+    expect(jobDtfReady({ deco_type: 'dtf', dtf_prints_status: null })).toBe(false);
+    expect(jobDtfReady({ deco_type: 'dtf', dtf_prints_status: 'received' })).toBe(true);
+  });
+
+  test('jobReleasable holds a DTF job whose prints are needed/ordered, frees it when received', () => {
+    const base = { art_status: 'art_complete', _art_ids: ['a'], items: [{ item_idx: 0, sizes: { S: 2 } }] };
+    const artOk = () => ({ prod_files_attached: true });
+    const ctxFull = { itemForIndex: () => ({ id: 1, sizes: { S: 2 } }), pulledFor: () => 2, receivedFor: () => 0 };
+    // garments + art ready, but prints on order → held with reason dtf_prints
+    expect(jobReleasable({ ...base, dtf_prints_status: 'ordered' }, artOk, ctxFull)).toMatchObject({ ready: false, reason: 'dtf_prints' });
+    expect(jobReleasable({ ...base, dtf_prints_status: 'needed' }, artOk, ctxFull)).toMatchObject({ ready: false, reason: 'dtf_prints' });
+    // prints received → releasable
+    expect(jobReleasable({ ...base, dtf_prints_status: 'received' }, artOk, ctxFull).ready).toBe(true);
+  });
 });
 
 // ── runRelease against a fake admin ─────────────────────────────────────────
@@ -188,6 +216,25 @@ describe('runRelease', () => {
     expect(s.released).toEqual([]);
     expect(s.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'fulfillment' }]);
     expect(admin.rpcs.length).toBe(0);
+  });
+
+  test('a DTF job whose prints are still on order is skipped (reason dtf_prints), not released', async () => {
+    const admin = makeAdmin(baseTables({
+      so_jobs: { data: [{ ...AUTO_JOB, dtf_prints_status: 'ordered' }, STAFF_JOB], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.released).toEqual([]);
+    expect(s.skipped).toEqual([{ so_id: 'SO-1', job_id: 'JOB-1', reason: 'dtf_prints' }]);
+    expect(admin.rpcs.length).toBe(0);
+  });
+
+  test('the same DTF job releases once its prints are received', async () => {
+    const admin = makeAdmin(baseTables({
+      so_jobs: { data: [{ ...AUTO_JOB, dtf_prints_status: 'received' }, STAFF_JOB], error: null },
+    }));
+    const s = await runRelease(admin, 'schedule');
+    expect(s.released.map((r) => r.job_id)).toEqual(['JOB-1']);
+    expect(admin.rpcs.length).toBe(1);
   });
 
   test("scope 'all' also releases a staff-finished art_complete job", async () => {

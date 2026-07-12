@@ -125,6 +125,18 @@ function JobPanel({ station, job, resolvedCode, busy, onAdvance }) {
           <div style={{ fontSize: 16, marginTop: 6, color: '#38bdf8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1 }}>
             Stage: {stage}{job.packed_at ? ' · packed' : ''}
           </div>
+          {job.dtf_prints_status && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>DTF prints</span>
+              <span style={{ fontSize: 15, fontWeight: 800, padding: '3px 10px', borderRadius: 8,
+                background: job.dtf_prints_status === 'received' ? '#052e16' : '#422006',
+                border: '1px solid ' + (job.dtf_prints_status === 'received' ? '#15803d' : '#a16207'),
+                color: job.dtf_prints_status === 'received' ? '#4ade80' : '#fbbf24' }}>
+                {job.dtf_prints_status === 'received' ? 'RECEIVED' : job.dtf_prints_status === 'ordered' ? 'ON ORDER' : 'NEEDED'}
+              </span>
+              {job.dtf_bin && <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>· BIN {job.dtf_bin}</span>}
+            </div>
+          )}
           {job.size_breakdown && Object.keys(job.size_breakdown).length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Sizes</div>

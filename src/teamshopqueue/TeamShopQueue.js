@@ -2126,6 +2126,24 @@ function AutoPoSection() {
     });
   };
 
+  // A DTF batch PO — its lines are DTF prints (00211 sweepDtf).
+  const isDtfPo = (po) => (po.lines || []).some((l) => (l.meta && l.meta.deco_type === 'dtf') || l.sku === 'DTF-PRINT');
+
+  // Receive a DTF PO's prints into a bin (00212). Staff enter the bin; the backend
+  // marks the needs received, flips so_jobs.dtf_prints_status → received (which
+  // frees the auto-release DTF gate), and creates a 'prints on hand' receiving box.
+  const receiveDtfPrints = (po) => {
+    const bin = window.prompt('Receiving DTF prints for ' + (po.po_number || po.id) + '.\nEnter the bin/location where the prints are stored:', '');
+    if (bin === null) return; // cancelled
+    setBusyId('recv-' + po.id);
+    callFn({ action: 'receive_dtf', po_id: po.id, bin: String(bin).trim() }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Receive prints failed: ' + r.error); return; }
+      showToast('Received ' + (r.received || 0) + ' DTF print job' + ((r.received || 0) === 1 ? '' : 's') + (r.bin ? ' → bin ' + r.bin : '') + (r.box_id ? ' (box ' + r.box_id + ')' : ''));
+      load();
+    });
+  };
+
   // Dismiss/resolve (00209) — staff ordered an unmapped line by hand; marks
   // dismissed_at server-side (teamshop-auto-po.js dismiss_unmapped, service
   // role) rather than a client delete — teamshop_auto_po_needs has no client
@@ -2257,6 +2275,17 @@ function AutoPoSection() {
                 Submitted {fmtAge(po.submitted_at)}{po.submitted_by ? ' by ' + po.submitted_by : ''}
               </span>
             ) : null}
+            {isDtfPo(po) && (
+              <button
+                type="button"
+                aria-label={'receive-dtf-' + po.id}
+                disabled={busyId === 'recv-' + po.id}
+                onClick={() => receiveDtfPrints(po)}
+                style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0891b2', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+              >
+                {busyId === 'recv-' + po.id ? 'Receiving…' : 'Receive prints (enter bin)'}
+              </button>
+            )}
           </div>
         </div>
       ))}

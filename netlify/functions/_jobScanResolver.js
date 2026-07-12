@@ -52,8 +52,11 @@ function classifyScan(raw) {
   // 'JOB' tag only — the ids keep their original case (job/SO ids are case-sensitive).
   const jm = code.match(/^JOB:([^:]+):([^:]+)$/i);
   if (jm) return { type: 'job_id', value: code, so_id: jm[1], job_id: jm[2] };
-  // BX-#### box plate (accept BX2001 or BX-2001; normalize to BX-2001).
-  if (/^BX-?\d+$/i.test(code)) {
+  // BX plate — the sequential form (BX-2001, dash optional) AND the ALPHANUMERIC
+  // fallback the client mints when the counter RPC isn't deployed (BX-K9Z3A1); the
+  // server-minted receiving boxes (DTF prints, PO receive) also use that fallback.
+  // Matches boxTracking.isBoxCode's charset so every plate the app can create scans.
+  if (/^BX-?[A-Z0-9]+$/i.test(code)) {
     return { type: 'box', value: code.toUpperCase().replace(/^BX-?/i, 'BX-') };
   }
   const name = normName(code);

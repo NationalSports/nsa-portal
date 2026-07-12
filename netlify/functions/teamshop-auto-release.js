@@ -128,9 +128,25 @@ function jobFulfillment(job, ctx) {
   return { total, fulfilled, itemStatus, fullyReceived: !!fullyReceived };
 }
 
-// A job is auto-releasable when BOTH gates pass.
+// DTF prints gate (00212): a DTF job is not releasable until its transfer prints
+// are physically in hand. so_jobs.dtf_prints_status is the signal
+// teamshop-auto-po writes ('needed' → 'ordered' → 'received'); only 'received'
+// frees the job. A deco_type='dtf' job ALWAYS needs prints, so it's held even when
+// its status is still null — the DTF lane may not have recorded the need yet, and
+// auto-release must never release a DTF job before prints are proven in hand
+// (closes the window between conversion and the hourly DTF sweep). Non-DTF jobs
+// with no status never block. This lives in the sweep, NOT 00205's SQL gate (which
+// stays art+garments only) — a staff scan can still release by hand.
+function jobDtfReady(job) {
+  const st = job && job.dtf_prints_status;
+  if (st) return st === 'received';
+  return (job && job.deco_type) !== 'dtf';
+}
+
+// A job is auto-releasable when the art, DTF-prints, and fulfillment gates all pass.
 function jobReleasable(job, artLookup, ctx) {
   if (!jobArtReady(job, artLookup)) return { ready: false, reason: 'art' };
+  if (!jobDtfReady(job)) return { ready: false, reason: 'dtf_prints' };
   const ful = jobFulfillment(job, ctx);
   if (!ful.fullyReceived) return { ready: false, reason: 'fulfillment', ful };
   return { ready: true, ful };
@@ -187,7 +203,7 @@ async function runRelease(admin, actor) {
   // Candidate jobs: hold + art_complete on these SOs.
   const jobsRes = await safe('so_jobs', async () => {
     const r = await admin.from('so_jobs')
-      .select('so_id, id, art_status, item_status, prod_status, art_file_id, _art_ids, items')
+      .select('so_id, id, art_status, item_status, prod_status, art_file_id, _art_ids, items, dtf_prints_status, deco_type')
       .in('so_id', soIds).eq('prod_status', 'hold').eq('art_status', 'art_complete').limit(2000);
     if (r.error) throw r.error; return r.data || [];
   }, []);
@@ -352,6 +368,7 @@ exports.handler = async (event) => {
 module.exports.runRelease = runRelease;
 module.exports.jobReleasable = jobReleasable;
 module.exports.jobArtReady = jobArtReady;
+module.exports.jobDtfReady = jobDtfReady;
 module.exports.jobFulfillment = jobFulfillment;
 module.exports.artRecordProdReady = artRecordProdReady;
 module.exports.jobArtIds = jobArtIds;

@@ -605,7 +605,27 @@ async function recordDtfNeeds(admin) {
   if (!rows.length) return { recorded: 0 };
   const up = await admin.from('teamshop_dtf_print_needs').upsert(rows, { onConflict: 'so_id,job_id', ignoreDuplicates: true });
   if (up.error) return { recorded: 0, error: up.error.message };
+  // Stamp the job readiness signal (00212) on the newly-needed jobs. Compare-and-set
+  // on dtf_prints_status is null so a job already ordered/received is never reset.
+  await stampDtfStatus(admin, rows.map((r) => ({ so_id: r.so_id, job_id: r.job_id })), 'needed', true);
   return { recorded: rows.length };
+}
+
+// Write so_jobs.dtf_prints_status for a set of (so_id, job_id) pairs (00212).
+// onlyIfNull restricts to jobs whose status is still null (used for 'needed' so an
+// already-ordered/received job isn't reset). Best-effort — never throws; a missing
+// column (pre-00212) is swallowed so the needs work still lands.
+async function stampDtfStatus(admin, pairs, status, onlyIfNull) {
+  const bySo = {};
+  (pairs || []).forEach((p) => { if (p && p.so_id && p.job_id) (bySo[p.so_id] = bySo[p.so_id] || []).push(p.job_id); });
+  for (const [soId, jobIds] of Object.entries(bySo)) {
+    try {
+      let q = admin.from('so_jobs').update({ dtf_prints_status: status }).eq('so_id', soId).in('id', jobIds);
+      if (onlyIfNull) q = q.is('dtf_prints_status', null);
+      const r = await q;
+      if (r.error && !isMissingRelation(r.error)) console.error('[teamshop-auto-po] dtf_prints_status stamp failed:', r.error.message);
+    } catch (e) { /* best-effort */ }
+  }
 }
 
 // Sweep: record any missing DTF needs, then batch ALL pending into ONE draft PO to
@@ -666,6 +686,8 @@ async function sweepDtf(admin, actor) {
     .update({ status: 'ordered', po_id: po ? po.id : null, vendor: setting.vendor, ordered_at: new Date().toISOString() })
     .in('id', ids).eq('status', 'pending');
   if (mark.error) return { ok: false, error: 'DTF needs mark failed: ' + mark.error.message, po_id: po ? po.id : null };
+  // Advance the job readiness signal (00212): these jobs' prints are on order.
+  await stampDtfStatus(admin, pending.map((n) => ({ so_id: n.so_id, job_id: n.job_id })), 'ordered', false);
 
   let autoSubmit = null;
   if (po && po.id && !replayed && po.status === 'draft' && setting.auto_submit_enabled === true) {
@@ -679,6 +701,58 @@ async function sweepDtf(admin, actor) {
     replayed, needs: pending.length, total_prints: decision.totalQty, recorded: rec.recorded || 0,
     ...(autoSubmit ? { auto_submit: autoSubmit } : {}),
   };
+}
+
+// Receive a DTF batch PO's prints into a bin (00212). Marks its needs 'received'
+// (+ bin), advances so_jobs.dtf_prints_status → 'received' (which frees the job for
+// the auto-release DTF gate), and creates a kind='receiving' box of "prints on
+// hand" tagged with the bin so staff can locate them. Compare-and-set on
+// status='ordered' so a double-receive is a clean 409. The box is best-effort — the
+// readiness signal (the load-bearing part) lands first. Plate uses the timestamp
+// fallback: next_counter is staff-scoped (is_team_member) and this runs as service
+// role, so it can't mint a sequential plate — the fallback is unique and scannable
+// (classifyScan accepts the alphanumeric BX- form).
+async function receiveDtf(admin, body, actor) {
+  const poId = String(body.po_id || '').trim();
+  const bin = String(body.bin || '').trim();
+  if (!poId) return bad(400, 'po_id required');
+
+  const needsRes = await admin.from('teamshop_dtf_print_needs')
+    .select('id, so_id, job_id, qty, vendor').eq('po_id', poId).eq('status', 'ordered');
+  if (needsRes.error) {
+    if (isMissingRelation(needsRes.error)) return bad(409, 'DTF lane (00211) not applied yet.');
+    return bad(500, needsRes.error.message);
+  }
+  const needs = needsRes.data || [];
+  if (!needs.length) return bad(409, 'No ordered DTF prints on this PO (already received, or not a DTF PO) — refresh.');
+
+  const ids = needs.map((n) => n.id);
+  const mark = await admin.from('teamshop_dtf_print_needs')
+    .update({ status: 'received', received_at: new Date().toISOString(), bin: bin || null })
+    .in('id', ids).eq('status', 'ordered');
+  if (mark.error) return bad(500, mark.error.message);
+
+  await stampDtfStatus(admin, needs.map((n) => ({ so_id: n.so_id, job_id: n.job_id })), 'received', false);
+
+  // "Prints on hand" receiving box (best-effort; boxes table may not be deployed).
+  let boxId = null;
+  try {
+    const poNumRes = await admin.from('purchase_orders').select('po_number').eq('id', poId).maybeSingle();
+    const poNumber = (poNumRes.data && poNumRes.data.po_number) || poId;
+    const plate = 'BX-' + Date.now().toString(36).toUpperCase().slice(-6);
+    const nowIso = new Date().toISOString();
+    const row = {
+      id: plate, kind: 'receiving',
+      contents: needs.map((n) => ({ sku: 'DTF-PRINT', name: 'DTF transfers', color: '', so_id: n.so_id, sizes: { PRINT: Math.max(1, Number(n.qty) || 0) } })),
+      source_refs: [{ type: 'PO', id: poNumber }],
+      po_id: poNumber, bin: bin || null, status: 'staged',
+      created_by: actor || 'auto', created_at: nowIso, updated_at: nowIso,
+    };
+    const ins = await admin.from('boxes').insert(row).select('id').maybeSingle();
+    if (!ins.error && ins.data) boxId = ins.data.id;
+  } catch (_) { /* box is best-effort */ }
+
+  return ok({ ok: true, received: needs.length, bin: bin || null, box_id: boxId, po_id: poId });
 }
 
 // DTF lane status for the Auto POs view: pending count/qty + the vendor's gates.
@@ -742,6 +816,7 @@ exports.handler = async (event) => {
     }
     if (body.action === 'sweep') return await sweep(admin, actor);
     if (body.action === 'sweep_dtf') return ok(await sweepDtf(admin, actor));
+    if (body.action === 'receive_dtf') return await receiveDtf(admin, body, actor);
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[teamshop-auto-po] error:', e);
@@ -766,3 +841,5 @@ module.exports.dtfBatchDecision = dtfBatchDecision;
 module.exports.recordDtfNeeds = recordDtfNeeds;
 module.exports.sweepDtf = sweepDtf;
 module.exports.dtfSummary = dtfSummary;
+module.exports.receiveDtf = receiveDtf;
+module.exports.stampDtfStatus = stampDtfStatus;

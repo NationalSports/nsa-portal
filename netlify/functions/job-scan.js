@@ -62,7 +62,7 @@ const fileUrl = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
 // run-ready files (DSTs, print files); `files` after as the general art pool.
 async function fetchJobDetail(db, soId, jobId) {
   const { data: job, error: jErr } = await db.from('so_jobs')
-    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at, notes, items')
+    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at, notes, items, dtf_prints_status')
     .eq('so_id', soId).eq('id', jobId).maybeSingle();
   if (jErr) throw jErr;
   if (!job) return null;
@@ -102,6 +102,19 @@ async function fetchJobDetail(db, soId, jobId) {
     }
   }
 
+  // DTF prints status + the bin they were received into (00212). The status is on
+  // the job; the bin lives on the DTF need row — one small lookup, only when the job
+  // actually has a DTF prints status (skips it for the non-DTF common case). Missing
+  // table (pre-00211/00212) degrades to just the status, never throws.
+  let dtfBin = null;
+  if (job.dtf_prints_status) {
+    try {
+      const { data: need } = await db.from('teamshop_dtf_print_needs')
+        .select('bin').eq('so_id', soId).eq('job_id', jobId).maybeSingle();
+      if (need && need.bin) dtfBin = need.bin;
+    } catch (_) { /* best-effort */ }
+  }
+
   // Deliberately no money/cost fields — this feeds shop-floor screens.
   return {
     so_id: job.so_id,
@@ -115,6 +128,8 @@ async function fetchJobDetail(db, soId, jobId) {
     packed_at: job.packed_at || null,
     notes: job.notes || null,
     size_breakdown: sizeBreakdown,
+    dtf_prints_status: job.dtf_prints_status || null,
+    dtf_bin: dtfBin,
     files,
   };
 }
