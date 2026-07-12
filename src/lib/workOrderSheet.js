@@ -54,22 +54,20 @@ const mockCell = (m, fill, crest) => {
 const panelHead = (t) => `<div style="background:${C.panel};padding:8px 14px;border-bottom:1px solid ${C.line};font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:12px;letter-spacing:0.05em;color:${C.navy}">${esc(t)}</div>`;
 
 const header = (d, subtitle, right, refLabel) => `
-  <div style="border-bottom:3px solid ${C.navy};padding-bottom:${refLabel ? '10px' : '16px'}">
-    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px">
-      <div style="display:flex;align-items:center;gap:13px">
-        <span style="width:44px;height:44px;border-radius:9px;background:${C.navy};color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px">NT</span>
-        <div style="line-height:1.05">
-          <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:600;font-size:22px;letter-spacing:0.08em;color:${C.navy}">${esc(d.brandName || 'National Team Shop')}</div>
-          <div style="font-size:11px;color:${C.gray};letter-spacing:0.04em">${esc(subtitle)}</div>
-        </div>
-      </div>
-      <div style="text-align:right">
-        <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:0.1em;color:${C.gray}">Work Order</div>
-        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:32px;color:${C.navy};line-height:1;letter-spacing:0.02em">${esc(d.id)}</div>
-        ${right}
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:3px solid ${C.navy};padding-bottom:16px">
+    <div style="display:flex;align-items:flex-start;gap:13px">
+      <span style="width:44px;height:44px;border-radius:9px;background:${C.navy};color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px">NT</span>
+      <div style="line-height:1.05">
+        <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:600;font-size:22px;letter-spacing:0.08em;color:${C.navy}">${esc(d.brandName || 'National Team Shop')}</div>
+        <div style="font-size:11px;color:${C.gray};letter-spacing:0.04em">${esc(subtitle)}</div>
+        ${refLabel ? `<div style="margin-top:7px;font-size:11px;color:${C.gray};letter-spacing:0.12em;font-family:'Barlow Condensed',sans-serif">${esc(refLabel)}</div>` : ''}
       </div>
     </div>
-    ${refLabel ? `<div style="text-align:right;margin-top:8px;font-size:11px;color:${C.gray};letter-spacing:0.14em;font-family:'Barlow Condensed',sans-serif">${esc(refLabel)}</div>` : ''}
+    <div style="text-align:right">
+      <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:0.1em;color:${C.gray}">Work Order</div>
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:32px;color:${C.navy};line-height:1;letter-spacing:0.02em">${esc(d.id)}</div>
+      ${right}
+    </div>
   </div>`;
 
 const metaGrid = (meta) => `
