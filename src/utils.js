@@ -863,6 +863,38 @@ export const openDocPDF=async(opts,filename)=>{
   window.open(url,'_blank');
   setTimeout(()=>URL.revokeObjectURL(url),60000);
 };
+
+// ── Raw full-document print / download ──
+// For self-contained sheets that bring their OWN <html>/<style> (e.g. the
+// production Work Order sheet from src/lib/workOrderSheet.js). Unlike printDoc/
+// downloadDoc these do NOT wrap the payload through buildDocHtml — the caller
+// passes a complete HTML document string.
+export const printRawDoc=(html,title)=>{
+  const w=window.open('','_blank');if(!w)return;
+  w.document.write(html);w.document.close();
+  if(title){try{w.document.title=title}catch{}}
+  // Snapshot-print only once every image (mockups) has loaded, else they print blank.
+  let printed=false;
+  const go=()=>{if(printed)return;printed=true;setTimeout(()=>{w.focus();w.print()},100)};
+  const pending=Array.from(w.document.images||[]).filter(im=>!(im.complete&&im.naturalWidth>0));
+  if(pending.length===0){setTimeout(go,200);return}
+  let left=pending.length;const done=()=>{left--;if(left<=0)go()};
+  pending.forEach(im=>{im.addEventListener('load',done);im.addEventListener('error',done)});
+  setTimeout(go,10000); // safety: print anyway if an image never loads
+};
+// Server-side (Puppeteer) PDF of a self-contained HTML doc. Margin defaults to
+// zero because these sheets manage their own @page margins/padding. Any images
+// must be publicly reachable (Cloudinary mockups are) or inlined as data URLs.
+export const downloadRawDoc=async(html,filename,{margin}={})=>{
+  const safe=(String(filename||'document').replace(/[^a-z0-9._-]+/gi,'_').replace(/\.html?$/i,''))||'document';
+  const fname=safe+'.pdf';
+  const {content}=await _serverPdf(html,fname,{margin:margin||{top:'0',right:'0',bottom:'0',left:'0'}});
+  const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
+  const blob=new Blob([bytes],{type:'application/pdf'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=fname;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+};
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(1000,...nums)+1)};
 
 // Decoration label used on PDF line-item rows. Includes the decoration name

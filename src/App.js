@@ -24,7 +24,8 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
-import { invokeEdgeFn, buildDocHtml, printDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
+import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
+import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
@@ -1070,6 +1071,130 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     repeatInfoHeader:true,
     notes:_notesCssReset+(_bcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
+};
+// ── Production Work Order sheet options (National Team Shop layout) ──
+// Parallel to buildProdSheetOpts but shapes the same job/SO data for the Work
+// Order design (src/lib/workOrderSheet.js → buildWorkOrderDoc). Ports the
+// floor-critical features (real approved-mockup images, DST scan barcodes,
+// runs-together siblings, production files, underbase/reversible flags) and adds
+// the layout upgrades (meta grid, sign-off row, paired names/numbers roster,
+// rush + method badges). Fields not in the data model — sport, backing, hooping,
+// stitch count — are intentionally omitted rather than rendered blank.
+const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={})=>{
+  const c=customers.find(x=>x.id===so.customer_id);
+  const allArtFiles=_prodJobArtFiles(j,so);
+  const machine=MACHINES.find(m=>m.id===j.assigned_machine);
+  const isEmb=j.deco_type==='embroidery';
+  const METHOD_LABEL={embroidery:'Embroidery',screen_print:'Screen Print',heat_press:'Heat Press',heat_transfer:'Heat Transfer',dtf:'DTF',dtg:'DTG',sublimation:'Sublimation',vinyl:'Vinyl',patch:'Patch'};
+  const methodName=METHOD_LABEL[j.deco_type]||(j.deco_type||'').replace(/_/g,' ')||'Decoration';
+  const SHIP_LABEL={ship_customer:'Ship to customer',rep_delivery:'Rep delivery',customer_pickup:'Customer pickup'};
+  const shipMethod=SHIP_LABEL[j.ship_method]||j.ship_method||'—';
+  const _fmtDate=s=>{if(!s)return'—';const d=new Date(s);return isNaN(d.getTime())?String(s):d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})};
+  const rush=j.daysOut!=null&&j.daysOut<=3;
+  // customer_contacts is an array — prefer Coach, then Billing, then first.
+  const _contact=(()=>{const cs=(c&&c.contacts)||[];const byRole=r=>cs.find(x=>String(x.role||'').toLowerCase()===r);return((byRole('coach')||byRole('billing')||cs[0])||{}).name||''})();
+  const crest=(((c&&c.name)||j.customer||'?').trim().charAt(0)||'?').toUpperCase();
+  const CHEX={navy:'#001f3f',gold:'#FFD700',white:'#ffffff',red:'#dc2626',black:'#111',silver:'#C0C0C0',royal:'#4169e1',cardinal:'#8C1515',green:'#166534',orange:'#EA580C',maroon:'#800000',forest:'#228B22',charcoal:'#36454F',purple:'#6B21A8',teal:'#008080',yellow:'#FFD700',columbia:'#9BDDFF',scarlet:'#FF2400'};
+  const swatch=cl=>{const s=String(cl||'').toLowerCase();return CHEX[s]||(Object.entries(CHEX).find(([k])=>s.includes(k))||[])[1]||pantoneHex(cl)||'#e2e8f0'};
+
+  // Line items (product · sku · size run · qty · deco)
+  const itemDetails=(j.items||[]).map(gi=>{
+    const it=safeItems(so)[gi.item_idx];if(!it)return null;
+    const sizes=[];Object.entries(gi.sizes||safeSizes(it)).forEach(([sz,v])=>{if(safeNum(v)>0)sizes.push({s:sz,q:safeNum(v)})});
+    sizes.sort((a,b)=>(SZ_ORD.indexOf(a.s)<0?99:SZ_ORD.indexOf(a.s))-(SZ_ORD.indexOf(b.s)<0?99:SZ_ORD.indexOf(b.s)));
+    const decoTxt=[...jobItemDecosOfKind(gi,it,'art'),...jobItemDecosOfKind(gi,it,'numbers'),...jobItemDecosOfKind(gi,it,'names')].map(d=>d.position).filter(Boolean);
+    return{gi,it,name:it.name||gi.name,color:it.color||gi.color||'',sku:it.sku||gi.sku||'',qty:sizes.reduce((a,s)=>a+s.q,0),sizes,deco:[...new Set(decoTxt)].join(', ')||methodName};
+  }).filter(Boolean);
+  const lines=itemDetails.map(d=>({name:d.name,color:d.color,sku:d.sku,deco:d.deco,qty:d.qty,sizes:d.sizes}));
+  const totalPieces=j.total_units!=null?j.total_units:lines.reduce((a,l)=>a+l.qty,0);
+
+  // Decoration spec + colors (job-level primary art decoration)
+  const _artFileOf=d=>safeArt(so).find(f=>f.id===d.art_file_id);
+  const _firstArt=(()=>{for(const d of itemDetails){const ds=jobItemDecosOfKind(d.gi,d.it,'art');if(ds.length)return ds[0]}return null})();
+  const frontLoc=(_firstArt&&_firstArt.position)||j.positions||'';
+  const frontDim=(()=>{if(!_firstArt)return'';const af=_artFileOf(_firstArt);return(af&&((af.art_sizes&&af.art_sizes[_firstArt.position])||af.art_size))||''})();
+  const specs=[{k:'Method',v:methodName}];
+  if(frontLoc)specs.push({k:'Placement',v:frontLoc});
+  const flags=[];itemDetails.forEach(d=>jobItemDecosOfKind(d.gi,d.it,'art').forEach(dd=>{if(dd.underbase)flags.push('Underbase');if(dd.reversible)flags.push('Reversible')}));
+  const colorList=(()=>{const d2=allArtFiles.flatMap(a=>(a.ink_colors||a.thread_colors||'').split(/[,\n]/).map(x=>x.trim()).filter(Boolean));if(d2.length)return[...new Set(d2)];return[...new Set(allArtFiles.flatMap(a=>(a.color_ways||[]).flatMap(cw=>(cw.inks||[]).filter(x=>x&&x.trim()))))]})();
+  const colors=colorList.map(name=>({name,code:'',hex:swatch(name)}));
+
+  // DST machine-design barcodes (embroidery) — scan-to-load on the floor
+  let dstBarcodes=null,dstWarning=false;
+  if(isEmb){
+    const seen=new Set();const arr=[];
+    allArtFiles.forEach(a=>{[...(a?.prod_files||[]),...(a?.files||[])].forEach(f=>{
+      if(!isDstFile(f))return;const base=fileDisplayName(f).replace(/\.[^.]+$/,'');const k=base.toUpperCase();
+      if(!base||seen.has(k))return;seen.add(k);arr.push({base,dg:dgCodeOf(base),art:(a&&a.name)||'',svg:barcodeSvg(base)||''})})});
+    if(arr.length){dstBarcodes=arr;specs.push({k:'Digitized file',v:arr.map(x=>x.base).join(', ')})}else dstWarning=true;
+  }
+  if(flags.length)specs.push({k:'Flags',v:[...new Set(flags)].join(', ')});
+
+  // Approved-mockup images (real front/back proofs; schematic fallback)
+  const _urlsFor=arr=>{const out=[];for(const f of(arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f&&f.url)||'';if(_isImgUrl(u,f))out.push(u);else if(_isPdfUrl(u,f)){const t=_cloudinaryPdfThumb(u);if(t)out.push(t)}}return out};
+  const mockUrls=[...new Set([].concat(...itemDetails.map(d=>_urlsFor(_prodJobItemMocks(allArtFiles,so,d.gi))),_urlsFor(_prodJobGenericMocks(allArtFiles))))].slice(0,2);
+  const _backDeco=(()=>{for(const d of itemDetails){const dd=[...jobItemDecosOfKind(d.gi,d.it,'art'),...jobItemDecosOfKind(d.gi,d.it,'names'),...jobItemDecosOfKind(d.gi,d.it,'numbers')].find(x=>/back/i.test(x.position||''));if(dd)return dd.position}return null})();
+  const hasBack=!!_backDeco;
+  const fLabel='Front · '+(frontLoc||'Left chest');const bLabel='Back · '+(_backDeco||'Upper back');
+  let mocks;
+  if(mockUrls.length>=2)mocks=[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,imgUrl:mockUrls[1],side:'back'}];
+  else if(mockUrls.length===1)mocks=hasBack?[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'}];
+  else mocks=hasBack?[{label:fLabel,dim:frontDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,side:'front'}];
+
+  // Names & numbers roster — pair by index within each size; DO NOT sort (that
+  // would break number↔name alignment for roster-seeded orders).
+  const roster=(()=>{
+    let rd=null;
+    for(const d of itemDetails){
+      const nd=jobItemDecosOfKind(d.gi,d.it,'numbers')[0];const nameD=jobItemDecosOfKind(d.gi,d.it,'names')[0];
+      if(nd||nameD){rd={nd,nameD,gi:d.gi,sku:d.it.sku||d.gi.sku,color:d.it.color||d.gi.color||''};break}
+    }
+    if(!rd)return null;
+    const rosterMap=(rd.gi&&rd.gi.roster)||(rd.nd&&rd.nd.roster)||{};const namesMap=(rd.nameD&&rd.nameD.names)||{};
+    const {groups,total}=pairRoster(rosterMap,namesMap,SZ_ORD);
+    if(!total)return null;
+    const personalization=[];
+    if(rd.nameD)personalization.push({k:'Back name',v:'Player name'});
+    if(rd.nd&&rd.nd.num_size)personalization.push({k:'Number height',v:rd.nd.num_size});
+    const nnColor=(rd.nd&&rd.nd.print_color)||(rd.nameD&&rd.nameD.print_color);if(nnColor)personalization.push({k:'Color',v:nnColor});
+    return{title:'Names & numbers · '+total+' pcs',garment:(rd.sku||'')+(rd.color?' · '+rd.color:''),personalization,summary:groups.map(g=>({s:g.size,q:g.count})),total,groups};
+  })();
+
+  // Runs-together siblings — jobs sharing this art/screen, ready to run now.
+  const _pid=(c&&(c.parent_id||c.id))||null;const _gk=jobGroupKey(j,_pid);
+  const _famPid=s2=>{const cc=customers.find(x=>x.id===s2.customer_id);return(cc&&(cc.parent_id||cc.id))||null};
+  const _sibs=[];
+  if(_gk)allOrders.forEach(s2=>{if(_famPid(s2)!==_pid)return;safeJobs(s2).forEach(jj=>{if(s2.id===so.id&&jj.id===j.id)return;if(jobGroupKey(jj,_famPid(s2))!==_gk)return;if(!jj.link_group&&!isJobReady(jj,s2))return;const _ready=isJobReady(jj,s2);_sibs.push({soId:s2.id,cust:(customers.find(x=>x.id===s2.customer_id)||{}).name||'—',qty:jj.total_units,pending:!_ready,matched:!jj.link_group})})});
+  const siblings=_sibs.length?{unitsTotal:(j.total_units||0)+_sibs.reduce((a,s)=>a+(s.qty||0),0),list:_sibs}:null;
+
+  const prodFiles=[...new Set(allArtFiles.flatMap(a=>(a?.prod_files||[])).map(f=>fileDisplayName(f)))];
+  const printed=new Date().toLocaleString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'numeric',minute:'2-digit'});
+  const station=machine?(machine.name+(j.assigned_to?' · '+j.assigned_to:'')):(j.assigned_to||'Unassigned');
+  const dueTxt=_fmtDate(so.expected_date)+(j.daysOut!=null?(j.daysOut<=0?' · PAST DUE':j.daysOut<=3?' · '+j.daysOut+'d':''):'');
+  const alpha=(((c&&(c.alpha_tag||c.name))||'')+'').toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-|-$/g,'');
+
+  return{
+    id:j.id,rush,methodName,crest,garmentFill:'#22345c',
+    barcodeSeed:j.id,barcodeSvg:barcodeSvg(j.id)||'',barcodeLabel:j.id+(alpha?' · '+alpha:''),
+    footerLeft:'Printed '+printed+' · '+station,
+    companyLine:'National Team Shop · A National Sports Apparel company',
+    meta:[
+      {k:'Customer',v:(c&&c.name)||j.customer||'—'},
+      {k:'Contact',v:_contact||'—'},
+      {k:'SO #',v:so.id},
+      {k:'Order date',v:_fmtDate(so.created_at)},
+      {k:'Due date',v:dueTxt,color:rush?'#962C32':'#192853'},
+      {k:'Ship method',v:shipMethod},
+      {k:'Station',v:station},
+      {k:'Total pieces',v:totalPieces+' pcs'},
+    ],
+    mocks,specs,colorsLabel:isEmb?'Thread colors':'Ink colors',colors,
+    dstBarcodes,dstWarning,
+    lines,totalPieces,
+    notes:j.notes||(so.production_notes?('SO Notes: '+so.production_notes):'')||'',
+    signoff:[{role:'Picked by'},{role:'Decorated by'},{role:'QC by'},{role:'Packed by'}],
+    prodFiles,siblings,roster,
+  };
 };
 // Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
 // JPGs run 2-4MB each) and the prod modal shows several at once. w_800 covers the
@@ -10755,6 +10880,11 @@ export default function App(){
           printDoc({...opts,appendixHtml});
         };
         const downloadProdPDF=async()=>{setProdPdfDownloading(true);try{await downloadDoc(_buildProdPdfOpts(),j.id+'-production')}finally{setProdPdfDownloading(false)}};
+        // New National Team Shop Work Order sheet — separate renderer; leaves the
+        // legacy Production Job Sheet (above) fully intact.
+        const _buildWO=()=>buildWorkOrderDoc(buildWorkOrderOpts(j,so,{customers:cust,allOrders:sos,products:prod,reps:REPS}));
+        const printWorkOrder=()=>printRawDoc(_buildWO(),j.id+' — Work Order');
+        const downloadWorkOrder=async()=>{setProdPdfDownloading(true);try{await downloadRawDoc(_buildWO(),j.id+'-work-order')}finally{setProdPdfDownloading(false)}};
 
         return<div className="modal-overlay" onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:860,maxHeight:'92vh',overflow:'auto'}}>
           <div className="modal-header" style={{background:'#1e293b',color:'white'}}>
@@ -10765,6 +10895,8 @@ export default function App(){
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
               <button className="btn btn-sm" style={{fontSize:11,background:'#d97706',color:'white',border:'none',padding:'5px 12px'}} onClick={printProdPDF}>Print PDF</button>
               <button className="btn btn-sm" style={{fontSize:11,background:'#0284c7',color:'white',border:'none',padding:'5px 12px'}} onClick={downloadProdPDF} disabled={prodPdfDownloading}>{prodPdfDownloading?'Generating…':'⬇ Download PDF'}</button>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#192853',color:'white',border:'none',padding:'5px 12px'}} onClick={printWorkOrder} title="Print the new National Team Shop work order layout">🧾 Work Order</button>
+              <button className="btn btn-sm" style={{fontSize:11,background:'#334155',color:'white',border:'none',padding:'5px 12px'}} onClick={downloadWorkOrder} disabled={prodPdfDownloading}>⬇ WO PDF</button>
               <button className="modal-close" style={{color:'white'}} onClick={()=>{setProdJobModal(null);setProdJobLightbox(false)}}>×</button>
             </div>
           </div>
