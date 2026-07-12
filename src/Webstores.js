@@ -1676,14 +1676,35 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   // soId accepts a single so_id (team-store single-batch pull, unchanged) OR an
   // array of so_ids (club stores' Group Pull — every converted-but-unpulled order
   // pulled in one action, each order individually converted to its own SO).
+  //
+  // Primary path (00206, Team Shop backend hardening #5): pull_webstore_transfers
+  // does the decrement + stamp in ONE transaction, server-side, against the
+  // LIVE on_hand row — no client read-then-write race between two staff
+  // sessions (or a double-click) pulling overlapping batches. computePullPlan
+  // still runs for soIds (needed either way) and `decrements` — kept ONLY as
+  // the fallback write plan below, not sent to the RPC (the RPC re-derives the
+  // decrement from p_needs against the current row itself).
   const pullBatchTransfers = useCallback(async (soId, neededByCode) => {
     const { soIds, decrements } = computePullPlan(soId, neededByCode, detail?.transfers || []);
     if (!soIds.length) return;
-    for (const d of decrements) {
-      await supabase.from('webstore_transfers').update({ on_hand: d.on_hand }).eq('id', d.id);
+    const needs = Object.entries(neededByCode || {})
+      .filter(([, qty]) => Number(qty) > 0)
+      .map(([code, qty]) => ({ code, qty: Math.round(Number(qty)) }));
+    const rpc = await supabase.rpc('pull_webstore_transfers', { p_store_id: sel.id, p_so_ids: soIds, p_needs: needs });
+    if (rpc.error) {
+      const msg = (rpc.error.message || '') + ' ' + (rpc.error.details || '') + ' ' + (rpc.error.hint || '');
+      const migrationNotApplied = rpc.error.code === '42883' || rpc.error.code === '42P01' || /does not exist|could not find|schema cache/i.test(msg);
+      if (!migrationNotApplied) { flash('Pull failed: ' + rpc.error.message); return; }
+      // Fallback ONLY for "migration not applied yet" — any other RPC error
+      // (bad input, forbidden, …) is a real failure and must surface, not
+      // silently degrade to the racy client loop this migration replaces.
+      console.warn('[pullBatchTransfers] pull_webstore_transfers RPC not found (00206 not applied yet) — falling back to the legacy client read-then-write loop:', rpc.error.message);
+      for (const d of decrements) {
+        await supabase.from('webstore_transfers').update({ on_hand: d.on_hand }).eq('id', d.id);
+      }
+      const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).in('so_id', soIds);
+      if (error) { flash('Pull failed: ' + error.message); return; }
     }
-    const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).in('so_id', soIds);
-    if (error) { flash('Pull failed: ' + error.message); return; }
     flash('Transfers pulled — moved to In process'); loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
