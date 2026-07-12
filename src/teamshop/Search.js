@@ -24,6 +24,14 @@ import { groupByStyle } from './colorways';
 //     wires this to the same previewProduct/ProductPage flow the top-level
 //     catalog uses.
 //   onBrowseCatalog  — () => void. The empty state's "Browse all apparel".
+//   initialQuery / initialCategory — seed `query`/`categoryKey` from the URL
+//     on mount (cold load / refresh of /search?q=&category=) — see
+//     useTeamShopRoute.js's `search` route.
+//   onQueryChange(q, categoryKey) — fired on every query/category change
+//     (i.e. every keystroke, not debounced — the RPC fetch below stays on
+//     its own 300ms debounce independently). TeamShopApp wires this to
+//     navTo('search', {...}, {replace:true}) so the address bar tracks the
+//     search box live without spamming browser history one entry per key.
 const PAGE_SIZE = 200;
 const POPULAR = ['Polos', 'Hoodies', 'Hats', 'adidas', 'Nike'];
 
@@ -39,14 +47,24 @@ function useDebounced(value, ms) {
   return debounced;
 }
 
-export default function Search({ onSelectProduct, onBrowseCatalog }) {
-  const [query, setQuery] = useState('');
+export default function Search({
+  onSelectProduct, onBrowseCatalog, initialQuery, initialCategory, onQueryChange,
+}) {
+  const [query, setQuery] = useState(initialQuery || '');
   const debounced = useDebounced(query, 300);
-  const [categoryKey, setCategoryKey] = useState(null); // null = All
+  const [categoryKey, setCategoryKey] = useState(initialCategory || null); // null = All
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [searched, setSearched] = useState(false);
+
+  // URL sync — every keystroke/category change replaces the current history
+  // entry (never pushes) so Back never has to step through each character;
+  // see the onQueryChange prop doc above.
+  useEffect(() => {
+    if (onQueryChange) onQueryChange(query, categoryKey);
+    // eslint-disable-next-line
+  }, [query, categoryKey]);
 
   useEffect(() => {
     let alive = true;

@@ -44,10 +44,16 @@ import { fetchCategoryHeroes, pickHeroForCategory } from './categoryHeroes';
 // below for the mechanics (auto-advance, hover/focus pause, reduced-motion,
 // dots).
 //
-// Team-stores links use a plain href to the portal's real, already-shipped
-// /team-stores directory (src/index.js `isTeamStores` path check, checked
-// BEFORE the Team-Shop-host branch, so it resolves correctly even on the
-// nationalteamshop.com host — see src/lib/hostRouting.js).
+// Team-stores CTAs (header/footer nav, hero slide 2, hero slide 1's "or shop
+// team stores" link, and the big category panel) all call onOpenStores —
+// TeamShopApp's goTeamStores, landing in-SPA on route 'stores'
+// (TeamStoresPage) with real client-side history (see useTeamShopRoute.js).
+// Two of these used to be raw `<a href="/team-stores">` anchors pointing at
+// the SEPARATE public directory (src/storefront/TeamStores.js, `isTeamStores`
+// in src/index.js) — a full page reload to a different chunk. Routing pass:
+// unified onto the same in-SPA destination as every other "Team Stores" CTA
+// on this page, so Back/forward and the address bar behave consistently
+// instead of one tile silently leaving the SPA.
 //
 // Photography: every photo/macro-photo block in the mockup is a labeled
 // placeholder (no real photography yet) and stays that way here, clearly
@@ -292,10 +298,16 @@ export default function Home({
                 Start with your logo
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
               </button>
-              <a href="/team-stores" tabIndex={heroSlide === 0 ? 0 : -1} className="nts-footlink" style={{ alignSelf: 'flex-end', display: 'inline-flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.85)', fontWeight: 600, fontSize: 15 }}>
+              <button
+                type="button"
+                onClick={onOpenStores}
+                tabIndex={heroSlide === 0 ? 0 : -1}
+                className="nts-footlink"
+                style={{ alignSelf: 'flex-end', display: 'inline-flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.85)', fontWeight: 600, fontSize: 15, background: 'none', border: 'none', padding: 0, cursor: 'pointer', fontFamily: 'inherit' }}
+              >
                 or shop team stores
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-              </a>
+              </button>
             </div>
           </div>
         </div>
@@ -402,7 +414,11 @@ export default function Home({
 
       {/* ============ BIG CATEGORY PANELS ============ */}
       <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 0 }}>
-        <a href="/team-stores" style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#1c2d4f,#192853 60%,#0F1A38)', overflow: 'hidden', textDecoration: 'none' }}>
+        <button
+          type="button"
+          onClick={onOpenStores}
+          style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#1c2d4f,#192853 60%,#0F1A38)', overflow: 'hidden', border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', width: '100%' }}
+        >
           <img src="/teamshop/panel-teamstores.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
           <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(15,26,56,0.15) 30%, rgba(15,26,56,0.82) 100%)' }} />
           <div style={{ position: 'relative', zIndex: 1 }}>
@@ -411,7 +427,7 @@ export default function Home({
               Shop now <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
             </span>
           </div>
-        </a>
+        </button>
         <button type="button" onClick={() => onBrowseCatalog()} style={{ position: 'relative', minHeight: 'clamp(360px, 32vw, 460px)', display: 'flex', alignItems: 'flex-end', padding: 'clamp(28px, 3vw, 44px)', background: 'linear-gradient(160deg,#F7F8FB,#EEF1F6 60%,#E4E8F0)', overflow: 'hidden', textAlign: 'left', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}>
           <img src="/teamshop/panel-newdrops.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} loading="lazy" />
           <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(180deg, rgba(247,248,251,0.05) 35%, rgba(247,248,251,0.88) 100%)' }} />

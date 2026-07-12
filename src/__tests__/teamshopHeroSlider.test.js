@@ -52,15 +52,17 @@ describe('Home.js — hero slider', () => {
     expect(screen.getByRole('button', { name: /Explore team stores/ })).toBeTruthy();
   });
 
-  test('slide 1 CTAs still call onStartOrder and link to team stores', () => {
+  test('slide 1 CTAs still call onStartOrder, and "or shop team stores" calls onOpenStores (routing pass: no more raw /team-stores anchor — see Home.js)', () => {
     const onStartOrder = jest.fn();
-    const { container } = render(<Home onStartOrder={onStartOrder} onBrowseCatalog={() => {}} onOpenStores={() => {}} />);
+    const onOpenStores = jest.fn();
+    const { container } = render(<Home onStartOrder={onStartOrder} onBrowseCatalog={() => {}} onOpenStores={onOpenStores} />);
     const hero = container.querySelector('.nts-hero');
 
     fireEvent.click(within(hero).getByRole('button', { name: /Start with your logo/ }));
     expect(onStartOrder).toHaveBeenCalled();
 
-    expect(within(hero).getByText(/or shop team stores/).closest('a').getAttribute('href')).toBe('/team-stores');
+    fireEvent.click(within(hero).getByRole('button', { name: /or shop team stores/ }));
+    expect(onOpenStores).toHaveBeenCalled();
   });
 
   test('onOpenStores fires from slide 2\'s "Explore team stores" CTA', () => {
