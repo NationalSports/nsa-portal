@@ -28,19 +28,6 @@ const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => (
   { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
 ));
 
-// Deterministic barcode strip from a seed string (no Math.random so output is
-// stable across renders / snapshot tests). ~34 bars, widths 1–3px.
-const barStrip = (seed, h = 30) => {
-  const s = String(seed || 'NT');
-  let bars = '';
-  for (let i = 0; i < 34; i++) {
-    const code = s.charCodeAt(i % s.length) + i * 7;
-    const w = 1 + (code % 3);
-    bars += `<span style="width:${w}px;background:${C.ink}"></span>`;
-  }
-  return `<div style="display:flex;gap:2px;height:${h}px;align-items:stretch">${bars}</div>`;
-};
-
 // Fallback garment schematic (used only when a job has no real mockup image).
 const garmentSvg = (fill, crest, hasBack, backArt, w = 150, h = 166) => {
   const front = `<svg width="${w}" height="${h}" viewBox="0 0 180 200" fill="none"><path d="M56 20 L36 34 L18 56 L34 74 L48 64 L48 180 Q48 186 54 186 L126 186 Q132 186 132 180 L132 64 L146 74 L162 56 L144 34 L124 20 Q112 34 90 34 Q68 34 56 20 Z" fill="${fill || '#22345c'}" stroke="#C9CFDD" stroke-width="1.5"/></svg>`;
@@ -66,20 +53,23 @@ const mockCell = (m, fill, crest) => {
 
 const panelHead = (t) => `<div style="background:${C.panel};padding:8px 14px;border-bottom:1px solid ${C.line};font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:12px;letter-spacing:0.05em;color:${C.navy}">${esc(t)}</div>`;
 
-const header = (d, subtitle, right) => `
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:3px solid ${C.navy};padding-bottom:16px">
-    <div style="display:flex;align-items:center;gap:13px">
-      <span style="width:44px;height:44px;border-radius:9px;background:${C.navy};color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px">NT</span>
-      <div style="line-height:1.05">
-        <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:600;font-size:22px;letter-spacing:0.08em;color:${C.navy}">${esc(d.brandName || 'National Team Shop')}</div>
-        <div style="font-size:11px;color:${C.gray};letter-spacing:0.04em">${esc(subtitle)}</div>
+const header = (d, subtitle, right, refLabel) => `
+  <div style="border-bottom:3px solid ${C.navy};padding-bottom:${refLabel ? '10px' : '16px'}">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px">
+      <div style="display:flex;align-items:center;gap:13px">
+        <span style="width:44px;height:44px;border-radius:9px;background:${C.navy};color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:22px">NT</span>
+        <div style="line-height:1.05">
+          <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:600;font-size:22px;letter-spacing:0.08em;color:${C.navy}">${esc(d.brandName || 'National Team Shop')}</div>
+          <div style="font-size:11px;color:${C.gray};letter-spacing:0.04em">${esc(subtitle)}</div>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:0.1em;color:${C.gray}">Work Order</div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:32px;color:${C.navy};line-height:1;letter-spacing:0.02em">${esc(d.id)}</div>
+        ${right}
       </div>
     </div>
-    <div style="text-align:right">
-      <div style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;font-weight:700;font-size:13px;letter-spacing:0.1em;color:${C.gray}">Work Order</div>
-      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:32px;color:${C.navy};line-height:1;letter-spacing:0.02em">${esc(d.id)}</div>
-      ${right}
-    </div>
+    ${refLabel ? `<div style="text-align:right;margin-top:8px;font-size:11px;color:${C.gray};letter-spacing:0.14em;font-family:'Barlow Condensed',sans-serif">${esc(refLabel)}</div>` : ''}
   </div>`;
 
 const metaGrid = (meta) => `
@@ -229,8 +219,7 @@ export function buildWorkOrderDoc(data) {
   const p1Lines = dual ? '' : lineItems(d) + prodFilesBlock(d.prodFiles) + siblingsBlock(d.siblings);
 
   const page1 = sheet(`
-    ${header(d, 'Production Work Order · Decoration Floor', rushMethod)}
-    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px"><div class="wo-barcode" style="display:flex;align-items:center;height:38px">${d.barcodeSvg || barStrip(d.barcodeSeed || d.id)}</div><span style="font-size:11px;color:${C.gray};letter-spacing:0.14em;font-family:'Barlow Condensed',sans-serif">${esc(d.barcodeLabel || d.id)}</span></div>
+    ${header(d, 'Production Work Order · Decoration Floor', rushMethod, d.barcodeLabel || d.id)}
     ${metaGrid(d.meta)}
     ${mockSection}
     ${p1Lines}
@@ -260,7 +249,6 @@ export function buildWorkOrderDoc(data) {
   body{background:#6b7280;font-family:'Source Sans 3',system-ui,-apple-system,Segoe UI,sans-serif;color:${C.ink};-webkit-font-smoothing:antialiased}
   .wo-screen-pad{padding:24px;display:flex;flex-direction:column;align-items:center}
   .wo-sheet{background:#fff}
-  .wo-barcode svg{height:36px;width:auto;max-width:360px}
   @media print{
     body{background:#fff}
     .wo-screen-pad{padding:0}

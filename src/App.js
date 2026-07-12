@@ -1175,7 +1175,7 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
 
   return{
     id:j.id,rush,methodName,crest,garmentFill:'#22345c',
-    barcodeSeed:j.id,barcodeSvg:barcodeSvg(j.id)||'',barcodeLabel:j.id+(alpha?' · '+alpha:''),
+    barcodeLabel:j.id+(alpha?' · '+alpha:''),
     footerLeft:'Printed '+printed+' · '+station,
     companyLine:'National Team Shop · A National Sports Apparel company',
     meta:[
