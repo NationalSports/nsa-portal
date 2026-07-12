@@ -213,3 +213,13 @@
 # netlify/functions/teamshop-auto-release.js.
 [functions."teamshop-auto-release"]
   schedule = "*/15 * * * *"
+
+# Team Shop DTF print lane (00211) — hourly. A scheduled (no-auth) invocation runs
+# the DTF batch sweep: records pending per-job DTF print needs and batches them into
+# ONE draft PO to the DTF vendor once SUM(pending prints) >= threshold_qty OR the
+# oldest pending need passes max_age_days (the time backstop the schedule exists
+# for). Default-INERT: the seeded DTF vendor has no gates/email and auto-submit off,
+# so this no-ops until staff configure it. Staff can also POST { action:'sweep_dtf' }.
+# See netlify/functions/teamshop-auto-po.js.
+[functions."teamshop-auto-po"]
+  schedule = "25 * * * *"

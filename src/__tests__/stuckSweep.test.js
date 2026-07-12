@@ -198,6 +198,38 @@ test('a vendor WITH a contact_email is not flagged (its drafts will auto-submit)
   expect(summary.counts.auto_submit_blocked).toBe(0);
 });
 
+test('(g) DTF vendor with auto-submit on, no email, and pending prints is surfaced', async () => {
+  const admin = makeAdmin((op) => {
+    if (op.table === 'teamshop_auto_po_settings') {
+      const dt = op.filters.find((f) => f[0] === 'eq:deco_type');
+      if (dt && dt[1] === 'dtf') return { data: [{ vendor: 'DTF Transfers', deco_type: 'dtf', auto_submit_enabled: true, contact_email: null, threshold_qty: 100 }], error: null };
+      return { data: [], error: null };
+    }
+    if (op.table === 'teamshop_dtf_print_needs') return { data: [{ qty: 60 }, { qty: 50 }], error: null };
+    return { data: [], error: null };
+  });
+  const summary = await runSweep(admin);
+  expect(summary.counts.dtf_no_email).toBe(1);
+  expect(summary.total_stuck).toBe(1);
+  const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+  expect(payload.htmlContent).toContain('DTF Transfers');
+  expect(payload.htmlContent).toContain('110 prints');
+});
+
+test('a DTF vendor WITH a contact_email is not flagged', async () => {
+  const admin = makeAdmin((op) => {
+    if (op.table === 'teamshop_auto_po_settings') {
+      const dt = op.filters.find((f) => f[0] === 'eq:deco_type');
+      if (dt && dt[1] === 'dtf') return { data: [{ vendor: 'DTF Transfers', deco_type: 'dtf', auto_submit_enabled: true, contact_email: 'dtf@x.com' }], error: null };
+      return { data: [], error: null };
+    }
+    if (op.table === 'teamshop_dtf_print_needs') return { data: [{ qty: 60 }], error: null };
+    return { data: [], error: null };
+  });
+  const summary = await runSweep(admin);
+  expect(summary.counts.dtf_no_email).toBe(0);
+});
+
 test('the "shipped, no email log" check (e) is always reported as skipped, never silently omitted', async () => {
   const admin = makeAdmin(emptyRoute);
   const { skipped } = await runChecks(admin);

@@ -460,6 +460,7 @@ async function listAutoPos(admin) {
     pos: pos.map((p) => ({ ...p, lines: linesByPo[p.id] || [] })),
     unmapped,
     settings: settingsRes.error ? [] : (settingsRes.data || []),
+    dtf: await dtfSummary(admin), // DTF lane pending vs threshold (null when unconfigured)
   });
 }
 
@@ -537,10 +538,190 @@ async function sweep(admin, actor) {
   return ok({ ok: true, swept, remaining: Math.max(0, pending.length - SWEEP_LIMIT) });
 }
 
+// ── DTF print lane (00211) ────────────────────────────────────────────
+// A NEW lane keyed by deco_type='dtf' (not inventory_source). DTF transfer prints
+// accumulate as per-job needs and batch into ONE draft PO to the DTF vendor once
+// enough are pending — gated exactly like the garment lanes (a threshold, with an
+// age backstop). Everything is default-inert: the seeded DTF vendor has no gates,
+// no email, and auto-submit off, so nothing fires until staff configure it.
+const DTF_DECO = 'dtf';
+const DTF_ACTIVE_STATUSES = ['hold', 'ready', 'staging', 'in_process']; // pre-completion
+
+// Pure batch gate (unit-tested directly). Threshold semantics: SUM(pending qty) is
+// a print COUNT (gang-sheet area is a future refinement). Trips at the boundary
+// (totalQty >= threshold). Backstop trips when the oldest pending need is at least
+// max_age_days old; skipped when max_age_days is null. Both gates null → inert.
+function dtfBatchDecision({ pendingNeeds, setting, now }) {
+  const needs = pendingNeeds || [];
+  const threshold = setting && setting.threshold_qty != null ? Number(setting.threshold_qty) : null;
+  const maxAgeDays = setting && setting.max_age_days != null ? Number(setting.max_age_days) : null;
+  const totalQty = needs.reduce((a, n) => a + Math.max(0, Number(n.qty) || 0), 0);
+  const nowMs = (now ? new Date(now) : new Date()).getTime();
+  let oldestAgeDays = 0;
+  for (const n of needs) {
+    const t = n.created_at ? new Date(n.created_at).getTime() : nowMs;
+    if (!Number.isNaN(t)) oldestAgeDays = Math.max(oldestAgeDays, (nowMs - t) / 86400000);
+  }
+  const base = { totalQty, oldestAgeDays, threshold, maxAgeDays, pending: needs.length };
+  if (!needs.length) return { batch: false, reason: 'no_pending', ...base };
+  if (threshold == null && maxAgeDays == null) return { batch: false, reason: 'not_configured', ...base };
+  if (threshold != null && totalQty >= threshold) return { batch: true, reason: 'threshold', ...base };
+  if (maxAgeDays != null && oldestAgeDays >= maxAgeDays) return { batch: true, reason: 'backstop', ...base };
+  return { batch: false, reason: 'below_threshold', ...base };
+}
+
+// SO ids born from a teamshop/club webstore order — the auto-PO engine's scope.
+async function teamshopClubSoIds(admin) {
+  const res = await admin.from('webstore_orders')
+    .select('so_id, order_source').in('order_source', ['teamshop', 'club']).not('so_id', 'is', null).limit(5000);
+  if (res.error) throw res.error;
+  return [...new Set((res.data || []).map((r) => r.so_id).filter(Boolean))];
+}
+
+// Record a pending DTF print need per active DTF job that has none yet (idempotent
+// on (so_id, job_id)). qty = the job's units at record time. Skips zero-unit jobs
+// and jobs past production (completed/packed). Best-effort; returns a count.
+async function recordDtfNeeds(admin) {
+  const soIds = await teamshopClubSoIds(admin);
+  if (!soIds.length) return { recorded: 0 };
+  const jobsRes = await admin.from('so_jobs')
+    .select('so_id, id, deco_type, total_units, prod_status')
+    .in('so_id', soIds).eq('deco_type', DTF_DECO).in('prod_status', DTF_ACTIVE_STATUSES).limit(5000);
+  if (jobsRes.error) {
+    if (isMissingRelation(jobsRes.error)) return { enabled: false, recorded: 0 };
+    return { recorded: 0, error: jobsRes.error.message };
+  }
+  const dtfJobs = (jobsRes.data || []).filter((j) => (Number(j.total_units) || 0) > 0);
+  if (!dtfJobs.length) return { recorded: 0 };
+  const existRes = await admin.from('teamshop_dtf_print_needs').select('so_id, job_id').in('so_id', soIds).limit(5000);
+  if (existRes.error) {
+    if (isMissingRelation(existRes.error)) return { enabled: false, recorded: 0 };
+    return { recorded: 0, error: existRes.error.message };
+  }
+  const have = new Set((existRes.data || []).map((r) => r.so_id + ' ' + r.job_id));
+  const rows = dtfJobs
+    .filter((j) => !have.has(j.so_id + ' ' + j.id))
+    .map((j) => ({ so_id: j.so_id, job_id: j.id, qty: Math.max(1, Number(j.total_units) || 0), status: 'pending' }));
+  if (!rows.length) return { recorded: 0 };
+  const up = await admin.from('teamshop_dtf_print_needs').upsert(rows, { onConflict: 'so_id,job_id', ignoreDuplicates: true });
+  if (up.error) return { recorded: 0, error: up.error.message };
+  return { recorded: rows.length };
+}
+
+// Sweep: record any missing DTF needs, then batch ALL pending into ONE draft PO to
+// the DTF vendor when the gate trips. Never throws; degrades to enabled:false
+// pre-migration. Idempotency: client_ref keys on the max need id in the batched
+// set, so an immediate retry (if marking failed) replays the same PO via 00193's
+// unique client_ref rather than duplicating it. Needs already 'ordered' are
+// excluded from `pending`, so a later-arriving need forms its own next batch.
+async function sweepDtf(admin, actor) {
+  const setRes = await admin.from('teamshop_auto_po_settings').select('*').eq('deco_type', DTF_DECO).limit(1);
+  if (setRes.error) {
+    if (isMissingRelation(setRes.error)) return { ok: true, enabled: false, batched: false, note: 'DTF lane (00211) not applied' };
+    return { ok: false, error: setRes.error.message };
+  }
+  const setting = (setRes.data || [])[0] || null;
+  if (!setting) return { ok: true, batched: false, reason: 'no_dtf_vendor' };
+
+  const rec = await recordDtfNeeds(admin);
+  if (rec && rec.enabled === false) return { ok: true, enabled: false, batched: false, note: 'DTF needs table (00211) not applied' };
+
+  const pendRes = await admin.from('teamshop_dtf_print_needs')
+    .select('id, so_id, job_id, qty, created_at').eq('status', 'pending').is('dismissed_at', null).limit(5000);
+  if (pendRes.error) {
+    if (isMissingRelation(pendRes.error)) return { ok: true, enabled: false, batched: false };
+    return { ok: false, error: pendRes.error.message };
+  }
+  const pending = pendRes.data || [];
+  const decision = dtfBatchDecision({ pendingNeeds: pending, setting, now: new Date().toISOString() });
+  if (!decision.batch) return { ok: true, batched: false, ...decision, recorded: rec.recorded || 0 };
+
+  const lines = pending
+    .filter((n) => (Number(n.qty) || 0) > 0)
+    .map((n) => ({ so_id: n.so_id, sku: 'DTF-PRINT', size: 'PRINT', qty: Math.max(1, Number(n.qty) || 0), unit_cost_cents: 0, meta: { job_id: n.job_id, deco_type: DTF_DECO } }));
+  if (!lines.length) return { ok: true, batched: false, reason: 'no_pending', ...decision };
+  const clientRef = 'tsdtf:' + Math.max(...pending.map((n) => Number(n.id) || 0));
+  const rpc = await admin.rpc('create_purchase_order', {
+    p_client_ref: clientRef,
+    p_po: {
+      vendor: setting.vendor, status: 'draft', origin: 'auto',
+      created_by: actor || AUTO_ACTOR_FALLBACK, totals_cents: 0,
+      threshold_eval: {
+        lane: 'dtf', reason: decision.reason, total_prints: decision.totalQty,
+        threshold_qty: decision.threshold, max_age_days: decision.maxAgeDays,
+        oldest_age_days: Math.round(decision.oldestAgeDays), needs: pending.length,
+      },
+    },
+    p_lines: lines,
+  });
+  if (rpc.error) {
+    if (isMissingRelation(rpc.error)) return { ok: true, enabled: false, batched: false };
+    return { ok: false, error: 'DTF batch PO failed: ' + rpc.error.message };
+  }
+  const po = rpc.data && rpc.data.purchase_order;
+  const replayed = !!(rpc.data && rpc.data.replayed);
+
+  const ids = pending.map((n) => n.id);
+  const mark = await admin.from('teamshop_dtf_print_needs')
+    .update({ status: 'ordered', po_id: po ? po.id : null, vendor: setting.vendor, ordered_at: new Date().toISOString() })
+    .in('id', ids).eq('status', 'pending');
+  if (mark.error) return { ok: false, error: 'DTF needs mark failed: ' + mark.error.message, po_id: po ? po.id : null };
+
+  let autoSubmit = null;
+  if (po && po.id && !replayed && po.status === 'draft' && setting.auto_submit_enabled === true) {
+    autoSubmit = await autoSubmitPo(admin, {
+      po, vendor: setting.vendor, setting,
+      group: { totals_cents: 0, lines: lines.map((l) => ({ sku: l.sku, size: l.size, qty: l.qty, unit_cost_cents: l.unit_cost_cents })) },
+    });
+  }
+  return {
+    ok: true, batched: true, reason: decision.reason, po_id: po ? po.id : null, po_number: po ? po.po_number : null,
+    replayed, needs: pending.length, total_prints: decision.totalQty, recorded: rec.recorded || 0,
+    ...(autoSubmit ? { auto_submit: autoSubmit } : {}),
+  };
+}
+
+// DTF lane status for the Auto POs view: pending count/qty + the vendor's gates.
+// Returns null when the lane isn't configured/applied (so the UI just omits it).
+async function dtfSummary(admin) {
+  try {
+    const setRes = await admin.from('teamshop_auto_po_settings')
+      .select('vendor, deco_type, threshold_qty, max_age_days, contact_email, auto_submit_enabled')
+      .eq('deco_type', DTF_DECO).limit(1);
+    if (setRes.error || !(setRes.data || []).length) return null;
+    const setting = setRes.data[0];
+    const pendRes = await admin.from('teamshop_dtf_print_needs')
+      .select('qty').eq('status', 'pending').is('dismissed_at', null).limit(5000);
+    const pend = pendRes.error ? [] : (pendRes.data || []);
+    return {
+      vendor: setting.vendor, threshold_qty: setting.threshold_qty, max_age_days: setting.max_age_days,
+      pending_qty: pend.reduce((a, n) => a + (Number(n.qty) || 0), 0), pending_count: pend.length,
+      contact_email: setting.contact_email, auto_submit_enabled: setting.auto_submit_enabled,
+    };
+  } catch (_) { return null; }
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
-  if (event.httpMethod !== 'POST') return bad(405, 'Method not allowed');
+  if (event && event.httpMethod === 'OPTIONS') return { statusCode: 200, headers, body: '' };
+
+  // Scheduled (Netlify cron) invocation — no httpMethod / not POST — runs the DTF
+  // batch sweep unattended (no auth, same posture as teamshop-auto-release /
+  // teamshop-stuck-sweep; the garment lanes stay conversion-triggered + staff
+  // sweep). Never throws. Only the DTF lane runs here — it's the one with a time
+  // backstop that needs a clock; the seeded DTF vendor is inert until configured.
+  if (!event || event.httpMethod !== 'POST') {
+    let admin;
+    try { admin = getSupabaseAdmin(); } catch (e) { return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: 'Service not configured' }) }; }
+    try {
+      const r = await sweepDtf(admin, 'schedule');
+      return { statusCode: 200, headers, body: JSON.stringify(r) };
+    } catch (e) {
+      console.error('[teamshop-auto-po] scheduled DTF sweep failed:', e.message || e);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: false, error: e.message || String(e) }) };
+    }
+  }
+
   try {
     const auth = await verifyUser(event);
     if (!auth.ok) return bad(auth.status || 401, auth.error || 'Unauthorized');
@@ -560,6 +741,7 @@ exports.handler = async (event) => {
       return r.ok || r.enabled === false ? ok(r) : bad(422, r.error || 'generation failed', r);
     }
     if (body.action === 'sweep') return await sweep(admin, actor);
+    if (body.action === 'sweep_dtf') return ok(await sweepDtf(admin, actor));
     return bad(400, 'Unknown action.');
   } catch (e) {
     console.error('[teamshop-auto-po] error:', e);
@@ -580,3 +762,7 @@ module.exports.dismissUnmapped = dismissUnmapped;
 module.exports.sweep = sweep;
 module.exports.autoSubmitPo = autoSubmitPo;
 module.exports.buildPoEmailHtml = buildPoEmailHtml;
+module.exports.dtfBatchDecision = dtfBatchDecision;
+module.exports.recordDtfNeeds = recordDtfNeeds;
+module.exports.sweepDtf = sweepDtf;
+module.exports.dtfSummary = dtfSummary;

@@ -1493,6 +1493,15 @@ function AutoPoVendorsSection() {
       auto_submit_enabled: Object.prototype.hasOwnProperty.call(patch, 'auto_submit_enabled') ? patch.auto_submit_enabled : row.auto_submit_enabled,
       min_order_cents: minVal === '' || minVal === null || minVal === undefined ? null : Math.round((Number(minVal) || 0) * 100),
     };
+    // DTF lane (deco_type='dtf', 00211): the gates are threshold_qty (prints) and
+    // max_age_days (backstop) instead of inventory_sources. Blank clears the gate
+    // (null = off) — that's how a DTF vendor stays inert.
+    if (row.deco_type === 'dtf') {
+      const thVal = Object.prototype.hasOwnProperty.call(patch, 'threshold_qty') ? patch.threshold_qty : row.threshold_qty;
+      const ageVal = Object.prototype.hasOwnProperty.call(patch, 'max_age_days') ? patch.max_age_days : row.max_age_days;
+      update.threshold_qty = thVal === '' || thVal === null || thVal === undefined ? null : Math.max(0, Math.round(Number(thVal) || 0));
+      update.max_age_days = ageVal === '' || ageVal === null || ageVal === undefined ? null : Math.max(0, Math.round(Number(ageVal) || 0));
+    }
     setSavingVendor(row.vendor);
     setRows((prev) => prev.map((r) => (r.vendor === row.vendor ? { ...r, ...update } : r)));
     supabase.from('teamshop_auto_po_settings').update(update).eq('vendor', row.vendor).then(({ error }) => {
@@ -1575,21 +1584,47 @@ function AutoPoVendorsSection() {
           </thead>
           <tbody>
             {rows.map((row) => {
+              const isDtf = row.deco_type === 'dtf';
               const sourcesField = fieldFor(row, 'inventory_sources');
+              const thField = fieldFor(row, 'threshold_qty');
+              const ageField = fieldFor(row, 'max_age_days');
               const minField = Object.prototype.hasOwnProperty.call(edits[row.vendor] || {}, 'min_order')
                 ? edits[row.vendor].min_order
                 : (row.min_order_cents != null ? row.min_order_cents / 100 : '');
               return (
                 <tr key={row.vendor} style={{ borderTop: '1px solid #e2e8f0' }}>
-                  <td style={{ padding: '4px 8px', fontWeight: 700 }}>{row.vendor}</td>
+                  <td style={{ padding: '4px 8px', fontWeight: 700 }}>{row.vendor}{isDtf && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: '#155e75', background: '#cffafe', padding: '1px 6px', borderRadius: 8 }}>DTF</span>}</td>
                   <td style={{ padding: '4px 8px' }}>
-                    <input
-                      type="text"
-                      aria-label={'vendor-sources-' + row.vendor}
-                      value={Array.isArray(sourcesField) ? sourcesField.join(', ') : (sourcesField || '')}
-                      onChange={(e) => setField(row, 'inventory_sources', e.target.value)}
-                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 180 }}
-                    />
+                    {isDtf ? (
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                        <span style={{ fontSize: 11, color: '#64748b' }}>batch ≥</span>
+                        <input
+                          type="number" min="0" step="1"
+                          aria-label={'dtf-threshold-' + row.vendor}
+                          placeholder="prints"
+                          value={thField == null ? '' : thField}
+                          onChange={(e) => setField(row, 'threshold_qty', e.target.value)}
+                          style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 70 }}
+                        />
+                        <span style={{ fontSize: 11, color: '#64748b' }}>or age ≥</span>
+                        <input
+                          type="number" min="0" step="1"
+                          aria-label={'dtf-max-age-' + row.vendor}
+                          placeholder="days"
+                          value={ageField == null ? '' : ageField}
+                          onChange={(e) => setField(row, 'max_age_days', e.target.value)}
+                          style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 60 }}
+                        />
+                      </div>
+                    ) : (
+                      <input
+                        type="text"
+                        aria-label={'vendor-sources-' + row.vendor}
+                        value={Array.isArray(sourcesField) ? sourcesField.join(', ') : (sourcesField || '')}
+                        onChange={(e) => setField(row, 'inventory_sources', e.target.value)}
+                        style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 180 }}
+                      />
+                    )}
                   </td>
                   <td style={{ padding: '4px 8px' }}>
                     <input
@@ -2027,7 +2062,7 @@ function PoReviewSection() {
 const fmtCents = (c) => '$' + ((Number(c) || 0) / 100).toFixed(2);
 
 function AutoPoSection() {
-  const [state, setState] = useState({ loading: true, enabled: true, pos: [], unmapped: [], error: null });
+  const [state, setState] = useState({ loading: true, enabled: true, pos: [], unmapped: [], dtf: null, error: null });
   const [busyId, setBusyId] = useState(null);
   const [toast, setToast] = useState(null);
 
@@ -2051,10 +2086,10 @@ function AutoPoSection() {
   const load = useCallback(() => {
     callFn({ action: 'list' })
       .then((r) => {
-        if (r.error) { setState({ loading: false, enabled: true, pos: [], unmapped: [], error: r.error }); return; }
-        setState({ loading: false, enabled: r.enabled !== false, pos: r.pos || [], unmapped: r.unmapped || [], error: null });
+        if (r.error) { setState({ loading: false, enabled: true, pos: [], unmapped: [], dtf: null, error: r.error }); return; }
+        setState({ loading: false, enabled: r.enabled !== false, pos: r.pos || [], unmapped: r.unmapped || [], dtf: r.dtf || null, error: null });
       })
-      .catch((e) => setState({ loading: false, enabled: true, pos: [], unmapped: [], error: e.message || String(e) }));
+      .catch((e) => setState({ loading: false, enabled: true, pos: [], unmapped: [], dtf: null, error: e.message || String(e) }));
   }, [callFn]);
 
   useEffect(() => { load(); }, [load]);
@@ -2076,6 +2111,17 @@ function AutoPoSection() {
       if (r.error) { showToast('Sweep failed: ' + r.error); return; }
       const n = (r.swept || []).length;
       showToast(n ? 'Sweep evaluated ' + n + ' order' + (n === 1 ? '' : 's') : 'Sweep: nothing pending');
+      load();
+    });
+  };
+
+  // DTF lane (00211): batch pending prints now (also runs hourly on a schedule).
+  const runDtfSweep = () => {
+    setBusyId('sweep_dtf');
+    callFn({ action: 'sweep_dtf' }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('DTF batch failed: ' + r.error); return; }
+      showToast(r.batched ? 'DTF batch created (' + (r.total_prints || 0) + ' prints, ' + (r.reason || '') + ')' : 'DTF: ' + (r.reason || 'nothing to batch').replace(/_/g, ' '));
       load();
     });
   };
@@ -2117,6 +2163,30 @@ function AutoPoSection() {
       {!state.enabled && (
         <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
           Auto-PO migration (00202) not applied yet — nothing to review.
+        </div>
+      )}
+      {state.dtf && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: '#ecfeff', border: '1px solid #a5f3fc', borderRadius: 8, padding: '10px 14px', marginBottom: 16 }}>
+          <span style={{ fontSize: 12, fontWeight: 800, color: '#155e75', textTransform: 'uppercase', letterSpacing: 0.5 }}>DTF batch</span>
+          <span style={{ fontSize: 14, fontWeight: 700, color: '#0f172a' }}>
+            {state.dtf.pending_qty} / {state.dtf.threshold_qty != null ? state.dtf.threshold_qty : '—'} prints pending
+            {state.dtf.pending_count ? ' · ' + state.dtf.pending_count + ' job' + (state.dtf.pending_count === 1 ? '' : 's') : ''}
+          </span>
+          {state.dtf.threshold_qty == null && state.dtf.max_age_days == null && (
+            <span style={{ fontSize: 11, color: '#b45309' }}>lane inert — set a threshold in Auto-PO vendors to enable</span>
+          )}
+          {state.dtf.auto_submit_enabled && !String(state.dtf.contact_email || '').trim() && (
+            <span style={{ fontSize: 11, color: '#b45309' }}>auto-submit on but no vendor email — batches stay draft</span>
+          )}
+          <button
+            type="button"
+            aria-label="dtf-sweep"
+            disabled={busyId === 'sweep_dtf'}
+            onClick={runDtfSweep}
+            style={{ marginLeft: 'auto', padding: '5px 12px', fontSize: 12, fontWeight: 700, background: '#0891b2', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {busyId === 'sweep_dtf' ? 'Batching…' : 'Batch DTF now'}
+          </button>
         </div>
       )}
       {state.error && (

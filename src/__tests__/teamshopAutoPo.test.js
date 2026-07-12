@@ -191,6 +191,7 @@ function fakeSb(script) {
         select() { return builder; },
         eq(col, val) { call.filters.push(['eq', col, val]); return builder; },
         in(col, vals) { call.filters.push(['in', col, vals]); return builder; },
+        is(col, val) { call.filters.push(['is', col, val]); return builder; },
         not(col, op, val) { call.filters.push(['not', col, op, val]); return builder; },
         order() { return builder; },
         limit() { return builder; },
@@ -411,6 +412,110 @@ describe('auto-submit', () => {
     });
     expect(res.submitted).toBe(false);
     expect(res.reason).toBe('not_draft');
+  });
+});
+
+// ── DTF print lane (00211) ───────────────────────────────────────────
+describe('dtfBatchDecision (pure batch gate)', () => {
+  const need = (id, qty, ageDays) => ({ id, qty, created_at: new Date(Date.now() - ageDays * 86400000).toISOString() });
+  const now = new Date().toISOString();
+
+  test('threshold trips at the boundary (>=), not below', () => {
+    const needs = [need(1, 60, 1), need(2, 40, 1)]; // 100 total
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: needs, setting: { threshold_qty: 100 }, now }))
+      .toMatchObject({ batch: true, reason: 'threshold', totalQty: 100 });
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: needs, setting: { threshold_qty: 101 }, now }))
+      .toMatchObject({ batch: false, reason: 'below_threshold', totalQty: 100 });
+  });
+
+  test('age backstop trips when the oldest pending need is at least max_age_days old', () => {
+    const needs = [need(1, 5, 20)]; // below any real threshold, but 20 days old
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: needs, setting: { threshold_qty: 1000, max_age_days: 14 }, now }))
+      .toMatchObject({ batch: true, reason: 'backstop' });
+    // one day short of the backstop → still held
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: [need(1, 5, 6)], setting: { threshold_qty: 1000, max_age_days: 14 }, now }))
+      .toMatchObject({ batch: false, reason: 'below_threshold' });
+  });
+
+  test('both gates null → lane inert (not_configured); no pending → no_pending', () => {
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: [need(1, 999, 999)], setting: { threshold_qty: null, max_age_days: null }, now }))
+      .toMatchObject({ batch: false, reason: 'not_configured' });
+    expect(autoPo.dtfBatchDecision({ pendingNeeds: [], setting: { threshold_qty: 1 }, now }))
+      .toMatchObject({ batch: false, reason: 'no_pending' });
+  });
+});
+
+describe('sweepDtf', () => {
+  const DTF_SETTING = { vendor: 'DTF Transfers', deco_type: 'dtf', threshold_qty: 100, max_age_days: null, auto_submit_enabled: false, contact_email: null };
+  const dtfScript = (over = {}) => ({
+    'teamshop_auto_po_settings.select': [{ data: [DTF_SETTING], error: null }],
+    // recordDtfNeeds
+    'webstore_orders.select': [{ data: [{ so_id: 'SO-1', order_source: 'teamshop' }], error: null }],
+    'so_jobs.select': [{ data: [{ so_id: 'SO-1', id: 'JOB-1', deco_type: 'dtf', total_units: 120, prod_status: 'hold' }], error: null }],
+    'teamshop_dtf_print_needs.select': [
+      { data: [], error: null }, // recordDtfNeeds exist-check: none yet
+      { data: [{ id: 5, so_id: 'SO-1', job_id: 'JOB-1', qty: 120, created_at: new Date().toISOString() }], error: null }, // pending load
+    ],
+    'teamshop_dtf_print_needs.upsert': [{ data: null, error: null }],
+    'rpc.create_purchase_order': [{ data: { ok: true, replayed: false, purchase_order: { id: 'po-dtf', po_number: 'NSA 900', status: 'draft' } }, error: null }],
+    'teamshop_dtf_print_needs.update': [{ data: [{ id: 5 }], error: null }],
+    ...over,
+  });
+
+  test('threshold met → ONE draft PO to the DTF vendor, then needs marked ordered', async () => {
+    const sb = fakeSb(dtfScript());
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r).toMatchObject({ ok: true, batched: true, reason: 'threshold', po_id: 'po-dtf', total_prints: 120 });
+
+    const rpc = sb.calls.find((c) => c.op === 'rpc' && c.table === 'create_purchase_order');
+    expect(rpc.payload.p_client_ref).toBe('tsdtf:5'); // keyed on the max batched need id
+    expect(rpc.payload.p_po.vendor).toBe('DTF Transfers');
+    expect(rpc.payload.p_po.origin).toBe('auto');
+    expect(rpc.payload.p_po.threshold_eval).toMatchObject({ lane: 'dtf', reason: 'threshold', total_prints: 120 });
+    expect(rpc.payload.p_lines[0]).toMatchObject({ so_id: 'SO-1', qty: 120, meta: { job_id: 'JOB-1', deco_type: 'dtf' } });
+
+    const upd = sb.calls.find((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs');
+    expect(upd.payload).toMatchObject({ status: 'ordered', po_id: 'po-dtf', vendor: 'DTF Transfers' });
+    expect(upd.filters).toEqual(expect.arrayContaining([['eq', 'status', 'pending']]));
+  });
+
+  test('below threshold → holds, creates no PO', async () => {
+    const sb = fakeSb(dtfScript({ 'teamshop_auto_po_settings.select': [{ data: [{ ...DTF_SETTING, threshold_qty: 1000 }], error: null }] }));
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r).toMatchObject({ ok: true, batched: false, reason: 'below_threshold', totalQty: 120 });
+    expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+    expect(sb.calls.some((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs')).toBe(false);
+  });
+
+  test('inert vendor (no gates) → not_configured, no PO', async () => {
+    const sb = fakeSb(dtfScript({ 'teamshop_auto_po_settings.select': [{ data: [{ ...DTF_SETTING, threshold_qty: null, max_age_days: null }], error: null }] }));
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r).toMatchObject({ batched: false, reason: 'not_configured' });
+    expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+  });
+
+  test('pre-migration (DTF lane not applied) → enabled:false, no PO', async () => {
+    const sb = fakeSb({ 'teamshop_auto_po_settings.select': [{ data: null, error: { code: '42703', message: 'column "deco_type" does not exist' } }] });
+    const r = await autoPo.sweepDtf(sb, 'schedule');
+    expect(r.enabled).toBe(false);
+    expect(sb.calls.filter((c) => c.op === 'rpc').length).toBe(0);
+  });
+});
+
+// ── Migration 00211 static characterization ──────────────────────────
+describe('migration 00211 (DTF lane)', () => {
+  const SQL = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/00211_teamshop_dtf_auto_po.sql'), 'utf8');
+  test('adds the DTF lane knobs, a sibling needs table with RLS, and seeds an INERT DTF vendor', () => {
+    expect(SQL).toMatch(/add column if not exists deco_type/);
+    expect(SQL).toMatch(/add column if not exists threshold_qty/);
+    expect(SQL).toMatch(/add column if not exists max_age_days/);
+    expect(SQL).toMatch(/create table if not exists public\.teamshop_dtf_print_needs/);
+    expect(SQL).toMatch(/unique \(so_id, job_id\)/);
+    expect(SQL).toMatch(/alter table public\.teamshop_dtf_print_needs enable row level security/);
+    // seeded vendor is inert: DTF deco_type, auto-submit false, and NO threshold/email in the seed
+    expect(SQL).toMatch(/'DTF Transfers', 'dtf', false/);
+    expect(SQL).not.toMatch(/on public\.teamshop_dtf_print_needs\s+for (insert|update)/); // service-write only
+    expect(SQL).toMatch(/Rollback/);
   });
 });
 

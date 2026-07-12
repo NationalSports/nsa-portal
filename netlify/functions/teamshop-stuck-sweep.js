@@ -190,9 +190,31 @@ async function checkAutoSubmitBlocked(admin) {
   return pos || [];
 }
 
+// DTF print lane (00211): the DTF vendor has auto-submit ON but no contact_email,
+// AND there are pending DTF prints waiting to batch — so a tripped batch would land
+// as an un-sendable draft. Surface it so staff add the email (or send by hand). (g)
+async function checkDtfNoEmail(admin) {
+  const { data: settings, error } = await admin.from('teamshop_auto_po_settings')
+    .select('vendor, deco_type, auto_submit_enabled, contact_email, threshold_qty').eq('deco_type', 'dtf');
+  if (error) throw error;
+  const vendor = (settings || []).find((s) => s.auto_submit_enabled === true && !String(s.contact_email || '').trim());
+  if (!vendor) return [];
+  const { data: needs, error: nErr } = await admin.from('teamshop_dtf_print_needs')
+    .select('qty').eq('status', 'pending').is('dismissed_at', null).limit(5000);
+  if (nErr) throw nErr;
+  const rows = needs || [];
+  if (!rows.length) return [];
+  return [{
+    vendor: vendor.vendor,
+    threshold_qty: vendor.threshold_qty,
+    pending_count: rows.length,
+    pending_qty: rows.reduce((a, n) => a + (Number(n.qty) || 0), 0),
+  }];
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────
 async function runChecks(admin) {
-  const out = { paid_no_so: [], stale_pending_payment: [], stuck_art: [], no_po_need_order: [], auto_submit_blocked: [], errors: [], skipped: [] };
+  const out = { paid_no_so: [], stale_pending_payment: [], stuck_art: [], no_po_need_order: [], auto_submit_blocked: [], dtf_no_email: [], errors: [], skipped: [] };
 
   out.skipped.push({
     check: 'shipped_no_email_log',
@@ -211,6 +233,7 @@ async function runChecks(admin) {
   out.stuck_art = await safe('stuck_art', () => checkStuckArt(admin, soIdMapObj));
   out.no_po_need_order = await safe('no_po_need_order', () => checkNoPoNeedOrder(admin, soIdMapObj));
   out.auto_submit_blocked = await safe('auto_submit_blocked', () => checkAutoSubmitBlocked(admin));
+  out.dtf_no_email = await safe('dtf_no_email', () => checkDtfNoEmail(admin));
 
   return out;
 }
@@ -218,7 +241,7 @@ async function runChecks(admin) {
 function totalStuck(summary) {
   return summary.paid_no_so.length + summary.stale_pending_payment.length
     + summary.stuck_art.length + summary.no_po_need_order.length
-    + summary.auto_submit_blocked.length;
+    + summary.auto_submit_blocked.length + summary.dtf_no_email.length;
 }
 
 // ── Email ────────────────────────────────────────────────────────────────
@@ -241,6 +264,8 @@ function buildEmailHtml(summary, portalUrl) {
     (j) => `<li>${soLink(j.so_id)} / ${esc(j.id)} — created ${esc(j.created_at)}</li>`);
   const autoSubmitHtml = section('Auto-PO drafts blocked — vendor has no contact_email', summary.auto_submit_blocked,
     (p) => `<li>${esc(p.po_number || p.id)} — ${esc(p.vendor)} — ${money((Number(p.totals_cents) || 0) / 100)} — created ${esc(p.created_at)}</li>`);
+  const dtfHtml = section('DTF prints pending but the vendor has no contact_email (auto-submit on)', summary.dtf_no_email,
+    (d) => `<li>${esc(d.vendor)} — ${d.pending_qty} print${d.pending_qty === 1 ? '' : 's'} across ${d.pending_count} job${d.pending_count === 1 ? '' : 's'}${d.threshold_qty != null ? ' (threshold ' + d.threshold_qty + ')' : ''} — add an email so the batch can send</li>`);
 
   const errorsHtml = summary.errors.length
     ? `<p style="margin-top:22px;font-size:12px;color:#92400e">Some checks failed and were skipped this run: ${summary.errors.map((e) => esc(e.check) + ' (' + esc(e.error) + ')').join('; ')}</p>`
@@ -252,7 +277,7 @@ function buildEmailHtml(summary, portalUrl) {
   return `<div style="font-family:sans-serif;max-width:680px">
     <h2 style="color:#dc2626;margin-bottom:4px">Team Shop / Club — stuck order sweep</h2>
     <p style="color:#64748b;margin-top:0">Generated: ${new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} PT</p>
-    ${paidNoSoHtml}${pendingHtml}${artHtml}${poHtml}${autoSubmitHtml}${errorsHtml}${skippedHtml}
+    ${paidNoSoHtml}${pendingHtml}${artHtml}${poHtml}${autoSubmitHtml}${dtfHtml}${errorsHtml}${skippedHtml}
     <hr style="margin-top:28px;border:none;border-top:1px solid #e2e8f0"/>
     <p style="font-size:11px;color:#94a3b8">Sent by teamshop-stuck-sweep. so_jobs age is date-only (no time-of-day in the source column) — see the function's header comment.</p>
   </div>`;
@@ -287,7 +312,7 @@ async function runSweep(admin) {
     try { emailed = await sendAlert(summary); }
     catch (e) { console.error('[teamshop-stuck-sweep] alert send error:', e.message || e); }
   }
-  console.log(`[teamshop-stuck-sweep] paid_no_so=${summary.paid_no_so.length} stale_pending=${summary.stale_pending_payment.length} stuck_art=${summary.stuck_art.length} no_po=${summary.no_po_need_order.length} auto_submit_blocked=${summary.auto_submit_blocked.length} emailed=${emailed}`);
+  console.log(`[teamshop-stuck-sweep] paid_no_so=${summary.paid_no_so.length} stale_pending=${summary.stale_pending_payment.length} stuck_art=${summary.stuck_art.length} no_po=${summary.no_po_need_order.length} auto_submit_blocked=${summary.auto_submit_blocked.length} dtf_no_email=${summary.dtf_no_email.length} emailed=${emailed}`);
   return {
     ok: true,
     total_stuck: n,
@@ -298,6 +323,7 @@ async function runSweep(admin) {
       stuck_art: summary.stuck_art.length,
       no_po_need_order: summary.no_po_need_order.length,
       auto_submit_blocked: summary.auto_submit_blocked.length,
+      dtf_no_email: summary.dtf_no_email.length,
     },
     errors: summary.errors,
     skipped: summary.skipped,
@@ -338,6 +364,7 @@ exports.handler = async (event) => {
 module.exports.runSweep = runSweep;
 module.exports.runChecks = runChecks;
 module.exports.checkAutoSubmitBlocked = checkAutoSubmitBlocked;
+module.exports.checkDtfNoEmail = checkDtfNoEmail;
 module.exports.businessDaysAgoDateOnly = businessDaysAgoDateOnly;
 module.exports.daysAgoDateOnly = daysAgoDateOnly;
 module.exports.parseSoJobDate = parseSoJobDate;
