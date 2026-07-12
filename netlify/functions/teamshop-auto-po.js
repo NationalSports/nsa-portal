@@ -441,9 +441,13 @@ async function listAutoPos(admin) {
   (linesRes.data || []).forEach((l) => { (linesByPo[l.po_id] = linesByPo[l.po_id] || []).push(l); });
 
   // Lines the engine could NOT route to a supplier — staff order these by hand.
+  // dismissed_at is null: a staff-dismissed line (ordered by hand already, see
+  // dismissUnmapped below, 00209) drops off this list without deleting the
+  // audit row.
   const unmappedRes = await admin.from('teamshop_auto_po_needs')
-    .select('so_id,sku,size,qty_needed,created_at')
+    .select('id,so_id,sku,size,qty_needed,created_at')
     .eq('skip_reason', 'no_vendor_mapping')
+    .is('dismissed_at', null)
     .order('created_at', { ascending: false })
     .limit(200);
   const unmapped = unmappedRes.error ? [] : (unmappedRes.data || []);
@@ -480,6 +484,26 @@ async function markSubmitted(admin, body, staff) {
   }
   if (!upd.data || !upd.data.length) return bad(409, 'PO is not a draft (already marked, or cancelled) — refresh the list.');
   return ok({ ok: true, purchase_order: upd.data[0] });
+}
+
+// Dismiss/resolve a "Needs manual ordering" line (00209) — staff ordered it by
+// hand and it should stop showing up. Marks dismissed_at/dismissed_by rather
+// than deleting the row, so the evaluation audit trail (why this line had no
+// vendor mapping) is preserved. Compare-and-set on dismissed_at is null so a
+// double-click can't stomp who/when a race already recorded.
+async function dismissUnmapped(admin, body, staff) {
+  const id = body.id;
+  if (id === undefined || id === null || id === '') return bad(400, 'id required');
+  const upd = await admin.from('teamshop_auto_po_needs')
+    .update({ dismissed_at: new Date().toISOString(), dismissed_by: (staff && staff.teamMemberId) || 'staff' })
+    .eq('id', id).is('dismissed_at', null)
+    .select('id,dismissed_at,dismissed_by');
+  if (upd.error) {
+    if (isMissingRelation(upd.error)) return bad(409, 'Auto-PO migration (00209) not applied yet.');
+    return bad(500, upd.error.message);
+  }
+  if (!upd.data || !upd.data.length) return bad(409, 'Already dismissed, or the row does not exist — refresh the list.');
+  return ok({ ok: true, need: upd.data[0] });
 }
 
 // Catch-up: evaluate every converted Team Shop order that has no evaluation
@@ -530,6 +554,7 @@ exports.handler = async (event) => {
     const actor = auth.teamMemberId || 'staff';
     if (body.action === 'list') return await listAutoPos(admin);
     if (body.action === 'mark_submitted') return await markSubmitted(admin, body, auth);
+    if (body.action === 'dismiss_unmapped') return await dismissUnmapped(admin, body, auth);
     if (body.action === 'generate') {
       const r = await generateForSo(admin, String(body.so_id || ''), actor);
       return r.ok || r.enabled === false ? ok(r) : bad(422, r.error || 'generation failed', r);
@@ -551,6 +576,7 @@ module.exports.generateForSo = generateForSo;
 module.exports.generateForSoSafe = generateForSoSafe;
 module.exports.listAutoPos = listAutoPos;
 module.exports.markSubmitted = markSubmitted;
+module.exports.dismissUnmapped = dismissUnmapped;
 module.exports.sweep = sweep;
 module.exports.autoSubmitPo = autoSubmitPo;
 module.exports.buildPoEmailHtml = buildPoEmailHtml;
