@@ -104,8 +104,32 @@ def scale_for_height(height_in, cfg, warnings):
     return clamped
 
 
+def _find_logs():
+    """Ink/Stitch writes errors to a log file (it suppresses stderr). Collect any."""
+    out = []
+    for base in [os.path.expanduser("~/.config/inkstitch"), os.path.expanduser("~/.inkstitch"), os.getcwd()]:
+        if not os.path.isdir(base):
+            continue
+        for root, _dirs, files in os.walk(base):
+            for fn in files:
+                if fn.endswith(".log") or "inkstitch" in fn.lower() and fn.endswith(".txt"):
+                    p = os.path.join(root, fn)
+                    try:
+                        with open(p, errors="replace") as f:
+                            out.append(f"--- {p} ---\n{f.read()[-3000:]}")
+                    except Exception:  # noqa: BLE001
+                        pass
+    return "\n".join(out)
+
+
 def run_inkstitch(bin_path, text, font_name, scale_pct, blank_svg_path):
-    """One batch_lettering call -> (zip_bytes, stderr_text, returncode)."""
+    """One batch_lettering call -> (zip_bytes, stderr_text, returncode).
+
+    stderr is inherited (flows to CI logs) rather than captured, because
+    Ink/Stitch suppresses much of its own stderr; we surface its log file on
+    failure instead. stdout (the zip) is captured to a temp file to keep binary
+    bytes clean.
+    """
     cmd = [
         bin_path,
         "--extension=batch_lettering",
@@ -119,8 +143,17 @@ def run_inkstitch(bin_path, text, font_name, scale_pct, blank_svg_path):
     ]
     if shutil.which("xvfb-run"):
         cmd = ["xvfb-run", "-a"] + cmd
-    proc = subprocess.run(cmd, capture_output=True, timeout=300)
-    return proc.stdout, proc.stderr.decode("utf-8", "replace"), proc.returncode
+    zip_path = blank_svg_path + ".out.zip"
+    with open(zip_path, "wb") as zf:
+        proc = subprocess.run(cmd, stdout=zf, stderr=subprocess.PIPE, timeout=300)
+    with open(zip_path, "rb") as zf:
+        zip_bytes = zf.read()
+    stderr = proc.stderr.decode("utf-8", "replace")
+    if proc.returncode != 0 or not zip_bytes:
+        logtext = _find_logs()
+        if logtext:
+            stderr = (stderr + "\n[inkstitch log files]\n" + logtext).strip()
+    return zip_bytes, stderr, proc.returncode
 
 
 def extract_dst(zip_bytes):
