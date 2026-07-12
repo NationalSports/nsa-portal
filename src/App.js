@@ -6314,7 +6314,11 @@ export default function App(){
     try {
       const ssResponse = await pushSOToShipStation(so, customer);
       const updatedSO = { ...so, _shipstation_order_id: ssResponse.orderId, _shipping_status: 'submitted', updated_at: new Date().toLocaleString() };
-      setSOs(prev => prev.map(s => s.id === so.id ? updatedSO : s));
+      // savSO (not a bare setSOs) so this actually persists — same pattern the
+      // ship modal uses (App.js ~17870). A setSOs-only write updates local
+      // state but skips savSO's diff-snapshot bookkeeping and merge guards,
+      // so it's vulnerable to being silently clobbered by the next poll.
+      savSO(updatedSO);
       nf('Order ' + so.id + ' submitted to ShipStation (' + ssResponse.orderId + ')');
     } catch (error) {
       console.error('[ShipStation] Ship order failed:', error);
@@ -6330,7 +6334,8 @@ export default function App(){
         const updatedSO = sos.find(s => s.id === soId);
         if (updatedSO && !updatedSO._tracking_number) {
           const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
-          setSOs(prev => prev.map(s => s.id === soId ? updated : s));
+          // savSO, same reasoning as handleShipToShipStation above.
+          savSO(updated);
           nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
         }
       } else { nf('No shipment data yet for ' + soId, 'error'); }
@@ -7015,8 +7020,10 @@ export default function App(){
         // Check if any other invoices remain for this SO
         const remainingInvs=invs.filter(i=>i.so_id===inv.so_id&&i.id!==invId);
         if(remainingInvs.length===0){
-          // No more invoices — SO goes back to ready_to_invoice
-          setSOs(prev=>prev.map(s=>s.id===inv.so_id?{...s,status:'ready_to_invoice',updated_at:new Date().toLocaleString()}:s));
+          // No more invoices — SO goes back to ready_to_invoice. savSO (not a
+          // bare setSOs) so this persists — same reasoning as the ShipStation
+          // handlers above.
+          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
