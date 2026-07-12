@@ -170,6 +170,57 @@ describe('TeamStoresPage', () => {
   });
 });
 
+describe('TeamStoresPage — one-click builder', () => {
+  test('sport, gender, color, and logo picks are live and drive the preview', () => {
+    const { container } = render(<TeamStoresPage />);
+
+    // Default state: Men's items in the preview.
+    expect(screen.getByText('Hooded Pullover')).toBeTruthy();
+    expect(screen.queryByText('Fitted Hoodie')).toBeNull();
+
+    // Sport chip selection toggles aria-pressed.
+    const basketball = screen.getByRole('button', { name: /Basketball/ });
+    expect(basketball.getAttribute('aria-pressed')).toBe('false');
+    fireEvent.click(basketball);
+    expect(basketball.getAttribute('aria-pressed')).toBe('true');
+
+    // Gender toggle swaps the live preview's item set.
+    fireEvent.click(screen.getByText("Women's"));
+    expect(screen.getByText('Fitted Hoodie')).toBeTruthy();
+    expect(screen.queryByText('Hooded Pullover')).toBeNull();
+
+    // Logo chip selection updates the preview header badge letter.
+    fireEvent.click(screen.getByText('Valley Wildcats').closest('button'));
+    const preview = container.querySelector('[data-testid="nts-builder-preview"]');
+    expect(within(preview).getByText('W')).toBeTruthy();
+
+    // Picking a primary/secondary swatch recolors the preview via CSS vars —
+    // the same --tp/--tp2/--ta custom properties Garment reads.
+    expect(preview.style.getPropertyValue('--tp')).toBe('#0E2A6B'); // default: Navy
+    fireEvent.click(screen.getByRole('button', { name: 'Royal' }));
+    expect(preview.style.getPropertyValue('--tp')).toBe('#123a8f');
+    expect(preview.style.getPropertyValue('--tp2')).toBe('#2350b0');
+
+    expect(preview.style.getPropertyValue('--ta')).toBe('#F5B429'); // default: Gold
+    fireEvent.click(screen.getByRole('button', { name: 'Scarlet' }));
+    expect(preview.style.getPropertyValue('--ta')).toBe('#C8102E');
+  });
+
+  test('launch is an illustrative confirmation, not a store-creation call, and links to the same rep contact as the hero', () => {
+    render(<TeamStoresPage />);
+
+    const launch = screen.getByText('Launch store — one click');
+    expect(screen.queryByText('Finish setup in your coach portal →')).toBeNull();
+
+    fireEvent.click(launch);
+
+    expect(screen.getByText('Your store is live')).toBeTruthy();
+    const coachLink = screen.getByText('Finish setup in your coach portal →');
+    expect(coachLink.getAttribute('href')).toMatch(/^mailto:info@nationalsportsapparel\.com/);
+    expect(coachLink.getAttribute('href')).toBe(screen.getAllByText('Talk to your rep about a store')[0].getAttribute('href'));
+  });
+});
+
 describe('TeamShopApp — Team Stores nav/footer wiring', () => {
   test('header nav "Team Stores" routes to the view', () => {
     render(<TeamShopApp />);

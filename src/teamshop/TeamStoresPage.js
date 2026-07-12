@@ -11,7 +11,7 @@ import { searchPublicTeamStores, closesLabel, cleanTerm } from '../lib/publicTea
 // (scratchpad design/TeamStores.dc.html, a design-canvas file: static
 // sections + a React-ish script block driving THEMES/SPORTS/garment() SVGs).
 // Section-by-section translation, in the design's own order:
-//   HERO -> FOUR PITCHES -> [builder, kept static] -> EXAMPLE STORE PREVIEW
+//   HERO -> FOUR PITCHES -> ONE-CLICK BUILDER -> EXAMPLE STORE PREVIEW
 //   (the centerpiece) -> FIND YOUR STORE (real functionality, no design slot)
 //   -> HOW IT WORKS -> FUNDRAISING CALLOUT -> LAUNCH CTA.
 //
@@ -28,10 +28,15 @@ import { searchPublicTeamStores, closesLabel, cleanTerm } from '../lib/publicTea
 //     no fake photography. The hero still cycles three differently-themed
 //     mocks with the 600ms fade, slug swap, ~4s rotation, reduced-motion
 //     guard, and pause-on-hover the mock specifies.
-//   - The one-click builder ("Pick your colors. Drop your logo. Done.") is
-//     visual-fidelity only, no self-service logic — store creation is still
-//     rep-assisted, not literally one click, on this page. Copy stays
-//     rep-led ("your rep handles the setup").
+//   - The one-click builder ("Pick your colors. Drop your logo. Done.") IS
+//     fully interactive — sport/gender/colors/logo are real React state and
+//     the live preview recolors immediately (reusing Garment/DemoStore's
+//     --tp/--tp2/--ta vars). The one piece that's illustrative is the
+//     "Launch" action itself: real store creation is rep-led, not literally
+//     one click, so clicking Launch flips a local "your store is live"
+//     confirmation with no backend call, and its follow-up link reuses the
+//     exact same rep-contact destination (CONTACT_HREF) as the hero CTA —
+//     no invented store-creation endpoint.
 //   - "Find your store" search is REAL: the same webstores_public query the
 //     portal's /team-stores finder uses (src/lib/publicTeamStores.js — one
 //     query path, not two), extended to also surface recently-closed stores
@@ -136,6 +141,79 @@ function toneSwatches(tone) {
   if (tone === 'white') return [swatchDotStyle('var(--tp2, #123a8f)'), swatchDotStyle('#F1F3F7')];
   if (tone === 'black') return [swatchDotStyle('#23262B'), swatchDotStyle('#5A6075')];
   return [swatchDotStyle('var(--tp2, #123a8f)'), swatchDotStyle('#F1F3F7')];
+}
+
+// ---------------------------------------------------------------------------
+// ONE-CLICK BUILDER data — copied from the mock's SPORTS/BPRIMS/SECONDARIES/
+// BLOGOS/MENS_ITEMS/WOMENS_ITEMS (script block, ~lines 462-542 of the design
+// file). The builder itself is real, interactive React state (see
+// TeamStoresPage below) — only the store-creation *action* is illustrative
+// (see the CONTACT_HREF note on the Launch button further down).
+// ---------------------------------------------------------------------------
+const SPORTS = [
+  { name: 'Football', icon: 'M4 12c0-4 3-7 8-7s8 3 8 7-3 7-8 7-8-3-8-7z M9 12h6 M12 9.5v5' },
+  { name: 'Basketball', icon: 'M3 12h18 M12 3v18 M5 5c4 3 4 11 0 14 M19 5c-4 3-4 11 0 14' },
+  { name: 'Soccer', icon: 'M12 3l3 2-1 4h-4l-1-4z M6 9l3 1 1 4-3 2-3-3z M18 9l-3 1-1 4 3 2 3-3z' },
+  { name: 'Baseball', icon: 'M6 5c4 3 6 9 6 14 M18 5c-4 3-6 9-6 14' },
+  { name: 'Volleyball', icon: 'M12 3v18 M12 12c-5 0-8-3-9-6 M12 12c5 0 8-3 9-6 M12 12c-2 4-5 6-9 6' },
+];
+
+const BPRIMS = [
+  { name: 'Navy', primary: '#0E2A6B', light: '#123a8f' },
+  { name: 'Royal', primary: '#123a8f', light: '#2350b0' },
+  { name: 'Crimson', primary: '#7A121E', light: '#9c1a2a' },
+  { name: 'Forest', primary: '#113B29', light: '#1a5a3f' },
+  { name: 'Purple', primary: '#3A1D66', light: '#512a8c' },
+  { name: 'Teal', primary: '#0F5C63', light: '#157a83' },
+  { name: 'Black', primary: '#1A1D22', light: '#2A2F3E' },
+];
+
+const SECONDARIES = [
+  { name: 'Gold', color: '#F5B429', ink: '#0E2A6B' },
+  { name: 'White', color: '#FFFFFF', ink: '#0E2A6B' },
+  { name: 'Silver', color: '#C7CDD6', ink: '#1A1D22' },
+  { name: 'Columbia', color: '#6CADE0', ink: '#0E2A6B' },
+  { name: 'Scarlet', color: '#C8102E', ink: '#FFFFFF' },
+  { name: 'Kelly', color: '#1E7A46', ink: '#FFFFFF' },
+];
+
+const BLOGOS = [
+  { letter: 'E', name: 'Eastside Eagles' },
+  { letter: 'W', name: 'Valley Wildcats' },
+  { letter: 'T', name: 'Harbor Titans' },
+];
+
+const MENS_ITEMS = [
+  { kind: 'hoodie', tone: 'royal', label: 'Hooded Pullover' },
+  { kind: 'ls', tone: 'royal', label: 'Long Sleeve Tee' },
+  { kind: 'tee', tone: 'white', label: 'Competitor Tee' },
+  { kind: 'ls', tone: 'black', label: 'Warm-Up Top' },
+  { kind: 'tee', tone: 'royal', label: 'Team Polo' },
+  { kind: 'shorts', tone: 'black', label: '7" Short' },
+  { kind: 'ls', tone: 'royal', label: 'Quarter-Zip' },
+  { kind: 'tee', tone: 'black', label: 'Crewneck Tee' },
+  { kind: 'shorts', tone: 'royal', label: 'Joggers' },
+];
+
+const WOMENS_ITEMS = [
+  { kind: 'hoodie', tone: 'royal', label: 'Fitted Hoodie' },
+  { kind: 'ls', tone: 'royal', label: 'Long Sleeve Tee' },
+  { kind: 'tee', tone: 'white', label: 'Fitted Tee' },
+  { kind: 'ls', tone: 'black', label: 'Quarter-Zip' },
+  { kind: 'tee', tone: 'royal', label: 'V-Neck Polo' },
+  { kind: 'shorts', tone: 'black', label: '5" Short' },
+  { kind: 'tee', tone: 'royal', label: 'Crewneck' },
+  { kind: 'hoodie', tone: 'black', label: 'Full-Zip' },
+  { kind: 'shorts', tone: 'royal', label: 'Leggings' },
+];
+
+// One sport chip's icon — stroke brightens when its chip is the active pick.
+function SportIcon({ path, active }) {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={active ? '#fff' : 'rgba(255,255,255,0.55)'} strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round" aria-hidden="true">
+      <path d={path} />
+    </svg>
+  );
 }
 
 // The mock's browser-framed, CSS-custom-property-themed demo store
@@ -490,6 +568,21 @@ export default function TeamStoresPage() {
   const storeTheme = THEMES[storeThemeIdx];
   const exampleStore = useMemo(() => ({ teamName: 'Oak Grove Football Team Store', slug: 'oak-grove-football' }), []);
 
+  // ---- One-click builder ("Pick your colors. Drop your logo. Done.") ----
+  // Real interactive state — the live preview recolors as these change, via
+  // the same --tp/--tp2/--ta custom properties Garment/DemoStore already key
+  // off. Store creation itself stays rep-led (see the Launch button below):
+  // this is a visual confirmation, not a self-service create action.
+  const [bSport, setBSport] = useState(0);
+  const [bGender, setBGender] = useState('mens');
+  const [bPrim, setBPrim] = useState(0);
+  const [bSec, setBSec] = useState(0);
+  const [bLogo, setBLogo] = useState('E');
+  const [bLaunched, setBLaunched] = useState(false);
+  const builderPrim = BPRIMS[bPrim];
+  const builderSec = SECONDARIES[bSec];
+  const builderItems = bGender === 'womens' ? WOMENS_ITEMS : MENS_ITEMS;
+
   return (
     <div style={{ width: '100%', overflowX: 'hidden', background: '#fff' }}>
       {/* ============ HERO ============ */}
@@ -601,45 +694,233 @@ export default function TeamStoresPage() {
       </section>
 
       {/* ============ ONE-CLICK BUILDER ============
-          Static/decorative recreation of the mock's builder — visual
-          fidelity only, no self-service logic (store creation is still
-          rep-assisted, not literally one click, on this page). */}
+          Full interactive store-launcher: sport, team colors, and logo are
+          real React state, and the live preview recolors as they change
+          (Garment already reads --tp/--tp2/--ta). The one thing that ISN'T
+          self-service is store creation itself — that's still rep-led, so
+          "Launch" is an illustrative confirmation (no backend call), and its
+          follow-up link reuses the exact same rep-contact destination as the
+          hero's "Talk to your rep about a store" CTA (CONTACT_HREF). */}
       <section style={{ background: NAVY_DARK, color: '#fff', padding: 'clamp(36px, 4.5vw, 64px) 24px' }}>
-        <div style={{ maxWidth: 1000, margin: '0 auto', textAlign: 'center' }}>
-          <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>One-click store creation</p>
-          <h2 style={displayType('clamp(2rem, 3.6vw, 2.7rem)', { margin: '0 0 14px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Pick your colors. Drop your logo. Done.</h2>
-          <p style={{ maxWidth: 620, margin: '0 auto 44px', fontSize: 'clamp(15px, 1.4vw, 17px)', lineHeight: 1.6, color: 'rgba(255,255,255,0.72)' }}>
-            Your rep handles the setup — send your colors and logo once, and it lands on every product in the store automatically. No per-item work, no design files to wrangle.
-          </p>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 24 }}>
-            {[
-              {
-                n: 1,
-                title: 'Pick your colors',
-                body: 'Tell your rep your team colors — we theme the whole store to match.',
-                icon: <><path d="M12 3a9 9 0 100 18 1.5 1.5 0 001.06-2.56 1.5 1.5 0 011.06-2.56H16a5 5 0 005-5c0-4.4-4.03-8-9-8z" /><circle cx="7.5" cy="10.5" r="1.1" fill="currentColor" stroke="none" /><circle cx="10.5" cy="7" r="1.1" fill="currentColor" stroke="none" /><circle cx="15" cy="7.3" r="1.1" fill="currentColor" stroke="none" /></>,
-              },
-              {
-                n: 2,
-                title: 'Drop your logo',
-                body: 'Send your logo file. We place it across your gear and store branding.',
-                icon: <><path d="M12 15V4M8 8l4-4 4 4" /><rect x="3" y="16" width="18" height="4" rx="1" /></>,
-              },
-              {
-                n: 3,
-                title: 'Done — share the link',
-                body: 'Preview, approve, and send families one link. No software to learn.',
-                icon: <><circle cx="12" cy="12" r="9" /><path d="M8 12.3l2.6 2.6L16 9.5" /></>,
-              },
-            ].map((s) => (
-              <div key={s.n} style={{ background: NAVY, border: '1px solid #1c2d4f', borderRadius: 14, padding: '28px 22px', textAlign: 'left' }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: RED_SOFT, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{s.icon}</svg>
+        <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', maxWidth: 620, margin: '0 auto 32px' }}>
+            <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>One-click store creation</p>
+            <h2 style={displayType('clamp(2rem, 3.6vw, 2.7rem)', { margin: '0 0 14px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Pick your colors. Drop your logo. Done.</h2>
+            <p style={{ fontSize: 'clamp(15px, 1.4vw, 17px)', lineHeight: 1.6, color: 'rgba(255,255,255,0.72)', margin: 0 }}>
+              Pick your sport, add your logo and team colors once — it lands on every product in the store automatically. No per-item setup, no design files to wrangle.
+            </p>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 'clamp(18px, 2.5vw, 28px)', alignItems: 'stretch' }}>
+
+            {/* CONTROLS */}
+            <div style={{ background: NAVY, border: '1px solid #1c2d4f', borderRadius: 16, padding: 'clamp(18px, 2vw, 24px)' }}>
+              {/* Step 1 — sport + gender toggle */}
+              <div style={{ marginBottom: 15 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', marginBottom: 9 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <span style={{ width: 26, height: 26, borderRadius: 999, background: RED_SOFT, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...displayType(14) }}>1</span>
+                    <span style={displayType(16, { letterSpacing: '0.08em' })}>Pick your sport</span>
+                  </div>
+                  <div style={{ display: 'flex', background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.14)', borderRadius: 9, padding: 3, minWidth: 168 }}>
+                    <button
+                      type="button"
+                      onClick={() => setBGender('mens')}
+                      style={{
+                        flex: 1, padding: '9px 14px', border: 'none', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                        fontWeight: 600, fontSize: 14, background: bGender === 'mens' ? '#fff' : 'transparent', color: bGender === 'mens' ? NAVY : 'rgba(255,255,255,0.7)',
+                      }}
+                    >
+                      Men&apos;s
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBGender('womens')}
+                      style={{
+                        flex: 1, padding: '9px 14px', border: 'none', borderRadius: 7, cursor: 'pointer', fontFamily: 'inherit',
+                        fontWeight: 600, fontSize: 14, background: bGender === 'womens' ? '#fff' : 'transparent', color: bGender === 'womens' ? NAVY : 'rgba(255,255,255,0.7)',
+                      }}
+                    >
+                      Women&apos;s
+                    </button>
+                  </div>
                 </div>
-                <h3 style={displayType(17, { color: '#fff', margin: '0 0 6px', letterSpacing: '0.02em' })}>{s.title}</h3>
-                <p style={{ margin: 0, fontSize: 13.5, color: 'rgba(255,255,255,0.65)', lineHeight: 1.55 }}>{s.body}</p>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {SPORTS.map((sp, i) => {
+                    const active = i === bSport;
+                    return (
+                      <button
+                        key={sp.name}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setBSport(i)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 9, padding: '10px 15px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                          background: active ? RED_SOFT : 'rgba(255,255,255,0.06)', border: `1px solid ${active ? RED_SOFT : 'rgba(255,255,255,0.14)'}`,
+                          color: '#fff', ...displayType(15, { letterSpacing: '0.05em' }),
+                        }}
+                      >
+                        <SportIcon path={sp.icon} active={active} />
+                        {sp.name}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
+
+              {/* Step 2 — team colors */}
+              <div style={{ marginBottom: 15 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 11 }}>
+                  <span style={{ width: 26, height: 26, borderRadius: 999, background: RED_SOFT, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...displayType(14) }}>2</span>
+                  <span style={displayType(16, { letterSpacing: '0.08em' })}>Team colors</span>
+                </div>
+                <div style={{ display: 'flex', gap: 26, flexWrap: 'wrap' }}>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.55)', marginBottom: 9 }}>Primary</span>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      {BPRIMS.map((c, i) => {
+                        const active = i === bPrim;
+                        return (
+                          <button
+                            key={c.name}
+                            type="button"
+                            aria-label={c.name}
+                            aria-pressed={active}
+                            onClick={() => setBPrim(i)}
+                            style={{
+                              position: 'relative', width: 36, height: 36, borderRadius: 999, padding: 0, cursor: 'pointer', background: c.primary,
+                              boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.2)', border: `2px solid ${active ? '#fff' : 'transparent'}`,
+                              outline: active ? `2px solid ${RED_SOFT}` : 'none', transform: active ? 'scale(1.1)' : 'scale(1)', transition: 'all 150ms ease',
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ display: 'block', fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'rgba(255,255,255,0.55)', marginBottom: 9 }}>Secondary</span>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                      {SECONDARIES.map((s, i) => {
+                        const active = i === bSec;
+                        return (
+                          <button
+                            key={s.name}
+                            type="button"
+                            aria-label={s.name}
+                            aria-pressed={active}
+                            onClick={() => setBSec(i)}
+                            style={{
+                              position: 'relative', width: 36, height: 36, borderRadius: 999, padding: 0, cursor: 'pointer', background: s.color,
+                              boxShadow: 'inset 0 0 0 1px rgba(15,26,56,0.12)', border: `2px solid ${active ? '#fff' : 'transparent'}`,
+                              outline: active ? `2px solid ${RED_SOFT}` : 'none', transform: active ? 'scale(1.1)' : 'scale(1)', transition: 'all 150ms ease',
+                            }}
+                          />
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Step 3 — logo */}
+              <div style={{ marginBottom: 15 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+                  <span style={{ width: 26, height: 26, borderRadius: 999, background: RED_SOFT, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...displayType(14) }}>3</span>
+                  <span style={displayType(16, { letterSpacing: '0.08em' })}>Add your logo</span>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  {BLOGOS.map((l) => {
+                    const active = l.letter === bLogo;
+                    return (
+                      <button
+                        key={l.letter}
+                        type="button"
+                        aria-pressed={active}
+                        onClick={() => setBLogo(l.letter)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px 8px 8px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit',
+                          background: active ? OFF_WHITE : '#fff', border: `1.5px solid ${active ? NAVY : BORDER}`,
+                        }}
+                      >
+                        <span aria-hidden="true" style={{ width: 32, height: 32, borderRadius: 8, flexShrink: 0, background: NAVY, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', ...displayType(16) }}>{l.letter}</span>
+                        <span style={{ fontWeight: 600, fontSize: 13, color: NAVY }}>{l.name}</span>
+                      </button>
+                    );
+                  })}
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 8, border: '1px dashed rgba(255,255,255,0.35)', borderRadius: 10, padding: '9px 14px', color: 'rgba(255,255,255,0.8)', fontWeight: 600, fontSize: 13 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+                    Upload
+                  </span>
+                </div>
+              </div>
+
+              {/* Launch — illustrative confirmation only; no store-creation
+                  backend call. The follow-up link reuses the hero's rep
+                  contact CTA (CONTACT_HREF), never a new/invented action. */}
+              <button
+                type="button"
+                onClick={() => setBLaunched(true)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%', fontFamily: 'inherit',
+                  fontWeight: 600, fontSize: 17, padding: '16px 28px', border: 'none', borderRadius: 8, cursor: 'pointer',
+                  textTransform: 'uppercase', letterSpacing: '0.02em', color: '#fff', transition: 'background 180ms ease',
+                  background: bLaunched ? '#1E7A46' : RED,
+                }}
+              >
+                {bLaunched && <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12l5 5L20 6" /></svg>}
+                {bLaunched ? 'Your store is live' : 'Launch store — one click'}
+              </button>
+              {bLaunched && (
+                <a
+                  href={CONTACT_HREF}
+                  className="nts-ghost"
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12, fontFamily: 'inherit',
+                    fontWeight: 600, fontSize: 15, color: '#fff', background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.28)',
+                    padding: 13, borderRadius: 8, textDecoration: 'none',
+                  }}
+                >
+                  Finish setup in your coach portal →
+                </a>
+              )}
+              <p style={{ margin: '14px 0 0', fontSize: 12.5, color: 'rgba(255,255,255,0.6)', textAlign: 'center', lineHeight: 1.5 }}>We send a preview to approve before it goes live to families.*</p>
+            </div>
+
+            {/* LIVE PREVIEW — recolors in real time off the selected primary/
+                secondary (Garment reads these same --tp/--tp2/--ta vars). */}
+            <div
+              data-testid="nts-builder-preview"
+              style={{
+                '--tp': builderPrim.primary, '--tp2': builderPrim.light, '--ta': builderSec.color, '--taInk': builderSec.ink,
+              }}
+            >
+              <div style={{ background: '#fff', borderRadius: 16, overflow: 'hidden', boxShadow: '0 30px 70px rgba(0,0,0,0.35)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '16px 20px', background: 'var(--tp)', color: '#fff' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
+                    <span style={{ width: 30, height: 30, borderRadius: 7, background: 'var(--ta)', color: 'var(--tp)', display: 'flex', alignItems: 'center', justifyContent: 'center', ...displayType(16) }}>{bLogo}</span>
+                    <span style={displayType(16, { letterSpacing: '0.06em' })}>Your Team Store</span>
+                  </span>
+                  <span style={displayType(11, { letterSpacing: '0.06em', color: 'var(--ta)' })}>Live preview</span>
+                </div>
+                <div style={{ padding: 'clamp(18px, 2vw, 26px)', background: '#FAF7F0' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, color: TEXT_MUTED }}>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1E7A46" strokeWidth="2.2" aria-hidden="true"><path d="M5 12l5 5L20 6" /></svg>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: TEXT }}>Your logo applied to all <strong>24 items</strong> automatically</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 14 }}>
+                    {builderItems.map((it) => (
+                      <div key={it.label} style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,26,56,0.08)' }}>
+                        <div style={{ aspectRatio: '1 / 1', background: TILE_BG[it.tone], display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                          <Garment kind={it.kind} tone={it.tone} />
+                        </div>
+                        <div style={{ padding: '9px 11px', ...displayType(12, { letterSpacing: '0.03em', color: 'var(--tp)' }) }}>{it.label}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
           </div>
         </div>
       </section>
