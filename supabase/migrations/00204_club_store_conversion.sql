@@ -96,14 +96,15 @@
 --      'paid' (no po_verified equivalent exists for club), so there is no PO branch.
 --      Commissions are computed per invoice (CommissionsPage.calcGP walks invoices) —
 --      without this, club orders would silently vanish from rep commission statements.
---   6. FUNDRAISE CREDIT — NOT created here. sales_orders._webstore_fundraise IS
---      stamped (this order's fundraise_amt x discount ratio, same as batchOrders) so
---      calcGP nets it out of GP the same way a batched club SO would — but the
---      customer_credits "Fundraiser Dollars" row webstoreCreateSO's addFundraiseCredit
---      writes client-side is NOT written by this RPC. Flagged as a follow-up decision
---      (out of the coordinator's explicit ask for this pass — garment cost / transfer
---      cost / invoice parity); the club is not shorted money, the credit ledger entry
---      just isn't automatic yet.
+--   6. FUNDRAISE CREDIT — created here, mirroring App.js addFundraiseCredit (the
+--      client-side write the batch path makes): a customer_credits CASH credit row
+--      (is_fundraise=true, spends dollar-for-dollar via Apply Credit), amount = this
+--      order's fundraise_amt x discount ratio (the same v_fundraise_cost stamped on
+--      sales_orders._webstore_fundraise). Idempotency matches addFundraiseCredit's
+--      dedupKey convention exactly: id = 'cr_fund_so_' || <SO id> — one credit per
+--      conversion, and ON CONFLICT DO NOTHING makes any replay a no-op (the RPC's
+--      so_id replay guard already prevents re-entry, this is belt-and-braces).
+--      Zero/negative fundraise -> no row, same as addFundraiseCredit's amt<=0 guard.
 --
 -- Idempotency / guards (NSA_* codes, 00171/00192/00193/00199 conventions):
 --   * row lock (FOR UPDATE) on the webstore order;
@@ -680,6 +681,26 @@ begin
       insert into invoice_payments (invoice_id, amount, method, ref, date)
       values (v_inv_id, v_applied, 'store', v_pay_ref, to_char(now(), 'MM/DD/YYYY'));
     end if;
+  end if;
+
+  -- ── Fundraise credit ── the club's "Fundraiser Dollars" ledger row (see header #6).
+  -- Same id convention as App.js addFundraiseCredit with dedupKey 'so_'+soId, so a
+  -- staff-side re-credit attempt for this SO would also dedupe against this row.
+  if v_fundraise_cost > 0 then
+    insert into customer_credits (id, customer_id, amount, used, is_fundraise, source, created_by, created_at)
+    values (
+      -- addFundraiseCredit sanitizes dedupKey with [^A-Za-z0-9_-] (hyphens KEPT), so
+      -- 'so_'+soId client-side yields exactly this id — cross-path dedup holds.
+      'cr_fund_so_' || v_so_id,
+      v_store.customer_id,
+      v_fundraise_cost,
+      0,
+      true,
+      'Webstore fundraising — ' || coalesce(v_store.name, 'Club Store') || ' · ' || v_so_id,
+      'System (club conversion)',
+      now()
+    )
+    on conflict (id) do nothing;
   end if;
 
   return jsonb_build_object(
