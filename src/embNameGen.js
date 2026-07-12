@@ -32,11 +32,13 @@ const _isEmbNum = (d) => d && d.kind === 'numbers' && (d.num_method || '') === '
 const _szRank = (sz) => { const i = SZ_ORD.indexOf(sz); return i === -1 ? 1e6 : i; };
 const _szSort = (a, b) => (_szRank(a) - _szRank(b)) || (a < b ? -1 : a > b ? 1 : 0);
 
-// CODE39-safe identity token: uppercase; A–Z 0–9 kept, every run of anything else
-// becomes a single dash; trimmed; length-capped. (Barudan barcodes are CODE39 —
-// uppercase/digits/dash only, no underscore — so these stay scannable if barcoded.)
+// CODE39-safe identity token: accents stripped (José → JOSE, not JOS), uppercased; A–Z 0–9
+// kept, every run of anything else becomes a single dash; trimmed; length-capped. (Barudan
+// barcodes are CODE39 — uppercase/digits/dash only, no underscore — so these stay scannable
+// if barcoded.)
 const _tok = (s, cap = 16) =>
-  String(s == null ? '' : s).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, cap);
+  String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, cap);
 
 // First numeric value in a size string like '1.5"' → 1.5 (inches); null if none.
 const _inches = (v) => { const m = String(v == null ? '' : v).match(/(\d+(?:\.\d+)?)/); return m ? parseFloat(m[1]) : null; };
@@ -51,14 +53,19 @@ const _fname = (seq, sz, kindTag, ident) =>
   `${String(seq).padStart(3, '0')}-${_tok(sz, 8)}-${kindTag}-${ident}`;
 
 // Are there any embroidery name/number pieces to generate on these decos?
-// (Cheap gate for the sweep that decides which jobs need generation.)
-export const embNameGenNeeded = (decos) => {
-  for (const d of decos || []) {
-    if (_isEmbName(d) && Object.values(d.names || {}).some((a) => (a || []).some((v) => String(v || '').trim()))) return true;
-    if (_isEmbNum(d) && Object.values(d.roster || {}).some((a) => (a || []).some((v) => String(v || '').trim()))) return true;
-  }
-  return false;
-};
+// (Cheap gate for the sweep that decides which jobs need generation. Uses the same
+// _KINDS table as buildEmbNameGen so "needed" can never disagree with what generates.)
+const _hasFilled = (rosterMap) =>
+  Object.values(rosterMap || {}).some((a) => (a || []).some((v) => String(v == null ? '' : v).trim()));
+export const embNameGenNeeded = (decos) =>
+  (decos || []).some((d) => _KINDS.some((cfg) => cfg.isMine(d) && _hasFilled(cfg.rosterOf(d))));
+
+// The two roster-bearing deco kinds, table-driven so names and numbers can never
+// drift apart in traversal/validation behavior (they differ only in these fields).
+const _KINDS = [
+  { kind: 'name', tag: 'NAME', isMine: _isEmbName, rosterOf: (d) => d.names, fontOf: (d) => d.name_font, sizeOf: (d) => d.name_size },
+  { kind: 'number', tag: 'NUM', isMine: _isEmbNum, rosterOf: (d) => d.roster, fontOf: (d) => d.num_font, sizeOf: (d) => d.num_size },
+];
 
 // Build the ordered per-piece generation plan for ONE job's decorations.
 //
@@ -67,19 +74,24 @@ export const embNameGenNeeded = (decos) => {
 // per size. Empty roster slots are skipped (a slot with no name/number = no piece).
 //
 // Returns { pieces, fingerprint, warnings }:
-//   pieces[]:    { seq, size, slot, kind:'name'|'number', text, font, heightIn, filename }
+//   pieces[]:    { seq, size, slot, kind:'name'|'number', text, font, heightIn,
+//                  filename, fontDefaulted?, heightDefaulted? }
+//                (slot = roster array index — provenance for re-matching a piece to its
+//                roster row later; not consumed by the generator)
 //   fingerprint: stable hash of the plan; regenerate when it changes
-//   warnings[]:  human-readable notes (e.g. a piece whose size is unknown)
+//   warnings[]:  human-readable notes (unknown size, defaulted font/height, …).
+//                Defaulted font/height are ALSO flagged per-piece so the distinction
+//                between "chosen" and "fell back" survives into the CI manifest —
+//                otherwise adding a second font later would silently leave names on
+//                the old default with no signal until finished garments come back.
 export const buildEmbNameGen = (decos, opts = {}) => {
-  const defaultNameFont = opts.defaultNameFont || 'block';
-  const defaultNameHeightIn = opts.defaultNameHeightIn != null ? opts.defaultNameHeightIn : 1;
-  const nameDecos = (decos || []).filter(_isEmbName);
-  const numDecos = (decos || []).filter(_isEmbNum);
+  const defaultFont = opts.defaultFont || 'block';
+  const defaultHeightIn = opts.defaultHeightIn != null ? opts.defaultHeightIn : 1;
 
-  const sizes = [...new Set([
-    ...nameDecos.flatMap((d) => Object.keys(d.names || {})),
-    ...numDecos.flatMap((d) => Object.keys(d.roster || {})),
-  ])].sort(_szSort);
+  const kindDecos = _KINDS.map((cfg) => ({ cfg, decos: (decos || []).filter(cfg.isMine) }));
+  const sizes = [...new Set(
+    kindDecos.flatMap(({ cfg, decos: ds }) => ds.flatMap((d) => Object.keys(cfg.rosterOf(d) || {}))),
+  )].sort(_szSort);
 
   const pieces = [];
   const warnings = [];
@@ -87,33 +99,32 @@ export const buildEmbNameGen = (decos, opts = {}) => {
 
   for (const sz of sizes) {
     if (_szRank(sz) === 1e6) warnings.push(`Unknown size "${sz}" — sewn last`);
-    for (const d of nameDecos) {
-      (d.names && d.names[sz] || []).forEach((raw, slot) => {
-        const text = String(raw == null ? '' : raw).trim();
-        if (!text) return;
-        seq += 1;
-        pieces.push({
-          seq, size: sz, slot, kind: 'name', text,
-          font: d.name_font || defaultNameFont,
-          heightIn: _inches(d.name_size) || defaultNameHeightIn,
-          filename: _fname(seq, sz, 'NAME', _tok(text)),
+    for (const { cfg, decos: ds } of kindDecos) {
+      for (const d of ds) {
+        ((cfg.rosterOf(d) || {})[sz] || []).forEach((raw, slot) => {
+          const text = String(raw == null ? '' : raw).trim();
+          if (!text) return;
+          seq += 1;
+          const fontDefaulted = !cfg.fontOf(d);
+          const heightDefaulted = !_inches(cfg.sizeOf(d));
+          const piece = {
+            seq, size: sz, slot, kind: cfg.kind, text,
+            font: cfg.fontOf(d) || defaultFont,
+            heightIn: _inches(cfg.sizeOf(d)) || defaultHeightIn,
+            filename: _fname(seq, sz, cfg.tag, _tok(text)),
+          };
+          if (fontDefaulted) piece.fontDefaulted = true;
+          if (heightDefaulted) piece.heightDefaulted = true;
+          pieces.push(piece);
         });
-      });
-    }
-    for (const d of numDecos) {
-      (d.roster && d.roster[sz] || []).forEach((raw, slot) => {
-        const text = String(raw == null ? '' : raw).trim();
-        if (!text) return;
-        seq += 1;
-        pieces.push({
-          seq, size: sz, slot, kind: 'number', text,
-          font: d.num_font || defaultNameFont,
-          heightIn: _inches(d.num_size) || defaultNameHeightIn,
-          filename: _fname(seq, sz, 'NUM', _tok(text)),
-        });
-      });
+      }
     }
   }
+
+  const defFont = pieces.filter((p) => p.fontDefaulted).length;
+  const defHeight = pieces.filter((p) => p.heightDefaulted).length;
+  if (defFont) warnings.push(`${defFont} piece(s) have no font on the deco — defaulted to "${defaultFont}"`);
+  if (defHeight) warnings.push(`${defHeight} piece(s) have no size on the deco — defaulted to ${defaultHeightIn}"`);
 
   const fingerprint = _hash(pieces.map((p) => `${p.seq}|${p.size}|${p.kind}|${p.text}|${p.font}|${p.heightIn}`).join('\n'));
   return { pieces, fingerprint, warnings };

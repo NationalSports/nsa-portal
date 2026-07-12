@@ -83,7 +83,7 @@ describe('buildEmbNameGen — font & size resolution', () => {
   test('numbers use their own num_size (inches) and num_font; names fall back to defaults', () => {
     const { pieces } = buildEmbNameGen(
       [nameDeco({ L: ['Smith'] }), numDeco({ L: ['12'] }, { num_size: '1.5"', num_font: 'serif' })],
-      { defaultNameFont: 'block', defaultNameHeightIn: 1.25 },
+      { defaultFont: 'block', defaultHeightIn: 1.25 },
     );
     const name = pieces.find((p) => p.kind === 'name');
     const num = pieces.find((p) => p.kind === 'number');
@@ -94,6 +94,27 @@ describe('buildEmbNameGen — font & size resolution', () => {
   test('embroidery number with no font defaults to block', () => {
     const { pieces } = buildEmbNameGen([numDeco({ L: ['7'] }, { num_size: '2"' })]);
     expect(pieces[0]).toMatchObject({ font: 'block', heightIn: 2 });
+  });
+
+  test('defaulted font/height are flagged per-piece AND summarized in warnings (not silent)', () => {
+    const { pieces, warnings } = buildEmbNameGen([
+      nameDeco({ L: ['Smith'] }), // names carry no font/size today → both defaulted
+      numDeco({ L: ['12'] }, { num_size: '1"', num_font: 'serif' }), // fully specified
+    ]);
+    const name = pieces.find((p) => p.kind === 'name');
+    const num = pieces.find((p) => p.kind === 'number');
+    expect(name.fontDefaulted).toBe(true);
+    expect(name.heightDefaulted).toBe(true);
+    expect(num.fontDefaulted).toBeUndefined();
+    expect(num.heightDefaulted).toBeUndefined();
+    expect(warnings.join(' ')).toMatch(/no font on the deco/);
+    expect(warnings.join(' ')).toMatch(/no size on the deco/);
+  });
+
+  test('accented roster names keep their letters in the filename identity (José → JOSE)', () => {
+    const { pieces } = buildEmbNameGen([nameDeco({ L: ['José'] })]);
+    expect(pieces[0].filename).toBe('001-L-NAME-JOSE');
+    expect(pieces[0].text).toBe('José'); // stitched text is untouched
   });
 });
 

@@ -23,6 +23,16 @@ per-name digitizer round-trip for standard lettering work (sew-test approved
    job's art files — at which point the existing `emb-machine-manifest` → Pi →
    barcode pipeline delivers them to the machine with zero changes.
 
+   Known limits / queued optimizations:
+   - `workflow_dispatch` inputs are capped at 64KB — very large rosters must
+     be chunked into multiple dispatches or moved to artifact/DB transport
+     when the sweep is built.
+   - Measured CI cost is ~3.2s process startup per piece — batching
+     same-(font,scale) pieces into one multi-line `batch_lettering` call
+     (supported: `--text` with a `\n` separator emits one file per line) cuts
+     a 60-piece roster from ~3.3min to ~40s; queued for the wiring increment.
+   - The Ink/Stitch tarball is now cached between runs.
+
 ## Triggering generation manually
 
 GitHub → Actions → **emb-name-gen** → Run workflow.

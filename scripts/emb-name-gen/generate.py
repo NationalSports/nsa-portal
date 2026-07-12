@@ -53,7 +53,7 @@ def log(msg):
 
 
 def load_payload(argv):
-    if len(argv) > 1 and os.path.exists(argv[1]) and os.path.getsize(argv[1]) > 0:
+    if len(argv) > 1 and os.path.exists(argv[1]):
         with open(argv[1]) as f:
             raw = f.read().strip()
         if raw:
@@ -188,10 +188,16 @@ def main(argv):
                   os.path.join(os.path.dirname(bin_dir), "fonts")]
     bundle_fonts_dir = next((c for c in candidates if c and os.path.isdir(c)), candidates[1])
 
-    payload, is_selftest = load_payload(argv)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    try:
+        payload, is_selftest = load_payload(argv)
+    except Exception as e:  # noqa: BLE001 — malformed payload; write a fatal manifest, don't traceback
+        log(f"FATAL: payload is not valid JSON: {e}")
+        with open(os.path.join(OUT_DIR, "manifest.json"), "w") as f:
+            json.dump({"ok": False, "fatal": f"payload parse error: {e}", "pieces": []}, f, indent=2)
+        return 2
     fonts_cfg, default_key = load_fonts_config()
 
-    os.makedirs(OUT_DIR, exist_ok=True)
     blank_svg_path = os.path.join(OUT_DIR, "_blank.svg")
     with open(blank_svg_path, "w") as f:
         f.write(BLANK_SVG)
@@ -199,20 +205,40 @@ def main(argv):
     results = []
     failed = 0
     for piece in payload["pieces"]:
+        fname = piece.get("filename")
+        if not fname:
+            results.append({"filename": "(missing)", "seq": piece.get("seq"), "kind": piece.get("kind"),
+                             "text": piece.get("text"), "ok": False, "warnings": [],
+                             "error": "piece missing required 'filename'"})
+            failed += 1
+            continue
         warnings = []
-        entry = {"filename": piece["filename"], "seq": piece.get("seq"), "kind": piece.get("kind"),
+        entry = {"filename": fname, "seq": piece.get("seq"), "kind": piece.get("kind"),
                  "text": piece.get("text"), "ok": False, "warnings": warnings}
         results.append(entry)
         try:
-            text = re.sub(r"\s+", " ", str(piece["text"])).strip()
+            raw_t = piece.get("text")
+            text = "" if raw_t is None else re.sub(r"\s+", " ", str(raw_t)).strip()
             if not text:
                 raise ValueError("empty text")
             font_name, cfg = resolve_font(piece.get("font") or default_key, fonts_cfg, default_key,
                                           bundle_fonts_dir, warnings)
-            pct = scale_for_height(piece.get("heightIn") or 1, cfg, warnings)
+            if piece.get("fontDefaulted"):
+                warnings.append('font was defaulted upstream (names carry no font field yet)')
+            raw_h = piece.get("heightIn")
+            try:
+                h_valid = raw_h not in (None, "") and float(raw_h) > 0
+            except (TypeError, ValueError):
+                h_valid = False
+            if h_valid:
+                height_in = raw_h
+            else:
+                warnings.append(f'heightIn missing/invalid ({raw_h!r}) — defaulted to 1"')
+                height_in = 1
+            pct = scale_for_height(height_in, cfg, warnings)
             entry.update({"font": font_name, "scalePct": pct,
                           "heightMm": round(cfg["designHeightMm"] * pct / 100, 1)})
-            log(f'[{piece["filename"]}] "{text}" font="{font_name}" scale={pct}%')
+            log(f'[{fname}] "{text}" font="{font_name}" scale={pct}%')
 
             zip_bytes, stderr, rc = run_inkstitch(bin_path, text, font_name, pct, blank_svg_path)
             if rc != 0 or not zip_bytes:
@@ -223,7 +249,7 @@ def main(argv):
             if len(dst) < MIN_DST_BYTES:
                 raise RuntimeError(f"DST suspiciously small ({len(dst)} bytes) — likely empty render; "
                                    f"stderr tail:\n{stderr[-1000:]}")
-            out_path = os.path.join(OUT_DIR, piece["filename"] + ".DST")
+            out_path = os.path.join(OUT_DIR, fname + ".DST")
             with open(out_path, "wb") as f:
                 f.write(dst)
             entry.update({"ok": True, "bytes": len(dst)})

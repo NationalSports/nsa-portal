@@ -8,7 +8,7 @@
  * Cloudinary PDF page URLs, and the inline barcode SVG (CODE128 + CODE39).
  */
 
-const { dgCodeOf, dgScanOf, isDstFile } = require('../constants');
+const { dgCodeOf, dgScanOf, scanTokenOf, isDstFile } = require('../constants');
 const { fileBaseName, barcodeSvg, _cloudinaryPdfPage } = require('../utils');
 
 // jsdom ships no canvas; JsBarcode only touches it to measure the label text
@@ -43,6 +43,29 @@ describe('dgScanOf', () => {
     expect(dgScanOf('dg-705669_ts_3409')).toBe('DG-705669');
     expect(dgScanOf('eagle_logo.dst')).toBe(null);
     expect(dgScanOf('')).toBe(null);
+  });
+});
+
+describe('scanTokenOf (what the machine barcode actually encodes)', () => {
+  test('full base name when it is verbatim CODE39-safe (unique per file; covers generated name files)', () => {
+    expect(scanTokenOf('001-L-NAME-SMITH')).toBe('001-L-NAME-SMITH');
+    expect(scanTokenOf('002-L-NUM-12')).toBe('002-L-NUM-12');
+  });
+  test('falls to the DG token as written when the full name has unsafe chars (underscores/lowercase)', () => {
+    expect(scanTokenOf('DG-619597_DONS_SB_Football')).toBe('DG-619597');
+    expect(scanTokenOf('DG648617_A_3D_CAP_FRONT')).toBe('DG648617');
+  });
+  test('falls to bare digits when the DG token itself is CODE39-unsafe (underscore separator, lowercase dg)', () => {
+    expect(scanTokenOf('DG_648617_X_BACK')).toBe('648617'); // "_" not encodable in CODE39
+    expect(scanTokenOf('dg-648617 rev b')).toBe('648617'); // lowercase isn't a verbatim CODE39 substring
+  });
+  test('full-name path respects the 30-char scan limit', () => {
+    const long = 'A'.repeat(31) + '-DG-123456';
+    expect(scanTokenOf(long)).toBe('DG-123456');
+  });
+  test('null when nothing scannable exists (text tile fallback)', () => {
+    expect(scanTokenOf('sm-logo')).toBe(null); // lowercase, no DG number
+    expect(scanTokenOf('')).toBe(null);
   });
 });
 

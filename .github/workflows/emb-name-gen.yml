@@ -35,11 +35,19 @@ jobs:
             libwayland-server0 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
             libegl1 libgl1 libgbm1
 
+      - name: Cache Ink/Stitch bundle
+        uses: actions/cache@v4
+        with:
+          path: inkstitch/
+          key: inkstitch-3.2.2-linux-x86_64-v1
+
       - name: Install Ink/Stitch (standalone bundle, pinned)
         run: |
           set -euo pipefail
-          wget -q https://github.com/inkstitch/inkstitch/releases/download/v3.2.2/inkstitch-3.2.2-linux-x86_64.tar.xz
-          tar -xf inkstitch-3.2.2-linux-x86_64.tar.xz
+          if [ ! -f inkstitch/bin/inkstitch ]; then
+            wget -q https://github.com/inkstitch/inkstitch/releases/download/v3.2.2/inkstitch-3.2.2-linux-x86_64.tar.xz
+            tar -xf inkstitch-3.2.2-linux-x86_64.tar.xz
+          fi
           # Discover the binary rather than hardcoding the archive layout.
           BIN="$(find . -maxdepth 3 -type f -name inkstitch | head -1)"
           test -n "$BIN" || { echo "inkstitch binary not found in archive"; tar -tf inkstitch-3.2.2-linux-x86_64.tar.xz | head -40; exit 1; }
