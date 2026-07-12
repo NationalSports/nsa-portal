@@ -258,6 +258,23 @@ function skuFromProductName(name) {
   return skuish ? last.toUpperCase() : '';
 }
 
+// Unique-containment SKU lookup against the OMG store catalog
+// (omg_store_products): returns the catalog SKU when EXACTLY ONE product's
+// name (>= 8 chars) appears inside the line's product name. OMG line names
+// are often "<catalog name> <display alias>" concatenations; the catalog is
+// the same source, so containment is reliable — but ambiguity returns ''
+// rather than guessing (same guarded rule as migration 00192's backfill).
+function skuFromCatalogName(productName, catalog) {
+  const hay = String(productName || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  if (!hay) return '';
+  const skus = new Set();
+  for (const p of catalog || []) {
+    const nm = String(p.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    if (nm.length >= 8 && p.sku && hay.includes(nm)) skus.add(String(p.sku).toUpperCase().trim());
+  }
+  return skus.size === 1 ? skus.values().next().value : '';
+}
+
 async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const key = (o) => `${String(o.sku || '').toUpperCase()}|${String(o.size || '')}`;
@@ -319,4 +336,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
