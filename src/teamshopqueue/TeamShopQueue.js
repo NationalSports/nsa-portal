@@ -3,11 +3,32 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { fetchTicketArts, openTicket } from './ticket';
 
-// Team Shop — Fast Turn Queue. A staff-only lazy chunk, routed at
-// /teamshop-queue by src/index.js. This is the fast-turn production board for
-// Team Shop orders ONLY (webstore_orders.order_source='teamshop', see 00195 /
-// 00196) — a small, separate view from the main warehouse jobs board in
-// App.js, which this chunk does not touch or import.
+// Production HQ (formerly "Team Shop — Fast Turn Queue"). A staff-only lazy
+// chunk, routed at /teamshop-queue (and, as of this pass, the alias /production
+// — see src/index.js / src/lib/hostRouting.js isProductionHQPath) by
+// src/index.js. This is the unified staff production-ops surface for Team
+// Shop orders (webstore_orders.order_source='teamshop', see 00195 / 00196;
+// the Pipeline tab also folds in 'club', see fetchPipeline) — a small,
+// separate view from the main warehouse jobs board in App.js, which this
+// chunk does not touch or import.
+//
+// Three top-level tabs (TeamShopQueueTabs, bottom of file):
+//   Pipeline           — order-centric: every teamshop/club order with stage
+//                         chips (Paid/Converted/Art/Goods/Floor/Shipped) plus
+//                         the stuck-state action panels (awaiting-conversion +
+//                         Retry, PO review, auto-PO drafts, unmapped lines)
+//                         folded in as ACTIONS, and a manual "Run sweep now"
+//                         (teamshop-stuck-sweep). See PipelineTab.
+//   Production & Pull  — job-centric: the original Kanban queue board
+//                         (TeamShopQueueBoard, unchanged behavior/tests) plus
+//                         the 00205 release-gate override dialog and a
+//                         per-job job_stage_events history drawer.
+//   Settings            — every staff-editable Team Shop knob in one tab:
+//                         deco rate card, delivery timelines, School-PO
+//                         eligibility, shipping, plus two additions this pass
+//                         — Auto-PO vendors (teamshop_auto_po_settings CRUD)
+//                         and Automation (teamshop_settings auto-release
+//                         toggle/scope, 00208).
 //
 // Data model (client-side join, no server view exists for this):
 //   webstore_orders  (order_source='teamshop', status in paid|batched)
@@ -21,8 +42,10 @@ import { fetchTicketArts, openTicket } from './ticket';
 // staff (00173+ lockdown); a signed-out visitor sees a plain gate, no login
 // form (staff sign in through the normal portal at '/').
 //
-// Stage moves go through the advance_job_stage RPC (00192) exclusively — this
-// chunk never writes prod_status directly. If the migration hasn't been
+// Stage moves go through the advance_job_stage RPC (00192/00205) exclusively
+// — this chunk never writes prod_status directly, anywhere, including the new
+// override path (Production & Pull's dialog still calls the same RPC with
+// p_override:true — see handleOverrideConfirm). If the migration hasn't been
 // applied yet to whatever DB this build points at, the RPC call fails with a
 // Postgres "function does not exist" error; we detect that and disable the
 // stage buttons with an explanatory note rather than silently failing.
@@ -69,6 +92,15 @@ const isFunctionMissing = (error) => {
 };
 
 const isStaleState = (error) => !!error && /NSA_STALE_STATE/.test(error.message || '');
+
+// 00205's release gate: a 'release' from hold with unfinished art or stock
+// still on order raises NSA_NOT_READY:art=<art_status>,item=<item_status>.
+// Parsed so the override dialog can show the actual state, not just the raw
+// Postgres error text.
+const parseNotReady = (msg) => {
+  const m = /NSA_NOT_READY:art=([^,]*),item=(.*)$/.exec(msg || '');
+  return m ? { art: m[1], item: m[2] } : null;
+};
 
 // Postgres "relation does not exist" (42P01) or "column does not exist"
 // (42703) — both surface as PostgREST schema-cache misses too, for
@@ -133,10 +165,211 @@ async function fetchQueue() {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Pipeline tab data — every teamshop/club order (not just paid/batched, the
+// Kanban board's narrower slice) plus their so_jobs, for the Paid → Converted
+// → Art → Goods → Floor → Shipped stage chips. Deliberately reuses fetchQueue's
+// exact shape (select/in/order, then a soIds-keyed sales_orders + so_jobs
+// fetch) rather than adding .neq/.limit to the query — that keeps this call
+// compatible with every existing test's minimal supabase mock, and cancelled
+// orders are few enough to filter client-side without real cost.
+async function fetchPipeline() {
+  const { data: orders, error: ordersErr } = await supabase
+    .from('webstore_orders')
+    .select('*')
+    .in('order_source', ['teamshop', 'club'])
+    .order('created_at', { ascending: false });
+  if (ordersErr) throw ordersErr;
+  const active = (orders || []).filter((o) => o.status !== 'cancelled');
+
+  const soIds = [...new Set(active.map((o) => o.so_id).filter(Boolean))];
+  const [soRes, jobsRes] = await Promise.all([
+    soIds.length
+      ? supabase.from('sales_orders').select('*').in('id', soIds)
+      : Promise.resolve({ data: [], error: null }),
+    soIds.length
+      ? supabase.from('so_jobs').select('*').in('so_id', soIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (soRes.error) throw soRes.error;
+  if (jobsRes.error) throw jobsRes.error;
+
+  return { orders: active, salesOrders: soRes.data || [], jobs: jobsRes.data || [] };
+}
+
+const PIPELINE_STAGES = [
+  ['paid', 'Paid'], ['converted', 'Converted'], ['art', 'Art'],
+  ['goods', 'Goods'], ['floor', 'Floor'], ['shipped', 'Shipped'],
+];
+
+// Each flag is independently derived from data the board already fetches —
+// no extra joins. "Shipped" is an honest proxy (every job packed_at set), not
+// a true carrier-shipped signal: webstore_orders carries no top-level shipped
+// status (shipstation-webhook.js marks ship state per LINE on
+// webstore_order_items.line_status, a join this cheap query skips on purpose
+// — see the file header's efficiency note).
+function computeStageFlags(order, jobs) {
+  const paid = !['pending_payment', 'unpaid'].includes(order.status);
+  const converted = !!order.so_id;
+  const hasJobs = jobs.length > 0;
+  const art = converted && hasJobs && jobs.every((j) => j.art_status === 'art_complete');
+  const goods = converted && hasJobs && jobs.every((j) => !!j.item_status && j.item_status !== 'need_to_order');
+  const floor = converted && hasJobs && jobs.every((j) => ['staging', 'in_process', 'completed'].includes(normProdStatus(j.prod_status)));
+  const shipped = converted && hasJobs && jobs.every((j) => !!j.packed_at);
+  return { paid, converted, art, goods, floor, shipped };
+}
+
+function StageChips({ flags }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+      {PIPELINE_STAGES.map(([key, label]) => (
+        <span key={key} style={{
+          fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4,
+          background: flags[key] ? '#dcfce7' : '#f1f5f9',
+          color: flags[key] ? '#166534' : '#94a3b8',
+        }}>{label}</span>
+      ))}
+    </div>
+  );
+}
+
+// Awaiting-conversion + Retry — shared by the Production & Pull queue board
+// (unchanged placement/behavior) and the Pipeline tab's Actions fold, so the
+// retry-convert mechanics (netlify/functions/teamshop-retry-convert.js) live
+// in exactly one place. `orders` is caller-filtered (status='paid', no so_id);
+// `onConverted` is called after a successful convert so the caller can refetch.
+function AwaitingConversionPanel({ orders, onConverted }) {
+  const [retryState, setRetryState] = useState({});
+
+  const handleRetryConvert = useCallback((order) => {
+    setRetryState((s) => ({ ...s, [order.id]: { busy: true, message: null, ok: null } }));
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data && data.session && data.session.access_token;
+      let r;
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-retry-convert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+          body: JSON.stringify({ order_id: order.id }),
+        });
+        r = await res.json().catch(() => ({}));
+      } catch (e) {
+        r = { error: e.message || String(e) };
+      }
+      if (r.error) {
+        setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.error, ok: false } }));
+        return;
+      }
+      setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.replayed ? 'Already converted' : ('Converted — ' + (r.so_id || '')), ok: true } }));
+      if (onConverted) onConverted();
+    })();
+  }, [onConverted]);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+        Awaiting conversion {orders.length > 0 && `(${orders.length})`}
+      </h2>
+      {orders.length === 0 ? (
+        <div style={{ fontSize: 13, color: '#94a3b8' }}>None — every paid order has been converted.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {orders.map((o) => {
+            const rs = retryState[o.id];
+            return (
+              <div key={o.id} style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>{o.id}</span>
+                <span style={{ fontSize: 13, color: '#334155' }}>{o.buyer_name || o.buyer_email || '—'}</span>
+                <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(o.total)}</span>
+                <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(o.created_at)}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  {rs && rs.message && (
+                    <span style={{ fontSize: 12, fontWeight: 600, color: rs.ok ? '#166534' : '#991b1b' }}>{rs.message}</span>
+                  )}
+                  <button
+                    type="button"
+                    aria-label={'retry-convert-' + o.id}
+                    disabled={!!(rs && rs.busy)}
+                    onClick={() => handleRetryConvert(o)}
+                    style={{
+                      padding: '6px 12px', fontSize: 12, fontWeight: 700,
+                      background: (rs && rs.busy) ? '#e2e8f0' : '#1d4ed8', color: (rs && rs.busy) ? '#94a3b8' : '#fff',
+                      border: 'none', borderRadius: 6, cursor: (rs && rs.busy) ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    {(rs && rs.busy) ? 'Retrying…' : 'Retry'}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Job stage-history drawer (deliverable B) — fetches job_stage_events lazily
+// on first expand (staff SELECT only, 00192; never fetched for jobs nobody
+// expands, so the board's own fetchQueue interval stays cheap). Shows the
+// auditable trail including auto_release/override events (00205/00208's
+// payload.override + payload.reason land here verbatim).
+function JobHistory({ job }) {
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    if (next && events === null) {
+      setLoading(true);
+      supabase.from('job_stage_events').select('*')
+        .eq('so_id', job.so_id).eq('job_id', job.id)
+        .order('created_at', { ascending: false })
+        .then(({ data, error }) => { setLoading(false); setEvents(error ? [] : (data || [])); });
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button
+        type="button"
+        aria-label={'history-' + job.id}
+        onClick={toggle}
+        style={{ padding: '2px 8px', fontSize: 11, background: 'none', border: '1px solid #cbd5e1', borderRadius: 4, color: '#475569', cursor: 'pointer' }}
+      >
+        {open ? 'Hide history' : 'History'}
+      </button>
+      {open && (
+        <div style={{ marginTop: 6, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: 8, fontSize: 11 }}>
+          {loading && <div style={{ color: '#94a3b8' }}>Loading…</div>}
+          {!loading && events && events.length === 0 && <div style={{ color: '#94a3b8' }}>No events recorded.</div>}
+          {!loading && events && events.map((e) => (
+            <div key={e.id} style={{ padding: '3px 0', borderBottom: '1px solid #e2e8f0' }}>
+              <span style={{ fontWeight: 700 }}>{e.event}</span>{' '}
+              <span style={{ color: '#64748b' }}>{e.actor || 'system'} · {e.created_at || ''}</span>
+              {e.payload && e.payload.override && (
+                <span style={{ marginLeft: 6, color: '#b91c1c', fontWeight: 700 }}>
+                  override{e.payload.reason ? ': ' + e.payload.reason : ''}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }) {
   const status = normProdStatus(job.prod_status);
   const buyer = order ? (order.buyer_name || order.buyer_email || '') : '';
   const busy = actionBusy === job.id;
+  // Deliverable B: next to a hold job, show WHY it can't release yet — the
+  // same art_status/item_status the 00205 release gate reads server-side.
+  const notReady = status === 'hold' && (job.art_status !== 'art_complete' || job.item_status === 'need_to_order');
 
   const actionFor = {
     hold: { event: 'release', label: 'Release →' },
@@ -165,12 +398,20 @@ function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }
         <span style={{ background: '#f1f5f9', color: '#334155', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
           art: {job.art_status || 'needs_art'}
         </span>
+        <span style={{ background: '#f1f5f9', color: '#334155', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
+          item: {job.item_status || 'need_to_order'}
+        </span>
         {job.packed_at && (
           <span style={{ background: '#dcfce7', color: '#166534', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
             packed
           </span>
         )}
       </div>
+      {notReady && (
+        <div style={{ fontSize: 11, color: '#b45309', marginTop: 4 }}>
+          Can't release yet — art: {job.art_status || 'needs_art'}, item: {job.item_status || 'need_to_order'}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         {actionFor && (
           <button
@@ -199,6 +440,7 @@ function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }
           Ticket
         </button>
       </div>
+      <JobHistory job={job} />
     </div>
   );
 }
@@ -212,8 +454,12 @@ function TeamShopQueueBoard({ email }) {
   const [digitizingOnly, setDigitizingOnly] = useState(false);
   const [rpcMissing, setRpcMissing] = useState(false);
   const [actionBusy, setActionBusy] = useState(null);
-  // Retry-convert (00205 hardening #3): order id -> { busy, message, ok }.
-  const [retryState, setRetryState] = useState({});
+  // 00205 override dialog: { job, expected, art, item } when a release hit
+  // NSA_NOT_READY, else null. Confirming re-calls advance_job_stage with
+  // p_override:true, p_reason — the readiness gate's staff escape hatch.
+  const [overrideDialog, setOverrideDialog] = useState(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideBusy, setOverrideBusy] = useState(false);
   const toastTimer = useRef(null);
 
   const refetch = useCallback(() => {
@@ -308,11 +554,16 @@ function TeamShopQueueBoard({ email }) {
     }).then(({ error }) => {
       setActionBusy(null);
       if (error) {
+        const notReady = event === 'release' ? parseNotReady(error.message) : null;
         if (isFunctionMissing(error)) {
           setRpcMissing(true);
           showToast('State machine migration not applied yet');
         } else if (isStaleState(error)) {
           showToast('Job moved by someone else — refreshed');
+        } else if (notReady) {
+          // 00205 release gate: show the real dialog (art/item state + an
+          // Override + reason field) instead of a generic failure toast.
+          setOverrideDialog({ job, expected, art: notReady.art, item: notReady.item });
         } else {
           showToast('Move failed: ' + (error.message || 'unknown error'));
         }
@@ -327,35 +578,37 @@ function TeamShopQueueBoard({ email }) {
     });
   }, [email, refetch]);
 
-  // Retry-convert: staff manual retry for a paid order that never converted
-  // to a Sales Order (netlify/functions/teamshop-retry-convert.js). Same staff
-  // JWT + fetch pattern the PO review / auto-PO panels use elsewhere in this
-  // file. Result shows inline on the order's row; a success refetches so the
-  // order drops out of "Awaiting conversion" once so_id is set.
-  const handleRetryConvert = useCallback((order) => {
-    setRetryState((s) => ({ ...s, [order.id]: { busy: true, message: null, ok: null } }));
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      const token = data && data.session && data.session.access_token;
-      let r;
-      try {
-        const res = await fetch('/.netlify/functions/teamshop-retry-convert', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
-          body: JSON.stringify({ order_id: order.id }),
-        });
-        r = await res.json().catch(() => ({}));
-      } catch (e) {
-        r = { error: e.message || String(e) };
-      }
-      if (r.error) {
-        setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.error, ok: false } }));
+  // Override & release (00205): re-calls advance_job_stage for the SAME job
+  // with p_override:true, p_reason — never a direct so_jobs write. The
+  // resulting job_stage_events row carries {override:true, reason} for the
+  // audit trail (readable via JobHistory above).
+  const handleOverrideConfirm = useCallback(() => {
+    if (!overrideDialog) return;
+    const { job, expected } = overrideDialog;
+    setOverrideBusy(true);
+    supabase.rpc('advance_job_stage', {
+      p_so_id: job.so_id,
+      p_job_id: job.id,
+      p_event: 'release',
+      p_actor: email || '',
+      p_expected: expected,
+      p_override: true,
+      p_reason: overrideReason,
+    }).then(({ error }) => {
+      setOverrideBusy(false);
+      if (error) {
+        showToast('Override release failed: ' + (error.message || 'unknown error'));
         return;
       }
-      setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.replayed ? 'Already converted' : ('Converted — ' + (r.so_id || '')), ok: true } }));
+      showToast('Released with override');
+      setOverrideDialog(null);
+      setOverrideReason('');
       refetch();
-    })();
-  }, [refetch]);
+    }).catch((e) => {
+      setOverrideBusy(false);
+      showToast('Override release failed: ' + (e.message || String(e)));
+    });
+  }, [overrideDialog, overrideReason, email, refetch]);
 
   return (
     <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
@@ -400,44 +653,7 @@ function TeamShopQueueBoard({ email }) {
       </div>
 
       <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-          Awaiting conversion {awaitingConversion.length > 0 && `(${awaitingConversion.length})`}
-        </h2>
-        {awaitingConversion.length === 0 ? (
-          <div style={{ fontSize: 13, color: '#94a3b8' }}>None — every paid order has been converted.</div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {awaitingConversion.map((o) => {
-              const rs = retryState[o.id];
-              return (
-                <div key={o.id} style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                  <span style={{ fontSize: 13, fontWeight: 600 }}>{o.id}</span>
-                  <span style={{ fontSize: 13, color: '#334155' }}>{o.buyer_name || o.buyer_email || '—'}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(o.total)}</span>
-                  <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(o.created_at)}</span>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    {rs && rs.message && (
-                      <span style={{ fontSize: 12, fontWeight: 600, color: rs.ok ? '#166534' : '#991b1b' }}>{rs.message}</span>
-                    )}
-                    <button
-                      type="button"
-                      aria-label={'retry-convert-' + o.id}
-                      disabled={!!(rs && rs.busy)}
-                      onClick={() => handleRetryConvert(o)}
-                      style={{
-                        padding: '6px 12px', fontSize: 12, fontWeight: 700,
-                        background: (rs && rs.busy) ? '#e2e8f0' : '#1d4ed8', color: (rs && rs.busy) ? '#94a3b8' : '#fff',
-                        border: 'none', borderRadius: 6, cursor: (rs && rs.busy) ? 'not-allowed' : 'pointer',
-                      }}
-                    >
-                      {(rs && rs.busy) ? 'Retrying…' : 'Retry'}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+        <AwaitingConversionPanel orders={awaitingConversion} onConverted={refetch} />
       </div>
 
       <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Jobs</h2>
@@ -464,6 +680,47 @@ function TeamShopQueueBoard({ email }) {
           </div>
         ))}
       </div>
+
+      {overrideDialog && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
+          <div style={{ background: '#fff', borderRadius: 10, padding: 20, maxWidth: 420, width: '90%' }}>
+            <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 800, color: '#0f172a' }}>Job isn't release-ready</h3>
+            <div style={{ fontSize: 13, color: '#334155', marginBottom: 10 }}>
+              Job <b>{overrideDialog.job.id}</b> — art status <b>{overrideDialog.art}</b>, item status <b>{overrideDialog.item}</b>.
+              Releasing anyway skips the readiness gate and is recorded on the job's audit trail.
+            </div>
+            <textarea
+              aria-label="override-reason"
+              placeholder="Reason (required, staff-audited)"
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              style={{ width: '100%', minHeight: 60, padding: 8, fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, boxSizing: 'border-box' }}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+              <button
+                type="button"
+                onClick={() => { setOverrideDialog(null); setOverrideReason(''); }}
+                style={{ padding: '6px 14px', fontSize: 12, background: 'none', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                aria-label="confirm-override-release"
+                disabled={overrideBusy || !overrideReason.trim()}
+                onClick={handleOverrideConfirm}
+                style={{
+                  padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                  background: overrideReason.trim() ? '#b91c1c' : '#e2e8f0', color: overrideReason.trim() ? '#fff' : '#94a3b8',
+                  border: 'none', borderRadius: 6, cursor: overrideReason.trim() ? 'pointer' : 'not-allowed',
+                }}
+              >
+                {overrideBusy ? 'Releasing…' : 'Override & release'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1165,6 +1422,398 @@ function ShippingSection() {
   );
 }
 
+// Auto-PO vendors (new this pass) — full CRUD over teamshop_auto_po_settings
+// (00202): vendor, inventory_sources (comma-separated text[] editor), contact
+// email, auto-submit toggle, min order. Direct client read/insert/update,
+// staff-gated by that table's own RLS (is_team_member()) — the same posture
+// RateCardSection uses for teamshop_deco_rates, not a netlify function. No
+// DELETE, by 00202's own design: disable a vendor by clearing its sources and
+// turning auto-submit off.
+const NEW_VENDOR_ROW = { vendor: '', inventory_sources: '', contact_email: '', min_order: '', auto_submit_enabled: false };
+
+function AutoPoVendorsSection() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [edits, setEdits] = useState({}); // vendor -> partial field overrides
+  const [savingVendor, setSavingVendor] = useState(null);
+  const [newRow, setNewRow] = useState(NEW_VENDOR_ROW);
+  const [addBusy, setAddBusy] = useState(false);
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const load = useCallback(() => {
+    setErr(null);
+    return supabase
+      .from('teamshop_auto_po_settings')
+      .select('*')
+      .order('vendor', { ascending: true })
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error) {
+          if (isMissingRelation(error)) { setMissing(true); return; }
+          setErr(error.message || String(error));
+          return;
+        }
+        setMissing(false);
+        setRows(data || []);
+      });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const fieldFor = (row, key) => {
+    const e = edits[row.vendor];
+    return e && Object.prototype.hasOwnProperty.call(e, key) ? e[key] : row[key];
+  };
+
+  const setField = (row, key, value) => {
+    setEdits((prev) => ({ ...prev, [row.vendor]: { ...(prev[row.vendor] || {}), [key]: value } }));
+  };
+
+  const isDirty = (row) => !!edits[row.vendor] && Object.keys(edits[row.vendor]).length > 0;
+
+  const saveRow = (row, patchOverride) => {
+    const patch = patchOverride || edits[row.vendor];
+    if (!patch) return;
+    const sourcesVal = Object.prototype.hasOwnProperty.call(patch, 'inventory_sources') ? patch.inventory_sources : row.inventory_sources;
+    const sourcesArr = Array.isArray(sourcesVal) ? sourcesVal : String(sourcesVal || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const emailVal = Object.prototype.hasOwnProperty.call(patch, 'contact_email') ? patch.contact_email : row.contact_email;
+    const minVal = Object.prototype.hasOwnProperty.call(patch, 'min_order')
+      ? patch.min_order
+      : (row.min_order_cents != null ? row.min_order_cents / 100 : '');
+    const update = {
+      inventory_sources: sourcesArr,
+      contact_email: String(emailVal || '').trim() || null,
+      auto_submit_enabled: Object.prototype.hasOwnProperty.call(patch, 'auto_submit_enabled') ? patch.auto_submit_enabled : row.auto_submit_enabled,
+      min_order_cents: minVal === '' || minVal === null || minVal === undefined ? null : Math.round((Number(minVal) || 0) * 100),
+    };
+    setSavingVendor(row.vendor);
+    setRows((prev) => prev.map((r) => (r.vendor === row.vendor ? { ...r, ...update } : r)));
+    supabase.from('teamshop_auto_po_settings').update(update).eq('vendor', row.vendor).then(({ error }) => {
+      setSavingVendor(null);
+      if (error) {
+        showToast('Vendor save failed: ' + (error.message || 'unknown error'));
+        load();
+        return;
+      }
+      setEdits((prev) => { const n = { ...prev }; delete n[row.vendor]; return n; });
+    });
+  };
+
+  const toggleAutoSubmit = (row) => {
+    const patch = { ...(edits[row.vendor] || {}), auto_submit_enabled: !fieldFor(row, 'auto_submit_enabled') };
+    setEdits((prev) => ({ ...prev, [row.vendor]: patch }));
+    saveRow(row, patch);
+  };
+
+  const addVendor = () => {
+    const vendor = String(newRow.vendor || '').trim();
+    if (!vendor) { showToast('Add vendor: vendor name is required'); return; }
+    const insertRow = {
+      vendor,
+      inventory_sources: String(newRow.inventory_sources || '').split(',').map((s) => s.trim()).filter(Boolean),
+      contact_email: String(newRow.contact_email || '').trim() || null,
+      auto_submit_enabled: !!newRow.auto_submit_enabled,
+      min_order_cents: newRow.min_order === '' ? null : Math.round((Number(newRow.min_order) || 0) * 100),
+    };
+    setAddBusy(true);
+    supabase.from('teamshop_auto_po_settings').insert(insertRow).then(({ error }) => {
+      setAddBusy(false);
+      if (error) {
+        showToast('Add vendor failed: ' + (error.message || 'unknown error'));
+        return;
+      }
+      setNewRow(NEW_VENDOR_ROW);
+      load();
+    });
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>Loading auto-PO vendors…</div>;
+
+  if (missing) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        Auto-PO migration (00202) not applied yet.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Per-vendor routing for the auto-PO engine. Inventory sources map a product's inventory source (sanmar, nike, ss_activewear,
+        click, ua, momentec, …) to a supplier — comma-separated. Auto-submit only fires when a vendor has a contact email AND this
+        toggle is on (below the vendor's min order, it stays a draft). No delete — disable a vendor by clearing its sources.
+      </div>
+      {err && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          Failed to load vendors: {err}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#475569', fontSize: 11, textTransform: 'uppercase' }}>
+              <th style={{ padding: '4px 8px' }}>Vendor</th>
+              <th style={{ padding: '4px 8px' }}>Inventory sources</th>
+              <th style={{ padding: '4px 8px' }}>Contact email</th>
+              <th style={{ padding: '4px 8px' }}>Min order ($)</th>
+              <th style={{ padding: '4px 8px' }}>Auto-submit</th>
+              <th style={{ padding: '4px 8px' }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row) => {
+              const sourcesField = fieldFor(row, 'inventory_sources');
+              const minField = Object.prototype.hasOwnProperty.call(edits[row.vendor] || {}, 'min_order')
+                ? edits[row.vendor].min_order
+                : (row.min_order_cents != null ? row.min_order_cents / 100 : '');
+              return (
+                <tr key={row.vendor} style={{ borderTop: '1px solid #e2e8f0' }}>
+                  <td style={{ padding: '4px 8px', fontWeight: 700 }}>{row.vendor}</td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="text"
+                      aria-label={'vendor-sources-' + row.vendor}
+                      value={Array.isArray(sourcesField) ? sourcesField.join(', ') : (sourcesField || '')}
+                      onChange={(e) => setField(row, 'inventory_sources', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 180 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="email"
+                      aria-label={'vendor-email-' + row.vendor}
+                      value={fieldFor(row, 'contact_email') || ''}
+                      onChange={(e) => setField(row, 'contact_email', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 180 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      aria-label={'vendor-min-order-' + row.vendor}
+                      value={minField}
+                      onChange={(e) => setField(row, 'min_order', e.target.value)}
+                      style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 90 }}
+                    />
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <input
+                      type="checkbox"
+                      aria-label={'vendor-auto-submit-' + row.vendor}
+                      checked={!!fieldFor(row, 'auto_submit_enabled')}
+                      onChange={() => toggleAutoSubmit(row)}
+                    />
+                    {fieldFor(row, 'auto_submit_enabled') && !String(fieldFor(row, 'contact_email') || '').trim() && (
+                      <div style={{ fontSize: 10, color: '#b45309' }}>needs a contact email to actually send</div>
+                    )}
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <button
+                      type="button"
+                      aria-label={'save-vendor-' + row.vendor}
+                      disabled={!isDirty(row) || savingVendor === row.vendor}
+                      onClick={() => saveRow(row)}
+                      style={{
+                        padding: '4px 10px', fontSize: 12, fontWeight: 700, borderRadius: 4, border: 'none',
+                        background: isDirty(row) ? '#1d4ed8' : '#e2e8f0', color: isDirty(row) ? '#fff' : '#94a3b8',
+                        cursor: isDirty(row) ? 'pointer' : 'not-allowed',
+                      }}
+                    >
+                      {savingVendor === row.vendor ? 'Saving…' : 'Save'}
+                    </button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: 16, padding: 12, background: '#f8fafc', border: '1px dashed #cbd5e1', borderRadius: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 8, textTransform: 'uppercase' }}>Add vendor</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="text"
+            aria-label="new-vendor-name"
+            placeholder="Vendor name"
+            value={newRow.vendor}
+            onChange={(e) => setNewRow((r) => ({ ...r, vendor: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 160 }}
+          />
+          <input
+            type="text"
+            aria-label="new-vendor-sources"
+            placeholder="inventory_sources (comma-separated)"
+            value={newRow.inventory_sources}
+            onChange={(e) => setNewRow((r) => ({ ...r, inventory_sources: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 220 }}
+          />
+          <input
+            type="email"
+            aria-label="new-vendor-email"
+            placeholder="Contact email"
+            value={newRow.contact_email}
+            onChange={(e) => setNewRow((r) => ({ ...r, contact_email: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 180 }}
+          />
+          <input
+            type="number"
+            aria-label="new-vendor-min-order"
+            min="0"
+            step="0.01"
+            placeholder="Min order $"
+            value={newRow.min_order}
+            onChange={(e) => setNewRow((r) => ({ ...r, min_order: e.target.value }))}
+            style={{ padding: '4px 6px', fontSize: 12, border: '1px solid #cbd5e1', borderRadius: 4, width: 100 }}
+          />
+          <button
+            type="button"
+            aria-label="add-vendor-submit"
+            disabled={addBusy}
+            onClick={addVendor}
+            style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+          >
+            {addBusy ? 'Adding…' : 'Add vendor'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Automation (new this pass) — the teamshop_settings singleton (00208):
+// auto_release_enabled + auto_release_scope. Direct client read/update,
+// staff-gated by that table's own RLS. Honest helper text: this is OFF by
+// default, and turning it on moves jobs into production with no human in the
+// loop the moment the server can prove readiness — see the migration header.
+function AutomationSection() {
+  const [row, setRow] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [missing, setMissing] = useState(false);
+  const [err, setErr] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [scope, setScope] = useState('auto_art_only');
+
+  const showToast = (msg) => {
+    setToast(msg);
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  const load = useCallback(() => {
+    setErr(null);
+    return supabase
+      .from('teamshop_settings')
+      .select('*')
+      .eq('id', 'global')
+      .maybeSingle()
+      .then(({ data, error }) => {
+        setLoading(false);
+        if (error) {
+          if (isMissingRelation(error)) { setMissing(true); return; }
+          setErr(error.message || String(error));
+          return;
+        }
+        setMissing(false);
+        setRow(data || null);
+        setEnabled(!!(data && data.auto_release_enabled));
+        setScope((data && data.auto_release_scope) || 'auto_art_only');
+      });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const dirty = !row || enabled !== !!row.auto_release_enabled || scope !== (row.auto_release_scope || 'auto_art_only');
+
+  const save = () => {
+    setSaving(true);
+    const update = { auto_release_enabled: enabled, auto_release_scope: scope };
+    supabase.from('teamshop_settings').update(update).eq('id', 'global').then(({ error }) => {
+      setSaving(false);
+      if (error) {
+        showToast('Save failed: ' + (error.message || 'unknown error'));
+        return;
+      }
+      setRow((r) => ({ ...(r || { id: 'global' }), ...update }));
+      showToast('Automation settings saved');
+    });
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b' }}>Loading automation settings…</div>;
+
+  if (missing) {
+    return (
+      <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
+        Automation migration (00208) not applied yet.
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
+        Auto-release moves a job from Hold straight into production the moment the server can PROVE it's ready (art done, garments in
+        hand) — through the same advance_job_stage release gate a staff scan uses (00205), never a direct write. <b>Off by default</b>:
+        no jobs move automatically until this is switched on.
+      </div>
+      {err && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          Failed to load: {err}
+        </div>
+      )}
+      {toast && (
+        <div style={{ background: '#0f172a', color: '#fff', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 10 }}>
+          {toast}
+        </div>
+      )}
+      <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, color: '#334155', cursor: 'pointer', marginBottom: 12 }}>
+        <input type="checkbox" aria-label="auto-release-enabled" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
+        Auto-release enabled
+      </label>
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ fontSize: 12, color: '#475569', display: 'block', marginBottom: 4 }}>Scope</label>
+        <select
+          aria-label="auto-release-scope"
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
+          style={{ padding: '6px 10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6 }}
+        >
+          <option value="auto_art_only">Only jobs born art-complete by auto-art — conservative</option>
+          <option value="all">Any hold job the server proves ready</option>
+        </select>
+      </div>
+      <button
+        type="button"
+        aria-label="save-automation-settings"
+        disabled={saving || !dirty}
+        onClick={save}
+        style={{
+          padding: '6px 14px', fontSize: 12, fontWeight: 700, borderRadius: 6, border: 'none',
+          background: dirty ? '#1d4ed8' : '#e2e8f0', color: dirty ? '#fff' : '#94a3b8', cursor: dirty ? 'pointer' : 'not-allowed',
+        }}
+      >
+        {saving ? 'Saving…' : 'Save automation settings'}
+      </button>
+    </div>
+  );
+}
+
 function TeamShopSettings() {
   return (
     <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
@@ -1185,9 +1834,19 @@ function TeamShopSettings() {
         <PoEligibilitySection />
       </section>
 
-      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16 }}>
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
         <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Shipping</h2>
         <ShippingSection />
+      </section>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Auto-PO vendors</h2>
+        <AutoPoVendorsSection />
+      </section>
+
+      <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16 }}>
+        <h2 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginTop: 0 }}>Automation</h2>
+        <AutomationSection />
       </section>
     </div>
   );
@@ -1263,9 +1922,13 @@ function PoReviewSection() {
 
   if (state.loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading PO queue…</div>;
 
+  // Folded into the Pipeline tab's Actions section (moved off its own
+  // top-level tab this pass) — no more full-page background/minHeight, but
+  // the heading text is unchanged (teamShopPoReviewTab.test.js still matches
+  // it verbatim after clicking into Pipeline).
   return (
-    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
-      <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: '0 0 16px' }}>Team Shop — PO review</h1>
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif' }}>
+      <h1 style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: '0 0 12px' }}>Team Shop — PO review</h1>
       {!state.enabled && (
         <div style={{ background: '#fef3c7', color: '#92400e', padding: '10px 14px', borderRadius: 6, fontSize: 13 }}>
           School-PO checkout migration (00201) not applied yet — nothing to review.
@@ -1417,12 +2080,28 @@ function AutoPoSection() {
     });
   };
 
+  // Dismiss/resolve (00209) — staff ordered an unmapped line by hand; marks
+  // dismissed_at server-side (teamshop-auto-po.js dismiss_unmapped, service
+  // role) rather than a client delete — teamshop_auto_po_needs has no client
+  // write policy on purpose (see 00202/00209 headers).
+  const dismissUnmapped = (row) => {
+    setBusyId('dismiss-' + row.id);
+    callFn({ action: 'dismiss_unmapped', id: row.id }).then((r) => {
+      setBusyId(null);
+      if (r.error) { showToast('Dismiss failed: ' + r.error); return; }
+      setState((s) => ({ ...s, unmapped: s.unmapped.filter((n) => n.id !== row.id) }));
+    });
+  };
+
   if (state.loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading auto POs…</div>;
 
+  // Folded into the Pipeline tab's Actions section — no more full-page
+  // background/minHeight, but heading text is unchanged (teamshopAutoPo.test.js
+  // still matches it verbatim after clicking into Pipeline).
   return (
-    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: 0 }}>Team Shop — Auto POs</h1>
+        <h1 style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>Team Shop — Auto POs</h1>
         {state.enabled && (
           <button
             type="button"
@@ -1520,11 +2199,22 @@ function AutoPoSection() {
             Lines with no supplier mapping (custom items, or vendors not wired for auto-PO) — order these by hand.
           </div>
           {state.unmapped.map((n, i) => (
-            <div key={n.so_id + '/' + (n.sku || '') + '/' + (n.size || '') + '/' + i} style={{ display: 'flex', gap: 12, padding: '6px 10px', borderBottom: '1px solid #e2e8f0', fontSize: 13, flexWrap: 'wrap' }}>
+            <div key={(n.id != null ? n.id : (n.so_id + '/' + (n.sku || '') + '/' + (n.size || '') + '/' + i))} style={{ display: 'flex', gap: 12, padding: '6px 10px', borderBottom: '1px solid #e2e8f0', fontSize: 13, flexWrap: 'wrap', alignItems: 'center' }}>
               <span style={{ color: '#64748b' }}>{n.so_id}</span>
               <span style={{ fontWeight: 600 }}>{n.sku || '—'}</span>
               <span>{n.size}</span>
               <span style={{ fontWeight: 700 }}>× {n.qty_needed}</span>
+              {n.id != null && (
+                <button
+                  type="button"
+                  aria-label={'dismiss-unmapped-' + n.id}
+                  disabled={busyId === 'dismiss-' + n.id}
+                  onClick={() => dismissUnmapped(n)}
+                  style={{ marginLeft: 'auto', padding: '4px 10px', fontSize: 11, fontWeight: 700, background: '#fff', color: '#334155', border: '1px solid #cbd5e1', borderRadius: 4, cursor: 'pointer' }}
+                >
+                  {busyId === 'dismiss-' + n.id ? 'Dismissing…' : 'Dismiss'}
+                </button>
+              )}
             </div>
           ))}
         </div>
@@ -1533,8 +2223,161 @@ function AutoPoSection() {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Pipeline tab — order-centric view. Every teamshop/club order (fetchPipeline)
+// as a row with Paid → Converted → Art → Goods → Floor → Shipped stage chips,
+// plus the stuck-state panels folded in as ACTIONS: awaiting-conversion
+// (AwaitingConversionPanel), PO review (PoReviewSection, moved here), auto-PO
+// drafts + unmapped/no-vendor lines (AutoPoSection, moved here, dismiss added
+// 00209), and a manual "Run sweep now" against teamshop-stuck-sweep.js.
+function PipelineTab() {
+  const [data, setData] = useState({ orders: [], salesOrders: [], jobs: [] });
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [sweepBusy, setSweepBusy] = useState(false);
+  const [sweepResult, setSweepResult] = useState(null);
+  const [sweepErr, setSweepErr] = useState(null);
+
+  const refetch = useCallback(() => {
+    setErr(null);
+    return fetchPipeline()
+      .then((d) => { setData(d); setLoading(false); })
+      .catch((e) => { setErr(e.message || String(e)); setLoading(false); });
+  }, []);
+
+  useEffect(() => {
+    refetch();
+    const id = setInterval(refetch, REFRESH_MS);
+    return () => clearInterval(id);
+  }, [refetch]);
+
+  const jobsBySo = useMemo(() => {
+    const m = {};
+    data.jobs.forEach((j) => { (m[j.so_id] || (m[j.so_id] = [])).push(j); });
+    return m;
+  }, [data.jobs]);
+
+  const awaitingConversion = useMemo(
+    () => data.orders.filter((o) => o.status === 'paid' && !o.so_id),
+    [data.orders]
+  );
+
+  const runSweep = () => {
+    setSweepBusy(true);
+    setSweepErr(null);
+    (async () => {
+      const { data: sess } = await supabase.auth.getSession();
+      const token = sess && sess.session && sess.session.access_token;
+      let json;
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-stuck-sweep', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+          body: JSON.stringify({ action: 'run' }),
+        });
+        json = await res.json().catch(() => ({}));
+      } catch (e) {
+        json = { error: e.message || String(e) };
+      }
+      setSweepBusy(false);
+      if (json.error) { setSweepErr(json.error); return; }
+      setSweepResult(json);
+    })();
+  };
+
+  if (loading) return <div style={{ fontSize: 13, color: '#64748b', padding: 20 }}>Loading pipeline…</div>;
+
+  return (
+    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', padding: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 800, color: '#0f172a', margin: 0 }}>Order pipeline</h2>
+        <button
+          type="button"
+          aria-label="run-stuck-sweep"
+          disabled={sweepBusy}
+          onClick={runSweep}
+          style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+        >
+          {sweepBusy ? 'Running…' : 'Run sweep now'}
+        </button>
+      </div>
+
+      {sweepErr && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 12 }}>
+          Sweep failed: {sweepErr}
+        </div>
+      )}
+      {sweepResult && (
+        <div style={{ background: '#eff6ff', color: '#1e3a5f', padding: '10px 14px', borderRadius: 6, fontSize: 12, marginBottom: 16 }}>
+          Sweep result — paid/no SO: {(sweepResult.counts && sweepResult.counts.paid_no_so) || 0},
+          {' '}stale pending: {(sweepResult.counts && sweepResult.counts.stale_pending_payment) || 0},
+          {' '}stuck art: {(sweepResult.counts && sweepResult.counts.stuck_art) || 0},
+          {' '}no PO/need order: {(sweepResult.counts && sweepResult.counts.no_po_need_order) || 0},
+          {' '}auto-submit blocked: {(sweepResult.counts && sweepResult.counts.auto_submit_blocked) || 0}.
+          {' '}Total stuck: {sweepResult.total_stuck || 0}{sweepResult.emailed ? ' — alert emailed.' : ''}
+        </div>
+      )}
+      {err && (
+        <div style={{ background: '#fee2e2', color: '#991b1b', padding: '8px 12px', borderRadius: 6, fontSize: 13, marginBottom: 16 }}>
+          Failed to load: {err}
+        </div>
+      )}
+
+      <div style={{ overflowX: 'auto', marginBottom: 28 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: 13 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: '#475569', fontSize: 11, textTransform: 'uppercase' }}>
+              <th style={{ padding: '4px 8px' }}>Order</th>
+              <th style={{ padding: '4px 8px' }}>Buyer</th>
+              <th style={{ padding: '4px 8px' }}>Total</th>
+              <th style={{ padding: '4px 8px' }}>Stage</th>
+              <th style={{ padding: '4px 8px' }}>Age</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.orders.map((o) => {
+              const jobs = o.so_id ? (jobsBySo[o.so_id] || []) : [];
+              const flags = computeStageFlags(o, jobs);
+              return (
+                <tr key={o.id} style={{ borderTop: '1px solid #e2e8f0' }}>
+                  <td style={{ padding: '4px 8px', fontWeight: 700 }}>{o.order_number || o.id}</td>
+                  <td style={{ padding: '4px 8px' }}>{o.buyer_name || o.buyer_email || '—'}</td>
+                  <td style={{ padding: '4px 8px', fontWeight: 700 }}>{fmtMoney(o.total)}</td>
+                  <td style={{ padding: '4px 8px' }}><StageChips flags={flags} /></td>
+                  <td style={{ padding: '4px 8px', color: '#64748b' }}>{fmtAge(o.created_at)}</td>
+                </tr>
+              );
+            })}
+            {data.orders.length === 0 && (
+              <tr><td colSpan={5} style={{ padding: 12, color: '#94a3b8' }}>No teamshop/club orders.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <h3 style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 8 }}>Actions</h3>
+
+      <div style={{ marginBottom: 24 }}>
+        <AwaitingConversionPanel orders={awaitingConversion} onConverted={refetch} />
+      </div>
+
+      <div style={{ marginBottom: 24 }}>
+        <PoReviewSection />
+      </div>
+
+      <div>
+        <AutoPoSection />
+      </div>
+    </div>
+  );
+}
+
 function TeamShopQueueTabs({ email }) {
-  const [tab, setTab] = useState('queue');
+  // Default tab stays 'production' (the original queue board) — the
+  // Production HQ rename/reorg is additive: existing staff muscle memory and
+  // this file's original test coverage both land on the same board they
+  // always did on open.
+  const [tab, setTab] = useState('production');
 
   const tabBtn = (key, label) => (
     <button
@@ -1553,15 +2396,16 @@ function TeamShopQueueTabs({ email }) {
 
   return (
     <div>
-      <div style={{ display: 'flex', gap: 8, padding: '12px 20px 0', background: '#f8fafc' }}>
-        {tabBtn('queue', 'Queue')}
-        {tabBtn('po', 'PO review')}
-        {tabBtn('autopo', 'Auto POs')}
-        {tabBtn('settings', 'Settings')}
+      <div style={{ padding: '16px 20px 0', background: '#f8fafc' }}>
+        <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', marginBottom: 10 }}>Production HQ</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {tabBtn('pipeline', 'Pipeline')}
+          {tabBtn('production', 'Production & Pull')}
+          {tabBtn('settings', 'Settings')}
+        </div>
       </div>
-      {tab === 'queue' ? <TeamShopQueueBoard email={email} />
-        : tab === 'po' ? <PoReviewSection />
-        : tab === 'autopo' ? <AutoPoSection />
+      {tab === 'pipeline' ? <PipelineTab />
+        : tab === 'production' ? <TeamShopQueueBoard email={email} />
         : <TeamShopSettings />}
     </div>
   );
