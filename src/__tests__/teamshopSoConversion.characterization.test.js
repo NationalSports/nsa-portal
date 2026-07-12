@@ -31,6 +31,15 @@ const SQL195 = fs.readFileSync(
   path.join(__dirname, '../../supabase/migrations/00199_teamshop_conversion_invoice.sql'),
   'utf8'
 );
+// 00207 CREATE OR REPLACEs the RPC again, keeping every 00199 write shape and
+// adding auto-art at job birth (a logo resolving to a production-ready
+// customer art-library entry is born art_complete). create_teamshop_sales_order
+// is the FIRST function in the file, so the non-global insertColumns/insertValues
+// helpers (first-match) read the teamshop function's inserts.
+const SQL207 = fs.readFileSync(
+  path.join(__dirname, '../../supabase/migrations/00207_auto_art.sql'),
+  'utf8'
+);
 
 // Extract the column list of `insert into <table> (col, col, ...)`.
 // Column lists in this migration contain no nested parens, so a lazy match to
@@ -447,5 +456,65 @@ describe('00199 invoice vs createAndSettleWebstoreInvoice (App.js ~12238)', () =
     expect(SQL195).toMatch(/raise notice 'TEAMSHOP_NO_REP:%', v_ord\.customer_id;/);
     expect(SQL195).not.toMatch(/raise exception 'TEAMSHOP_NO_REP/);
     expect(SQL195).toMatch(/'invoice_id', v_inv_id, 'no_rep', v_no_rep/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 00207 — auto-art at conversion. CREATE OR REPLACEs create_teamshop_sales_order
+// (first fn in the file): every 00199 write shape is preserved; the ONLY change is
+// the job-birth values when a logo resolves to a production-ready customer
+// art-library entry.
+// ═════════════════════════════════════════════════════════════════════════════
+describe('00207 preserves the 00199 write shapes and adds teamshop auto-art', () => {
+  test('every insert column list is byte-identical to 00199 (only VALUES change)', () => {
+    ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events',
+     'invoices', 'invoice_items', 'invoice_payments'].forEach((t) => {
+      expect(insertColumns(t, SQL207)).toEqual(insertColumns(t, SQL195));
+    });
+  });
+
+  test('idempotency + guards + service-role grants survive the replace', () => {
+    expect(SQL207).toMatch(/create or replace function public\.create_teamshop_sales_order\(\s*p_webstore_order_id uuid\s*\)/);
+    expect(SQL207).toMatch(/from webstore_orders where id = p_webstore_order_id for update/);
+    expect(SQL207).toMatch(/if v_ord\.so_id is not null then/);
+    expect(SQL207).toMatch(/<> 'teamshop'[\s\S]{0,80}NSA_BAD_SOURCE/);
+    expect(SQL207).toMatch(/not in \('paid', 'po_verified'\)[\s\S]{0,80}NSA_NOT_PAID/);
+    expect(SQL207).toMatch(/grant execute on function public\.create_teamshop_sales_order\(uuid\) to service_role;/);
+  });
+
+  test('auto-art fires ONLY on an art:<id> logo_ref resolved against the order customer’s art_files', () => {
+    // logo_ref carrying a customer art-library id is parsed out of 'art:<id>'
+    expect(SQL207).toMatch(/v_art_id\s*:=\s*case when v_job\.logo_ref like 'art:%' then substring\(v_job\.logo_ref from 5\) else null end;/);
+    // resolved against v_cust.art_files (the ORDER's customer) by id
+    expect(SQL207).toMatch(/from jsonb_array_elements\(coalesce\(v_cust\.art_files, '\[\]'::jsonb\)\) je\s*\n\s*where je\.value->>'id' = v_art_id/);
+  });
+
+  test('production-ready predicate = approved AND (prod_files_attached | prod_files | embroidery .dst) — isJobReady’s art half', () => {
+    expect(SQL207).toMatch(/coalesce\(v_art_entry->>'status', ''\) = 'approved'/);
+    expect(SQL207).toMatch(/\(v_art_entry->>'prod_files_attached'\)::boolean is true/);
+    expect(SQL207).toMatch(/jsonb_array_length\(coalesce\(v_art_entry->'prod_files', '\[\]'::jsonb\)\) > 0/);
+    expect(SQL207).toMatch(/coalesce\(v_art_entry->>'deco_type', ''\) = 'embroidery'/);
+    expect(SQL207).toMatch(/like '%\.dst'/);
+  });
+
+  test('so_jobs is born art_complete / real art id / no digitizing ONLY when v_auto_art, else 00199’s exact birth', () => {
+    const cols = insertColumns('so_jobs', SQL207);
+    const vals = insertValues('so_jobs', SQL207);
+    const at = (c) => vals[cols.indexOf(c)];
+    expect(at('art_status')).toBe("case when v_auto_art then 'art_complete' else 'needs_art' end");
+    expect(at('art_file_id')).toBe('case when v_auto_art then v_art_id else null end');
+    expect(at('_art_ids')).toBe("case when v_auto_art then jsonb_build_array(v_art_id) else '[]'::jsonb end");
+    expect(at('art_name')).toBe("case when v_auto_art then coalesce(v_art_entry->>'name', v_job_name) else v_job_name end");
+    expect(at('digitizing_needed')).toBe('case when v_auto_art then false else v_job.digitizing end');
+    // untouched birth fields stay literal (proves the non-auto path is unchanged)
+    expect(at('item_status')).toBe("'need_to_order'");
+    expect(at('prod_status')).toBe("'hold'");
+    expect(at('_auto')).toBe('true');
+  });
+
+  test("created event records the auto-art outcome (to_state art_status + payload auto_art/art_file_id)", () => {
+    expect(SQL207).toMatch(/'art_status', case when v_auto_art then 'art_complete' else 'needs_art' end/);
+    expect(SQL207).toMatch(/'auto_art', v_auto_art/);
+    expect(SQL207).toMatch(/'art_file_id', case when v_auto_art then v_art_id else null end/);
   });
 });

@@ -20,6 +20,14 @@ const SQL = fs.readFileSync(
   path.join(__dirname, '../../supabase/migrations/00204_club_store_conversion.sql'),
   'utf8'
 );
+// 00207 CREATE OR REPLACEs create_club_sales_order (the SECOND function in the
+// file) adding auto-art at job birth. We slice its body out so the single-INSERT
+// helpers below read the CLUB function's writes, not the teamshop one above it.
+const SQL207 = fs.readFileSync(
+  path.join(__dirname, '../../supabase/migrations/00207_auto_art.sql'),
+  'utf8'
+);
+const CLUB207 = SQL207.slice(SQL207.indexOf('create or replace function public.create_club_sales_order'));
 
 // ── Same lazy/top-level-comma parsing as teamshopSoConversion's helpers, but
 // returning EVERY match (in source order) since 00204 has multiple same-table
@@ -368,5 +376,66 @@ describe('_version bookkeeping is never written (trigger/DEFAULT own it)', () =>
     ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events', 'invoices'].forEach((t) => {
       allInsertColumns(t).forEach((cols) => expect(cols).not.toContain('_version'));
     });
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 00207 — auto-art for the CLUB RPC. Every 00204 write shape preserved; the ONLY
+// change is the job-birth values when an 'art:<art_id>' logo resolves to a
+// production-ready customer art-library entry ('xfer:' transfer jobs never do).
+// ═════════════════════════════════════════════════════════════════════════════
+describe('00207 preserves the 00204 club write shapes and adds auto-art', () => {
+  // Single-INSERT helpers scoped to the CLUB function slice of 00207.
+  const colsOf = (table) => {
+    const m = CLUB207.match(new RegExp(`insert\\s+into\\s+${table}\\s*\\(([^)]+)\\)`, 'i'));
+    return m ? m[1].split(',').map((s) => s.trim()).filter(Boolean) : null;
+  };
+  const valsOf = (table) => {
+    const m = CLUB207.match(new RegExp(`insert\\s+into\\s+${table}\\s*\\([^)]+\\)\\s*values\\s*\\(`, 'i'));
+    if (!m) return null;
+    let i = m.index + m[0].length; let depth = 1; let body = '';
+    while (i < CLUB207.length && depth > 0) {
+      const ch = CLUB207[i];
+      if (ch === '(') depth++;
+      if (ch === ')') { depth--; if (depth === 0) break; }
+      body += ch; i++;
+    }
+    return splitTopLevel(body);
+  };
+
+  test('so_jobs + job_stage_events column lists byte-identical to 00204', () => {
+    ['so_jobs', 'job_stage_events'].forEach((t) => {
+      expect(colsOf(t)).toEqual(insertColumns(t)); // insertColumns = 00204 (module SQL)
+    });
+  });
+
+  test('service-role grants + club guards survive the replace', () => {
+    expect(CLUB207).toMatch(/create or replace function public\.create_club_sales_order\(\s*p_order_id uuid\s*\)/);
+    expect(CLUB207).toMatch(/coalesce\(v_store\.org_type, ''\) <> 'club'[\s\S]{0,40}NSA_BAD_SOURCE/);
+    expect(CLUB207).toMatch(/grant execute on function public\.create_club_sales_order\(uuid\) to service_role;/);
+  });
+
+  test('same production-ready predicate as teamshop, resolved against the club customer’s art_files', () => {
+    expect(CLUB207).toMatch(/v_art_id\s*:=\s*case when v_job\.logo_ref like 'art:%' then substring\(v_job\.logo_ref from 5\) else null end;/);
+    expect(CLUB207).toMatch(/coalesce\(v_art_entry->>'status', ''\) = 'approved'/);
+    expect(CLUB207).toMatch(/\(v_art_entry->>'prod_files_attached'\)::boolean is true/);
+    expect(CLUB207).toMatch(/like '%\.dst'/);
+  });
+
+  test('so_jobs born art_complete/real art id/no digitizing ONLY when v_auto_art, else 00204’s exact birth', () => {
+    const cols = colsOf('so_jobs'); const vals = valsOf('so_jobs');
+    const at = (c) => vals[cols.indexOf(c)];
+    expect(at('art_status')).toBe("case when v_auto_art then 'art_complete' else 'needs_art' end");
+    expect(at('art_file_id')).toBe('case when v_auto_art then v_art_id else null end');
+    expect(at('_art_ids')).toBe("case when v_auto_art then jsonb_build_array(v_art_id) else '[]'::jsonb end");
+    expect(at('digitizing_needed')).toBe('case when v_auto_art then false else v_job.digitizing end');
+    expect(at('item_status')).toBe("'need_to_order'");
+    expect(at('prod_status')).toBe("'hold'");
+  });
+
+  test('created event source stays club and records auto_art', () => {
+    const cols = colsOf('job_stage_events'); const vals = valsOf('job_stage_events');
+    expect(vals[cols.indexOf('source')]).toBe("'club'");
+    expect(CLUB207).toMatch(/'auto_art', v_auto_art/);
   });
 });
