@@ -33,8 +33,14 @@ describe('ticketCodeFor', () => {
     const arts = [{ so_id: 'SO-1', id: 'a1', name: 'Eagles', prod_files: [{ name: 'EAGLES.dst', url: 'u' }], files: [] }];
     expect(ticketCodeFor(EMB_JOB, arts)).toEqual({ code: 'EAGLES.dst', dst: 'EAGLES.dst' });
   });
-  test('null when the job has nothing scannable yet', () => {
+  test('embroidery job with no DG/DST is still null (shows the upload-DST prompt, not an unloadable code)', () => {
     expect(ticketCodeFor({ ...EMB_JOB, art_file_id: 'a2' }, ARTS)).toEqual({ code: null, dst: null });
+  });
+  test('a non-embroidery job with no DG/DST falls back to the JOB:<so>:<job> identity code', () => {
+    const dtfJob = { ...EMB_JOB, deco_type: 'dtf', art_file_id: 'a2' };
+    expect(ticketCodeFor(dtfJob, ARTS)).toEqual({ code: 'JOB:SO-1:JOB-1', dst: null });
+    // a DTF job that DOES carry a DG still prefers the DG (unchanged precedence)
+    expect(ticketCodeFor({ ...EMB_JOB, deco_type: 'dtf' }, ARTS)).toEqual({ code: 'DG12345', dst: 'EAGLES_DG12345.dst' });
   });
   test('only reads arts linked to THIS job on THIS so (art ids repeat across SOs)', () => {
     const foreign = [{ so_id: 'SO-2', id: 'a1', name: 'x', prod_files: [{ name: 'WRONG_DG777777.dst', url: 'u' }], files: [] }];
@@ -56,10 +62,16 @@ describe('buildTicketHtml', () => {
     expect(html).toContain('EAGLES_DG12345.dst'); // DST filename on embroidery tickets
     expect(html).toContain('Coach Jones');
   });
-  test('non-embroidery ticket has no DST row; no code → loud no-code note, no svg', () => {
+  test('a non-embroidery ticket has no DST row but now renders the JOB identity barcode', () => {
     const dtfJob = { ...EMB_JOB, deco_type: 'dtf', art_file_id: 'a2' };
     const html = buildTicketHtml(dtfJob, null, ARTS);
-    expect(html).not.toContain('class="lbl">DST file'); // no DST row (the no-code note may mention DSTs)
+    expect(html).not.toContain('class="lbl">DST file'); // no DST row on non-emb tickets
+    expect(html).toContain('<svg'); // JOB:<so>:<job> barcode, not the no-code note
+    expect(html).toContain('JOB:SO-1:JOB-1');
+    expect(html).not.toContain('No scan code yet');
+  });
+  test('an embroidery ticket with no DG/DST still shows the loud no-code note, no svg', () => {
+    const html = buildTicketHtml({ ...EMB_JOB, art_file_id: 'a2' }, null, ARTS);
     expect(html).not.toContain('<svg');
     expect(html).toContain('No scan code yet');
   });

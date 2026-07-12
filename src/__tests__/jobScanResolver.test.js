@@ -53,6 +53,23 @@ describe('classifyScan', () => {
       expect(classifyScan('https://portal.app/?scan=NSA-4501').type).toBe('unknown');
     });
   });
+
+  // Job-identity code for non-embroidery job sheets/tickets (no DST/DG).
+  describe('JOB:<so>:<job> job-identity family', () => {
+    test('classifies to job_id carrying the parsed so_id + job_id', () => {
+      expect(classifyScan('JOB:SO-100:j1')).toEqual({ type: 'job_id', value: 'JOB:SO-100:j1', so_id: 'SO-100', job_id: 'j1' });
+    });
+    test('the JOB tag is case-insensitive; ids keep their case', () => {
+      expect(classifyScan('job:SO-100:JOB-7')).toMatchObject({ type: 'job_id', so_id: 'SO-100', job_id: 'JOB-7' });
+    });
+    test('works through a ?scan= URL label too', () => {
+      expect(classifyScan('https://portal.app/?scan=JOB:SO-100:j1'))
+        .toMatchObject({ type: 'job_id', so_id: 'SO-100', job_id: 'j1' });
+    });
+    test('a malformed JOB token (missing part) is not a job_id', () => {
+      expect(classifyScan('JOB:SO-100').type).toBe('unknown');
+    });
+  });
 });
 
 describe('resolveScan', () => {
@@ -81,6 +98,13 @@ describe('resolveScan', () => {
   test('a scanned DST-carrying label URL resolves to the owning job', () => {
     expect(resolveScan('https://portal.app/?scan=EAGLES_LC.dst', index))
       .toMatchObject({ ok: true, kind: 'job', so_id: 'SO-100', job_id: 'j1' });
+  });
+  test('JOB:<so>:<job> resolves straight to that job (non-emb job sheets)', () => {
+    expect(resolveScan('JOB:SO-100:j2', index))
+      .toMatchObject({ ok: true, kind: 'job', so_id: 'SO-100', job_id: 'j2', art_name: 'Eagles FB' });
+  });
+  test('JOB code for a job not in the index → no_job_for_code (never ambiguous)', () => {
+    expect(resolveScan('JOB:SO-100:nope', index)).toMatchObject({ ok: false, reason: 'no_job_for_code' });
   });
   test('unknown box plate → box_not_found', () => {
     expect(resolveScan('BX-9999', index)).toMatchObject({ ok: false, reason: 'box_not_found' });

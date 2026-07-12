@@ -28,9 +28,12 @@ export async function fetchTicketArts(soId) {
 // The scannable code for a job, derived exactly the way job-scan's buildIndex
 // derives its index entries (art ids via _art_ids/art_file_id; DG codes and DST
 // names off prod_files + files + art/job names): prefer the DG code (short,
-// stable across file revisions), fall back to a DST filename. Returns
-// { code, dst } — code null when the job has nothing scannable yet
-// (art not digitized).
+// stable across file revisions), then a DST filename. For NON-embroidery jobs
+// (DTF / screen print — no DST or DG to scan) fall back to the job-identity
+// code JOB:<so_id>:<job_id>, which job-scan resolves straight to this job. An
+// embroidery job with no DG/DST still returns code:null on purpose — the ticket
+// shows the "upload the DST" prompt rather than a code the machine can't load a
+// design from. Returns { code, dst }.
 export function ticketCodeFor(job, arts) {
   const artIds = (Array.isArray(job._art_ids) && job._art_ids.length ? job._art_ids : [job.art_file_id]).filter(Boolean);
   const mine = (arts || []).filter((a) => a.so_id === job.so_id && artIds.includes(a.id));
@@ -45,7 +48,8 @@ export function ticketCodeFor(job, arts) {
     if (!dg) dg = dgCodeOf(art.name) || dgCodeOf(job.art_name);
   }
   if (!dg) dg = dgCodeOf(job.art_name);
-  return { code: dg || dst || null, dst };
+  const jobIdCode = (job.deco_type !== 'embroidery' && job.so_id && job.id) ? 'JOB:' + job.so_id + ':' + job.id : null;
+  return { code: dg || dst || jobIdCode, dst };
 }
 
 // Print-ready ticket HTML (pure given the barcode SVG markup barcodeSvg

@@ -41,10 +41,17 @@ const extractScanParam = (code) => {
   return v.trim();
 };
 
-// classifyScan(raw) → { type: 'box'|'dst'|'dg'|'unknown', value }
+// classifyScan(raw) → { type: 'box'|'dst'|'dg'|'job_id'|'unknown', value, ... }
 function classifyScan(raw) {
   const code = extractScanParam(String(raw || '').trim());
   if (!code) return { type: 'unknown', value: '' };
+  // JOB:<so_id>:<job_id> — the job-identity code non-embroidery job sheets/tickets
+  // carry (DTF / screen print have no DST or DG code to scan). so_id+job_id are
+  // unique, so this resolves straight to the job. Three colon-separated parts;
+  // neither id contains a colon (SO-#### / j# / JOB-####). Case-insensitive on the
+  // 'JOB' tag only — the ids keep their original case (job/SO ids are case-sensitive).
+  const jm = code.match(/^JOB:([^:]+):([^:]+)$/i);
+  if (jm) return { type: 'job_id', value: code, so_id: jm[1], job_id: jm[2] };
   // BX-#### box plate (accept BX2001 or BX-2001; normalize to BX-2001).
   if (/^BX-?\d+$/i.test(code)) {
     return { type: 'box', value: code.toUpperCase().replace(/^BX-?/i, 'BX-') };
@@ -71,6 +78,14 @@ function resolveScan(raw, index) {
     const box = boxes.find((b) => String(b.id).toUpperCase() === cls.value);
     if (!box) return { ok: false, reason: 'box_not_found', code: cls.value };
     return { ok: true, kind: 'box', box_id: box.id, so_id: box.so_id || null, contents: box.contents || [] };
+  }
+
+  if (cls.type === 'job_id') {
+    // Self-describing code: match the exact (so_id, job_id) in the index. Unlike
+    // dst/dg this can never be ambiguous (the pair is unique), and needs no art.
+    const job = jobs.find((j) => String(j.so_id) === String(cls.so_id) && String(j.job_id) === String(cls.job_id));
+    if (!job) return { ok: false, reason: 'no_job_for_code', code: cls.value };
+    return { ok: true, kind: 'job', so_id: job.so_id, job_id: job.job_id, art_name: job.art_name || null };
   }
 
   // dst / dg → match against jobs' art.

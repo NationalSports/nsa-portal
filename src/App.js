@@ -1002,13 +1002,18 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
       +'</div></div>'
     :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
+  // Non-embroidery jobs (DTF / screen print / vinyl) have no DST/DG to scan, so the
+  // sheet carries a stable JOB:<so>:<job> identity barcode — job-scan resolves it
+  // straight to this job (advance its stage at a floor station or on a phone).
+  const _jobScanCode='JOB:'+so.id+':'+j.id;
+  const _jobBcHtml=isEmb?'':'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🏷️ JOB BARCODE — SCAN TO ADVANCE</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Scan at a floor station or on a phone to move this job through production.</div><div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(_jobScanCode)||'<div style="font-size:12px;font-weight:700;padding:8px">'+_jobScanCode+'</div>')+'</div></div></div>';
   return{title:c?.name||j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
     headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
     infoBoxes,tables:[],
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_bcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+(_bcHtml||'')+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // Display-size variant of a Cloudinary image: the originals are full-res uploads (mock
