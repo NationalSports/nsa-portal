@@ -435,7 +435,7 @@ export default function Home({
             </div>
           </div>
           <div className="nts-category-grid">
-            {LAUNCH_CATEGORIES.map((cat, i) => {
+            {LAUNCH_CATEGORIES.filter((cat) => cat.key !== 'footwear').map((cat, i) => {
               const tileImg = CATEGORY_TILE_IMG[cat.key];
               const hero = pickHeroForCategory(categoryHeroes, cat);
               const gradient = TILE_GRADIENTS[i % TILE_GRADIENTS.length];
