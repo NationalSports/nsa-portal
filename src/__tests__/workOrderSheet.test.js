@@ -28,6 +28,7 @@ const baseData = (over = {}) => ({
   totalPieces: 34,
   notes: 'Do not scale down.',
   signoff: [{ role: 'Picked by' }, { role: 'Decorated by' }, { role: 'QC by' }, { role: 'Packed by' }],
+  includePickList: true,
   ...over,
 });
 
@@ -96,17 +97,40 @@ describe('buildWorkOrderDoc — ported production features', () => {
   });
 });
 
-describe('buildWorkOrderDoc — single vs dual layout', () => {
-  test('single mock (front only): no page-2 line-items header', () => {
-    const h = buildWorkOrderDoc(baseData());
-    expect(h).not.toContain('Garments · sizes · decoration');
-    expect(h).not.toContain('Page 1 of');
+describe('buildWorkOrderDoc — pick list is conditional (clubstore / NTS only)', () => {
+  const sheetCount = (h) => (h.match(/class="wo-sheet"/g) || []).length;
+
+  test('clubstore/NTS order: pick list renders on its own IF page', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: true, roster: null }));
+    expect(h).toContain('Line Items &amp; Pick List');
+    expect(h).toContain('Item fulfillment · pick list');
+    expect(sheetCount(h)).toBe(2); // work order + pick page
   });
 
-  test('two mocks (front + back): line items flow to their own page', () => {
-    const h = buildWorkOrderDoc(baseData({ mocks: [{ label: 'Front', side: 'front' }, { label: 'Back', side: 'back', backArt: 'EAGLES' }] }));
-    expect(h).toContain('Garments · sizes · decoration');
-    expect(h).toContain('Page 1 of');
+  test('contract/bulk order: no pick list, no IF page', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, roster: null }));
+    expect(h).not.toContain('Line Items &amp; Pick List');
+    expect(h).not.toContain('Item fulfillment');
+    expect(sheetCount(h)).toBe(1); // single-page work order
+  });
+
+  test('production files still render on page 1 even without a pick list', () => {
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, roster: null, prodFiles: ['dolphin-sep.ai'] }));
+    expect(h).toContain('dolphin-sep.ai');
+    expect(h).not.toContain('Line Items &amp; Pick List');
+  });
+
+  test('contract order WITH a names/numbers roster still gets the roster page', () => {
+    const roster = { title: 'R', garment: 'G', personalization: [], summary: [{ s: 'M', q: 1 }], total: 1, groups: [{ size: 'M', count: 1, players: [{ num: '7', name: 'A B', back: 'A B' }] }] };
+    const h = buildWorkOrderDoc(baseData({ includePickList: false, roster }));
+    expect(h).toContain('Player Roster');
+    expect(h).not.toContain('Line Items &amp; Pick List');
+    expect(sheetCount(h)).toBe(2); // work order + roster (no pick page)
+  });
+
+  test('clubstore order with a roster = work order + pick page + roster (3 sheets)', () => {
+    const roster = { title: 'R', garment: 'G', personalization: [], summary: [{ s: 'M', q: 1 }], total: 1, groups: [{ size: 'M', count: 1, players: [{ num: '7', name: 'A B', back: 'A B' }] }] };
+    expect(sheetCount(buildWorkOrderDoc(baseData({ includePickList: true, roster })))).toBe(3);
   });
 });
 

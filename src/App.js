@@ -810,6 +810,11 @@ const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
   const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
   return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
 }).filter(f=>f);
+// A re-uploaded proof lands under a fresh URL but keeps its original filename, so a
+// decoration slot ends up showing the same image twice. Collapse by filename (the
+// first/primary copy wins); files with no resolvable name are left as-is. Callers scope
+// this per slot, so two different decorations that share a filename are never merged.
+const _dedupMockDupes=arr=>{const out=[];const seen=new Set();for(const f of(arr||[])){if(!f)continue;const nm=(fileDisplayName(f)||'').trim().toLowerCase();if(nm){if(seen.has(nm))continue;seen.add(nm)}out.push(f)}return out};
 // All mockups for one garment line, mirroring the Art Dashboard's slot system: one slot
 // per art decoration on the ITEM (first deco reads the base sku|color key, additional
 // decos read suffixed keys |<colorWayId> / |d1), each from that decoration's OWN art
@@ -840,15 +845,15 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
         :(m[_mk]&&m[_mk].length>0)?m[_mk]
         :(m[sku]&&m[sku].length>0)?m[sku]
         :(Object.entries(m).find(([k,arr])=>k.startsWith(_mk+'|')&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
-      v.forEach(push);
+      _dedupMockDupes(v).forEach(push);
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
-    artFiles.forEach(a=>{const m=a?.item_mockups||{};((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
   }
   const rank=k=>/\|numbers(_\d+)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
-    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>(m[k]||[]).forEach(push))});
+    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
 };
 // Production Job Sheet PDF options — the single builder shared by the production-board
@@ -1130,16 +1135,41 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   }
   if(flags.length)specs.push({k:'Flags',v:[...new Set(flags)].join(', ')});
 
-  // Approved-mockup images (real front/back proofs; schematic fallback)
-  const _urlsFor=arr=>{const out=[];for(const f of(arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f&&f.url)||'';if(_isImgUrl(u,f))out.push(u);else if(_isPdfUrl(u,f)){const t=_cloudinaryPdfThumb(u);if(t)out.push(t)}}return out};
-  const mockUrls=[...new Set([].concat(...itemDetails.map(d=>_urlsFor(_prodJobItemMocks(allArtFiles,so,d.gi))),_urlsFor(_prodJobGenericMocks(allArtFiles))))].slice(0,2);
-  const _backDeco=(()=>{for(const d of itemDetails){const dd=[...jobItemDecosOfKind(d.gi,d.it,'art'),...jobItemDecosOfKind(d.gi,d.it,'names'),...jobItemDecosOfKind(d.gi,d.it,'numbers')].find(x=>/back/i.test(x.position||''));if(dd)return dd.position}return null})();
-  const hasBack=!!_backDeco;
-  const fLabel='Front · '+(frontLoc||'Left chest');const bLabel='Back · '+(_backDeco||'Upper back');
+  // Approved-mockup images — one representative proof per decoration, placed into
+  // the Front / Back panels by that decoration's PLACEMENT. The per-item mock list
+  // is ordered by decoration then upload, so grabbing the first two images could
+  // land both proofs of ONE decoration on both panels (labelling one "Front") and
+  // drop the garment's other side. Each mock element carries its art_file_id, so we
+  // take one image per decoration and read its placement to pick the front vs back.
+  const _isBackPos=p=>/\b(back|yoke|nape|rear|shoulder\s*blade|upper\s*back|centre?\s*back)\b/i.test(String(p||''));
+  const _mockImg=f=>{const u=typeof f==='string'?f:(f&&f.url)||'';if(_isImgUrl(u,f))return u;if(_isPdfUrl(u,f))return _cloudinaryPdfThumb(u)||'';return''};
+  // art_file_id → placement, from this job's art decorations.
+  const _artPos={};itemDetails.forEach(d=>jobItemDecosOfKind(d.gi,d.it,'art').forEach(dd=>{if(dd.art_file_id&&_artPos[dd.art_file_id]==null)_artPos[dd.art_file_id]=dd.position||''}));
+  // One image per decoration (grouped by art file), tagged front/back by placement.
+  const _decoMocks=[];const _seenArt=new Set();const _seenUrl=new Set();
+  itemDetails.forEach(d=>{(_prodJobItemMocks(allArtFiles,so,d.gi)||[]).forEach(f=>{
+    const url=_mockImg(f);if(!url||_seenUrl.has(url))return;
+    const artId=(f&&typeof f==='object'&&f.art_file_id)||'';const grp=artId||url;
+    if(_seenArt.has(grp))return;_seenArt.add(grp);_seenUrl.add(url);
+    const pos=artId?(_artPos[artId]||''):'';
+    _decoMocks.push({url,artId,pos,side:_isBackPos(pos)?'back':'front'});
+  })});
+  // Fall back to generic (non-per-item) mocks only when no per-decoration image exists.
+  if(_decoMocks.length===0)(_prodJobGenericMocks(allArtFiles)||[]).forEach(f=>{const url=_mockImg(f);if(url&&!_seenUrl.has(url)){_seenUrl.add(url);_decoMocks.push({url,artId:'',pos:'',side:'front'})}});
+  const _frontMock=_decoMocks.find(m=>m.side==='front')||null;
+  const _backMock=_decoMocks.find(m=>m.side==='back')||null;
+  const _dimFor=m=>{if(!m||!m.artId)return'';const af=allArtFiles.find(a=>a?.id===m.artId);return(af&&((af.art_sizes&&af.art_sizes[m.pos])||af.art_size))||''};
+  const _backDeco=(()=>{for(const d of itemDetails){const dd=[...jobItemDecosOfKind(d.gi,d.it,'art'),...jobItemDecosOfKind(d.gi,d.it,'names'),...jobItemDecosOfKind(d.gi,d.it,'numbers')].find(x=>_isBackPos(x.position));if(dd)return dd.position}return null})();
+  const hasBack=!!_backMock||!!_backDeco;
+  const fLabel='Front · '+((_frontMock&&_frontMock.pos)||frontLoc||'Left chest');
+  const bLabel='Back · '+((_backMock&&_backMock.pos)||_backDeco||'Upper back');
+  const _fDim=(_frontMock&&_dimFor(_frontMock))||frontDim;
+  const _fUrl=_frontMock&&_frontMock.url;const _bUrl=_backMock&&_backMock.url;
   let mocks;
-  if(mockUrls.length>=2)mocks=[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,imgUrl:mockUrls[1],side:'back'}];
-  else if(mockUrls.length===1)mocks=hasBack?[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'}];
-  else mocks=hasBack?[{label:fLabel,dim:frontDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,side:'front'}];
+  if(_fUrl&&_bUrl)mocks=[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'},{label:bLabel,imgUrl:_bUrl,side:'back'}];
+  else if(_fUrl)mocks=hasBack?[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'}];
+  else if(_bUrl)mocks=[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,imgUrl:_bUrl,side:'back'}];
+  else mocks=hasBack?[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:_fDim,side:'front'}];
 
   // Names & numbers roster — pair by index within each size; DO NOT sort (that
   // would break number↔name alignment for roster-seeded orders).
@@ -1175,6 +1205,12 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
 
   return{
     id:j.id,rush,methodName,crest,garmentFill:'#22345c',
+    // The item-fulfillment pick list is only meaningful when the order carries
+    // names & numbers (a per-player roster) — that's what turns a job into a
+    // per-person fulfillment. A bulk decoration job with no names/numbers —
+    // even one placed through an OMG / webstore team store (e.g. a screen-print
+    // team order) — prints as a clean single-page work order, no pick list.
+    includePickList:!!roster,
     barcodeLabel:j.id+(alpha?' · '+alpha:''),
     footerLeft:'Printed '+printed+' · '+station,
     companyLine:'National Team Shop · A National Sports Apparel company',
@@ -19994,7 +20030,7 @@ export default function App(){
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
-                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
@@ -20592,7 +20628,7 @@ export default function App(){
                       if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
-                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};

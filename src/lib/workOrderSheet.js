@@ -196,8 +196,14 @@ export function buildWorkOrderDoc(data) {
   const hasRoster = !!(d.roster && d.roster.groups && d.roster.groups.length);
   const rushMethod = `<div style="margin-top:6px;display:inline-flex;align-items:center;gap:7px">${d.rush ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.05em;text-transform:uppercase;color:#fff;background:${C.red};padding:3px 8px;border-radius:4px">Rush</span>` : ''}<span style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${C.navy};border:1px solid #C9CFDD;padding:3px 8px;border-radius:4px">${esc(d.methodName)}</span></div>`;
 
+  // The Line Items & Pick List is an item-fulfillment concern, rendered on its
+  // own "IF" page only when the caller sets includePickList (see
+  // buildWorkOrderOpts: set for names/numbers orders that need per-person
+  // fulfillment). A plain bulk decoration job doesn't get it. The roster page is
+  // independent.
+  const showPick = !!d.includePickList;
   // page count for footers
-  const totalPages = 1 + (dual ? 1 : 0) + (hasRoster ? 1 : 0);
+  const totalPages = 1 + (showPick ? 1 : 0) + (hasRoster ? 1 : 0);
   let pageNo = 0;
   const pg = () => { pageNo += 1; return totalPages > 1 ? `Page ${pageNo} of ${totalPages}` : ''; };
 
@@ -213,27 +219,28 @@ export function buildWorkOrderDoc(data) {
     </div>${dstBlock(d)}`;
   }
 
-  // Line items live on page 1 for single, page 2 for dual (matches the design).
-  const p1Lines = dual ? '' : lineItems(d) + prodFilesBlock(d.prodFiles) + siblingsBlock(d.siblings);
+  // Separations + runs-together are decoration info. They ride on page 1 for a
+  // contract job (which has room). For a clubstore/NTS order they move onto the
+  // pick page, so the two-mockup page 1 doesn't overflow.
+  const extras = prodFilesBlock(d.prodFiles) + siblingsBlock(d.siblings);
 
   const page1 = sheet(`
     ${header(d, 'Production Work Order · Decoration Floor', rushMethod, d.barcodeLabel || d.id)}
     ${metaGrid(d.meta)}
     ${mockSection}
-    ${p1Lines}
+    ${showPick ? '' : extras}
     ${instructions(d.notes)}
     ${signoff(d.signoff)}
     ${footer(d.footerLeft, d.companyLine || 'National Team Shop · A National Sports Apparel company', pg())}
   `);
 
   let pages = page1;
-  if (dual) {
+  if (showPick) {
     pages += sheet(`
-      ${header(d, 'Garments · sizes · decoration', `<div style="margin-top:5px;font-size:11px;color:${C.gray}">${esc(d.methodName)} · ${esc(d.totalPieces)} pcs</div>`)}
+      ${header(d, 'Item fulfillment · pick list', `<div style="margin-top:5px;font-size:11px;color:${C.gray}">${esc(d.methodName)} · ${esc(d.totalPieces)} pcs</div>`)}
       ${lineItems(d)}
-      ${prodFilesBlock(d.prodFiles)}
-      ${siblingsBlock(d.siblings)}
-      ${footer(d.footerLeft, `${esc(d.id)} · Line items`, pg())}
+      ${extras}
+      ${footer(d.footerLeft, `${esc(d.id)} · Pick list`, pg())}
     `, 'margin-top:24px;');
   }
   if (hasRoster) pages += rosterPage(d, d.roster, pg());
