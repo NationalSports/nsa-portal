@@ -1175,6 +1175,9 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
 
   return{
     id:j.id,rush,methodName,crest,garmentFill:'#22345c',
+    // Pick list only for clubstore / National Team Shop online-store orders
+    // (SOs created from a webstore or OMG store); contract/bulk jobs skip it.
+    includePickList:!!(so.webstore_id||so.omg_store_id),
     barcodeLabel:j.id+(alpha?' · '+alpha:''),
     footerLeft:'Printed '+printed+' · '+station,
     companyLine:'National Team Shop · A National Sports Apparel company',
