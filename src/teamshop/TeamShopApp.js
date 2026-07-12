@@ -446,7 +446,7 @@ export default function TeamShopApp() {
 
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
         {route === 'landing' && (
-          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} onOpenDecoration={goDecoration} />
+          <Home onStartOrder={goStartWithLogo} onBrowseCatalog={goCatalog} onOpenDecoration={goDecoration} onOpenStores={goTeamStores} />
         )}
 
         {route === 'decoration' && (

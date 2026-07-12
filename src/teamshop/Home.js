@@ -28,6 +28,21 @@ import { fetchCategoryHeroes, pickHeroForCategory } from './categoryHeroes';
 //                       catalog opens pre-filtered, every other CTA (New
 //                       Drops, "Shop all products", featured products' "Shop
 //                       all products →") passes nothing and opens on 'All'.
+//   onOpenStores     — hero slide 2's "Explore team stores" CTA. TeamShopApp
+//                       passes its goTeamStores handler (setRoute('stores')) —
+//                       the same navigation the header/footer "Team Stores"
+//                       links already use. Optional: falls back to a plain
+//                       href to /team-stores (the real, already-shipped
+//                       directory — see the team-stores links note below) if
+//                       no handler is supplied, so the slide still works if a
+//                       caller doesn't wire it.
+//
+// Hero: a 3-slide auto-rotating slider (pure React state + CSS, no carousel
+// lib). Slide 1 (shown first) is a designed navy graphic banner carrying the
+// original hero content/CTAs; slide 2 is a designed Team Stores pitch; slide
+// 3 is the original sideline video treatment. See the HERO SLIDER block
+// below for the mechanics (auto-advance, hover/focus pause, reduced-motion,
+// dots).
 //
 // Team-stores links use a plain href to the portal's real, already-shipped
 // /team-stores directory (src/index.js `isTeamStores` path check, checked
@@ -106,7 +121,18 @@ function PhotoLabel({ children, style }) {
   );
 }
 
-export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }) {
+// Hero slider — 3 fixed slides, auto-advancing every ~6s. A plain interval
+// ticks continuously; `pausedRef`/`reducedMotionRef` gate whether a tick
+// actually advances, so hover/focus-pause and prefers-reduced-motion don't
+// need to tear down and restart the timer (avoids drift/flicker on rapid
+// hover-in/out). Dots (and clicks) always work, even when auto-advance is
+// paused or disabled.
+const HERO_SLIDE_COUNT = 3;
+const HERO_AUTO_MS = 6000;
+
+export default function Home({
+  onStartOrder, onBrowseCatalog, onOpenDecoration, onOpenStores,
+}) {
   const [products, setProducts] = useState([]);
   const [productsLoading, setProductsLoading] = useState(true);
   // Category-tile hero photos (categoryHeroes.js) — a small anon fetch of the
@@ -163,51 +189,173 @@ export default function Home({ onStartOrder, onBrowseCatalog, onOpenDecoration }
   const dismissPopup = () => { setPopupOpen(false); setDismissed(true); };
   const toggleChat = () => { setPopupOpen((v) => !v); setDismissed(true); };
 
+  // ---- Hero slider state -------------------------------------------------
+  const [heroSlide, setHeroSlide] = useState(0);
+  const heroPausedRef = useRef(false);
+  const heroReducedMotionRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    heroReducedMotionRef.current = mq.matches;
+    const onChange = (e) => { heroReducedMotionRef.current = e.matches; };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else if (mq.removeListener) mq.removeListener(onChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (heroPausedRef.current || heroReducedMotionRef.current) return;
+      setHeroSlide((s) => (s + 1) % HERO_SLIDE_COUNT);
+    }, HERO_AUTO_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const pauseHero = () => { heroPausedRef.current = true; };
+  const resumeHero = () => { heroPausedRef.current = false; };
+
   return (
     <div style={{ width: '100%', overflowX: 'hidden', background: '#fff', position: 'relative' }}>
 
-      {/* ============ HERO ============ */}
-      <section className="nts-hero" style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', display: 'flex', overflow: 'hidden', background: NAVY_DARK }}>
-        {/* Generated hero loop (owner-approved) over the sideline photo,
-            under a navy gradient so the headline/CTAs stay legible. The photo
-            stays mounted underneath and doubles as the poster — if the video
-            can't load or autoplay (data saver, old browsers), the page looks
-            exactly as it did before. muted + playsInline are both required
-            for mobile autoplay. */}
-        <img src="/teamshop/hero-sideline.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
-        <video
-          src="/teamshop/hero-sideline-loop.mp4"
-          poster="/teamshop/hero-sideline.jpg"
-          autoPlay
-          muted
-          loop
-          playsInline
-          preload="metadata"
-          aria-hidden="true"
-          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
-        />
-        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg, rgba(15,26,56,0.88) 0%, rgba(25,40,83,0.55) 48%, rgba(15,26,56,0.35) 100%)' }} />
-        <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
-          <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
-        </span>
-        <div style={{ position: 'relative', width: '100%', marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', padding: '0 clamp(16px, 2.5vw, 36px) clamp(30px, 4vw, 56px)' }}>
-          <p style={{ margin: '0 0 10px', textAlign: 'right', color: 'rgba(255,255,255,0.82)', fontSize: 'clamp(15px, 1.5vw, 19px)', fontWeight: 500 }}>Your logo. Team-quality gear.</p>
-          <h1 style={{ ...displayType('clamp(3.2rem, 9vw, 7rem)', { fontWeight: 700, lineHeight: 0.9, letterSpacing: '0.01em', color: '#fff' }), margin: '0 0 26px', textAlign: 'right' }}>Days, not weeks.</h1>
-          <div style={{ width: 'min(660px, 100%)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* ============ HERO SLIDER ============ */}
+      {/* 3 fixed slides, cross-fading via opacity/pointer-events (no layout
+          shift — every slide is absolutely stacked inside the same
+          minHeight-clamped section, so the clamp keeps doing its old job of
+          holding hero height steady). Only the active slide's interactive
+          elements are tabbable (tabIndex -1 on the rest) so keyboard users
+          don't tab through off-screen CTAs. Auto-advance pauses on
+          hover/focus (onMouseEnter/Leave + onFocus/Blur on the section —
+          React's onFocus/onBlur behave like focusin/focusout, i.e.
+          focus-within) and is skipped entirely under prefers-reduced-motion;
+          dots remain clickable either way. */}
+      <section
+        className="nts-hero"
+        style={{ position: 'relative', minHeight: 'clamp(460px, 54vw, 700px)', overflow: 'hidden', background: NAVY_DARK }}
+        onMouseEnter={pauseHero}
+        onMouseLeave={resumeHero}
+        onFocus={pauseHero}
+        onBlur={resumeHero}
+      >
+        {/* ---- Slide 1: designed graphic banner (no photo/video) ---- */}
+        <div
+          aria-hidden={heroSlide !== 0}
+          style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', opacity: heroSlide === 0 ? 1 : 0, pointerEvents: heroSlide === 0 ? 'auto' : 'none', transition: 'opacity 700ms ease' }}
+        >
+          <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: `linear-gradient(115deg, ${NAVY_DARK} 0%, ${NAVY} 55%, #1c2d4f 100%)` }} />
+          {/* Angled brand-color planes — subtle geometric accents, kept out
+              of the right two-thirds where the headline/CTAs sit. */}
+          <span aria-hidden="true" style={{ position: 'absolute', left: '-12%', top: '-20%', width: '52%', height: '150%', background: 'linear-gradient(135deg, rgba(28,45,79,0.65), rgba(28,45,79,0))', transform: 'skewX(-14deg)' }} />
+          <span aria-hidden="true" style={{ position: 'absolute', left: '14%', bottom: '-25%', width: '26%', height: '75%', background: 'linear-gradient(135deg, rgba(150,44,50,0.20), rgba(150,44,50,0))', transform: 'skewX(-14deg)' }} />
+          {/* Faint oversized wordmark watermark, anchored left so it stays
+              clear of the right-aligned headline. */}
+          <div aria-hidden="true" style={{ position: 'absolute', inset: 0, overflow: 'hidden', display: 'flex', alignItems: 'center' }}>
+            <span style={{ ...displayType('clamp(6rem, 19vw, 15rem)', { fontWeight: 700, color: 'rgba(255,255,255,0.045)', letterSpacing: '0.02em', whiteSpace: 'nowrap' }), marginLeft: '-4%' }}>NATIONAL TEAM SHOP</span>
+          </div>
+          <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
+            <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
+          </span>
+          <div style={{ position: 'relative', width: '100%', marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', padding: '0 clamp(16px, 2.5vw, 36px) clamp(30px, 4vw, 56px)' }}>
+            <p style={{ margin: '0 0 10px', textAlign: 'right', color: 'rgba(255,255,255,0.82)', fontSize: 'clamp(15px, 1.5vw, 19px)', fontWeight: 500 }}>Your logo. Team-quality gear.</p>
+            <h1 style={{ ...displayType('clamp(3.2rem, 9vw, 7rem)', { fontWeight: 700, lineHeight: 0.9, letterSpacing: '0.01em', color: '#fff' }), margin: '0 0 26px', textAlign: 'right' }}>Days, not weeks.</h1>
+            <div style={{ width: 'min(660px, 100%)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <button
+                type="button"
+                onClick={onStartOrder}
+                tabIndex={heroSlide === 0 ? 0 : -1}
+                className="nts-cta-red"
+                style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: RED, color: '#fff', fontWeight: 600, fontSize: 'clamp(16px, 1.6vw, 19px)', letterSpacing: '0.02em', padding: '18px 32px', borderRadius: 6, textTransform: 'uppercase', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
+              >
+                Start with your logo
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </button>
+              <a href="/team-stores" tabIndex={heroSlide === 0 ? 0 : -1} className="nts-footlink" style={{ alignSelf: 'flex-end', display: 'inline-flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.85)', fontWeight: 600, fontSize: 15 }}>
+                or shop team stores
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        {/* ---- Slide 2: Team Stores (designed, no photo) ---- */}
+        <div
+          aria-hidden={heroSlide !== 1}
+          style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', opacity: heroSlide === 1 ? 1 : 0, pointerEvents: heroSlide === 1 ? 'auto' : 'none', transition: 'opacity 700ms ease' }}
+        >
+          <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(150deg,#1c2d4f,#192853 55%,#0F1A38)' }} />
+          <span aria-hidden="true" style={{ position: 'absolute', right: '-10%', top: '-15%', width: '48%', height: '135%', background: 'linear-gradient(135deg, rgba(150,44,50,0.18), rgba(150,44,50,0))', transform: 'skewX(12deg)' }} />
+          <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
+            <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />Team Stores
+          </span>
+          <div style={{ position: 'relative', width: '100%', marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', padding: '0 clamp(16px, 2.5vw, 36px) clamp(30px, 4vw, 56px)' }}>
+            <h1 style={{ ...displayType('clamp(2.6rem, 6vw, 4.6rem)', { fontWeight: 700, lineHeight: 0.96, letterSpacing: '0.01em', color: '#fff' }), margin: '0 0 14px' }}>Launch a team store</h1>
+            <p style={{ margin: '0 0 24px', maxWidth: 560, color: 'rgba(255,255,255,0.82)', fontSize: 'clamp(15px, 1.5vw, 18px)', fontWeight: 500, lineHeight: 1.5 }}>
+              A private branded storefront for your program — players and parents order their own gear, with optional fundraising back to the team. No upfront cost.
+            </p>
             <button
               type="button"
-              onClick={onStartOrder}
+              onClick={onOpenStores ? onOpenStores : undefined}
+              tabIndex={heroSlide === 1 ? 0 : -1}
               className="nts-cta-red"
               style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, background: RED, color: '#fff', fontWeight: 600, fontSize: 'clamp(16px, 1.6vw, 19px)', letterSpacing: '0.02em', padding: '18px 32px', borderRadius: 6, textTransform: 'uppercase', border: 'none', cursor: 'pointer', fontFamily: 'inherit' }}
             >
-              Start with your logo
+              Explore team stores
               <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
             </button>
-            <a href="/team-stores" className="nts-footlink" style={{ alignSelf: 'flex-end', display: 'inline-flex', alignItems: 'center', gap: 8, color: 'rgba(255,255,255,0.85)', fontWeight: 600, fontSize: 15 }}>
-              or shop team stores
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-            </a>
           </div>
+        </div>
+
+        {/* ---- Slide 3: sideline video ---- */}
+        {/* Generated hero loop (owner-approved) over the sideline photo,
+            under a navy gradient so the headline stays legible. The photo
+            stays mounted underneath and doubles as the poster — if the video
+            can't load or autoplay (data saver, old browsers), the slide
+            looks the same as the original hero did. muted + playsInline are
+            both required for mobile autoplay. The video keeps playing across
+            rotations even while off-screen — simplest and avoids restart
+            flicker each time this slide comes back around. */}
+        <div
+          aria-hidden={heroSlide !== 2}
+          style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', opacity: heroSlide === 2 ? 1 : 0, pointerEvents: heroSlide === 2 ? 'auto' : 'none', transition: 'opacity 700ms ease' }}
+        >
+          <img src="/teamshop/hero-sideline.jpg" alt="" aria-hidden="true" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
+          <video
+            src="/teamshop/hero-sideline-loop.mp4"
+            poster="/teamshop/hero-sideline.jpg"
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="metadata"
+            aria-hidden="true"
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+          <span aria-hidden="true" style={{ position: 'absolute', inset: 0, background: 'linear-gradient(115deg, rgba(15,26,56,0.88) 0%, rgba(25,40,83,0.55) 48%, rgba(15,26,56,0.35) 100%)' }} />
+          <span style={{ position: 'absolute', top: 22, left: 26, marginTop: 26, ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT }), display: 'inline-flex', alignItems: 'center', gap: 10, pointerEvents: 'none' }}>
+            <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />National Team Shop
+          </span>
+          <div style={{ position: 'relative', width: '100%', marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', padding: '0 clamp(16px, 2.5vw, 36px) clamp(30px, 4vw, 56px)' }}>
+            <p style={{ margin: '0 0 10px', textAlign: 'right', color: 'rgba(255,255,255,0.82)', fontSize: 'clamp(15px, 1.5vw, 19px)', fontWeight: 500 }}>Your logo. Team-quality gear.</p>
+            <h1 style={{ ...displayType('clamp(2.8rem, 7vw, 5.6rem)', { fontWeight: 700, lineHeight: 0.92, letterSpacing: '0.01em', color: '#fff' }), margin: 0, textAlign: 'right' }}>Built for the sideline.</h1>
+          </div>
+        </div>
+
+        {/* ---- Pagination dots ---- */}
+        <div style={{ position: 'absolute', left: 0, right: 0, bottom: 'clamp(10px, 1.6vw, 18px)', display: 'flex', justifyContent: 'center', gap: 10, zIndex: 5 }}>
+          {Array.from({ length: HERO_SLIDE_COUNT }).map((_, i) => (
+            <button
+              // eslint-disable-next-line react/no-array-index-key
+              key={i}
+              type="button"
+              onClick={() => setHeroSlide(i)}
+              aria-label={`Go to slide ${i + 1}`}
+              aria-current={heroSlide === i}
+              style={{ width: 10, height: 10, padding: 0, borderRadius: 999, border: 'none', cursor: 'pointer', background: heroSlide === i ? RED : 'rgba(255,255,255,0.45)' }}
+            />
+          ))}
         </div>
       </section>
 
