@@ -18,7 +18,13 @@ const SUPABASE_URL =
 const SUPABASE_ANON_KEY =
   Netlify.env.get('REACT_APP_SUPABASE_ANON_KEY') || '';
 
-const SITE_ORIGIN = 'https://nationalsportsapparel.com';
+// Canonical store domain. nationalteamshop.com is a Netlify alias of this site
+// that serves the storefront SPA directly; it's the one origin we consolidate
+// every store URL onto (the marketing /shop/* path 301s here, the raw
+// netlify.app origin is de-duped via robots.js). og:url + canonical always point
+// here, whichever host actually served the request.
+const SITE_ORIGIN = 'https://nationalteamshop.com';
+const CANONICAL_HOSTS = new Set(['nationalteamshop.com', 'www.nationalteamshop.com']);
 const DEFAULT_IMAGE = 'https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png';
 
 const escapeHtml = (s) =>
@@ -58,7 +64,7 @@ async function fetchStore(slug) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   const qs = new URLSearchParams({
     slug: `eq.${slug}`,
-    select: 'name,logo_url,banner_url,hero_blurb,status',
+    select: 'name,logo_url,banner_url,hero_blurb,status,public_listed,require_login',
     limit: '1',
   });
   try {
@@ -83,11 +89,29 @@ async function fetchStore(slug) {
 // static defaults in index.html are removed first so each property appears once.
 function injectTags(html, tags, title) {
   let out = html;
-  // Drop the default OG/Twitter meta block + title so we don't emit duplicates.
-  out = out.replace(/\s*<meta\s+(?:property|name)="(?:og:[^"]*|twitter:[^"]*)"[^>]*>/g, '');
+  // Drop the default OG/Twitter/description/robots metas + any canonical + title
+  // so we don't emit duplicates.
+  out = out.replace(
+    /\s*<meta\s+(?:property|name)="(?:og:[^"]*|twitter:[^"]*|description|robots)"[^>]*>/g,
+    ''
+  );
+  out = out.replace(/\s*<link\s+rel="canonical"[^>]*>/gi, '');
   out = out.replace(/<title>[\s\S]*?<\/title>/, `<title>${escapeHtml(title)}</title>`);
   // Insert the fresh tags right after the (now store-specific) <title>.
   return out.replace(/<\/title>/, `</title>\n${tags}`);
+}
+
+// For an unknown/archived slug we keep the default NSA preview but add a canonical
+// + noindex so the generic app shell isn't indexed as a phantom store page.
+function injectNoindex(html, pageUrl) {
+  const block = [
+    `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
+    `  <meta name="robots" content="noindex, follow" />`,
+  ].join('\n');
+  let out = html
+    .replace(/\s*<link\s+rel="canonical"[^>]*>/gi, '')
+    .replace(/\s*<meta\s+name="robots"[^>]*>/gi, '');
+  return out.replace(/<\/title>/, `</title>\n${block}`);
 }
 
 export default async function handler(request, context) {
@@ -101,17 +125,41 @@ export default async function handler(request, context) {
   const contentType = response.headers.get('content-type') || '';
   if (!contentType.includes('text/html')) return response;
 
+  const isCanonicalHost = CANONICAL_HOSTS.has(url.hostname.toLowerCase());
+  const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
+
   const store = await fetchStore(slug);
-  if (!store) return response; // unknown slug → keep default NSA preview
+  if (!store) {
+    // Unknown/archived slug → keep the default NSA preview, but canonical + noindex.
+    const html0 = await response.text();
+    const headers0 = new Headers(response.headers);
+    headers0.delete('content-length');
+    return new Response(injectNoindex(html0, pageUrl), {
+      status: response.status,
+      headers: headers0,
+    });
+  }
 
   const title = `${store.name} — Team Store`;
   const description =
     store.hero_blurb ||
     `The official ${store.name} store — custom team apparel, decorated and delivered. Order before the window closes.`;
   const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
-  const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
+
+  // Index only the real, public, open, ungated stores — and only on the canonical
+  // host (the raw netlify.app duplicate always stays noindex). Mirrors the
+  // directory's open/listed filter (src/storefront/TeamStores.js).
+  const indexable =
+    store.status === 'open' && store.public_listed === true && store.require_login !== true;
+  const robots =
+    isCanonicalHost && indexable
+      ? 'index, follow, max-image-preview:large'
+      : 'noindex, follow';
 
   const tags = [
+    `  <meta name="description" content="${escapeHtml(description)}" />`,
+    `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
+    `  <meta name="robots" content="${robots}" />`,
     `  <meta property="og:type" content="website" />`,
     `  <meta property="og:site_name" content="National Sports Apparel" />`,
     `  <meta property="og:title" content="${escapeHtml(title)}" />`,

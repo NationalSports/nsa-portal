@@ -182,24 +182,33 @@ canonical domain.
 Effort: S (hours), M (a day or two), L (a week+). Impact: ★★★ = moves
 indexation/rankings materially, ★ = polish.
 
-### Phase 0 — Crawl infrastructure & origin consolidation (ship first)
-Safe, self-contained, no storefront re-architecture.
+### Phase 0 — Crawl infrastructure & origin consolidation (ship first) ✅ DONE
+Safe, self-contained, no storefront re-architecture. _Shipped 2026-07-12._
 
-- [ ] **`robots.txt` on `nationalteamshop.com`** — ★★★ · S
-  `Allow: /`, disallow `/checkout`/`/cart`/auth paths, and point at the store
-  sitemap. Fixes half of finding 2.
-- [ ] **Dynamic store `sitemap.xml`** — ★★★ · M
-  Netlify function over `webstores_public` (status open + `public_listed=true` +
-  open window) → `nationalteamshop.com/shop/<slug>` entries with `<lastmod>`.
-  Fixes the other half of finding 2.
-- [ ] **Per-store canonical + robots via the edge function** — ★★★ · S
-  Add `<link rel="canonical" href="https://nationalteamshop.com/shop/<slug>">`
-  and `noindex` for closed / `public_listed=false` / `require_login` / archived
-  stores. Extends `og-storefront.js`. Fixes findings 3 (partial) + 8.
-- [ ] **De-dupe origins** — ★★★ · S
-  301 `nationalsportsapparel.com/shop/*` → `nationalteamshop.com/shop/*` (retire
-  the iframe shell); `X-Robots-Tag: noindex` on `nsa-portal.netlify.app/shop/*`.
-  Fixes findings 4 + 5.
+- [x] **Host-aware `robots.txt`** — ★★★ · S
+  `nsa-portal/netlify/edge-functions/robots.js`. `nationalteamshop.com` allows
+  `/shop`, `/team-stores`, `/static`, disallows checkout/cart and every app route,
+  and points at the store sitemap; the staff host and the raw `netlify.app`
+  origin get `Disallow: /`. Fixes half of finding 2.
+- [x] **Dynamic store `sitemap.xml`** — ★★★ · M
+  `nsa-portal/netlify/edge-functions/sitemap.js`. Queries `webstores_public`
+  (status `open` + `public_listed=true`, drops `require_login`) and emits
+  `nationalteamshop.com/shop/<slug>` + the `/team-stores` directory. _(lastmod
+  omitted — the public view exposes no modified timestamp; add later if we
+  surface one.)_ Fixes the other half of finding 2.
+- [x] **Per-store canonical + lifecycle robots via the edge function** — ★★★ · S
+  Extended `og-storefront.js`: adds `<meta name="description">`, `<link
+  rel="canonical" href="…nationalteamshop.com/shop/<slug>">`, and a `<meta
+  name="robots">` that is `index` only for open + `public_listed` + non-gated
+  stores on the canonical host — else `noindex`. Unknown/archived slugs get
+  canonical + `noindex` so the app shell isn't indexed as a phantom store. Fixes
+  finding 3 (partial) + 8 (crawl side).
+- [x] **De-dupe origins** — ★★★ · S
+  `nsa-website/netlify.toml`: 301 `nationalsportsapparel.com/shop/*` →
+  `nationalteamshop.com/shop/*` (retires the iframe shell). The raw
+  `nsa-portal.netlify.app` origin is de-duped via `robots.js` (`Disallow: /`) plus
+  the edge function forcing `noindex` on any non-canonical host. Fixes findings
+  4 + 5.
 
 ### Phase 1 — Crawlable store pages (the core fix)
 - [ ] **Edge-render the store `<head>` per store** — ★★★ · M
