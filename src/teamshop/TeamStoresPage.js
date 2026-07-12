@@ -1,41 +1,302 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, {
+  useEffect, useMemo, useRef, useState,
+} from 'react';
 import {
   NAVY, NAVY_DARK, RED, RED_SOFT, OFF_WHITE, BORDER, BORDER_DARK,
   TEXT, TEXT_MUTED, TEXT_FAINT, GREEN, displayType,
 } from './theme';
 import { searchPublicTeamStores, closesLabel, cleanTerm } from '../lib/publicTeamStores';
 
-// "Team Stores" — the approved Claude Design mock ("Team Stores.dc.html")
-// translated to React. Content-only, same convention as FAQPage.js /
-// DecorationPage.js — TeamShopApp renders the shared header/footer around
-// this view.
+// "Team Stores" — rebuilt against the ACTUAL Claude Design source this time
+// (scratchpad design/TeamStores.dc.html, a design-canvas file: static
+// sections + a React-ish script block driving THEMES/SPORTS/garment() SVGs).
+// Section-by-section translation, in the design's own order:
+//   HERO -> FOUR PITCHES -> [builder, kept static] -> EXAMPLE STORE PREVIEW
+//   (the centerpiece) -> FIND YOUR STORE (real functionality, no design slot)
+//   -> HOW IT WORKS -> FUNDRAISING CALLOUT -> LAUNCH CTA.
 //
-// What departs from the mock, and why:
-//   - "Find your store" search is REAL: it reuses the exact webstores_public
-//     query the portal's /team-stores finder uses (src/lib/publicTeamStores.js,
-//     extracted from src/storefront/TeamStores.js — one query path, not two).
-//     Unlike that open-only finder, this page also surfaces recently-closed
-//     stores, marked closed, so a parent searching after the window shut gets
-//     an answer instead of a confusing "no match".
-//   - The mock's interactive one-click store builder ("Pick your colors. Drop
-//     your logo. Done.") is rendered as a STATIC/decorative section below —
-//     visual fidelity to the mock, no self-service logic. Self-service store
-//     creation still lives in the Connect coach portal, not this marketing
-//     page, so the section's copy stays rep-led ("your rep handles the
-//     setup") rather than implying a literal one-click flow.
-//   - 2026-07-12 tightening pass (owner design review): the hero headline's
-//     "up in days" and the stats row's "~1 wk to go live*" timing claims were
-//     reinstated to match the mock, at the owner's explicit direction, with a
-//     footnote hedge ("typical timeline...may vary") preserving some of the
-//     caution behind the original softening below. Fundraising claims stay:
-//     fundraise_enabled is a real webstore feature.
-//   - The example-store band keeps the mock's browser-frame layout but uses
-//     labeled photo placeholders (house style, per DecorationPage.js) — no
-//     fake store screenshots.
-//   - The mock's fundraising payout-math demo card ($1,200 raised, etc.) is
-//     dropped — no client-side money math, illustrative or otherwise.
+// What intentionally departs from the mock, and why:
+//   - PRICING: the mock's product cards show {{ p.price }} (illustrative
+//     dollar figures). Per the owner's explicit override, no $ prices render
+//     anywhere on this page — product cards keep name, swatch dots, stock
+//     badge, and the "View ->" affordance, nothing invented.
+//   - HERO / EXAMPLE STORE screenshots: the mock cycles real store
+//     screenshots (STORE_IMGS) inside the hero frame. Those photo assets
+//     aren't available here, so both the hero and the example-store
+//     centerpiece are built as in-page CSS/SVG store mocks (garment() SVGs
+//     translated to JSX) instead — same visual language, no binary assets,
+//     no fake photography. The hero still cycles three differently-themed
+//     mocks with the 600ms fade, slug swap, ~4s rotation, reduced-motion
+//     guard, and pause-on-hover the mock specifies.
+//   - The one-click builder ("Pick your colors. Drop your logo. Done.") is
+//     visual-fidelity only, no self-service logic — store creation is still
+//     rep-assisted, not literally one click, on this page. Copy stays
+//     rep-led ("your rep handles the setup").
+//   - "Find your store" search is REAL: the same webstores_public query the
+//     portal's /team-stores finder uses (src/lib/publicTeamStores.js — one
+//     query path, not two), extended to also surface recently-closed stores
+//     (marked closed) so a late searcher gets an answer, not a dead end. The
+//     mock has no slot for this, so it's its own section, styled to match.
+//   - FUNDRAISING CALLOUT: the mock's right-column card does client-side
+//     money math ("$1,200 raised" off a made-up average order). That's
+//     dropped — the layout/visual treatment is kept, but the numbers are
+//     replaced with how the mechanism works, not a fabricated payout.
+//   - All CTA hrefs/handlers stay wired to the shipped rep-led flow
+//     (CONTACT_HREF / goFind) — the mock's literal "Launch a store" /
+//     "#launch" self-service links are relabeled to match.
 
 const CONTACT_HREF = 'mailto:info@nationalsportsapparel.com?subject=Team%20store%20for%20my%20program';
+
+// ---------------------------------------------------------------------------
+// Shared visual building blocks — translated from the mock's garment() SVG
+// generator and THEMES/product data (script block, ~line 453 & 545 of the
+// design file).
+// ---------------------------------------------------------------------------
+
+// Six store color palettes from the mock's THEMES array — drives the "See it
+// in your colors" swatch selector via CSS custom properties on the demo
+// store, exactly as the mock does (--tp / --tp2 / --ta).
+const THEMES = [
+  { name: 'Royal & Gold', primary: '#0E2A6B', light: '#123a8f', accent: '#F5B429' },
+  { name: 'Navy & Gold', primary: '#12213F', light: '#1c3160', accent: '#F5B429' },
+  { name: 'Crimson & Gold', primary: '#7A121E', light: '#9c1a2a', accent: '#F0B429' },
+  { name: 'Forest & Gold', primary: '#113B29', light: '#1a5a3f', accent: '#F5B429' },
+  { name: 'Purple & Gold', primary: '#3A1D66', light: '#512a8c', accent: '#F5B429' },
+  { name: 'Black & Vegas', primary: '#1A1D22', light: '#2A2F3E', accent: '#E7B84B' },
+];
+
+// The mock's "reusable team gear placeholder illustration in the customer's
+// colors" (garment(kind, tone, letter)), translated 1:1 to JSX. Reads its
+// theme from the nearest --tp/--tp2/--ta CSS custom properties, same as the
+// mock.
+function Garment({ kind, tone }) {
+  const body = tone === 'white' ? '#F1F3F7' : tone === 'black' ? '#23262B' : 'var(--tp2, #123a8f)';
+  const stroke = tone === 'white' ? '#C9D0DC' : tone === 'black' ? '#3a3f47' : 'var(--tp, #0E2A6B)';
+  const sleeveLong = kind !== 'tee';
+  const crestX = kind === 'shorts' ? 54 : 46;
+  const crestY = kind === 'shorts' ? 60 : 46;
+  const crestInk = tone === 'white' ? 'var(--ta, #F5B429)' : 'var(--tp, #0E2A6B)';
+  return (
+    <svg width="62%" height="62%" viewBox="0 0 92 96" fill="none" aria-hidden="true">
+      {kind !== 'shorts' && (
+        <>
+          <path
+            d={sleeveLong
+              ? 'M34 20 L46 14 L54 20 L62 30 L56 40 L50 36 L50 84 L18 84 L18 36 L12 40 L6 30 L14 20 L26 14 Z'
+              : 'M34 22 L46 16 L54 22 L66 30 L60 42 L50 37 L50 84 L18 84 L18 37 L8 42 L2 30 L14 22 L26 16 Z'}
+            transform="translate(6 4)"
+            fill={body}
+            stroke={stroke}
+            strokeWidth={2}
+            strokeLinejoin="round"
+          />
+          {kind === 'hoodie' && (
+            <path d="M40 18 q10 8 20 0 q-2 12 -10 12 q-8 0 -10 -12 Z" transform="translate(6 4)" fill={stroke} opacity={0.5} />
+          )}
+        </>
+      )}
+      {kind === 'shorts' && (
+        <path
+          d="M16 20 L64 20 L60 74 L44 74 L40 40 L36 74 L20 74 Z"
+          transform="translate(6 4)"
+          fill={body}
+          stroke={stroke}
+          strokeWidth={2}
+          strokeLinejoin="round"
+        />
+      )}
+      <g transform={`translate(${crestX} ${crestY})`}>
+        <circle r={9} fill={tone === 'white' ? 'var(--tp2, #123a8f)' : 'var(--ta, #F5B429)'} opacity={0.95} />
+        <path d="M-4 -1 L0 -5 L4 -1 L2 4 L-2 4 Z" fill={crestInk} />
+      </g>
+    </svg>
+  );
+}
+
+const TILE_BG = {
+  royal: 'linear-gradient(150deg, #F7F9FC, #E9EEF6)',
+  white: 'linear-gradient(150deg, #FFFFFF, #EEF1F6)',
+  black: 'linear-gradient(150deg, #F2F3F5, #E4E6EA)',
+};
+
+// The mock's storeProducts (4 items) — price dropped everywhere per the
+// owner's pricing rule; everything else (name, stock, tone) kept.
+const STORE_PRODUCTS = [
+  { name: 'PosiCharge Hooded Pullover', tone: 'royal', kind: 'hoodie', inStock: true },
+  { name: 'Long Sleeve Competitor Tee', tone: 'royal', kind: 'ls', inStock: true },
+  { name: 'PosiCharge Competitor Tee', tone: 'white', kind: 'tee', inStock: true },
+  { name: 'Repeat 7" Short', tone: 'black', kind: 'shorts', inStock: false },
+];
+
+function swatchDotStyle(color) {
+  return { width: 14, height: 14, borderRadius: 999, background: color, border: '1px solid rgba(15,26,56,0.15)', flexShrink: 0 };
+}
+
+function toneSwatches(tone) {
+  if (tone === 'white') return [swatchDotStyle('var(--tp2, #123a8f)'), swatchDotStyle('#F1F3F7')];
+  if (tone === 'black') return [swatchDotStyle('#23262B'), swatchDotStyle('#5A6075')];
+  return [swatchDotStyle('var(--tp2, #123a8f)'), swatchDotStyle('#F1F3F7')];
+}
+
+// The mock's browser-framed, CSS-custom-property-themed demo store
+// (EXAMPLE STORE PREVIEW, lines 249-315 of the design file). Used both as
+// the full interactive centerpiece and — via `compact` — reused (per the
+// task's "scaled-down variant is fine") as the hero's cycling store mocks.
+function DemoStore({
+  theme, teamName, compact = false,
+}) {
+  const vars = { '--tp': theme.primary, '--tp2': theme.light, '--ta': theme.accent };
+  return (
+    <div style={{ background: '#fff', ...vars }}>
+      {/* announcement bar */}
+      <div
+        style={{
+          background: 'var(--tp)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          gap: 10, padding: compact ? '6px 14px' : '9px clamp(16px, 2.5vw, 32px)', fontSize: compact ? 9.5 : 12, letterSpacing: '0.05em', flexWrap: 'wrap',
+        }}
+      >
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600, whiteSpace: 'nowrap' }}>
+          <span style={{ color: 'var(--ta)' }}>★</span> OFFICIAL TEAM STORE
+        </span>
+        {!compact && <span style={{ fontWeight: 600, color: 'rgba(255,255,255,0.85)' }}>SHIPS TO EACH FAMILY</span>}
+      </div>
+
+      {/* store header */}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+          padding: compact ? '10px 14px' : '18px clamp(16px, 2.5vw, 32px)', borderBottom: `1px solid ${BORDER}`, flexWrap: 'wrap',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: compact ? 8 : 14, minWidth: 0 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              width: compact ? 28 : 46, height: compact ? 28 : 46, borderRadius: 8, background: 'var(--tp)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}
+          >
+            <svg width={compact ? 16 : 26} height={compact ? 16 : 26} viewBox="0 0 24 24" fill="none" stroke="var(--ta)" strokeWidth="1.5">
+              <path d="M3 6l9-3 9 3-9 4z" /><path d="M7 10v5c0 2 10 2 10 0v-5" />
+            </svg>
+          </span>
+          <div style={{ lineHeight: 1.15, minWidth: 0 }}>
+            {!compact && <div style={displayType(11, { letterSpacing: '0.1em', color: 'var(--ta)' })}>Official Team Store</div>}
+            <div style={{ ...displayType(compact ? 12.5 : 'clamp(18px, 2vw, 23px)', { fontWeight: 700, letterSpacing: '0.02em', color: 'var(--tp)' }), whiteSpace: compact ? 'nowrap' : 'normal', overflow: compact ? 'hidden' : 'visible', textOverflow: compact ? 'ellipsis' : 'clip' }}>
+              {teamName}
+            </div>
+          </div>
+        </div>
+        {!compact && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, background: 'var(--tp)', color: '#fff', fontWeight: 700, fontSize: 13, letterSpacing: '0.05em', padding: '11px 18px', borderRadius: 8 }}>
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M6 8h12l-1 12H7z" /><path d="M9 8V6a3 3 0 0 1 6 0v2" /></svg>
+            CART <span style={{ background: 'var(--ta)', color: 'var(--tp)', borderRadius: 999, minWidth: 18, height: 18, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>0</span>
+          </span>
+        )}
+      </div>
+
+      {/* store nav — full variant only, no room in the compact hero card */}
+      {!compact && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '12px clamp(16px, 2.5vw, 32px)', borderBottom: `1px solid ${BORDER}`, flexWrap: 'wrap' }}>
+          <span style={{ ...displayType(14, { fontWeight: 700, color: 'var(--tp)' }), borderBottom: '3px solid var(--ta)', paddingBottom: 5 }}>All Gear</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#F5F6F8', color: '#8790A5', borderRadius: 8, padding: '8px 14px', fontSize: 13, minWidth: 220 }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
+            Search the store
+          </span>
+        </div>
+      )}
+
+      {/* store hero — striped gradient, Spirit Pack badge, stat trio, jersey grid */}
+      <div
+        style={{
+          position: 'relative', background: 'linear-gradient(120deg, var(--tp2), var(--tp))', overflow: 'hidden',
+          padding: compact ? '16px 14px' : 'clamp(24px, 3vw, 44px) clamp(16px, 2.5vw, 40px)',
+          display: 'grid', gridTemplateColumns: compact ? '1fr' : 'repeat(auto-fit, minmax(260px, 1fr))', gap: compact ? 12 : 24,
+          alignItems: 'center', flex: compact ? 1 : 'none',
+        }}
+      >
+        <span aria-hidden="true" style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(115deg, rgba(255,255,255,0.05) 0 2px, transparent 2px 22px)', pointerEvents: 'none' }} />
+        <div style={{ position: 'relative' }}>
+          <span style={{ display: 'inline-block', background: 'var(--ta)', color: 'var(--tp)', ...displayType(compact ? 9.5 : 12, { fontWeight: 700 }), padding: compact ? '4px 9px' : '6px 12px', borderRadius: 5, marginBottom: compact ? 8 : 16 }}>
+            Spirit Pack · Now Open
+          </span>
+          <h3 style={{ ...displayType(compact ? '15px' : 'clamp(1.8rem, 3.6vw, 2.8rem)', { fontWeight: 700, lineHeight: 0.95, color: '#fff' }), margin: compact ? '0 0 6px' : '0 0 14px' }}>
+            {teamName.replace(' Team Store', '')} <span style={{ color: 'var(--ta)' }}>Team Store</span>
+          </h3>
+          {!compact && (
+            <>
+              <p style={{ fontSize: 14, lineHeight: 1.55, color: 'rgba(255,255,255,0.82)', margin: '0 0 22px', maxWidth: 400 }}>
+                Hand-picked and approved by your coaching staff, so you can order with confidence.
+              </p>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, border: '1.5px solid rgba(255,255,255,0.5)', color: '#fff', ...displayType(14, { fontWeight: 600 }), padding: '12px 22px', borderRadius: 6 }}>
+                Shop the collection
+              </span>
+              <div style={{ display: 'flex', gap: 26, marginTop: 26 }}>
+                {[['No', 'Minimums'], ['Top', 'Brands'], ['Ship', 'To Families']].map(([big, small], i) => (
+                  <div key={small}>
+                    <div style={{ ...displayType(26, { fontWeight: 700, lineHeight: 1 }), color: i === 2 ? 'var(--ta)' : '#fff' }}>{big}</div>
+                    <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.65)', textTransform: 'uppercase', letterSpacing: '0.06em', marginTop: 3 }}>{small}</div>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        {!compact && (
+          <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: '1.3fr 1fr', gridTemplateRows: '1fr 1fr', gap: 12, minHeight: 220 }}>
+            <div style={{ gridRow: '1 / span 2', background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Garment kind="hoodie" tone="royal" />
+            </div>
+            <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Garment kind="ls" tone="white" />
+            </div>
+            <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Garment kind="ls" tone="royal" />
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* store product grid — full variant only; no illustrative prices */}
+      {!compact && (
+        <div style={{ background: '#FAF7F0', padding: 'clamp(22px, 3vw, 36px) clamp(18px, 2.5vw, 32px)' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 14 }}>
+            {STORE_PRODUCTS.map((p) => (
+              <div
+                key={p.name}
+                className="nts-card"
+                style={{ background: '#fff', borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,26,56,0.08)', display: 'flex', flexDirection: 'column' }}
+              >
+                <div style={{ position: 'relative', aspectRatio: '1 / 1', background: TILE_BG[p.tone], display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <span
+                    style={{
+                      position: 'absolute', top: 10, right: 10, background: p.inStock ? GREEN : 'var(--tp)', color: '#fff',
+                      ...displayType(10, { letterSpacing: '0.06em' }), padding: '4px 9px', borderRadius: 5,
+                    }}
+                  >
+                    {p.inStock ? 'In Stock' : 'Sold Out'}
+                  </span>
+                  <Garment kind={p.kind} tone={p.tone} />
+                </div>
+                <div style={{ padding: '14px 15px 16px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
+                  <div style={displayType(14, { color: 'var(--tp)', lineHeight: 1.2 })}>{p.name}</div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    {toneSwatches(p.tone).map((s, i) => <span key={i} style={s} />)}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', marginTop: 'auto', paddingTop: 8 }}>
+                    <span style={{ ...displayType(12, { letterSpacing: '0.06em', color: '#B8860B' }), display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                      View <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const PITCHES = [
   {
@@ -74,25 +335,24 @@ const STEPS = [
   {
     n: 3,
     title: 'We decorate & ship',
-    body: 'We produce every order in-house and ship direct to each family, with tracking emails throughout.',
+    body: 'We produce every order in-house and ship direct to each family, with automated tracking emails throughout.',
   },
   {
     n: 4,
-    title: 'Your program earns',
-    body: 'After the window closes, your rep totals your fundraising margin and it goes back to your program.',
+    title: 'You get paid',
+    body: 'After the window closes, your rep totals your fundraising margin and sends your program one clean payout.*',
   },
 ];
 
-// Labeled photo placeholder in the house style (see DecorationPage.js) —
-// a gradient block with an icon + caption, never a fake screenshot.
-function PhotoPlaceholder({ gradient, ink, caption, style }) {
-  return (
-    <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: 8, background: gradient, color: ink, overflow: 'hidden', ...style }}>
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" /><circle cx="8.5" cy="10" r="1.6" /><path d="M21 16l-5-5-9 8" /></svg>
-      <span style={{ ...displayType(11, { letterSpacing: '0.14em', color: ink }), textAlign: 'center', padding: '0 12px' }}>{caption}</span>
-    </div>
-  );
-}
+// Three differently-themed CSS store mocks for the hero to cycle through
+// (screenshots aren't available — see file header). Distinct sports/palettes
+// so the rotation reads as "real stores," not one card recolored.
+const HERO_STORES = [
+  { slug: 'oak-grove-football', teamName: 'Oak Grove Football Team Store', theme: THEMES[1] }, // Navy & Gold
+  { slug: 'riverside-baseball', teamName: 'Riverside Baseball Team Store', theme: THEMES[2] }, // Crimson & Gold
+  { slug: 'eastside-soccer', teamName: 'Eastside Soccer Team Store', theme: THEMES[3] }, // Forest & Gold
+];
+const HERO_AUTO_MS = 3800;
 
 // One search result — real store data from webstores_public. Open stores link
 // to their live storefront (/shop/<slug> — the same URL the /team-stores
@@ -180,27 +440,65 @@ export default function TeamStoresPage() {
 
   const term = cleanTerm(q);
 
+  // ---- Hero store-mock cycler (mirrors Home.js's hero slider pattern:
+  //      a single interval that keeps ticking, gated by refs so hover-pause
+  //      and prefers-reduced-motion don't need to tear the timer down). ----
+  const [heroIdx, setHeroIdx] = useState(0);
+  const heroPausedRef = useRef(false);
+  const heroReducedMotionRef = useRef(false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return undefined;
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+    heroReducedMotionRef.current = mq.matches;
+    const onChange = (e) => { heroReducedMotionRef.current = e.matches; };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else if (mq.removeListener) mq.removeListener(onChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (heroPausedRef.current || heroReducedMotionRef.current) return;
+      setHeroIdx((i) => (i + 1) % HERO_STORES.length);
+    }, HERO_AUTO_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  const pauseHero = () => { heroPausedRef.current = true; };
+  const resumeHero = () => { heroPausedRef.current = false; };
+  const heroStore = HERO_STORES[heroIdx];
+
+  // ---- Example store theme switcher ("See it in your colors") ----
+  const [storeThemeIdx, setStoreThemeIdx] = useState(0);
+  const storeTheme = THEMES[storeThemeIdx];
+  const exampleStore = useMemo(() => ({ teamName: 'Oak Grove Football Team Store', slug: 'oak-grove-football' }), []);
+
   return (
     <div style={{ width: '100%', overflowX: 'hidden', background: '#fff' }}>
       {/* ============ HERO ============ */}
       <section style={{ position: 'relative', background: `linear-gradient(120deg, ${NAVY_DARK} 0%, ${NAVY} 55%, #1c2d4f 100%)`, color: '#fff', overflow: 'hidden' }}>
-        <div style={{ position: 'relative', maxWidth: 1200, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 'clamp(32px, 4vw, 56px)', alignItems: 'center' }}>
+        <span aria-hidden="true" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 'clamp(90px, 16%, 280px)', background: '#22335c' }} />
+        <div style={{ position: 'relative', maxWidth: 1280, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 'clamp(32px, 4vw, 56px)', alignItems: 'center' }}>
           <div>
-            <p style={{ ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT, margin: '0 0 18px' }), display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+            <p style={{ ...displayType(13, { letterSpacing: '0.18em', color: RED_SOFT, margin: '0 0 20px' }), display: 'inline-flex', alignItems: 'center', gap: 10 }}>
               <span aria-hidden="true" style={{ width: 30, height: 2, background: RED_SOFT, display: 'inline-block' }} />
               Online Team Stores
             </p>
-            <h1 style={displayType('clamp(2.4rem, 5vw, 4rem)', { lineHeight: 0.98, letterSpacing: '0.01em', margin: '0 0 20px', maxWidth: '20ch' })}>
+            <h1 style={displayType('clamp(2.6rem, 5.5vw, 4.4rem)', { lineHeight: 0.98, letterSpacing: '0.01em', margin: '0 0 20px', maxWidth: '16ch' })}>
               A storefront for your program — up in days.
             </h1>
-            <p style={{ fontSize: 'clamp(16px, 1.5vw, 18px)', lineHeight: 1.6, color: 'rgba(255,255,255,0.78)', maxWidth: 520, margin: '0 0 30px' }}>
-              We build a private, branded store for your team. Players and parents order and pay individually, gear ships to their door, and your program can earn on every sale — with no upfront cost and zero inventory to manage. Fast setup with your rep.
+            <p style={{ fontSize: 'clamp(16px, 1.5vw, 19px)', lineHeight: 1.6, color: 'rgba(255,255,255,0.78)', maxWidth: 520, margin: '0 0 34px' }}>
+              We build a branded store for your team. Families order and pay directly, gear ships to their door, and your program earns on every sale — with zero inventory to manage.
             </p>
             <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
               <a
                 className="nts-cta-red"
                 href={CONTACT_HREF}
-                style={{ fontWeight: 600, fontSize: 16, padding: '15px 28px', borderRadius: 8, background: RED, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.02em' }}
+                style={{ fontWeight: 600, fontSize: 17, padding: '16px 30px', borderRadius: 8, background: RED, color: '#fff', textTransform: 'uppercase', letterSpacing: '0.02em' }}
               >
                 Talk to your rep about a store
               </a>
@@ -208,9 +506,9 @@ export default function TeamStoresPage() {
                 type="button"
                 className="nts-ghost"
                 onClick={goFind}
-                style={{ fontFamily: 'inherit', fontWeight: 600, fontSize: 16, padding: '15px 28px', borderRadius: 8, background: 'transparent', color: '#fff', border: '1px solid rgba(255,255,255,0.4)', cursor: 'pointer' }}
+                style={{ fontFamily: 'inherit', fontWeight: 600, fontSize: 17, padding: '16px 30px', borderRadius: 8, background: 'transparent', color: '#fff', border: '1px solid rgba(255,255,255,0.4)', cursor: 'pointer' }}
               >
-                Find your store
+                See an example store
               </button>
             </div>
             <div style={{ display: 'flex', gap: 'clamp(24px, 3vw, 44px)', marginTop: 36, flexWrap: 'wrap' }}>
@@ -218,7 +516,7 @@ export default function TeamStoresPage() {
                 <React.Fragment key={small}>
                   {i > 0 && <div aria-hidden="true" style={{ width: 1, background: 'rgba(255,255,255,0.15)' }} />}
                   <div>
-                    <div style={{ ...displayType('clamp(1.8rem, 2.6vw, 2.4rem)', { fontWeight: 700, lineHeight: 1 }), ...(i === 2 ? { color: '#F3B0B4' } : {}) }}>{big}</div>
+                    <div style={{ ...displayType('clamp(2rem, 3vw, 2.6rem)', { fontWeight: 700, lineHeight: 1 }), ...(i === 2 ? { color: '#F3B0B4' } : {}) }}>{big}</div>
                     <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.65)', textTransform: 'uppercase', letterSpacing: '0.07em', marginTop: 5 }}>{small}</div>
                   </div>
                 </React.Fragment>
@@ -226,67 +524,79 @@ export default function TeamStoresPage() {
             </div>
             <p style={{ margin: '10px 0 0', fontSize: 11, color: 'rgba(255,255,255,0.45)' }}>*Typical timeline once you confirm colors and logo with your rep — can vary by season.</p>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-            {/* Decorative LIVE store preview — pure CSS/JSX recreation of the
-                mock's store-preview card (no binary assets), aria-hidden. */}
+
+          {/* Perspective-tilted, cycling store mock — pure CSS/SVG (Garment +
+              DemoStore compact variant), no binary screenshot assets. */}
+          <div style={{ perspective: 1500, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             <div
-              aria-hidden="true"
-              style={{
-                position: 'relative', width: '100%', maxWidth: 440,
-                transform: 'rotate(-3deg)', borderRadius: 16, overflow: 'hidden',
-                boxShadow: '0 40px 80px rgba(0,0,0,0.45)', border: '1px solid rgba(255,255,255,0.14)',
-                background: '#fff',
-              }}
+              style={{ position: 'relative', width: '100%', maxWidth: 500, transform: 'rotate(4deg) rotateY(11deg) rotateX(4deg)', transformStyle: 'preserve-3d' }}
+              onMouseEnter={pauseHero}
+              onMouseLeave={resumeHero}
+              onFocus={pauseHero}
+              onBlur={resumeHero}
             >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#1c2840' }}>
-                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: '#ff5f57' }} />
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: '#febc2e' }} />
-                  <span style={{ width: 9, height: 9, borderRadius: 999, background: '#28c840' }} />
+              <span
+                aria-hidden="true"
+                style={{
+                  position: 'absolute', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 7,
+                  background: 'rgba(15,26,56,0.82)', backdropFilter: 'blur(4px)', color: 'rgba(255,255,255,0.9)', border: '1px solid rgba(255,255,255,0.14)',
+                  borderRadius: 999, padding: '6px 14px', fontSize: 11.5, whiteSpace: 'nowrap',
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
+                nationalteamshop.com/store/{heroStore.slug}
+              </span>
+              <div style={{ aspectRatio: '0.95', borderRadius: 16, overflow: 'hidden', border: '1px solid rgba(255,255,255,0.14)', boxShadow: '0 50px 90px rgba(0,0,0,0.5), 0 12px 30px rgba(0,0,0,0.35)', display: 'flex' }}>
+                <div key={heroIdx} style={{ flex: 1, display: 'flex', flexDirection: 'column', animation: heroReducedMotionRef.current ? 'none' : 'nts-ts-fade 600ms ease' }} aria-hidden="true">
+                  <DemoStore theme={heroStore.theme} teamName={heroStore.teamName} slug={heroStore.slug} compact />
                 </div>
-                <div style={{ flex: 1, minWidth: 0, background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.75)', borderRadius: 6, padding: '5px 10px', fontSize: 11, display: 'flex', alignItems: 'center', gap: 6, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" style={{ flexShrink: 0 }}><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
-                  nationalteamshop.com/store/oak-grove-football
-                </div>
               </div>
-              <div style={{ position: 'relative', background: 'linear-gradient(150deg, #22335c, #131f42)', padding: '22px 20px 26px' }}>
-                <span style={{ position: 'absolute', top: 14, right: 14, display: 'inline-flex', alignItems: 'center', gap: 6, background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.25)', borderRadius: 999, padding: '4px 10px', ...displayType(9.5, { letterSpacing: '0.06em', color: '#fff' }) }}>
-                  <span style={{ width: 6, height: 6, borderRadius: 999, background: '#3DDC84' }} />
-                  Live store
-                </span>
-                <div style={displayType(10.5, { letterSpacing: '0.14em', color: RED_SOFT })}>Official Team Store</div>
-                <div style={{ ...displayType('clamp(16px, 2vw, 20px)', { color: '#fff' }), margin: '4px 0 8px', maxWidth: '75%', lineHeight: 1.05 }}>Oak Grove Football Team Store</div>
-                <p style={{ margin: 0, fontSize: 12, color: 'rgba(255,255,255,0.72)', lineHeight: 1.5, maxWidth: '88%' }}>Spirit-pack gear for players &amp; families — order anytime, ships direct to your door.</p>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0,1fr))', gap: 10, padding: 14, background: OFF_WHITE }}>
-                {[
-                  { label: 'Spirit hoodie', gradient: 'linear-gradient(150deg, #F7F9FC, #E9EEF6)' },
-                  { label: 'Practice tee', gradient: 'linear-gradient(150deg, #FFFFFF, #EEF1F6)' },
-                  { label: 'Team cap', gradient: 'linear-gradient(150deg, #F2F3F5, #E4E6EA)' },
-                ].map((item) => (
-                  <div key={item.label} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 10, overflow: 'hidden' }}>
-                    <div style={{ aspectRatio: '1 / 1', background: item.gradient }} />
-                    <div style={{ padding: '6px 6px 8px', fontSize: 9.5, fontWeight: 600, color: TEXT_MUTED, textAlign: 'center', lineHeight: 1.25 }}>{item.label}</div>
-                  </div>
-                ))}
-              </div>
+              <span
+                aria-hidden="true"
+                style={{
+                  position: 'absolute', bottom: 16, right: 16, zIndex: 2, display: 'inline-flex', alignItems: 'center', gap: 7, background: '#fff', color: NAVY_DARK,
+                  borderRadius: 999, padding: '8px 14px', ...displayType(12, { fontWeight: 700 }), boxShadow: '0 8px 20px rgba(0,0,0,0.28)',
+                }}
+              >
+                <span style={{ width: 7, height: 7, borderRadius: 999, background: GREEN }} />
+                Live store
+              </span>
             </div>
           </div>
         </div>
         <span aria-hidden="true" style={{ position: 'absolute', left: 0, bottom: 0, height: 4, width: '100%', background: RED }} />
       </section>
 
-      {/* ============ HOW YOUR STORE COMES TOGETHER ============
-          Static/decorative recreation of the mock's one-click builder
-          section — visual fidelity only, no self-service logic. Copy stays
-          rep-led ("your rep handles the setup") since store creation is
-          still rep-assisted, not literally one-click, on this page. */}
-      <section style={{ background: OFF_WHITE, borderBottom: `1px solid ${BORDER}`, padding: 'clamp(48px, 6vw, 80px) 24px' }}>
+      {/* ============ FOUR PITCHES ============ */}
+      <section style={{ maxWidth: 1280, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px' }}>
+        <div style={{ textAlign: 'center', maxWidth: 600, margin: '0 auto 48px' }}>
+          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>Why programs use team stores</p>
+          <h2 style={displayType('clamp(1.9rem, 3.4vw, 2.5rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Everything handled, nothing to manage</h2>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 22 }}>
+          {PITCHES.map((p) => (
+            <div key={p.title} style={{ position: 'relative', border: `1px solid ${BORDER}`, borderRadius: 14, padding: '30px 26px', boxShadow: '0 1px 2px rgba(15,26,56,0.05)', overflow: 'hidden' }}>
+              <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: RED }} />
+              <div style={{ width: 46, height: 46, borderRadius: 11, background: OFF_WHITE, border: `1px solid ${BORDER}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: NAVY, marginBottom: 18 }}>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">{p.icon}</svg>
+              </div>
+              <h3 style={displayType(19, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.02em' })}>{p.title}</h3>
+              <p style={{ margin: 0, fontSize: 14, color: TEXT_MUTED, lineHeight: 1.55 }}>{p.body}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ============ ONE-CLICK BUILDER ============
+          Static/decorative recreation of the mock's builder — visual
+          fidelity only, no self-service logic (store creation is still
+          rep-assisted, not literally one click, on this page). */}
+      <section style={{ background: NAVY_DARK, color: '#fff', padding: 'clamp(36px, 4.5vw, 64px) 24px' }}>
         <div style={{ maxWidth: 1000, margin: '0 auto', textAlign: 'center' }}>
-          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 10px' })}>Simple by design</p>
-          <h2 style={displayType('clamp(1.9rem, 3.4vw, 2.5rem)', { color: NAVY, margin: '0 0 14px', letterSpacing: '0.01em' })}>Pick your colors. Drop your logo. Done.</h2>
-          <p style={{ maxWidth: 560, margin: '0 auto 44px', fontSize: 15, color: TEXT_MUTED, lineHeight: 1.6 }}>
-            Your rep handles the setup — send your colors and logo, and we build a store like this one, ready to share with your team.
+          <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>One-click store creation</p>
+          <h2 style={displayType('clamp(2rem, 3.6vw, 2.7rem)', { margin: '0 0 14px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Pick your colors. Drop your logo. Done.</h2>
+          <p style={{ maxWidth: 620, margin: '0 auto 44px', fontSize: 'clamp(15px, 1.4vw, 17px)', lineHeight: 1.6, color: 'rgba(255,255,255,0.72)' }}>
+            Your rep handles the setup — send your colors and logo once, and it lands on every product in the store automatically. No per-item work, no design files to wrangle.
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 24 }}>
             {[
@@ -309,39 +619,87 @@ export default function TeamStoresPage() {
                 icon: <><circle cx="12" cy="12" r="9" /><path d="M8 12.3l2.6 2.6L16 9.5" /></>,
               },
             ].map((s) => (
-              <div key={s.n} style={{ background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 14, padding: '28px 22px', textAlign: 'left' }}>
-                <div style={{ width: 44, height: 44, borderRadius: 10, background: NAVY, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
+              <div key={s.n} style={{ background: NAVY, border: '1px solid #1c2d4f', borderRadius: 14, padding: '28px 22px', textAlign: 'left' }}>
+                <div style={{ width: 44, height: 44, borderRadius: 10, background: RED_SOFT, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16 }}>
                   <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">{s.icon}</svg>
                 </div>
-                <h3 style={displayType(17, { color: NAVY, margin: '0 0 6px', letterSpacing: '0.02em' })}>{s.title}</h3>
-                <p style={{ margin: 0, fontSize: 13.5, color: TEXT_MUTED, lineHeight: 1.55 }}>{s.body}</p>
+                <h3 style={displayType(17, { color: '#fff', margin: '0 0 6px', letterSpacing: '0.02em' })}>{s.title}</h3>
+                <p style={{ margin: 0, fontSize: 13.5, color: 'rgba(255,255,255,0.65)', lineHeight: 1.55 }}>{s.body}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ============ FOUR PITCHES ============ */}
-      <section style={{ maxWidth: 1200, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px' }}>
-        <div style={{ textAlign: 'center', maxWidth: 600, margin: '0 auto 48px' }}>
-          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>Why programs use team stores</p>
-          <h2 style={displayType('clamp(1.9rem, 3.4vw, 2.5rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Everything handled, nothing to manage</h2>
-        </div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: 22 }}>
-          {PITCHES.map((p) => (
-            <div key={p.title} style={{ position: 'relative', border: `1px solid ${BORDER}`, borderRadius: 14, padding: '30px 26px', boxShadow: '0 1px 2px rgba(15,26,56,0.05)', overflow: 'hidden' }}>
-              <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: RED }} />
-              <div style={{ width: 46, height: 46, borderRadius: 11, background: OFF_WHITE, border: `1px solid ${BORDER}`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: NAVY, marginBottom: 18 }}>
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">{p.icon}</svg>
-              </div>
-              <h3 style={displayType(19, { color: NAVY, margin: '0 0 8px', letterSpacing: '0.02em' })}>{p.title}</h3>
-              <p style={{ margin: 0, fontSize: 14, color: TEXT_MUTED, lineHeight: 1.55 }}>{p.body}</p>
+      {/* ============ EXAMPLE STORE PREVIEW — the centerpiece ============ */}
+      <section id="example" style={{ background: OFF_WHITE, borderTop: `1px solid ${BORDER}`, borderBottom: `1px solid ${BORDER}`, padding: 'clamp(48px, 6vw, 88px) 24px' }}>
+        <div style={{ maxWidth: 1280, margin: '0 auto' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', marginBottom: 28 }}>
+            <div style={{ maxWidth: 560 }}>
+              <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>A real example</p>
+              <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.4rem)', { color: NAVY, margin: '0 0 10px', letterSpacing: '0.01em' })}>This is what your families see</h2>
+              <p style={{ fontSize: 16, color: TEXT_MUTED, lineHeight: 1.6, margin: 0 }}>
+                Every store is branded in your team&apos;s colors and logo, hand-picked with your coaching staff. Here&apos;s an Oak Grove Football store, shown as an example.
+              </p>
             </div>
-          ))}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: GREEN, background: '#EAF3EE', border: '1px solid #D4E7DC', padding: '8px 14px', borderRadius: 999 }}>
+              <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, background: GREEN }} />
+              Store open · demo
+            </span>
+          </div>
+
+          {/* Color selector — "See it in your colors" */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', background: '#fff', border: `1px solid ${BORDER}`, borderRadius: 12, padding: '15px 20px', marginBottom: 16, boxShadow: '0 1px 2px rgba(15,26,56,0.05)' }}>
+            <div style={{ display: 'flex', flexDirection: 'column' }}>
+              <span style={displayType(15, { letterSpacing: '0.08em', color: NAVY })}>See it in your colors</span>
+              <span style={{ fontSize: 12.5, color: TEXT_MUTED }}>Tap a palette — the whole store restyles instantly.</span>
+            </div>
+            <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginLeft: 'auto' }}>
+              {THEMES.map((t, i) => {
+                const active = i === storeThemeIdx;
+                return (
+                  <button
+                    key={t.name}
+                    type="button"
+                    aria-label={t.name}
+                    aria-pressed={active}
+                    onClick={() => setStoreThemeIdx(i)}
+                    style={{
+                      position: 'relative', width: 34, height: 34, borderRadius: 999, padding: 0, cursor: 'pointer', background: t.primary,
+                      boxShadow: 'inset 0 0 0 2px #fff', border: `2px solid ${active ? NAVY : '#E4E8F0'}`, transform: active ? 'scale(1.12)' : 'scale(1)',
+                      transition: 'all 160ms ease',
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ position: 'absolute', right: -2, bottom: -2, width: 13, height: 13, borderRadius: 999, background: t.accent, border: '2px solid #fff' }} />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Browser-framed demo store */}
+          <div style={{ borderRadius: 16, overflow: 'hidden', boxShadow: '0 30px 70px rgba(15,26,56,0.22)', border: '1px solid #E4E8F0', background: '#fff' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', background: '#1c2840', borderBottom: '1px solid rgba(0,0,0,0.2)' }}>
+              <div aria-hidden="true" style={{ display: 'flex', gap: 7 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#ff5f57' }} />
+                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#febc2e' }} />
+                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#28c840' }} />
+              </div>
+              <div style={{ flex: 1, maxWidth: 520, margin: '0 auto', background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.75)', borderRadius: 8, padding: '6px 14px', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8, overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis' }}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
+                nationalteamshop.com/store/{exampleStore.slug}
+              </div>
+              <span aria-hidden="true" style={{ width: 40 }} />
+            </div>
+            <DemoStore theme={storeTheme} teamName={exampleStore.teamName} slug={exampleStore.slug} />
+          </div>
+          <p style={{ textAlign: 'center', margin: '18px 0 0', fontSize: 12, color: TEXT_FAINT }}>Example store shown in a customer&apos;s team colors. Your store is branded to your program.*</p>
         </div>
       </section>
 
-      {/* ============ FIND YOUR STORE ============ */}
+      {/* ============ FIND YOUR STORE ============
+          Real functionality — the mock has no slot for this, so it's its
+          own section, styled to match the surrounding sections. */}
       <section ref={findRef} style={{ background: NAVY_DARK, padding: 'clamp(48px, 6vw, 80px) 24px' }}>
         <div style={{ maxWidth: 760, margin: '0 auto', textAlign: 'center' }}>
           <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>Already have a store?</p>
@@ -382,65 +740,11 @@ export default function TeamStoresPage() {
         </div>
       </section>
 
-      {/* ============ EXAMPLE STORE SHOWCASE ============ */}
-      <section style={{ background: OFF_WHITE, borderBottom: `1px solid ${BORDER}`, padding: 'clamp(48px, 6vw, 88px) 24px' }}>
-        <div style={{ maxWidth: 1200, margin: '0 auto' }}>
-          <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', marginBottom: 28 }}>
-            <div style={{ maxWidth: 560 }}>
-              <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 8px' })}>What families see</p>
-              <h2 style={displayType('clamp(1.9rem, 3.2vw, 2.4rem)', { color: NAVY, margin: '0 0 10px', letterSpacing: '0.01em' })}>Your store, in your colors</h2>
-              <p style={{ fontSize: 16, color: TEXT_MUTED, lineHeight: 1.6, margin: 0 }}>
-                Every store is branded with your team&apos;s colors and logo, stocked with gear hand-picked with your coaching staff — so families order with confidence.
-              </p>
-            </div>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 600, color: GREEN, background: '#EAF3EE', border: '1px solid #D4E7DC', padding: '8px 14px', borderRadius: 999 }}>
-              <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: 999, background: GREEN }} />
-              Example layout
-            </span>
-          </div>
-
-          {/* Browser frame per the mock — placeholder imagery, no fake screenshots. */}
-          <div style={{ borderRadius: 16, overflow: 'hidden', boxShadow: '0 30px 70px rgba(15,26,56,0.22)', border: '1px solid #E4E8F0', background: '#fff' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', background: '#1c2840' }}>
-              <div aria-hidden="true" style={{ display: 'flex', gap: 7 }}>
-                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#ff5f57' }} />
-                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#febc2e' }} />
-                <span style={{ width: 12, height: 12, borderRadius: 999, background: '#28c840' }} />
-              </div>
-              <div style={{ flex: 1, maxWidth: 520, margin: '0 auto', background: 'rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.75)', borderRadius: 8, padding: '6px 14px', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2" /><path d="M8 11V8a4 4 0 0 1 8 0v3" /></svg>
-                nationalteamshop.com/shop/your-team
-              </div>
-              <span aria-hidden="true" style={{ width: 40 }} />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '16px clamp(16px, 2.5vw, 32px)', borderBottom: `1px solid ${BORDER}`, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                <span aria-hidden="true" style={{ width: 46, height: 46, borderRadius: 8, background: NAVY, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke={RED_SOFT} strokeWidth="1.5"><path d="M3 6l9-3 9 3-9 4z" /><path d="M7 10v5c0 2 10 2 10 0v-5" /></svg>
-                </span>
-                <div style={{ lineHeight: 1.15 }}>
-                  <div style={displayType(11, { letterSpacing: '0.1em', color: RED })}>Official Team Store</div>
-                  <div style={displayType('clamp(18px, 2vw, 23px)', { fontWeight: 700, letterSpacing: '0.02em', color: NAVY })}>Your Team Store</div>
-                </div>
-              </div>
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 600, color: TEXT_MUTED, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Ships to each family · Open while the window is</span>
-            </div>
-            <div style={{ padding: 'clamp(18px, 2.5vw, 28px)', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 14, background: OFF_WHITE }}>
-              <PhotoPlaceholder gradient={`linear-gradient(150deg, #22335c, ${NAVY_DARK})`} ink="rgba(255,255,255,0.75)" caption="Photo — Store hero in your team colors" style={{ gridColumn: '1 / -1', aspectRatio: '16 / 6', borderRadius: 12 }} />
-              <PhotoPlaceholder gradient="linear-gradient(150deg, #F7F9FC, #E9EEF6)" ink={TEXT_FAINT} caption="Photo — Spirit hoodie" style={{ aspectRatio: '1 / 1', borderRadius: 12 }} />
-              <PhotoPlaceholder gradient="linear-gradient(150deg, #FFFFFF, #EEF1F6)" ink={TEXT_FAINT} caption="Photo — Practice tee" style={{ aspectRatio: '1 / 1', borderRadius: 12 }} />
-              <PhotoPlaceholder gradient="linear-gradient(150deg, #F2F3F5, #E4E6EA)" ink={TEXT_FAINT} caption="Photo — Team cap" style={{ aspectRatio: '1 / 1', borderRadius: 12 }} />
-            </div>
-          </div>
-          <p style={{ textAlign: 'center', margin: '18px 0 0', fontSize: 12, color: TEXT_FAINT }}>Example layout shown with placeholder imagery — your store is branded to your program.</p>
-        </div>
-      </section>
-
-      {/* ============ HOW IT WORKS FOR COACHES ============ */}
+      {/* ============ HOW IT WORKS ============ */}
       <section style={{ maxWidth: 1200, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px' }}>
         <div style={{ textAlign: 'center', maxWidth: 560, margin: '0 auto 52px' }}>
-          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 10px' })}>How it works for coaches</p>
-          <h2 style={displayType('clamp(1.9rem, 3.4vw, 2.5rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Open it, share it, fund the season</h2>
+          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 10px' })}>How a store runs</p>
+          <h2 style={displayType('clamp(1.9rem, 3.4vw, 2.5rem)', { color: NAVY, margin: 0, letterSpacing: '0.01em' })}>Open it, share it, cash the check</h2>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 24 }}>
           {STEPS.map((s) => (
@@ -456,30 +760,73 @@ export default function TeamStoresPage() {
         </div>
       </section>
 
-      {/* ============ CTA BAND ============ */}
-      <section style={{ background: OFF_WHITE, borderTop: `1px solid ${BORDER}`, padding: 'clamp(48px, 6vw, 80px) 24px', textAlign: 'center' }}>
-        <div style={{ maxWidth: 760, margin: '0 auto' }}>
-          <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 12px' })}>Ready when you are</p>
-          <h2 style={displayType('clamp(2rem, 4vw, 2.8rem)', { color: NAVY, margin: '0 0 14px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Launch your team store</h2>
-          <p style={{ fontSize: 'clamp(15px, 1.5vw, 17px)', color: TEXT_MUTED, lineHeight: 1.6, margin: '0 auto 30px', maxWidth: 520 }}>
-            Tell us your program and colors — your rep will build the store with you and send a preview to approve before it goes live to families.
-          </p>
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+      {/* ============ FUNDRAISING CALLOUT ============
+          Layout/visual treatment kept faithful to the mock; the mock's
+          client-side money-math demo ("$1,200 raised" off a made-up average
+          order) is replaced with how the mechanism works — no fabricated
+          numbers. */}
+      <section style={{ background: NAVY_DARK, color: '#fff', padding: 'clamp(48px, 6vw, 88px) 24px' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 'clamp(32px, 4vw, 56px)', alignItems: 'center' }}>
+          <div>
+            <p style={displayType(13, { letterSpacing: '0.16em', color: RED_SOFT, margin: '0 0 12px' })}>Fundraising</p>
+            <h2 style={displayType('clamp(2rem, 3.6vw, 2.8rem)', { margin: '0 0 16px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Every order funds the season</h2>
+            <p style={{ fontSize: 16, lineHeight: 1.65, color: 'rgba(255,255,255,0.75)', margin: '0 0 26px', maxWidth: 440 }}>
+              Set a margin on any item and your program keeps the difference — no car washes, no order forms, no handling cash. Spirit gear families already want quietly pays for equipment, travel, and banquets.
+            </p>
             <a
               className="nts-cta-red"
               href={CONTACT_HREF}
-              style={{ background: RED, color: '#fff', fontWeight: 600, fontSize: 16, padding: '15px 30px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.02em' }}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 10, background: RED, color: '#fff', fontWeight: 600, fontSize: 16, padding: '15px 28px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.02em' }}
             >
               Talk to your rep about a store
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
             </a>
-            <button
-              type="button"
-              onClick={goFind}
-              style={{ fontFamily: 'inherit', background: 'transparent', color: NAVY, fontWeight: 600, fontSize: 16, padding: '15px 28px', borderRadius: 8, border: `1px solid ${BORDER_DARK}`, cursor: 'pointer' }}
-            >
-              Find your store
-            </button>
           </div>
+          <div style={{ background: NAVY, border: '1px solid #1c2d4f', borderRadius: 16, padding: 32 }}>
+            <div style={{ fontSize: 14, color: 'rgba(255,255,255,0.7)', marginBottom: 10 }}>How the margin works</div>
+            <div style={{ ...displayType('clamp(2rem, 4vw, 2.8rem)', { fontWeight: 700, lineHeight: 1 }), marginBottom: 20 }}>
+              Set it once<span style={{ ...displayType(18, { fontWeight: 600, color: 'rgba(255,255,255,0.6)' }) }}> per item</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)' }}>Applies to</span>
+                <span style={{ fontWeight: 600 }}>Every item, automatically</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: 12, borderBottom: '1px solid rgba(255,255,255,0.1)' }}>
+                <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)' }}>Families pay</span>
+                <span style={{ fontWeight: 600 }}>Directly, at checkout</span>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.75)' }}>Effort from you</span>
+                <span style={{ fontWeight: 600, color: RED_SOFT }}>Share a link</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ============ LAUNCH CTA ============ */}
+      <section id="launch" style={{ maxWidth: 900, margin: '0 auto', padding: 'clamp(48px, 6vw, 88px) 24px', textAlign: 'center' }}>
+        <p style={displayType(13, { letterSpacing: '0.16em', color: RED, margin: '0 0 12px' })}>Ready when you are</p>
+        <h2 style={displayType('clamp(2rem, 4vw, 3rem)', { color: NAVY, margin: '0 0 14px', lineHeight: 1.02, letterSpacing: '0.01em' })}>Launch your team store</h2>
+        <p style={{ fontSize: 'clamp(16px, 1.5vw, 18px)', color: TEXT_MUTED, lineHeight: 1.6, margin: '0 auto 32px', maxWidth: 520 }}>
+          Tell us your program and colors — we&apos;ll build a store and send you a preview to approve, usually within a week.*
+        </p>
+        <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+          <a
+            className="nts-cta-red"
+            href={CONTACT_HREF}
+            style={{ background: RED, color: '#fff', fontWeight: 600, fontSize: 17, padding: '16px 32px', borderRadius: 8, textTransform: 'uppercase', letterSpacing: '0.02em' }}
+          >
+            Talk to your rep about a store
+          </a>
+          <button
+            type="button"
+            onClick={goFind}
+            style={{ fontFamily: 'inherit', background: 'transparent', color: NAVY, fontWeight: 600, fontSize: 17, padding: '16px 30px', borderRadius: 8, border: `1px solid ${BORDER_DARK}`, cursor: 'pointer' }}
+          >
+            Find your store
+          </button>
         </div>
       </section>
     </div>

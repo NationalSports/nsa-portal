@@ -79,6 +79,9 @@ const CSS = `
 .nts-chat-panel { animation: nts-chat-pop-in 220ms ease-out; }
 @keyframes nts-chat-launcher-in { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
 .nts-chat-launcher { animation: nts-chat-launcher-in 220ms ease-out; }
+/* Team Stores hero: cross-fade between cycling store mocks (TeamStoresPage.js),
+   mirroring the design mock's tsFade keyframe. */
+@keyframes nts-ts-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes nts-chat-dot-bounce { 0%, 60%, 100% { transform: translateY(0); opacity: 0.5; } 30% { transform: translateY(-4px); opacity: 1; } }
 .nts-chat-dot { width: 6px; height: 6px; border-radius: 50%; background: ${TEXT_FAINT}; display: inline-block; animation: nts-chat-dot-bounce 950ms ease-in-out infinite; }
 .nts-chat-chip { transition: background 150ms ease, color 150ms ease, border-color 150ms ease; }

@@ -112,11 +112,21 @@ describe('TeamStoresPage', () => {
     // Find-your-store search.
     expect(screen.getByText('Find your store', { selector: 'h2' })).toBeTruthy();
     expect(searchBox()).toBeTruthy();
-    // Example showcase uses labeled placeholders, not fake screenshots.
-    expect(screen.getByText('Photo — Store hero in your team colors')).toBeTruthy();
+    // Example store centerpiece — theme switcher + demo store, no fake screenshots.
+    expect(screen.getByText('This is what your families see')).toBeTruthy();
+    expect(screen.getByText('See it in your colors')).toBeTruthy();
+    expect(screen.getAllByText(/Oak Grove Football/)[0]).toBeTruthy();
+    // No illustrative dollar prices on the example store's product cards —
+    // just name, stock badge, and the "View" affordance. (The design mock's
+    // product prices were $17/$10/$8/$24; none of those render anywhere.
+    // The hero's "$0 upfront cost" stat is a real, non-illustrative claim
+    // and is exempt.)
+    expect(screen.getByText('PosiCharge Hooded Pullover')).toBeTruthy();
+    ['$17', '$10', '$8', '$24'].forEach((price) => expect(screen.queryByText(price)).toBeNull());
     // How it works + CTA band.
-    expect(screen.getByText('How it works for coaches')).toBeTruthy();
+    expect(screen.getByText('Open it, share it, cash the check')).toBeTruthy();
     expect(screen.getByText('We build your store')).toBeTruthy();
+    expect(screen.getByText('Every order funds the season')).toBeTruthy();
     expect(screen.getByText('Launch your team store')).toBeTruthy();
   });
 
@@ -124,14 +134,17 @@ describe('TeamStoresPage', () => {
     render(<TeamStoresPage />);
     fireEvent.change(searchBox(), { target: { value: 'oak grove' } });
 
-    // Both Oak Grove stores match; Central HS does not.
-    const football = await screen.findByText('Oak Grove Football');
-    expect(screen.getByText('Oak Grove Volleyball')).toBeTruthy();
+    // Both Oak Grove stores match; Central HS does not. (The example-store
+    // centerpiece above also renders "Oak Grove Football" text, so scope to
+    // the search-result link.)
+    await screen.findByText('Oak Grove Volleyball');
+    const results = screen.getAllByText('Oak Grove Football').map((el) => el.closest('a')).filter(Boolean);
+    expect(results.length).toBe(1);
+    const [link] = results;
     expect(screen.queryByText('Central HS Track')).toBeNull();
 
     // Open store: linked to the same real storefront URL the /team-stores
     // directory uses, with the shared close-date label.
-    const link = football.closest('a');
     expect(link.getAttribute('href')).toBe('/shop/oak-grove-football');
     expect(within(link).getByText('Open')).toBeTruthy();
     expect(within(link).getByText(/Open until/)).toBeTruthy();
