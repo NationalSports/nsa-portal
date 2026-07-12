@@ -330,6 +330,90 @@ describe('markSubmitted', () => {
   });
 });
 
+// ── Auto-submit (Phase 3b) ───────────────────────────────────────────
+describe('auto-submit', () => {
+  const SANMAR_ON = (extra) => [{
+    vendor: 'SanMar', inventory_sources: ['sanmar', 'nike'], auto_submit_enabled: true,
+    supplier_account: 'NSA-SM', min_order_cents: null, contact_email: 'sanmar@vendor.test', ...extra,
+  }];
+  const autoScript = (settings, over = {}) => ({
+    'teamshop_auto_po_needs.select': [{ data: [], error: null }],
+    'webstore_orders.select': [{ data: [{ id: 'ord-1', order_source: 'teamshop' }], error: null }],
+    'so_items.select': [{ data: [{ id: 11, item_index: 0, product_id: 'p-sm', sku: 'PC61', sizes: { S: 10 }, is_custom: false }], error: null }],
+    'teamshop_auto_po_settings.select': [{ data: settings, error: null }],
+    'products.select': [{ data: PRODUCTS, error: null }],
+    'product_inventory.select': [{ data: [], error: null }],
+    'inventory_unified.select': [{ data: [], error: null }],
+    'rpc.create_purchase_order': [{ data: { ok: true, replayed: false, purchase_order: { id: 'po-sm', po_number: 'NSA 501', status: 'draft' } }, error: null }],
+    'teamshop_auto_po_needs.upsert': [{ data: null, error: null }],
+    'purchase_orders.update': [{ data: [{ id: 'po-sm', status: 'created', submitted_by: 'auto' }], error: null }],
+    ...over,
+  });
+
+  beforeEach(() => {
+    process.env.BREVO_API_KEY = 'test-brevo';
+    global.fetch = jest.fn(async () => ({ ok: true, text: async () => '' }));
+  });
+  afterEach(() => { delete process.env.BREVO_API_KEY; });
+
+  test('enabled vendor: emails the PO then marks it submitted (submitted_by=auto) on a fresh draft', async () => {
+    const sb = fakeSb(autoScript(SANMAR_ON()));
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.ok).toBe(true);
+    expect(r.auto_submitted).toBe(1);
+
+    // PO email sent to the vendor's contact_email via Brevo
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, opts] = global.fetch.mock.calls[0];
+    expect(url).toBe('https://api.brevo.com/v3/smtp/email');
+    const payload = JSON.parse(opts.body);
+    expect(payload.to).toEqual([{ email: 'sanmar@vendor.test' }]);
+    expect(payload.htmlContent).toContain('NSA 501');
+    expect(payload.htmlContent).toContain('PC61');
+
+    // marked submitted like mark_submitted, but submitted_by 'auto'
+    const upd = sb.calls.find((c) => c.op === 'update' && c.table === 'purchase_orders');
+    expect(upd.payload.status).toBe('created');
+    expect(upd.payload.submitted_by).toBe('auto');
+    expect(upd.filters).toEqual(expect.arrayContaining([['eq', 'id', 'po-sm'], ['eq', 'status', 'draft']]));
+  });
+
+  test('below the vendor min_order_cents: left draft, no email, no submit', async () => {
+    const sb = fakeSb(autoScript(SANMAR_ON({ min_order_cents: 99999999 })));
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.auto_submits[0].reason).toBe('below_min');
+    expect(r.auto_submitted).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(sb.calls.some((c) => c.op === 'update' && c.table === 'purchase_orders')).toBe(false);
+  });
+
+  test('missing contact_email: left draft, no email (surfaced by the stuck sweep)', async () => {
+    const sb = fakeSb(autoScript(SANMAR_ON({ contact_email: null })));
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.auto_submits[0].reason).toBe('no_vendor_email');
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(sb.calls.some((c) => c.op === 'update' && c.table === 'purchase_orders')).toBe(false);
+  });
+
+  test('auto_submit_enabled=false (default): never emails or marks', async () => {
+    const sb = fakeSb(autoScript(SANMAR_ON({ auto_submit_enabled: false })));
+    const r = await autoPo.generateForSo(sb, SO_ID, 'tm-1');
+    expect(r.auto_submitted).toBeUndefined();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  test('autoSubmitPo unit: a racing already-submitted PO returns not_draft, never a second stamp', async () => {
+    const sb = fakeSb({ 'purchase_orders.update': [{ data: [], error: null }] });
+    const res = await autoPo.autoSubmitPo(sb, {
+      po: { id: 'po-sm', po_number: 'NSA 501' }, vendor: 'SanMar',
+      setting: { auto_submit_enabled: true, contact_email: 'x@y.test', min_order_cents: null },
+      group: { totals_cents: 2616, lines: [{ sku: 'PC61', size: 'S', qty: 6, unit_cost_cents: 436 }] },
+    });
+    expect(res.submitted).toBe(false);
+    expect(res.reason).toBe('not_draft');
+  });
+});
+
 // ── Migration 00202 static characterization ──────────────────────────
 describe('migration 00202', () => {
   const SQL = fs.readFileSync(path.join(__dirname, '../../supabase/migrations/00202_teamshop_auto_po.sql'), 'utf8');

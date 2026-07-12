@@ -166,6 +166,38 @@ test('a converted SO that already has a purchase_order_lines row is NOT flagged'
   expect(summary.counts.no_po_need_order).toBe(0);
 });
 
+test('(f) auto-submit-blocked: a vendor with auto_submit on but no contact_email surfaces its draft auto POs', async () => {
+  const admin = makeAdmin((op) => {
+    if (op.table === 'teamshop_auto_po_settings') {
+      return { data: [{ vendor: 'SanMar', auto_submit_enabled: true, contact_email: null }], error: null };
+    }
+    if (op.table === 'purchase_orders') {
+      return { data: [{ id: 'po-1', po_number: 'NSA 501', vendor: 'SanMar', totals_cents: 2616, created_at: '2026-07-01T00:00:00Z' }], error: null };
+    }
+    return { data: [], error: null };
+  });
+  const summary = await runSweep(admin);
+  expect(summary.counts.auto_submit_blocked).toBe(1);
+  expect(summary.total_stuck).toBe(1);
+  expect(summary.emailed).toBe(true);
+  const payload = JSON.parse(global.fetch.mock.calls[0][1].body);
+  expect(payload.htmlContent).toContain('NSA 501');
+});
+
+test('a vendor WITH a contact_email is not flagged (its drafts will auto-submit)', async () => {
+  const admin = makeAdmin((op) => {
+    if (op.table === 'teamshop_auto_po_settings') {
+      return { data: [{ vendor: 'SanMar', auto_submit_enabled: true, contact_email: 'sanmar@x.com' }], error: null };
+    }
+    if (op.table === 'purchase_orders') {
+      return { data: [{ id: 'po-1', vendor: 'SanMar' }], error: null };
+    }
+    return { data: [], error: null };
+  });
+  const summary = await runSweep(admin);
+  expect(summary.counts.auto_submit_blocked).toBe(0);
+});
+
 test('the "shipped, no email log" check (e) is always reported as skipped, never silently omitted', async () => {
   const admin = makeAdmin(emptyRoute);
   const { skipped } = await runChecks(admin);

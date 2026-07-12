@@ -69,6 +69,88 @@ const isMissingRelation = (e) => {
   return code === '42P01' || code === '42703' || code === '42883' || /does not exist|could not find|schema cache/i.test(msg);
 };
 
+// ── Auto-submit (Phase 3b) ────────────────────────────────────────────
+// When teamshop_auto_po_settings.auto_submit_enabled is true for a vendor, a
+// FRESHLY-drafted PO (never a replay) is emailed to that vendor's contact_email
+// (00202's existing column — no schema change needed) and marked submitted the
+// same way the staff mark_submitted action does (status 'created',
+// submitted_at), but submitted_by='auto'. There is no supplier-email step in the
+// codebase today (00193: "no supplier submission in this pass"; the queue only
+// flips status), so this composes a PO email via Brevo — the same transport
+// teamshop-stuck-sweep.js uses. Respects min_order_cents: a PO below the vendor's
+// minimum is left draft. A missing contact_email leaves the PO draft and is
+// surfaced by teamshop-stuck-sweep. NEVER throws (best-effort, like the rest of
+// this module) — a submission failure only leaves the PO as a reviewable draft.
+const escHtml = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+const moneyCents = (cents) => '$' + ((Number(cents) || 0) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function buildPoEmailHtml(po, vendor, group) {
+  const cell = 'padding:4px 10px;border:1px solid #e2e8f0';
+  const rows = (group.lines || []).map((l) => `<tr>
+    <td style="${cell}">${escHtml(l.sku || '')}</td>
+    <td style="${cell}">${escHtml(l.size || '')}</td>
+    <td style="${cell};text-align:right">${Number(l.qty) || 0}</td>
+    <td style="${cell};text-align:right">${moneyCents(l.unit_cost_cents)}</td>
+  </tr>`).join('');
+  return `<div style="font-family:sans-serif;max-width:640px">
+    <h2 style="margin-bottom:4px">Purchase Order ${escHtml(po.po_number || po.id)}</h2>
+    <p style="color:#475569;margin-top:0">National Sports Apparel — ${escHtml(vendor)}${group.supplier_account ? ' · acct ' + escHtml(group.supplier_account) : ''}</p>
+    <table style="border-collapse:collapse;font-size:13px;margin-top:10px">
+      <thead><tr>
+        <th style="${cell};text-align:left">SKU</th>
+        <th style="${cell};text-align:left">Size</th>
+        <th style="${cell};text-align:right">Qty</th>
+        <th style="${cell};text-align:right">Unit</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p style="font-size:13px;margin-top:12px">Total: <strong>${moneyCents(group.totals_cents)}</strong></p>
+    <p style="font-size:11px;color:#94a3b8;margin-top:18px">Auto-submitted by National Sports Apparel Team Shop.</p>
+  </div>`;
+}
+
+async function sendVendorPoEmail(po, vendor, group, toEmail) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) { console.error('[teamshop-auto-po] BREVO_API_KEY missing — cannot email PO ' + (po.po_number || po.id)); return false; }
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    body: JSON.stringify({
+      sender: { name: 'NSA Team Shop', email: 'noreply@nationalsportsapparel.com' },
+      to: [{ email: toEmail }],
+      subject: 'Purchase Order ' + (po.po_number || po.id) + ' — National Sports Apparel',
+      htmlContent: buildPoEmailHtml(po, vendor, group),
+    }),
+  });
+  if (!res.ok) { console.error('[teamshop-auto-po] Brevo PO send failed:', res.status, await res.text().catch(() => '')); return false; }
+  return true;
+}
+
+// Attempt to auto-submit ONE freshly drafted PO. Returns a result; never throws.
+async function autoSubmitPo(admin, { po, vendor, setting, group }) {
+  try {
+    if (!setting || setting.auto_submit_enabled !== true) return { submitted: false, reason: 'disabled' };
+    const min = setting.min_order_cents != null ? Number(setting.min_order_cents) : null;
+    if (min != null && (Number(group.totals_cents) || 0) < min) return { submitted: false, reason: 'below_min' };
+    const toEmail = String(setting.contact_email || '').trim();
+    if (!toEmail) return { submitted: false, reason: 'no_vendor_email' };
+
+    const emailed = await sendVendorPoEmail(po, vendor, group, toEmail);
+    if (!emailed) return { submitted: false, reason: 'email_failed' };
+
+    // Same compare-and-set from 'draft' that markSubmitted uses, submitted_by='auto'.
+    const upd = await admin.from('purchase_orders')
+      .update({ status: 'created', submitted_at: new Date().toISOString(), submitted_by: 'auto' })
+      .eq('id', po.id).eq('status', 'draft')
+      .select('id,status,submitted_at,submitted_by');
+    if (upd.error) return { submitted: false, reason: 'mark_failed', error: upd.error.message };
+    if (!upd.data || !upd.data.length) return { submitted: false, reason: 'not_draft' }; // raced with a staff mark
+    return { submitted: true, emailed: true, po_id: po.id };
+  } catch (e) {
+    return { submitted: false, reason: 'error', error: e.message || String(e) };
+  }
+}
+
 // ── Pure needs computation (unit-tested directly) ─────────────────────
 // Inputs are plain row arrays; output is { needs, vendorGroups, notes }.
 //   soItems     — so_items rows: { id, item_index, product_id, sku, sizes, is_custom }
@@ -232,10 +314,16 @@ async function generateForSo(admin, soId, actor) {
     vendorStock: vsRes.error ? [] : (vsRes.data || []),
   });
 
+  // Full per-vendor setting rows (auto_submit_enabled / contact_email /
+  // min_order_cents) — computeNeeds only carries a subset into vendorGroups.
+  const settingByVendor = {};
+  (settingsRes.data || []).forEach((s) => { settingByVendor[s.vendor] = s; });
+
   // One draft PO per vendor through the 00193 RPC. client_ref makes any
   // replay/race collapse onto the same PO with the same lines.
   const created = [];
   const poIdByVendor = {};
+  const autoSubmits = [];
   for (const [vendor, g] of Object.entries(vendorGroups)) {
     const clientRef = 'tsauto:' + so + ':' + vendor;
     const rpc = await admin.rpc('create_purchase_order', {
@@ -267,13 +355,26 @@ async function generateForSo(admin, soId, actor) {
     }
     const po = rpc.data && rpc.data.purchase_order;
     if (po && po.id) poIdByVendor[vendor] = po.id;
+    const replayed = !!(rpc.data && rpc.data.replayed);
+
+    // Auto-submit: only a FRESHLY-created draft (never a replay) for a vendor whose
+    // auto_submit flag is on. A replay already went through this decision on its
+    // first run, so we never re-email/re-mark it.
+    let autoSubmit = null;
+    const setting = settingByVendor[vendor];
+    if (po && po.id && !replayed && po.status === 'draft' && setting && setting.auto_submit_enabled === true) {
+      autoSubmit = await autoSubmitPo(admin, { po, vendor, setting, group: g });
+      autoSubmits.push({ vendor, po_id: po.id, po_number: po.po_number, ...autoSubmit });
+    }
+
     created.push({
       vendor,
       po_id: po ? po.id : null,
       po_number: po ? po.po_number : null,
-      replayed: !!(rpc.data && rpc.data.replayed),
+      replayed,
       lines: g.lines.length,
       totals_cents: g.totals_cents,
+      ...(autoSubmit ? { auto_submit: autoSubmit } : {}),
     });
   }
 
@@ -297,6 +398,7 @@ async function generateForSo(admin, soId, actor) {
     pos: created,
     needs_rows: rows.length,
     unmapped: needs.filter((n) => n.skip_reason === 'no_vendor_mapping').length,
+    ...(autoSubmits.length ? { auto_submits: autoSubmits, auto_submitted: autoSubmits.filter((a) => a.submitted).length } : {}),
     ...(notes.length ? { notes } : {}),
   };
 }
@@ -450,3 +552,5 @@ module.exports.generateForSoSafe = generateForSoSafe;
 module.exports.listAutoPos = listAutoPos;
 module.exports.markSubmitted = markSubmitted;
 module.exports.sweep = sweep;
+module.exports.autoSubmitPo = autoSubmitPo;
+module.exports.buildPoEmailHtml = buildPoEmailHtml;

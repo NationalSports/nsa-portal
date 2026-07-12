@@ -24,6 +24,11 @@
 //       (so the auto-PO engine, 00202, never fired or found nothing to buy)
 //       AND at least one so_jobs row still item_status='need_to_order',
 //       24h+ old — production is waiting on stock nobody ordered.
+//   (f) auto-PO drafts BLOCKED from auto-submit by a missing vendor email — a
+//       vendor with teamshop_auto_po_settings.auto_submit_enabled=true but no
+//       contact_email will never dispatch its drafts (teamshop-auto-po.js
+//       leaves them 'draft'); surface them so staff add the email or send the
+//       PO by hand.
 //   (e) SKIPPED — sales_orders in a shipped state with no webstore email log.
 //       There is no email-send-log table for webstore order shipment notices
 //       (traced: webstore_orders/so_jobs carry no "shipment email sent"
@@ -169,9 +174,25 @@ async function checkNoPoNeedOrder(admin, soIdMap) {
     .filter((j) => j._created && j._created <= cutoff);
 }
 
+// Auto-PO drafts for vendors that CAN'T auto-submit — auto_submit_enabled=true but
+// no contact_email — so teamshop-auto-po.js left them as drafts. (f)
+async function checkAutoSubmitBlocked(admin) {
+  const { data: settings, error } = await admin.from('teamshop_auto_po_settings')
+    .select('vendor, auto_submit_enabled, contact_email').eq('auto_submit_enabled', true);
+  if (error) throw error;
+  const blocked = (settings || []).filter((s) => !String(s.contact_email || '').trim()).map((s) => s.vendor);
+  if (!blocked.length) return [];
+  const { data: pos, error: pErr } = await admin.from('purchase_orders')
+    .select('id, po_number, vendor, totals_cents, created_at')
+    .eq('origin', 'auto').eq('status', 'draft').in('vendor', blocked)
+    .order('created_at', { ascending: true }).limit(ROW_LIMIT);
+  if (pErr) throw pErr;
+  return pos || [];
+}
+
 // ── Orchestration ────────────────────────────────────────────────────────
 async function runChecks(admin) {
-  const out = { paid_no_so: [], stale_pending_payment: [], stuck_art: [], no_po_need_order: [], errors: [], skipped: [] };
+  const out = { paid_no_so: [], stale_pending_payment: [], stuck_art: [], no_po_need_order: [], auto_submit_blocked: [], errors: [], skipped: [] };
 
   out.skipped.push({
     check: 'shipped_no_email_log',
@@ -189,13 +210,15 @@ async function runChecks(admin) {
   const soIdMapObj = Array.isArray(soIdMap) ? {} : soIdMap; // safe() returns [] on failure
   out.stuck_art = await safe('stuck_art', () => checkStuckArt(admin, soIdMapObj));
   out.no_po_need_order = await safe('no_po_need_order', () => checkNoPoNeedOrder(admin, soIdMapObj));
+  out.auto_submit_blocked = await safe('auto_submit_blocked', () => checkAutoSubmitBlocked(admin));
 
   return out;
 }
 
 function totalStuck(summary) {
   return summary.paid_no_so.length + summary.stale_pending_payment.length
-    + summary.stuck_art.length + summary.no_po_need_order.length;
+    + summary.stuck_art.length + summary.no_po_need_order.length
+    + summary.auto_submit_blocked.length;
 }
 
 // ── Email ────────────────────────────────────────────────────────────────
@@ -216,6 +239,8 @@ function buildEmailHtml(summary, portalUrl) {
     (j) => `<li>${soLink(j.so_id)} / ${esc(j.id)} — ${esc(j.art_name || 'unassigned art')} — ${esc(j.art_status)} — created ${esc(j.created_at)}</li>`);
   const poHtml = section('No purchase order and still need_to_order (24h+)', summary.no_po_need_order,
     (j) => `<li>${soLink(j.so_id)} / ${esc(j.id)} — created ${esc(j.created_at)}</li>`);
+  const autoSubmitHtml = section('Auto-PO drafts blocked — vendor has no contact_email', summary.auto_submit_blocked,
+    (p) => `<li>${esc(p.po_number || p.id)} — ${esc(p.vendor)} — ${money((Number(p.totals_cents) || 0) / 100)} — created ${esc(p.created_at)}</li>`);
 
   const errorsHtml = summary.errors.length
     ? `<p style="margin-top:22px;font-size:12px;color:#92400e">Some checks failed and were skipped this run: ${summary.errors.map((e) => esc(e.check) + ' (' + esc(e.error) + ')').join('; ')}</p>`
@@ -227,7 +252,7 @@ function buildEmailHtml(summary, portalUrl) {
   return `<div style="font-family:sans-serif;max-width:680px">
     <h2 style="color:#dc2626;margin-bottom:4px">Team Shop / Club — stuck order sweep</h2>
     <p style="color:#64748b;margin-top:0">Generated: ${new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} PT</p>
-    ${paidNoSoHtml}${pendingHtml}${artHtml}${poHtml}${errorsHtml}${skippedHtml}
+    ${paidNoSoHtml}${pendingHtml}${artHtml}${poHtml}${autoSubmitHtml}${errorsHtml}${skippedHtml}
     <hr style="margin-top:28px;border:none;border-top:1px solid #e2e8f0"/>
     <p style="font-size:11px;color:#94a3b8">Sent by teamshop-stuck-sweep. so_jobs age is date-only (no time-of-day in the source column) — see the function's header comment.</p>
   </div>`;
@@ -262,7 +287,7 @@ async function runSweep(admin) {
     try { emailed = await sendAlert(summary); }
     catch (e) { console.error('[teamshop-stuck-sweep] alert send error:', e.message || e); }
   }
-  console.log(`[teamshop-stuck-sweep] paid_no_so=${summary.paid_no_so.length} stale_pending=${summary.stale_pending_payment.length} stuck_art=${summary.stuck_art.length} no_po=${summary.no_po_need_order.length} emailed=${emailed}`);
+  console.log(`[teamshop-stuck-sweep] paid_no_so=${summary.paid_no_so.length} stale_pending=${summary.stale_pending_payment.length} stuck_art=${summary.stuck_art.length} no_po=${summary.no_po_need_order.length} auto_submit_blocked=${summary.auto_submit_blocked.length} emailed=${emailed}`);
   return {
     ok: true,
     total_stuck: n,
@@ -272,6 +297,7 @@ async function runSweep(admin) {
       stale_pending_payment: summary.stale_pending_payment.length,
       stuck_art: summary.stuck_art.length,
       no_po_need_order: summary.no_po_need_order.length,
+      auto_submit_blocked: summary.auto_submit_blocked.length,
     },
     errors: summary.errors,
     skipped: summary.skipped,
@@ -311,6 +337,7 @@ exports.handler = async (event) => {
 // ── Test surface ─────────────────────────────────────────────────────────
 module.exports.runSweep = runSweep;
 module.exports.runChecks = runChecks;
+module.exports.checkAutoSubmitBlocked = checkAutoSubmitBlocked;
 module.exports.businessDaysAgoDateOnly = businessDaysAgoDateOnly;
 module.exports.daysAgoDateOnly = daysAgoDateOnly;
 module.exports.parseSoJobDate = parseSoJobDate;
