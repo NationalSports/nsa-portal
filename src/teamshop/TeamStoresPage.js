@@ -147,7 +147,7 @@ function DemoStore({
 }) {
   const vars = { '--tp': theme.primary, '--tp2': theme.light, '--ta': theme.accent };
   return (
-    <div style={{ background: '#fff', ...vars }}>
+    <div style={{ background: '#fff', ...vars, ...(compact ? { display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 } : {}) }}>
       {/* announcement bar */}
       <div
         style={{
@@ -211,8 +211,8 @@ function DemoStore({
         style={{
           position: 'relative', background: 'linear-gradient(120deg, var(--tp2), var(--tp))', overflow: 'hidden',
           padding: compact ? '16px 14px' : 'clamp(24px, 3vw, 44px) clamp(16px, 2.5vw, 40px)',
-          display: 'grid', gridTemplateColumns: compact ? '1fr' : 'repeat(auto-fit, minmax(260px, 1fr))', gap: compact ? 12 : 24,
-          alignItems: 'center', flex: compact ? 1 : 'none',
+          display: 'grid', gridTemplateColumns: compact ? '1.1fr 1fr' : 'repeat(auto-fit, minmax(260px, 1fr))', gap: compact ? 12 : 24,
+          alignItems: 'center', flex: 'none',
         }}
       >
         <span aria-hidden="true" style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(115deg, rgba(255,255,255,0.05) 0 2px, transparent 2px 22px)', pointerEvents: 'none' }} />
@@ -242,22 +242,35 @@ function DemoStore({
             </>
           )}
         </div>
-        {!compact && (
-          <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: '1.3fr 1fr', gridTemplateRows: '1fr 1fr', gap: 12, minHeight: 220 }}>
-            <div style={{ gridRow: '1 / span 2', background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Garment kind="hoodie" tone="royal" />
-            </div>
-            <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Garment kind="ls" tone="white" />
-            </div>
-            <div style={{ background: '#fff', borderRadius: 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Garment kind="ls" tone="royal" />
-            </div>
+        <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: '1.3fr 1fr', gridTemplateRows: '1fr 1fr', gap: compact ? 8 : 12, minHeight: compact ? 120 : 220 }}>
+          <div style={{ gridRow: '1 / span 2', background: '#fff', borderRadius: compact ? 8 : 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Garment kind="hoodie" tone="royal" />
           </div>
-        )}
+          <div style={{ background: '#fff', borderRadius: compact ? 8 : 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Garment kind="ls" tone="white" />
+          </div>
+          <div style={{ background: '#fff', borderRadius: compact ? 8 : 12, boxShadow: '0 12px 30px rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Garment kind="ls" tone="royal" />
+          </div>
+        </div>
       </div>
 
-      {/* store product grid — full variant only; no illustrative prices */}
+      {/* store product grid — compact gets a 3-up mini strip that fills the rest of
+          the hero card; full variant gets the complete cards. No illustrative prices. */}
+      {compact && (
+        <div style={{ background: '#FAF7F0', padding: 12, flex: 1, minHeight: 0 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, height: '100%' }}>
+            {STORE_PRODUCTS.slice(0, 3).map((p) => (
+              <div key={p.name} style={{ background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 2px 8px rgba(15,26,56,0.08)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+                <div style={{ position: 'relative', flex: 1, minHeight: 0, background: TILE_BG[p.tone], display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Garment kind={p.kind} tone={p.tone} />
+                </div>
+                <div style={{ padding: '6px 8px', ...displayType(9, { color: 'var(--tp)', lineHeight: 1.2 }), whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{p.name}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {!compact && (
         <div style={{ background: '#FAF7F0', padding: 'clamp(22px, 3vw, 36px) clamp(18px, 2.5vw, 32px)' }}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 14 }}>

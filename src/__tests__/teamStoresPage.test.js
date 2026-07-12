@@ -121,7 +121,9 @@ describe('TeamStoresPage', () => {
     // product prices were $17/$10/$8/$24; none of those render anywhere.
     // The hero's "$0 upfront cost" stat is a real, non-illustrative claim
     // and is exempt.)
-    expect(screen.getByText('PosiCharge Hooded Pullover')).toBeTruthy();
+    // Appears twice by design: the demo-store product grid AND the hero card's
+    // compact mini product strip (which reuses the same STORE_PRODUCTS).
+    expect(screen.getAllByText('PosiCharge Hooded Pullover').length).toBeGreaterThanOrEqual(2);
     ['$17', '$10', '$8', '$24'].forEach((price) => expect(screen.queryByText(price)).toBeNull());
     // How it works + CTA band.
     expect(screen.getByText('Open it, share it, cash the check')).toBeTruthy();
