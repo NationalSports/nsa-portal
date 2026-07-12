@@ -9702,6 +9702,18 @@ export default function App(){
   const[jobFilters,_setJobFilters]=useState({statuses:[],rep:_initRepF,deco:'all',artSt:'all',itemSt:'all',dueBefore:'',search:'',readyF:'all'});
   const[activeSavedFilterIdx,setActiveSavedFilterIdx]=useState(null);
   const setJobFilters=(v)=>{setActiveSavedFilterIdx(null);_setJobFilters(v)};
+  // jobFilters.rep initializes from _initRepF, which reads localStorage('nsa_user') at App mount.
+  // On a fresh login that key isn't set yet, so the jobs rep filter locks to 'all' (every rep) and
+  // never re-derives once the user arrives. Re-apply the role-appropriate default once cu is known:
+  // sales-facing roles default to their own jobs; ops roles (warehouse/production/art) keep 'all'
+  // since they work across every rep. Runs once, so it never clobbers a rep the user picks later.
+  const _jobRepDefaulted=useRef(false);
+  useEffect(()=>{
+    if(!cu||_jobRepDefaulted.current)return;
+    _jobRepDefaulted.current=true;
+    const mine=['rep','admin','super_admin','gm'].includes(cu.role);
+    _setJobFilters(prev=>({...prev,rep:mine?'_me_':'all'}));
+  },[cu]);
   const[jobSortField,setJobSortField]=useState('expected');const[jobSortDir,setJobSortDir]=useState('asc');
   const[jobTrackModal,setJobTrackModal]=useState(null);// enriched job row whose inbound tracking popup is open
   const _defaultSavedFilters=[
