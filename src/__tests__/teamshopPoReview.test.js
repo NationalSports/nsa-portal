@@ -6,6 +6,11 @@
  * exercised by calling the actions directly with a staff identity, matching
  * how teamshopCheckout.test.js drives its actions past verifyCoach.
  */
+jest.mock('../../netlify/functions/_webstoreEmail', () => ({
+  sendPoOrderApproved: jest.fn().mockResolvedValue(undefined),
+}));
+
+const emailMock = require('../../netlify/functions/_webstoreEmail');
 const po = require('../../netlify/functions/teamshop-po-review');
 
 // Scripted fake supabase — results consumed in order per "table.op" key;
@@ -65,6 +70,7 @@ beforeEach(() => {
   global.fetch = jest.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
   delete process.env.BREVO_API_KEY;
   delete process.env.REACT_APP_BREVO_API_KEY;
+  emailMock.sendPoOrderApproved.mockClear();
 });
 
 describe('list', () => {
@@ -123,14 +129,32 @@ describe('approve', () => {
     const rpc = sb.calls.find((c) => c.op === 'rpc');
     expect(rpc.table).toBe('create_teamshop_sales_order');
     expect(rpc.payload).toEqual({ p_webstore_order_id: 'ordpo1' });
+
+    // "PO order approved" fires once, after the RPC succeeds, with the order row.
+    expect(emailMock.sendPoOrderApproved).toHaveBeenCalledTimes(1);
+    expect(emailMock.sendPoOrderApproved).toHaveBeenCalledWith(sb, expect.objectContaining({ id: 'ordpo1' }));
   });
 
-  test('already converted (so_id set) → replayed, no writes', async () => {
+  test('a failed "PO order approved" email never fails the approval (best-effort)', async () => {
+    emailMock.sendPoOrderApproved.mockRejectedValueOnce(new Error('brevo down'));
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [PENDING], error: null }],
+      'webstore_orders.update': [{ data: [{ id: 'ordpo1' }], error: null }],
+      'rpc.create_teamshop_sales_order': [{ data: { so_id: 'SO-1002', replayed: false, invoice_id: 'INV-1002' }, error: null }],
+    });
+    const res = await po.approve(sb, { order_id: 'ordpo1' }, STAFF);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).so_id).toBe('SO-1002');
+    expect(emailMock.sendPoOrderApproved).toHaveBeenCalledTimes(1);
+  });
+
+  test('already converted (so_id set) → replayed, no writes, no email', async () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [{ ...PENDING, so_id: 'SO-1002', status: 'batched' }], error: null }] });
     const res = await po.approve(sb, { order_id: 'ordpo1' }, STAFF);
     expect(res.statusCode).toBe(200);
     const out = JSON.parse(res.body);
     expect(out.replayed).toBe(true);
+    expect(emailMock.sendPoOrderApproved).not.toHaveBeenCalled();
     expect(out.so_id).toBe('SO-1002');
     expect(sb.calls.filter((c) => c.op === 'update' || c.op === 'rpc')).toHaveLength(0);
   });
@@ -154,6 +178,8 @@ describe('approve', () => {
     expect(res.statusCode).toBe(502);
     // no status flip attempted — the order is already po_verified and stays so
     expect(sb.calls.filter((c) => c.op === 'update')).toHaveLength(0);
+    // conversion never succeeded, so no "in production" email is sent
+    expect(emailMock.sendPoOrderApproved).not.toHaveBeenCalled();
   });
 
   test('cancelled / card / non-PO orders are refused', async () => {

@@ -20,10 +20,12 @@ jest.mock('stripe', () => {
 });
 jest.mock('../../netlify/functions/_webstoreEmail', () => ({
   sendOrderConfirmation: jest.fn().mockResolvedValue(undefined),
+  sendPoOrderReceived: jest.fn().mockResolvedValue(undefined),
   bumpCouponUse: jest.fn().mockResolvedValue(undefined),
 }));
 
 const stripeMock = require('stripe');
+const emailMock = require('../../netlify/functions/_webstoreEmail');
 const ts = require('../../netlify/functions/teamshop-checkout');
 const qq = require('../../netlify/functions/quickorder-quote');
 const ws = require('../../netlify/functions/webstore-checkout');
@@ -354,7 +356,21 @@ describe('place_order_po', () => {
     const upd = sb.calls.find((c) => c.op === 'update');
     expect(upd.payload).toEqual({ po_doc_path: 'ordpo1/po.pdf' });
 
+    // "PO order received" fires once, after the write, with the order the RPC returned.
+    expect(emailMock.sendPoOrderReceived).toHaveBeenCalledTimes(1);
+    expect(emailMock.sendPoOrderReceived).toHaveBeenCalledWith(sb, expect.objectContaining({ id: 'ordpo1' }));
+
     expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+  });
+
+  test('a failed "PO order received" email never fails order placement (best-effort)', async () => {
+    emailMock.sendPoOrderReceived.mockRejectedValueOnce(new Error('brevo down'));
+    const { quote_hash } = await freshQuote();
+    const sb = fakeSb(poScript());
+    const res = await ts.placeOrderPo(sb, poBody({ quote_hash }), COACH);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).poPending).toBe(true);
+    expect(emailMock.sendPoOrderReceived).toHaveBeenCalledTimes(1);
   });
 
   test('program not approved (teamshop_po_allowed false) → 403 po_not_allowed, nothing written', async () => {
@@ -421,6 +437,8 @@ describe('place_order_po', () => {
     expect(out.clientSecret).toBeUndefined(); // unpaid replay = the plain branch, no PaymentIntent leg
     expect(sb.calls.filter((c) => c.op === 'rpc' || c.op === 'upload')).toHaveLength(0);
     expect(stripeMock.__pi.create).not.toHaveBeenCalled();
+    // A same-attempt replay must never re-send the "received" email.
+    expect(emailMock.sendPoOrderReceived).not.toHaveBeenCalled();
   });
 
   test('PDF upload failure rolls the committed order back', async () => {

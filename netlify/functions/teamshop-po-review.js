@@ -30,6 +30,10 @@
 // (.eq('status', ...)) so two staff tabs can't double-approve or
 // approve-after-reject.
 const { corsHeaders, getSupabaseAdmin, verifyUser } = require('./_shared');
+// "PO order approved" confirmation — same shared Brevo builder reject()'s
+// rejection email deliberately does NOT use (rejection is terminal and has
+// no analog in _webstoreEmail; approval does, so it reuses the one template).
+const { sendPoOrderApproved } = require('./_webstoreEmail');
 
 const bad = (status, error, extra) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ error, ...(extra || {}) }) });
 const ok = (body) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify(body) });
@@ -95,7 +99,7 @@ async function approve(admin, body, staff) {
   const orderId = String(body.order_id || '').trim();
   if (!orderId) return bad(400, 'order_id required');
   const { data, error } = await admin.from('webstore_orders')
-    .select('id,status,order_source,so_id,po_number').eq('id', orderId).limit(1);
+    .select('id,status,order_source,so_id,po_number,store_id,order_number,status_token,buyer_name,buyer_email').eq('id', orderId).limit(1);
   if (error) return bad(500, error.message);
   const order = data && data[0];
   if (!order) return bad(404, 'Order not found');
@@ -131,6 +135,19 @@ async function approve(admin, body, staff) {
   // fails the approval (staff can sweep from the Auto POs tab).
   if (rpc.data && rpc.data.so_id) {
     await require('./teamshop-auto-po').generateForSoSafe(admin, rpc.data.so_id, 'po-review-approve', 'teamshop-po-review');
+  }
+  // Best-effort "PO order approved" email — placed AFTER the RPC succeeds so
+  // it only ever claims the order is "in production" once that's actually
+  // true. Idempotency: this only runs on a call that just converted the order
+  // (so_id was null on entry); a replay of an already-converted order returns
+  // at the `if (order.so_id)` guard above and never reaches here, so it fires
+  // once per order. A missing key or send failure never fails the approval.
+  if (rpc.data && rpc.data.so_id) {
+    try {
+      await sendPoOrderApproved(admin, order);
+    } catch (e) {
+      console.error('[teamshop-po-review] approval email failed:', e.message);
+    }
   }
   return ok({ ok: true, ...(rpc.data || {}) });
 }

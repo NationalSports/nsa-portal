@@ -49,6 +49,9 @@ const qq = require('./quickorder-quote');
 // Tax, shipping, rollback, and clientRef idempotency come from the hardened
 // storefront checkout — one implementation for both order sources.
 const ws = require('./webstore-checkout');
+// "PO order received" confirmation (School-PO checkout) — same shared Brevo
+// builder as sendOrderConfirmation, never a second copy of the brand template.
+const { sendPoOrderReceived } = require('./_webstoreEmail');
 
 const TEAMSHOP_SLUG = 'nationalteamshop';
 const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
@@ -454,6 +457,20 @@ async function placeOrderPo(sb, body, coach) {
     try { await sb.storage.from('po-docs').remove([docPath]); } catch (e) { console.error('[teamshop-checkout] po doc cleanup failed:', e.message); }
     await ws.rollbackOrder(sb, order.id);
     return bad(502, 'Could not link the PO document: ' + docErr.message);
+  }
+
+  // Best-effort "PO order received" email — order + PO doc are recorded; a
+  // failed or unconfigured send must never fail the (already-committed) order.
+  // Idempotency: the clientRef replay check above returns BEFORE this point
+  // for any retried attempt that carries the same client_ref, so this only
+  // fires once per newly-created order in the common case. There is no
+  // confirmation_sent-style claim column for this path (unlike
+  // webstore-checkout's finalize) — a rare double-send from a client_ref-less
+  // retry is an acceptable cost for a best-effort transactional email.
+  try {
+    await sendPoOrderReceived(sb, order);
+  } catch (e) {
+    console.error('[teamshop-checkout] PO received email failed:', e.message);
   }
 
   return ok({ order: { ...order, po_doc_path: docPath }, totals, poPending: true });
