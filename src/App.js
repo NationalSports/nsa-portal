@@ -9763,6 +9763,11 @@ export default function App(){
     if(jfRepId&&jfRepId!=='all')fj=fj.filter(j=>j.repId===jfRepId);
     if(jf.deco!=='all')fj=fj.filter(j=>j.deco_type===jf.deco);
     if(jf.artSt!=='all')fj=fj.filter(j=>j.art_status===jf.artSt);
+    // Pure default view (no prod-status or ready-state chip active) also hides jobs that still need
+    // art — Art TBD / unassigned (art_status 'needs_art') — so the list is real production work. They
+    // resurface under the Needs Art chip (same predicate) and stay in the Not Ready pipeline view.
+    // Selecting any chip shows the honest subset so chip counts and the list agree.
+    else if(jf.statuses.length===0&&jf.readyF==='all')fj=fj.filter(j=>j.art_status!=='needs_art');
     // Waiting IF: garments aren't all in yet, but every missing unit sits on a reserved pick line
     // awaiting the warehouse Inventory Fulfillment pull — nothing left to order or receive.
     const _isWaitingIF=j=>j.total_units>0&&j.fulfilled_units<j.total_units&&j.ifCov>=j.total_units;
