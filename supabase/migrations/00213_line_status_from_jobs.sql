@@ -86,13 +86,20 @@ begin
     return NEW;
   end if;
 
+  -- Exclude 'draft' scaffold jobs — jobs OrderEditor's release wizard writes when
+  -- staff release only part of a job group (OrderEditor.js prod_status:'draft').
+  -- calcSOStatus (components.js:394, the SO-status source this mirrors) filters
+  -- them the same way; without this a leftover draft alongside fully-'completed'
+  -- real jobs would make v_completed < v_total forever, permanently capping the
+  -- order at 'in_production' and never reaching 'bagging'.
   select
     count(*),
     count(*) filter (where coalesce(prod_status, 'hold') in ('staging', 'in_process')),
     count(*) filter (where prod_status = 'completed')
   into v_total, v_active, v_completed
   from so_jobs
-  where so_id = NEW.so_id;
+  where so_id = NEW.so_id
+    and coalesce(prod_status, 'hold') <> 'draft';
 
   if v_total = 0 then return NEW; end if;
 
