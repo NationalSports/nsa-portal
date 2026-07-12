@@ -1130,16 +1130,41 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   }
   if(flags.length)specs.push({k:'Flags',v:[...new Set(flags)].join(', ')});
 
-  // Approved-mockup images (real front/back proofs; schematic fallback)
-  const _urlsFor=arr=>{const out=[];for(const f of(arr||[])){if(!f)continue;const u=typeof f==='string'?f:(f&&f.url)||'';if(_isImgUrl(u,f))out.push(u);else if(_isPdfUrl(u,f)){const t=_cloudinaryPdfThumb(u);if(t)out.push(t)}}return out};
-  const mockUrls=[...new Set([].concat(...itemDetails.map(d=>_urlsFor(_prodJobItemMocks(allArtFiles,so,d.gi))),_urlsFor(_prodJobGenericMocks(allArtFiles))))].slice(0,2);
-  const _backDeco=(()=>{for(const d of itemDetails){const dd=[...jobItemDecosOfKind(d.gi,d.it,'art'),...jobItemDecosOfKind(d.gi,d.it,'names'),...jobItemDecosOfKind(d.gi,d.it,'numbers')].find(x=>/back/i.test(x.position||''));if(dd)return dd.position}return null})();
-  const hasBack=!!_backDeco;
-  const fLabel='Front · '+(frontLoc||'Left chest');const bLabel='Back · '+(_backDeco||'Upper back');
+  // Approved-mockup images — one representative proof per decoration, placed into
+  // the Front / Back panels by that decoration's PLACEMENT. The per-item mock list
+  // is ordered by decoration then upload, so grabbing the first two images could
+  // land both proofs of ONE decoration on both panels (labelling one "Front") and
+  // drop the garment's other side. Each mock element carries its art_file_id, so we
+  // take one image per decoration and read its placement to pick the front vs back.
+  const _isBackPos=p=>/\b(back|yoke|nape|rear|shoulder\s*blade|upper\s*back|centre?\s*back)\b/i.test(String(p||''));
+  const _mockImg=f=>{const u=typeof f==='string'?f:(f&&f.url)||'';if(_isImgUrl(u,f))return u;if(_isPdfUrl(u,f))return _cloudinaryPdfThumb(u)||'';return''};
+  // art_file_id → placement, from this job's art decorations.
+  const _artPos={};itemDetails.forEach(d=>jobItemDecosOfKind(d.gi,d.it,'art').forEach(dd=>{if(dd.art_file_id&&_artPos[dd.art_file_id]==null)_artPos[dd.art_file_id]=dd.position||''}));
+  // One image per decoration (grouped by art file), tagged front/back by placement.
+  const _decoMocks=[];const _seenArt=new Set();const _seenUrl=new Set();
+  itemDetails.forEach(d=>{(_prodJobItemMocks(allArtFiles,so,d.gi)||[]).forEach(f=>{
+    const url=_mockImg(f);if(!url||_seenUrl.has(url))return;
+    const artId=(f&&typeof f==='object'&&f.art_file_id)||'';const grp=artId||url;
+    if(_seenArt.has(grp))return;_seenArt.add(grp);_seenUrl.add(url);
+    const pos=artId?(_artPos[artId]||''):'';
+    _decoMocks.push({url,artId,pos,side:_isBackPos(pos)?'back':'front'});
+  })});
+  // Fall back to generic (non-per-item) mocks only when no per-decoration image exists.
+  if(_decoMocks.length===0)(_prodJobGenericMocks(allArtFiles)||[]).forEach(f=>{const url=_mockImg(f);if(url&&!_seenUrl.has(url)){_seenUrl.add(url);_decoMocks.push({url,artId:'',pos:'',side:'front'})}});
+  const _frontMock=_decoMocks.find(m=>m.side==='front')||null;
+  const _backMock=_decoMocks.find(m=>m.side==='back')||null;
+  const _dimFor=m=>{if(!m||!m.artId)return'';const af=allArtFiles.find(a=>a?.id===m.artId);return(af&&((af.art_sizes&&af.art_sizes[m.pos])||af.art_size))||''};
+  const _backDeco=(()=>{for(const d of itemDetails){const dd=[...jobItemDecosOfKind(d.gi,d.it,'art'),...jobItemDecosOfKind(d.gi,d.it,'names'),...jobItemDecosOfKind(d.gi,d.it,'numbers')].find(x=>_isBackPos(x.position));if(dd)return dd.position}return null})();
+  const hasBack=!!_backMock||!!_backDeco;
+  const fLabel='Front · '+((_frontMock&&_frontMock.pos)||frontLoc||'Left chest');
+  const bLabel='Back · '+((_backMock&&_backMock.pos)||_backDeco||'Upper back');
+  const _fDim=(_frontMock&&_dimFor(_frontMock))||frontDim;
+  const _fUrl=_frontMock&&_frontMock.url;const _bUrl=_backMock&&_backMock.url;
   let mocks;
-  if(mockUrls.length>=2)mocks=[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,imgUrl:mockUrls[1],side:'back'}];
-  else if(mockUrls.length===1)mocks=hasBack?[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,imgUrl:mockUrls[0],side:'front'}];
-  else mocks=hasBack?[{label:fLabel,dim:frontDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:frontDim,side:'front'}];
+  if(_fUrl&&_bUrl)mocks=[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'},{label:bLabel,imgUrl:_bUrl,side:'back'}];
+  else if(_fUrl)mocks=hasBack?[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:_fDim,imgUrl:_fUrl,side:'front'}];
+  else if(_bUrl)mocks=[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,imgUrl:_bUrl,side:'back'}];
+  else mocks=hasBack?[{label:fLabel,dim:_fDim,side:'front'},{label:bLabel,side:'back',backArt:crest}]:[{label:fLabel,dim:_fDim,side:'front'}];
 
   // Names & numbers roster — pair by index within each size; DO NOT sort (that
   // would break number↔name alignment for roster-seeded orders).
