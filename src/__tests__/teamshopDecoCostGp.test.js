@@ -78,3 +78,48 @@ describe('App.js local dP carries the branch (source-text pin — App.js is unim
     );
   });
 });
+
+// Club conversion (00204) writes numbers/names personalization decos with an explicit
+// sell_override=0 — revenue is already inside unit_sell, so the deco's own sell must be
+// deterministically zero. The names branch (and App.js's numbers branch) used falsy-||
+// on sell_override, silently re-adding the $6/name (or npP) default over a deliberate
+// zero — inflating the calcGP cost-scaling denominator and overpaying commissions.
+describe('numbers/names sell_override=0 is honored (nullish, all dP copies)', () => {
+  const namesDeco = {
+    kind: 'names', position: 'Back Center',
+    sell_override: 0, sell_each: 6, cost_each: 3,
+    names: { M: ['SMITH', 'JONES'] },
+  };
+  const numbersDeco = {
+    kind: 'numbers', position: 'Back', num_method: 'screen_print',
+    sell_override: 0, roster: { M: ['12', '34'] },
+  };
+
+  test('decoPricing: names sell 0, cost stays real', () => {
+    const r = DECO.dP(DECO.DEFAULTS, namesDeco, 12);
+    expect(r.sell).toBe(0);
+    expect(r.cost).toBe(DECO.rQ(2 * 3 / 12)); // 2 names × $3 cost, prorated
+  });
+
+  test('decoPricing: numbers sell 0, cost stays real', () => {
+    const r = DECO.dP(DECO.DEFAULTS, numbersDeco, 12);
+    expect(r.sell).toBe(0);
+    expect(r.cost).toBeGreaterThan(0); // npP cost still applies
+  });
+
+  test('businessLogic: names sell 0', () => {
+    const r = BL.dP(namesDeco, 12);
+    expect(r.sell).toBe(0);
+  });
+
+  test('names default is preserved when sell_override is null/absent', () => {
+    const r = DECO.dP(DECO.DEFAULTS, { ...namesDeco, sell_override: null }, 12);
+    expect(r.sell).toBe(DECO.rQ(2 * 6 / 12)); // falls back to sell_each 6
+  });
+
+  test('App.js numbers/names branches use the nullish form (source-text pin)', () => {
+    const appSrc = fs.readFileSync(path.join(__dirname, '..', 'App.js'), 'utf8');
+    expect(appSrc).toContain("d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true))");
+    expect(appSrc).toContain("const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6))");
+  });
+});
