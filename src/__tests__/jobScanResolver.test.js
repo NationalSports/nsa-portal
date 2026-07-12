@@ -25,6 +25,34 @@ describe('classifyScan', () => {
     expect(classifyScan('   ').type).toBe('unknown');
     expect(classifyScan('hello world').type).toBe('unknown');
   });
+
+  // Printed labels encode the scan target as a ?scan= URL param, not a bare token.
+  // classifyScan must pull that param out and classify its value.
+  describe('URL-form ?scan= labels (the box-label unbreak)', () => {
+    test('box-label URL → the box plate inside it', () => {
+      expect(classifyScan('https://portal.app/?scan=BX-2001')).toEqual({ type: 'box', value: 'BX-2001' });
+      // percent-encoded plate + a trailing param
+      expect(classifyScan('https://portal.app/?scan=BX-2001&x=1')).toEqual({ type: 'box', value: 'BX-2001' });
+      expect(classifyScan('https://portal.app/?scan=bx2001')).toEqual({ type: 'box', value: 'BX-2001' });
+    });
+    test('scan param carrying a DG code / DST name classifies as dg / dst', () => {
+      expect(classifyScan('https://portal.app/?scan=DG648617')).toEqual({ type: 'dg', value: 'DG648617' });
+      expect(classifyScan('https://portal.app/?scan=EAGLES_LC.dst')).toEqual({ type: 'dst', value: 'EAGLES_LC.dst' });
+      expect(classifyScan('https://portal.app/?scan=EAGLES%20LC.DST')).toEqual({ type: 'dst', value: 'EAGLES LC.DST' });
+    });
+    test('bare tokens still classify unchanged (no regression)', () => {
+      expect(classifyScan('BX-2001')).toEqual({ type: 'box', value: 'BX-2001' });
+      expect(classifyScan('EAGLES_LC.dst')).toEqual({ type: 'dst', value: 'EAGLES_LC.dst' });
+      expect(classifyScan('DG-12345')).toEqual({ type: 'dg', value: 'DG12345' });
+    });
+    test('a DST download URL (?token=, no scan param) is untouched — still a DST', () => {
+      const c = classifyScan('https://cdn/artwork/EAGLES%20LC.DST?token=x');
+      expect(c).toEqual({ type: 'dst', value: 'EAGLES LC.DST' });
+    });
+    test('scan param pointing at a bare PO number stays unknown (no PO family)', () => {
+      expect(classifyScan('https://portal.app/?scan=NSA-4501').type).toBe('unknown');
+    });
+  });
 });
 
 describe('resolveScan', () => {
@@ -45,6 +73,14 @@ describe('resolveScan', () => {
   });
   test('BX plate → box + SO', () => {
     expect(resolveScan('BX-2001', index)).toMatchObject({ ok: true, kind: 'box', box_id: 'BX-2001', so_id: 'SO-100' });
+  });
+  test('a scanned box-label URL resolves to the box (end-to-end, the unbreak)', () => {
+    expect(resolveScan('https://portal.app/?scan=BX-2001', index))
+      .toMatchObject({ ok: true, kind: 'box', box_id: 'BX-2001', so_id: 'SO-100' });
+  });
+  test('a scanned DST-carrying label URL resolves to the owning job', () => {
+    expect(resolveScan('https://portal.app/?scan=EAGLES_LC.dst', index))
+      .toMatchObject({ ok: true, kind: 'job', so_id: 'SO-100', job_id: 'j1' });
   });
   test('unknown box plate → box_not_found', () => {
     expect(resolveScan('BX-9999', index)).toMatchObject({ ok: false, reason: 'box_not_found' });

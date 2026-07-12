@@ -25,9 +25,25 @@ const normName = (f) => {
   catch { return s.split('/').pop().split('?')[0]; }
 };
 
+// Every printed box label (boxTracking.buildBoxLabel) and the PO-receive labels
+// encode their scan target as a URL query param — <scanBase>?scan=<code> — not a
+// bare token. So before classifying, pull the `scan` param out of a URL/query
+// string and classify ITS value (a box plate, DST, or DG). Without this, a
+// scanned box label ('https://…/?scan=BX-2001') never matched any bare-token
+// pattern and resolved as unrecognized_code — the bug this unbreaks. A DST
+// download URL (…/EAGLES.DST?token=x) has no `scan` param, so it is untouched
+// and still flows through normName below.
+const extractScanParam = (code) => {
+  const m = code.match(/[?&]scan=([^&#]*)/i);
+  if (!m) return code;
+  let v = m[1];
+  try { v = decodeURIComponent(v); } catch (_) { /* keep raw on malformed % */ }
+  return v.trim();
+};
+
 // classifyScan(raw) → { type: 'box'|'dst'|'dg'|'unknown', value }
 function classifyScan(raw) {
-  const code = String(raw || '').trim();
+  const code = extractScanParam(String(raw || '').trim());
   if (!code) return { type: 'unknown', value: '' };
   // BX-#### box plate (accept BX2001 or BX-2001; normalize to BX-2001).
   if (/^BX-?\d+$/i.test(code)) {
