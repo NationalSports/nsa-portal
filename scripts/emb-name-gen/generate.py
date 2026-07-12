@@ -1,0 +1,197 @@
+#!/usr/bin/env python3
+"""Generate per-piece embroidery DSTs from an emb-name-gen payload via Ink/Stitch.
+
+Runs in CI (see .github/workflows/emb-name-gen.yml). Consumes the plan produced
+by src/embNameGen.js buildEmbNameGen():
+
+    {"job_id": "JOB-1189-04", "fingerprint": "ab12cd34",
+     "pieces": [{"seq":1,"size":"L","kind":"name","text":"Smith",
+                 "font":"block","heightIn":1,"filename":"001-L-NAME-SMITH"}, ...]}
+
+For each piece it invokes Ink/Stitch's batch_lettering extension headlessly
+(one call per piece — our sew-order filenames replace batch_lettering's own
+000-XXXX naming), unzips the stdout zip, validates the DST, and writes it to
+out/<filename>.DST. Writes out/manifest.json with per-piece results; exits
+non-zero if any piece failed (manifest still written for diagnosis).
+
+Stdlib only. Env: INKSTITCH_BIN (path to the bundled inkstitch executable).
+With no payload (or {"selftest": true}) it runs a built-in selftest: one name
+and one number through the default font — the first-live-run validation.
+"""
+
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import zipfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+OUT_DIR = os.path.abspath(os.environ.get("EMB_OUT_DIR", "out"))
+MIN_DST_BYTES = 200  # an empty/failed render produces a near-empty file; real lettering is KBs
+
+SELFTEST_PAYLOAD = {
+    "job_id": "SELFTEST",
+    "fingerprint": "selftest",
+    "pieces": [
+        {"seq": 1, "size": "L", "kind": "name", "text": "SMITH", "font": "block", "heightIn": 1, "filename": "001-L-NAME-SMITH"},
+        {"seq": 2, "size": "L", "kind": "number", "text": "12", "font": "block", "heightIn": 1, "filename": "002-L-NUM-12"},
+    ],
+}
+
+BLANK_SVG = """<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     width="100mm" height="100mm" viewBox="0 0 100 100" version="1.1"></svg>
+"""
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def load_payload(argv):
+    if len(argv) > 1 and os.path.exists(argv[1]) and os.path.getsize(argv[1]) > 0:
+        with open(argv[1]) as f:
+            raw = f.read().strip()
+        if raw:
+            payload = json.loads(raw)
+            if payload.get("pieces"):
+                return payload, False
+    log("No payload provided — running SELFTEST (one name + one number, default font)")
+    return SELFTEST_PAYLOAD, True
+
+
+def load_fonts_config():
+    with open(os.path.join(HERE, "fonts.json")) as f:
+        cfg = json.load(f)
+    return {k: v for k, v in cfg.items() if not k.startswith("_")}, cfg.get("_default", "block")
+
+
+def resolve_font(font_key, fonts_cfg, default_key, bundle_fonts_dir, warnings):
+    cfg = fonts_cfg.get(font_key)
+    if cfg is None:
+        warnings.append(f'font "{font_key}" not configured — using default "{default_key}"')
+        cfg = fonts_cfg[default_key]
+    # Read the bundle's own font.json for the EXACT display name (case varies by release).
+    name = cfg["fallbackName"]
+    fj = os.path.join(bundle_fonts_dir, cfg["fontDir"], "font.json")
+    if os.path.exists(fj):
+        try:
+            with open(fj) as f:
+                meta = json.load(f)
+            if meta.get("name"):
+                name = meta["name"]
+        except Exception as e:  # noqa: BLE001 — fall back to configured name, but say so
+            warnings.append(f'could not read {fj} ({e}) — using fallback name "{name}"')
+    else:
+        warnings.append(f'font dir "{cfg["fontDir"]}" not in bundle — using fallback name "{name}"')
+    return name, cfg
+
+
+def scale_for_height(height_in, cfg, warnings):
+    want_mm = float(height_in) * 25.4
+    pct = round(want_mm / cfg["designHeightMm"] * 100)
+    clamped = max(cfg["minScalePct"], min(cfg["maxScalePct"], pct))
+    if clamped != pct:
+        got_mm = cfg["designHeightMm"] * clamped / 100
+        warnings.append(
+            f'requested {height_in}" ({want_mm:.1f}mm) is outside this font\'s range — '
+            f'clamped to {clamped}% = {got_mm:.1f}mm ({got_mm / 25.4:.2f}")'
+        )
+    return clamped
+
+
+def run_inkstitch(bin_path, text, font_name, scale_pct, blank_svg_path):
+    """One batch_lettering call -> (zip_bytes, stderr_text, returncode)."""
+    cmd = [
+        bin_path,
+        "--extension=batch_lettering",
+        f"--text={text}",
+        f"--font={font_name}",
+        f"--scale={scale_pct}",
+        "--color-sort=off",
+        "--trim=off",
+        "--file-formats=dst",
+        blank_svg_path,
+    ]
+    if shutil.which("xvfb-run"):
+        cmd = ["xvfb-run", "-a"] + cmd
+    proc = subprocess.run(cmd, capture_output=True, timeout=300)
+    return proc.stdout, proc.stderr.decode("utf-8", "replace"), proc.returncode
+
+
+def extract_dst(zip_bytes):
+    """Pull the first .dst out of batch_lettering's stdout zip -> bytes."""
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        dsts = [n for n in z.namelist() if n.lower().endswith(".dst")]
+        if not dsts:
+            raise ValueError(f"zip contained no .dst (members: {z.namelist()})")
+        return z.read(dsts[0])
+
+
+def main(argv):
+    bin_path = os.environ.get("INKSTITCH_BIN", "")
+    if not bin_path or not os.path.exists(bin_path):
+        log(f"FATAL: INKSTITCH_BIN not set or missing (got: {bin_path!r})")
+        return 2
+    bundle_fonts_dir = os.path.join(os.path.dirname(os.path.abspath(bin_path)), "fonts")
+
+    payload, is_selftest = load_payload(argv)
+    fonts_cfg, default_key = load_fonts_config()
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    blank_svg_path = os.path.join(OUT_DIR, "_blank.svg")
+    with open(blank_svg_path, "w") as f:
+        f.write(BLANK_SVG)
+
+    results = []
+    failed = 0
+    for piece in payload["pieces"]:
+        warnings = []
+        entry = {"filename": piece["filename"], "seq": piece.get("seq"), "kind": piece.get("kind"),
+                 "text": piece.get("text"), "ok": False, "warnings": warnings}
+        results.append(entry)
+        try:
+            text = re.sub(r"\s+", " ", str(piece["text"])).strip()
+            if not text:
+                raise ValueError("empty text")
+            font_name, cfg = resolve_font(piece.get("font") or default_key, fonts_cfg, default_key,
+                                          bundle_fonts_dir, warnings)
+            pct = scale_for_height(piece.get("heightIn") or 1, cfg, warnings)
+            entry.update({"font": font_name, "scalePct": pct,
+                          "heightMm": round(cfg["designHeightMm"] * pct / 100, 1)})
+            log(f'[{piece["filename"]}] "{text}" font="{font_name}" scale={pct}%')
+
+            zip_bytes, stderr, rc = run_inkstitch(bin_path, text, font_name, pct, blank_svg_path)
+            if rc != 0 or not zip_bytes:
+                raise RuntimeError(f"inkstitch rc={rc}; stderr tail:\n{stderr[-2000:]}")
+            dst = extract_dst(zip_bytes)
+            if len(dst) < MIN_DST_BYTES:
+                raise RuntimeError(f"DST suspiciously small ({len(dst)} bytes) — likely empty render; "
+                                   f"stderr tail:\n{stderr[-1000:]}")
+            out_path = os.path.join(OUT_DIR, piece["filename"] + ".DST")
+            with open(out_path, "wb") as f:
+                f.write(dst)
+            entry.update({"ok": True, "bytes": len(dst)})
+            log(f'  -> OK {len(dst)} bytes' + (f' ({len(warnings)} warning(s))' if warnings else ""))
+            for w in warnings:
+                log(f"  ! {w}")
+        except Exception as e:  # noqa: BLE001 — keep going; report all failures at the end
+            failed += 1
+            entry["error"] = str(e)
+            log(f"  -> FAILED: {e}")
+
+    manifest = {"job_id": payload.get("job_id"), "fingerprint": payload.get("fingerprint"),
+                "selftest": is_selftest, "pieces": results,
+                "ok": failed == 0, "failed": failed, "total": len(results)}
+    with open(os.path.join(OUT_DIR, "manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=2)
+    log(f"\n{len(results) - failed}/{len(results)} pieces generated -> {OUT_DIR}")
+    return 0 if failed == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

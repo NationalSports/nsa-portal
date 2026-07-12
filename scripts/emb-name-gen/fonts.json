@@ -1,0 +1,11 @@
+{
+  "_comment": "Maps the portal's deco font keys (num_font / name_font: 'block' | 'serif' | ...) to Ink/Stitch fonts. fontDir is the folder under the Ink/Stitch bundle's fonts/ directory — generate.py reads that folder's font.json at runtime to get the EXACT display name (spelling/case varies between releases), falling back to fallbackName if the folder is missing. designHeightMm is the glyph height at scale=100; scale%% for a requested height is height_mm / designHeightMm * 100, clamped to [minScalePct, maxScalePct]. Add new fonts here as the shop approves them — key = what the portal deco stores.",
+  "block": {
+    "fontDir": "barstitch_bold",
+    "fallbackName": "Barstitch bold",
+    "designHeightMm": 23,
+    "minScalePct": 50,
+    "maxScalePct": 130
+  },
+  "_default": "block"
+}
