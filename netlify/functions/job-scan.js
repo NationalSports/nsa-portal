@@ -62,7 +62,7 @@ const fileUrl = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
 // run-ready files (DSTs, print files); `files` after as the general art pool.
 async function fetchJobDetail(db, soId, jobId) {
   const { data: job, error: jErr } = await db.from('so_jobs')
-    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at')
+    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at, notes, items')
     .eq('so_id', soId).eq('id', jobId).maybeSingle();
   if (jErr) throw jErr;
   if (!job) return null;
@@ -89,6 +89,19 @@ async function fetchJobDetail(db, soId, jobId) {
     }
   }
 
+  // Per-size breakdown, summed across the job's covered items. so_jobs.items is
+  // the same jsonb the client/auto-release read ([{ item_idx, sizes:{S:3,M:2} }]);
+  // a split job carries only its slice's sizes there, so this is the job's true
+  // size mix without a second query. Empty for qty-only jobs (no sized items).
+  const sizeBreakdown = {};
+  for (const gi of (Array.isArray(job.items) ? job.items : [])) {
+    const sizes = gi && gi.sizes && typeof gi.sizes === 'object' ? gi.sizes : {};
+    for (const [sz, v] of Object.entries(sizes)) {
+      const n = Number(v) || 0;
+      if (n > 0) sizeBreakdown[sz] = (sizeBreakdown[sz] || 0) + n;
+    }
+  }
+
   // Deliberately no money/cost fields — this feeds shop-floor screens.
   return {
     so_id: job.so_id,
@@ -100,6 +113,8 @@ async function fetchJobDetail(db, soId, jobId) {
     total_units: job.total_units || 0,
     digitizing_needed: !!job.digitizing_needed,
     packed_at: job.packed_at || null,
+    notes: job.notes || null,
+    size_breakdown: sizeBreakdown,
     files,
   };
 }

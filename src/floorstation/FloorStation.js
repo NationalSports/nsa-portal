@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import {
   STATIONS, stationByKey, stationAccepts, stationFilesFor, previewImageFor,
-  normProdStatus, nextActionFor,
+  normProdStatus, nextActionFor, sortedSizeEntries,
 } from './floorLogic';
 
 // Floor Station — scan-at-machine routing for the Team Shop fast-turn floor.
@@ -125,8 +125,26 @@ function JobPanel({ station, job, resolvedCode, busy, onAdvance }) {
           <div style={{ fontSize: 16, marginTop: 6, color: '#38bdf8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1 }}>
             Stage: {stage}{job.packed_at ? ' · packed' : ''}
           </div>
+          {job.size_breakdown && Object.keys(job.size_breakdown).length > 0 && (
+            <div style={{ marginTop: 10 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Sizes</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {sortedSizeEntries(job.size_breakdown).map(([sz, qty]) => (
+                  <span key={sz} style={{ fontSize: 17, fontWeight: 700, background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '4px 10px' }}>
+                    <span style={{ color: '#94a3b8' }}>{sz}</span> <span style={{ color: '#e2e8f0' }}>{qty}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
+      {job.notes && (
+        <div style={{ marginTop: 12, background: '#422006', border: '1px solid #a16207', borderRadius: 10, padding: '12px 14px' }}>
+          <div style={{ fontSize: 12, fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Notes</div>
+          <div style={{ fontSize: 17, color: '#fef3c7', whiteSpace: 'pre-wrap' }}>{job.notes}</div>
+        </div>
+      )}
 
       {station !== 'packing' && (
         <div style={{ marginTop: 14 }}>

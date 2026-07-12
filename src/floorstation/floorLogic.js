@@ -53,6 +53,20 @@ export function stationFilesFor(stationKey, files) {
 export const previewImageFor = (files) =>
   (Array.isArray(files) ? files : []).find((f) => isImageName(f.name)) || null;
 
+// Apparel size order for the floor sheet's size breakdown. Known sizes sort in
+// wear order (YXS..5XL); anything unrecognized sorts last, alphabetically, so a
+// custom/one-size cell never disappears.
+const SIZE_ORDER = ['YXS', 'YS', 'YM', 'YL', 'YXL', 'XS', 'S', 'M', 'L', 'XL', '2XL', 'XXL', '3XL', 'XXXL', '4XL', '5XL', 'OS', 'OSFA'];
+const sizeRank = (sz) => {
+  const i = SIZE_ORDER.indexOf(String(sz || '').toUpperCase());
+  return i === -1 ? SIZE_ORDER.length : i;
+};
+// Object {S:3,M:2} → [['S',3],['M',2]] in wear order (see sizeRank).
+export const sortedSizeEntries = (breakdown) =>
+  Object.entries(breakdown || {})
+    .filter(([, v]) => Number(v) > 0)
+    .sort((a, b) => sizeRank(a[0]) - sizeRank(b[0]) || String(a[0]).localeCompare(String(b[0])));
+
 // Mirrors advance_job_stage's legacy normalization (00192: 'ready' → 'hold'),
 // same as TeamShopQueue's normProdStatus.
 export const normProdStatus = (s) => {

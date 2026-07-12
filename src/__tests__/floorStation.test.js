@@ -40,6 +40,8 @@ const JOB_ROW = {
 };
 const JOB_DETAIL_ROW = {
   ...JOB_ROW, positions: 'Left Chest', total_units: 12, digitizing_needed: false, packed_at: null,
+  notes: 'Rush — heat set at 320F',
+  items: [{ item_idx: 0, sizes: { M: 5, S: 2 } }, { item_idx: 1, sizes: { M: 3, XL: 2 } }],
 };
 const ART_ROW = {
   so_id: 'SO-1', id: 'a1', name: 'Eagles',
@@ -87,6 +89,13 @@ describe('job-scan event:resolve (read-only)', () => {
     expect(global.__fnRpc).not.toHaveBeenCalled();
   });
 
+  test('resolve returns the per-size breakdown (summed across items) and the job note', async () => {
+    const r = await handler(makeEvent({ code: 'DG-12345', event: 'resolve' }, { 'x-machine-token': 'station-secret' }));
+    const body = JSON.parse(r.body);
+    expect(body.job.notes).toBe('Rush — heat set at 320F');
+    expect(body.job.size_breakdown).toEqual({ S: 2, M: 8, XL: 2 }); // M summed across both items
+  });
+
   test('resolve works with the station token (unattended read path, no staff JWT)', async () => {
     const r = await handler(makeEvent({ code: 'EAGLES_DG12345.dst', event: 'resolve' }, { 'x-machine-token': 'station-secret' }));
     expect(r.statusCode).toBe(200);
@@ -124,7 +133,7 @@ describe('job-scan event:resolve (read-only)', () => {
 
 // ── floorLogic pure helpers ────────────────────────────────────────────────
 const {
-  stationAccepts, stationFilesFor, previewImageFor, nextActionFor,
+  stationAccepts, stationFilesFor, previewImageFor, nextActionFor, sortedSizeEntries,
 } = require('../floorstation/floorLogic');
 
 describe('floorLogic', () => {
@@ -159,6 +168,14 @@ describe('floorLogic', () => {
     expect(previewImageFor([{ name: 'x.dst', url: 'u' }])).toBe(null);
   });
 
+  test('sortedSizeEntries orders sizes in wear order, drops zeros, unknown sizes last', () => {
+    expect(sortedSizeEntries({ M: 8, S: 2, XL: 2 })).toEqual([['S', 2], ['M', 8], ['XL', 2]]);
+    expect(sortedSizeEntries({ '2XL': 1, S: 3, L: 0 })).toEqual([['S', 3], ['2XL', 1]]);
+    expect(sortedSizeEntries({ CUSTOM: 4, M: 1 })).toEqual([['M', 1], ['CUSTOM', 4]]);
+    expect(sortedSizeEntries({})).toEqual([]);
+    expect(sortedSizeEntries(null)).toEqual([]);
+  });
+
   test('nextActionFor mirrors the 00192 stage machine, incl. legacy ready→hold', () => {
     expect(nextActionFor({ prod_status: 'hold' })).toMatchObject({ event: 'release', expected: 'hold' });
     expect(nextActionFor({ prod_status: 'ready' })).toMatchObject({ event: 'release', expected: 'hold' });
@@ -184,6 +201,7 @@ const RESOLVED_DTF_JOB = {
   so_id: 'SO-9', job_id: 'j9', art_name: 'Tigers DTF', deco_type: 'dtf',
   prod_status: 'staging', positions: 'Full Front', total_units: 8,
   digitizing_needed: false, packed_at: null,
+  notes: 'Left-chest print, no back', size_breakdown: { S: 2, M: 6 },
   files: [{ name: 'tigers-print.png', url: 'https://cdn/tigers-print.png', source: 'prod' }],
 };
 
@@ -233,6 +251,12 @@ describe('FloorStation UI', () => {
     const link = screen.getByText('tigers-print.png');
     expect(link.getAttribute('href')).toBe('https://cdn/tigers-print.png');
     expect(localStorage.getItem('nsa_floor_station')).toBe('dtf');
+    // size breakdown + the job note render on the floor sheet
+    expect(screen.getByText('Notes')).toBeTruthy();
+    expect(screen.getByText('Left-chest print, no back')).toBeTruthy();
+    expect(screen.getByText('Sizes')).toBeTruthy();
+    expect(screen.getByText('S')).toBeTruthy();
+    expect(screen.getByText('M')).toBeTruthy();
   });
 
   test('advance sends expected=<shown stage> and NSA_STALE_STATE re-resolves with a notice', async () => {
