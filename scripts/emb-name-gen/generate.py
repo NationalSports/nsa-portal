@@ -157,8 +157,17 @@ def run_inkstitch(bin_path, text, font_name, scale_pct, blank_svg_path):
 
 
 def extract_dst(zip_bytes):
-    """Pull the first .dst out of batch_lettering's stdout zip -> bytes."""
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+    """Pull the first .dst out of batch_lettering's stdout zip -> bytes.
+
+    On an import-time crash Ink/Stitch prints the Python traceback to STDOUT
+    (not stderr) — so if the bytes aren't a zip, surface them as the error.
+    """
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
+    except zipfile.BadZipFile:
+        text = zip_bytes[:1200].decode("utf-8", "replace")
+        raise RuntimeError(f"stdout was not a zip — inkstitch output:\n{text}")
+    with zf as z:
         dsts = [n for n in z.namelist() if n.lower().endswith(".dst")]
         if not dsts:
             raise ValueError(f"zip contained no .dst (members: {z.namelist()})")
@@ -207,7 +216,9 @@ def main(argv):
 
             zip_bytes, stderr, rc = run_inkstitch(bin_path, text, font_name, pct, blank_svg_path)
             if rc != 0 or not zip_bytes:
-                raise RuntimeError(f"inkstitch rc={rc}; stderr tail:\n{stderr[-2000:]}")
+                # Crashes print the traceback to STDOUT, so include both streams.
+                out_txt = zip_bytes[:1200].decode("utf-8", "replace") if zip_bytes else "(empty)"
+                raise RuntimeError(f"inkstitch rc={rc}; stdout:\n{out_txt}\nstderr tail:\n{stderr[-1000:]}")
             dst = extract_dst(zip_bytes)
             if len(dst) < MIN_DST_BYTES:
                 raise RuntimeError(f"DST suspiciously small ({len(dst)} bytes) — likely empty render; "

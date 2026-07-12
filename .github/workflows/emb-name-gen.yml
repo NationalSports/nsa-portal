@@ -37,7 +37,9 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q xvfb libgtk-3-0 libglib2.0-0 libgdk-pixbuf-2.0-0 \
-            libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libsm6 libxtst6 libnotify4 libxxf86vm1
+            libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libsm6 libxtst6 libnotify4 libxxf86vm1 \
+            libwayland-server0 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libegl1 libgl1 libgbm1
 
       - name: Install Ink/Stitch (standalone bundle, pinned)
         run: |
