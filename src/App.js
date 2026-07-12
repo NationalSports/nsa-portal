@@ -9742,8 +9742,9 @@ export default function App(){
     let fj=allJobs;
     const jf=jobFilters;
     // Legacy 'ready' prod_status folds into 'hold' (same normalization the run-with badge uses) so
-    // those jobs aren't invisible to the Hold chip.
-    const _normSt=s=>s==='ready'?'hold':s;
+    // those jobs aren't invisible to the Hold chip. 'shipped' folds into 'completed' so the Completed
+    // chip is the single "done" bucket — a shipped job is finished production too.
+    const _normSt=s=>s==='ready'?'hold':s==='shipped'?'completed':s;
     // True production readiness per the floor's rule: art finalized (incl. production files) AND
     // every garment picked/received — and the job hasn't already started running.
     const _isReadyToRun=j=>(_normSt(j.prod_status)==='hold')&&isJobReady(j,j.so);
@@ -9751,6 +9752,9 @@ export default function App(){
     // files, or goods. This is the "what's coming" pipeline view.
     const _isNotReadyYet=j=>(_normSt(j.prod_status)==='hold')&&!isJobReady(j,j.so);
     if(jf.statuses.length>0)fj=fj.filter(j=>jf.statuses.includes(_normSt(j.prod_status)));
+    // Default view (no production-status chip selected) hides finished jobs — completed and shipped —
+    // so the page shows active production work. Click the Completed chip to bring them back.
+    else fj=fj.filter(j=>_normSt(j.prod_status)!=='completed');
     if(jf.readyF==='ready')fj=fj.filter(_isReadyToRun);
     else if(jf.readyF==='not_ready')fj=fj.filter(_isNotReadyYet);
     const jfRepId=jf.rep==='_me_'?cu?.id:jf.rep;
