@@ -49,7 +49,12 @@ jobs:
           test -n "$BIN" || { echo "inkstitch binary not found in archive"; tar -tf inkstitch-3.2.2-linux-x86_64.tar.xz | head -40; exit 1; }
           chmod +x "$BIN"
           echo "INKSTITCH_BIN=$(readlink -f "$BIN")" >> "$GITHUB_ENV"
-          echo "Bundled fonts:"; ls "$(dirname "$BIN")/fonts" | head -30
+          # Fonts live at inkstitch/fonts while the binary is at inkstitch/bin/inkstitch —
+          # discover the dir instead of assuming it sits next to the binary.
+          FONTS_DIR="$(find . -maxdepth 3 -type d -name fonts -path '*inkstitch*' | head -1)"
+          test -n "$FONTS_DIR" || { echo "fonts dir not found in archive"; find . -maxdepth 2 -type d | head -20; exit 1; }
+          echo "EMB_FONTS_DIR=$(readlink -f "$FONTS_DIR")" >> "$GITHUB_ENV"
+          echo "Bundled fonts:"; ls "$FONTS_DIR" | head -30
 
       - name: Write payload
         env:

@@ -137,7 +137,14 @@ def main(argv):
     if not bin_path or not os.path.exists(bin_path):
         log(f"FATAL: INKSTITCH_BIN not set or missing (got: {bin_path!r})")
         return 2
-    bundle_fonts_dir = os.path.join(os.path.dirname(os.path.abspath(bin_path)), "fonts")
+    # Fonts dir: prefer the explicitly discovered one (the v3.2.2 tarball puts the
+    # binary at inkstitch/bin/inkstitch but fonts at inkstitch/fonts), then try
+    # both layouts relative to the binary.
+    bin_dir = os.path.dirname(os.path.abspath(bin_path))
+    candidates = [os.environ.get("EMB_FONTS_DIR", ""),
+                  os.path.join(bin_dir, "fonts"),
+                  os.path.join(os.path.dirname(bin_dir), "fonts")]
+    bundle_fonts_dir = next((c for c in candidates if c and os.path.isdir(c)), candidates[1])
 
     payload, is_selftest = load_payload(argv)
     fonts_cfg, default_key = load_fonts_config()
