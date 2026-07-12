@@ -203,3 +203,13 @@
 # netlify/functions/teamshop-stuck-sweep.js.
 [functions."teamshop-stuck-sweep"]
   schedule = "50 * * * *"
+
+# Team Shop / Club auto-release — every 15 min. Releases hold jobs it can PROVE
+# ready by a server-side recompute (art done + garments fully in hand) through
+# advance_job_stage('release', …) — the same 00205 gate a staff scan uses, never a
+# direct prod_status write. Default-OFF via teamshop_settings.auto_release_enabled
+# (00208); scope 'auto_art_only' | 'all'. Also callable on demand — staff POST
+# { action:'run' } with a bearer session token. See
+# netlify/functions/teamshop-auto-release.js.
+[functions."teamshop-auto-release"]
+  schedule = "*/15 * * * *"
