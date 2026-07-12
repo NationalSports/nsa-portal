@@ -9733,7 +9733,9 @@ export default function App(){
       return{billed,pulledStock,billedCov,ifCov}};
     // Build flat jobs list
     const allJobs=[];
-    sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
+    // Skip cancelled and soft-deleted orders — their jobs aren't real production work. Same guard the
+    // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
+    sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
         parentId:_pid,grpKey:jobGroupKey(j,_pid),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
