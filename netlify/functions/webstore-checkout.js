@@ -459,6 +459,13 @@ async function placeOrder(sb, body) {
   if (mode === 'paid' && Math.round(total * 100) < 50) return bad(409, 'Card payments must be at least $0.50 — use the team tab for this order.');
 
   // ── Build every row up front; nothing is written until all checks pass ──
+  // Club stores (org_type 'club'): each order converts into its own Sales Order the
+  // moment it's paid (create_club_sales_order, migration 00204) — same identity
+  // stamp teamshop-checkout.js writes for its own conversion RPC (order_source +
+  // customer_id), read by the RPC's org_type join back to webstores. Team stores
+  // (org_type 'team'/null) get neither field — batchOrders' `.is('so_id', null)`
+  // query is untouched, so nothing here can affect the staff batch flow.
+  const isClubStore = store.org_type === 'club';
   const orderRow = {
     store_id: store.id, status: mode === 'paid' ? 'pending_payment' : 'unpaid', payment_mode: mode, order_kind: 'individual',
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
@@ -466,6 +473,7 @@ async function placeOrder(sb, body) {
     ship_method: store.delivery_mode,
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
+    ...(isClubStore ? { order_source: 'club', customer_id: store.customer_id || null } : {}),
   };
 
   // Order-level "who this is for" name (checkout's Player name field). Used as the
@@ -689,6 +697,20 @@ async function finalize(sb, body) {
 
   await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).neq('status', 'paid');
 
+  // Club store order -> production conversion (migration 00204), the same
+  // post-payment trigger point as stripe-webhook's teamshop conversion fallback.
+  // Best-effort and STRICTLY guarded: this call must never fail the checkout
+  // response — the RPC is idempotent (so_id replay + paid re-guard), and the
+  // stripe-webhook fallback below picks it up if this never lands.
+  if (order.order_source === 'club' && !order.so_id) {
+    try {
+      const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
+      if (convErr) console.error('[webstore-checkout] club conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
+    } catch (e) {
+      console.error('[webstore-checkout] club conversion error:', e.message);
+    }
+  }
+
   // Atomic claim — whoever flips confirmation_sent (this call or the Stripe
   // webhook fallback) owns the coupon bump + the one confirmation email.
   const { data: won } = await sb.from('webstore_orders').update({ confirmation_sent: true }).eq('id', order.id).neq('confirmation_sent', true).select('id').limit(1);
@@ -886,6 +908,7 @@ async function updateShip(sb, body) {
 // isolation. Netlify invokes `handler`; these extra exports are inert in prod.
 module.exports.priceCart = priceCart;
 module.exports.placeOrder = placeOrder;
+module.exports.finalize = finalize;
 module.exports.checkStock = checkStock;
 module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;

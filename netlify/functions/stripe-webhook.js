@@ -99,6 +99,25 @@ exports.handler = async (event) => {
           console.error('[stripe-webhook] teamshop conversion error:', e.message);
         }
 
+        // Club store order → production conversion (migration 00204). Same
+        // best-effort/replay-safe posture as the teamshop branch above — this is
+        // the fallback for when webstore-checkout's own finalize call never landed
+        // (buyer closed the tab right after paying). Only fires for paid,
+        // unconverted club orders.
+        try {
+          const { data: _cs } = await sb.from('webstore_orders')
+            .select('id,order_source,so_id,status').eq('stripe_pi_id', pi.id).limit(1);
+          const _cso = _cs && _cs[0];
+          if (_cso && _cso.order_source === 'club' && !_cso.so_id && _cso.status === 'paid') {
+            const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: _cso.id });
+            if (convErr) {
+              console.error('[stripe-webhook] club conversion failed (order stays paid; next webhook/retry will pick it up):', convErr.message);
+            }
+          }
+        } catch (e) {
+          console.error('[stripe-webhook] club conversion error:', e.message);
+        }
+
         // Coach-portal invoice payments: mark the referenced invoice(s) paid. The portal also calls
         // this server-side right after paying (stripe-payment → finalize_invoice); this webhook is the
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
