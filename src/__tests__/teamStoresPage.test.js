@@ -100,7 +100,7 @@ const searchBox = () => screen.getByPlaceholderText('Search by school, team, or 
 describe('TeamStoresPage', () => {
   test('renders hero, pitches, find-your-store, showcase, steps, and CTA band', () => {
     render(<TeamStoresPage />);
-    expect(screen.getByText('A storefront for your program.')).toBeTruthy();
+    expect(screen.getByText('A storefront for your program — up in days.')).toBeTruthy();
     expect(screen.getByText('Online Team Stores')).toBeTruthy();
     // Rep CTA — mailto, never a self-service builder.
     const ctas = screen.getAllByText('Talk to your rep about a store');
@@ -158,12 +158,12 @@ describe('TeamStoresPage', () => {
 describe('TeamShopApp — Team Stores nav/footer wiring', () => {
   test('header nav "Team Stores" routes to the view', () => {
     render(<TeamShopApp />);
-    expect(screen.queryByText('A storefront for your program.')).toBeNull();
+    expect(screen.queryByText('A storefront for your program — up in days.')).toBeNull();
 
     const nav = screen.getAllByRole('button', { name: 'Team Stores' });
     fireEvent.click(nav[0]);
 
-    expect(screen.getByText('A storefront for your program.')).toBeTruthy();
+    expect(screen.getByText('A storefront for your program — up in days.')).toBeTruthy();
     expect(searchBox()).toBeTruthy();
   });
 
@@ -173,6 +173,6 @@ describe('TeamShopApp — Team Stores nav/footer wiring', () => {
     expect(buttons.length).toBe(2); // header nav + footer Help column
     fireEvent.click(buttons[1]);
 
-    expect(screen.getByText('A storefront for your program.')).toBeTruthy();
+    expect(screen.getByText('A storefront for your program — up in days.')).toBeTruthy();
   });
 });
