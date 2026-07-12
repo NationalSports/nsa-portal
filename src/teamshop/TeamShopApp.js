@@ -374,9 +374,6 @@ export default function TeamShopApp() {
               <img src="/NEW NSA Logo on white.png" alt="National Sports Apparel" style={{ height: 40, width: 'auto', objectFit: 'contain', flexShrink: 0 }} />
               <span style={displayType('clamp(15px, 1.7vw, 18px)', { letterSpacing: '0.18em', color: NAVY, lineHeight: 1, borderLeft: `1px solid ${BORDER}`, paddingLeft: 12 })}>Team Shop</span>
             </span>
-            <span className="nts-header-tagline" style={{ fontSize: 12, fontWeight: 500, color: TEXT_MUTED, letterSpacing: '0.02em', lineHeight: 1.4 }}>
-              Free decoration setup* · Saved logos · Fast turnaround, days not weeks*
-            </span>
           </button>
           {/* Menu bar: nav centered, utilities pinned right via a balanced
               1fr / auto / 1fr track so the nav stays optically centered. */}
