@@ -53,6 +53,10 @@ Known gap: `names` decorations don't yet carry a size/font (numbers do —
   `embNameGen.test.js`).
 - `generate.py` mechanics (payload → scale math → zip handling → renames →
   manifest): smoke-tested against a stub inkstitch binary.
-- The real Ink/Stitch invocation: validated by the Action's SELFTEST run in CI
-  (headless flags verified against v3.2.2 source; wx/GTK import behavior is
-  why xvfb + GTK libs are installed).
+- The real Ink/Stitch invocation: **validated in CI** (run #4, commit dc75832) —
+  the selftest produced valid Tajima DSTs headless: `001-L-NAME-SMITH.DST`
+  (1,959 stitches, ~25mm tall) and `002-L-NUM-12.DST` (656 stitches), both with
+  correct DST headers. Getting there required (found only by live runs): the
+  archive layout (binary at `inkstitch/bin/`, fonts at `inkstitch/fonts/`),
+  surfacing crashes that Ink/Stitch prints to stdout, and the wayland/EGL libs
+  the bundled wxPython needs on ubuntu-latest.
