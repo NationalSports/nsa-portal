@@ -212,6 +212,8 @@ function TeamShopQueueBoard({ email }) {
   const [digitizingOnly, setDigitizingOnly] = useState(false);
   const [rpcMissing, setRpcMissing] = useState(false);
   const [actionBusy, setActionBusy] = useState(null);
+  // Retry-convert (00205 hardening #3): order id -> { busy, message, ok }.
+  const [retryState, setRetryState] = useState({});
   const toastTimer = useRef(null);
 
   const refetch = useCallback(() => {
@@ -325,6 +327,36 @@ function TeamShopQueueBoard({ email }) {
     });
   }, [email, refetch]);
 
+  // Retry-convert: staff manual retry for a paid order that never converted
+  // to a Sales Order (netlify/functions/teamshop-retry-convert.js). Same staff
+  // JWT + fetch pattern the PO review / auto-PO panels use elsewhere in this
+  // file. Result shows inline on the order's row; a success refetches so the
+  // order drops out of "Awaiting conversion" once so_id is set.
+  const handleRetryConvert = useCallback((order) => {
+    setRetryState((s) => ({ ...s, [order.id]: { busy: true, message: null, ok: null } }));
+    (async () => {
+      const { data } = await supabase.auth.getSession();
+      const token = data && data.session && data.session.access_token;
+      let r;
+      try {
+        const res = await fetch('/.netlify/functions/teamshop-retry-convert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
+          body: JSON.stringify({ order_id: order.id }),
+        });
+        r = await res.json().catch(() => ({}));
+      } catch (e) {
+        r = { error: e.message || String(e) };
+      }
+      if (r.error) {
+        setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.error, ok: false } }));
+        return;
+      }
+      setRetryState((s) => ({ ...s, [order.id]: { busy: false, message: r.replayed ? 'Already converted' : ('Converted — ' + (r.so_id || '')), ok: true } }));
+      refetch();
+    })();
+  }, [refetch]);
+
   return (
     <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
@@ -375,14 +407,35 @@ function TeamShopQueueBoard({ email }) {
           <div style={{ fontSize: 13, color: '#94a3b8' }}>None — every paid order has been converted.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {awaitingConversion.map((o) => (
-              <div key={o.id} style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>{o.id}</span>
-                <span style={{ fontSize: 13, color: '#334155' }}>{o.buyer_name || o.buyer_email || '—'}</span>
-                <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(o.total)}</span>
-                <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(o.created_at)}</span>
-              </div>
-            ))}
+            {awaitingConversion.map((o) => {
+              const rs = retryState[o.id];
+              return (
+                <div key={o.id} style={{ background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 10, display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 13, fontWeight: 600 }}>{o.id}</span>
+                  <span style={{ fontSize: 13, color: '#334155' }}>{o.buyer_name || o.buyer_email || '—'}</span>
+                  <span style={{ fontSize: 13, fontWeight: 700 }}>{fmtMoney(o.total)}</span>
+                  <span style={{ fontSize: 12, color: '#64748b' }}>{fmtAge(o.created_at)}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {rs && rs.message && (
+                      <span style={{ fontSize: 12, fontWeight: 600, color: rs.ok ? '#166534' : '#991b1b' }}>{rs.message}</span>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={'retry-convert-' + o.id}
+                      disabled={!!(rs && rs.busy)}
+                      onClick={() => handleRetryConvert(o)}
+                      style={{
+                        padding: '6px 12px', fontSize: 12, fontWeight: 700,
+                        background: (rs && rs.busy) ? '#e2e8f0' : '#1d4ed8', color: (rs && rs.busy) ? '#94a3b8' : '#fff',
+                        border: 'none', borderRadius: 6, cursor: (rs && rs.busy) ? 'not-allowed' : 'pointer',
+                      }}
+                    >
+                      {(rs && rs.busy) ? 'Retrying…' : 'Retry'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -117,6 +117,44 @@ test('NSA_STALE_STATE error shows the refresh toast and refetches', async () => 
   expect(rpc).toHaveBeenCalledTimes(1);
 });
 
+const UNCONVERTED_ORDER = {
+  id: 'ord-2', order_source: 'teamshop', status: 'paid', so_id: null,
+  buyer_name: 'Coach Adams', buyer_email: 'adams@example.com', total: 99.99,
+  created_at: new Date().toISOString(),
+};
+
+test('Retry button on an awaiting-conversion order calls teamshop-retry-convert and shows success inline', async () => {
+  setMocks({ session: SESSION, tables: { ...baseTables(), webstore_orders: { data: [ORDER, UNCONVERTED_ORDER], error: null } } });
+  global.fetch = jest.fn(() => Promise.resolve({
+    json: () => Promise.resolve({ ok: true, so_id: 'SO-2002' }),
+  }));
+  render(<TeamShopQueue />);
+  await waitFor(() => expect(screen.getByText('Awaiting conversion (1)')).toBeTruthy());
+
+  fireEvent.click(screen.getByLabelText('retry-convert-ord-2'));
+
+  await waitFor(() => expect(screen.getByText('Converted — SO-2002')).toBeTruthy());
+  expect(global.fetch).toHaveBeenCalledWith('/.netlify/functions/teamshop-retry-convert', expect.objectContaining({
+    method: 'POST',
+    body: JSON.stringify({ order_id: 'ord-2' }),
+  }));
+  const [, opts] = global.fetch.mock.calls[0];
+  expect(opts.headers.Authorization).toBe('Bearer tok');
+});
+
+test('Retry button shows the real error message inline on failure', async () => {
+  setMocks({ session: SESSION, tables: { ...baseTables(), webstore_orders: { data: [UNCONVERTED_ORDER], error: null } } });
+  global.fetch = jest.fn(() => Promise.resolve({
+    json: () => Promise.resolve({ error: 'Duplicate key value violates unique constraint' }),
+  }));
+  render(<TeamShopQueue />);
+  await waitFor(() => expect(screen.getByText('Awaiting conversion (1)')).toBeTruthy());
+
+  fireEvent.click(screen.getByLabelText('retry-convert-ord-2'));
+
+  await waitFor(() => expect(screen.getByText('Duplicate key value violates unique constraint')).toBeTruthy());
+});
+
 test('missing RPC function disables stage buttons with a note', async () => {
   const rpc = jest.fn(() => Promise.resolve({
     data: null,
