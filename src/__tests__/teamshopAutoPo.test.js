@@ -475,10 +475,14 @@ afterEach(() => {
   delete global.fetch;
 });
 
+// Auto POs moved off its own top-level tab into the Pipeline tab's Actions
+// fold (Production HQ reorg) — navigate through Pipeline now; the section's
+// own heading text is unchanged, so every assertion below it still matches.
 async function openAutoPoTab() {
   render(<TeamShopQueue />);
-  await waitFor(() => expect(screen.getByText('Auto POs')).toBeTruthy());
-  fireEvent.click(screen.getByText('Auto POs'));
+  await waitFor(() => expect(screen.getByText('Pipeline')).toBeTruthy());
+  fireEvent.click(screen.getByText('Pipeline'));
+  await waitFor(() => expect(screen.getByText('Team Shop — Auto POs')).toBeTruthy());
 }
 
 test('Auto POs tab renders draft POs with lines, server-cents totals, and mark-as-submitted', async () => {

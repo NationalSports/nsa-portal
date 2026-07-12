@@ -49,11 +49,14 @@ const mockFetch = (handlers) => {
   });
 };
 
+// PO review moved off its own top-level tab into the Pipeline tab's Actions
+// fold (Production HQ reorg) — navigate through Pipeline now; the section's
+// own heading text is unchanged, so every assertion below it still matches.
 const openPoTab = async () => {
   global.__mockSession = SESSION;
   render(<TeamShopQueue />);
-  await waitFor(() => expect(screen.getByText('PO review')).toBeTruthy());
-  fireEvent.click(screen.getByText('PO review'));
+  await waitFor(() => expect(screen.getByText('Pipeline')).toBeTruthy());
+  fireEvent.click(screen.getByText('Pipeline'));
   await waitFor(() => expect(screen.getByText('Team Shop — PO review')).toBeTruthy());
 };
 
@@ -116,5 +119,10 @@ test('pre-migration (enabled:false) shows the 00201 banner, never a blank page',
 test('list failure shows an error banner', async () => {
   mockFetch({ list: () => ({ error: 'nope' }) });
   await openPoTab();
-  await waitFor(() => expect(screen.getByText(/Failed to load: nope/)).toBeTruthy());
+  // Pipeline's Actions fold mounts PoReviewSection AND AutoPoSection side by
+  // side, and this test's mockFetch answers every action:'list' call
+  // (regardless of which netlify function it's headed to) the same way — so
+  // both sections legitimately show the same error banner. >=1 match, like
+  // teamShopQueue.test.js's own "shared toast + banner text" case.
+  await waitFor(() => expect(screen.getAllByText(/Failed to load: nope/).length).toBeGreaterThan(0));
 });
