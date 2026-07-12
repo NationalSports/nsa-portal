@@ -2,7 +2,7 @@
  * src/index.js uses to send nationalteamshop.com visitors (and /teamshop paths
  * on any host) to the Team Shop chunk instead of the portal login. */
 
-const { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath } = require('../lib/hostRouting');
+const { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath } = require('../lib/hostRouting');
 
 describe('isTeamShopHost', () => {
   // ── Hostname matches (any path) ────────────────────────────────────────────
@@ -119,5 +119,20 @@ describe('isVendorDigitizingPath', () => {
     null, undefined,
   ])('false for %s', (path) => {
     expect(isVendorDigitizingPath(path)).toBe(false);
+  });
+});
+
+// Production HQ's additive /production alias (the canonical route,
+// /teamshop-queue, is a plain string check directly in index.js and unaffected).
+describe('isProductionHQPath', () => {
+  test.each(['/production', '/production/'])('true for %s', (path) => {
+    expect(isProductionHQPath(path)).toBe(true);
+  });
+  test.each([
+    '/', '', '/production/extra', '/productions', '/x/production',
+    '/PRODUCTION', // case-sensitive like every index.js path check
+    null, undefined,
+  ])('false for %s', (path) => {
+    expect(isProductionHQPath(path)).toBe(false);
   });
 });

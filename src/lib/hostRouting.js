@@ -41,4 +41,13 @@ function isVendorDigitizingPath(pathname) {
   return path === '/vendor-digitizing' || path === '/vendor-digitizing/';
 }
 
-module.exports = { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath };
+// Should this visit load the Production HQ chunk (src/teamshopqueue/TeamShopQueue.js)
+// via its /production alias? The canonical route is /teamshop-queue (checked
+// directly in src/index.js, unchanged); this is an ADDITIVE alias only, same
+// path-exact/trailing-slash shape as isFloorStationPath.
+function isProductionHQPath(pathname) {
+  const path = String(pathname || '');
+  return path === '/production' || path === '/production/';
+}
+
+module.exports = { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath };

@@ -7,7 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
-import { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath } from './lib/hostRouting';
+import { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -73,11 +73,13 @@ const TeamStores = React.lazy(() => import('./storefront/TeamStores'));
 // branch chain below, so existing path prefixes (/shop/*, /adidas,
 // /team-stores, auth flows, …) still win on the alias hostname.
 const TeamShopApp = React.lazy(() => import('./teamshop/TeamShopApp'));
-// Staff-only Team Shop production board (fast-turn queue for order_source
-// 'teamshop' jobs) — separate from both the consumer TeamShopApp above and the
-// main warehouse jobs board in App.js. Matched by path so it works on any
-// host; checked (below) BEFORE the isTeamShop hostname/path check so it wins
-// over the consumer storefront's own /teamshop path match.
+// Staff-only Team Shop production board — "Production HQ" — for order_source
+// 'teamshop' jobs (the Pipeline tab inside it also reads 'club') — separate
+// from both the consumer TeamShopApp above and the main warehouse jobs board
+// in App.js. Matched by path so it works on any host; checked (below) BEFORE
+// the isTeamShop hostname/path check so it wins over the consumer
+// storefront's own /teamshop path match. Canonical route is /teamshop-queue
+// (unchanged); /production is an additive alias (isProductionHQPath).
 const TeamShopQueue = React.lazy(() => import('./teamshopqueue/TeamShopQueue'));
 // Shop-floor scan station (scan a job ticket at the embroidery machine / DTF /
 // heat press → the job + its production file + one next-stage button). Staff
@@ -90,7 +92,7 @@ const FloorStation = React.lazy(() => import('./floorstation/FloorStation'));
 // by path like /vendor-digitizing, predicate in src/lib/hostRouting.js.
 const VendorDigitizing = React.lazy(() => import('./vendorportal/VendorDigitizing'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
-const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/';
+const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/' || isProductionHQPath(_path);
 const isFloorStation = isFloorStationPath(_path);
 const isVendorDigitizing = isVendorDigitizingPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
