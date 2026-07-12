@@ -810,6 +810,11 @@ const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
   const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
   return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
 }).filter(f=>f);
+// A re-uploaded proof lands under a fresh URL but keeps its original filename, so a
+// decoration slot ends up showing the same image twice. Collapse by filename (the
+// first/primary copy wins); files with no resolvable name are left as-is. Callers scope
+// this per slot, so two different decorations that share a filename are never merged.
+const _dedupMockDupes=arr=>{const out=[];const seen=new Set();for(const f of(arr||[])){if(!f)continue;const nm=(fileDisplayName(f)||'').trim().toLowerCase();if(nm){if(seen.has(nm))continue;seen.add(nm)}out.push(f)}return out};
 // All mockups for one garment line, mirroring the Art Dashboard's slot system: one slot
 // per art decoration on the ITEM (first deco reads the base sku|color key, additional
 // decos read suffixed keys |<colorWayId> / |d1), each from that decoration's OWN art
@@ -840,15 +845,15 @@ const _prodJobItemMocks=(artFiles,so,gi)=>{
         :(m[_mk]&&m[_mk].length>0)?m[_mk]
         :(m[sku]&&m[sku].length>0)?m[sku]
         :(Object.entries(m).find(([k,arr])=>k.startsWith(_mk+'|')&&!_isNN(k)&&(arr||[]).length>0)?.[1]||[]);
-      v.forEach(push);
+      _dedupMockDupes(v).forEach(push);
     });
   }else{
     // No art decorations (numbers-only line, or art swapped out): legacy job-wide lookup
-    artFiles.forEach(a=>{const m=a?.item_mockups||{};((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
+    artFiles.forEach(a=>{const m=a?.item_mockups||{};_dedupMockDupes((m[_mk]&&m[_mk].length>0)?m[_mk]:(m[sku]||[])).forEach(push)});
   }
   const rank=k=>/\|numbers(_\d+)?$/.test(k)?1:2;
   artFiles.forEach(a=>{const m=a?.item_mockups||{};
-    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>(m[k]||[]).forEach(push))});
+    Object.keys(m).filter(k=>k.startsWith(_mk+'|')&&_isNN(k)).sort((x,y)=>rank(x)-rank(y)).forEach(k=>_dedupMockDupes(m[k]||[]).forEach(push))});
   return out;
 };
 // Production Job Sheet PDF options — the single builder shared by the production-board
@@ -20002,7 +20007,7 @@ export default function App(){
                       </div>
                       {_repSlots.length===0?<div style={{fontSize:11,color:'#94a3b8'}}>No art assigned to this item yet.</div>
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
-                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
@@ -20600,7 +20605,7 @@ export default function App(){
                       if(_slots.length===0&&af)_slots.push({key:_skBase,primary:true,artId:af.id,artFile:af,label:af.name||'Art',sub:(af.deco_type||'').replace(/_/g,' ')});
                       if(_slots.length===0)return<div style={{fontSize:11,color:'#94a3b8',padding:8}}>No art assigned to this item yet.</div>;
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
-                        const mocks=slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]);const primary=mocks[0]||null;const extra=mocks.slice(1);
+                        const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
