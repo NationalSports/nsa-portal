@@ -199,12 +199,14 @@ export const probeCloudinaryPdfPages=async(u,cap=15)=>{
   const out=[];
   for(let n=1;n<=cap;n++){const src=_cloudinaryPdfPage(u,n);if(await tryLoad(src))out.push(src);else break}
   return out};
-// Inline SVG Code 128 barcode for print documents — inline so the print window never
-// waits on (or drops) an external image request. Code 128 encodes full ASCII, incl. the
-// underscores in digitizer file names like DG648617_A_3D_CAP_FRONT.
-export const barcodeSvg=(text,{height=46,width=1.6,fontSize=13}={})=>{
+// Inline SVG barcode for print documents — inline so the print window never waits on
+// (or drops) an external image request. Default CODE128 (full ASCII). Pass format:'CODE39'
+// for the Barudan machine barcode — its "USB Flash Drive Search" spec lists CODE39, which
+// is uppercase + digits + a few symbols only (no underscore); JsBarcode throws on an
+// invalid char, so the caller's `|| fallback` prints the name as text instead.
+export const barcodeSvg=(text,{height=46,width=1.6,fontSize=13,format='CODE128'}={})=>{
   try{const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
-    JsBarcode(svg,String(text),{format:'CODE128',width,height,fontSize,displayValue:true,margin:6,background:'#ffffff'});
+    JsBarcode(svg,String(text),{format,width,height,fontSize,displayValue:true,margin:6,background:'#ffffff'});
     return svg.outerHTML}
   catch(e){console.warn('[barcodeSvg] '+(e?.message||e));return''}};
 

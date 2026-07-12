@@ -3,11 +3,12 @@
  * NSA Portal — Embroidery machine-design helpers
  *
  * Covers the production-sheet barcode pipeline: DG code extraction from the
- * digitizer's file names, base-name derivation (used to pair DST + PDF run
- * sheet), Cloudinary PDF page URLs, and the inline Code 128 barcode SVG.
+ * digitizer's file names (dgCodeOf for display, dgScanOf for the machine's
+ * substring search), base-name derivation (used to pair DST + PDF run sheet),
+ * Cloudinary PDF page URLs, and the inline barcode SVG (CODE128 + CODE39).
  */
 
-const { dgCodeOf, isDstFile } = require('../constants');
+const { dgCodeOf, dgScanOf, isDstFile } = require('../constants');
 const { fileBaseName, barcodeSvg, _cloudinaryPdfPage } = require('../utils');
 
 // jsdom ships no canvas; JsBarcode only touches it to measure the label text
@@ -30,6 +31,18 @@ describe('dgCodeOf', () => {
     expect(dgCodeOf('eagle_logo.dst')).toBe(null);
     expect(dgCodeOf('')).toBe(null);
     expect(dgCodeOf(null)).toBe(null);
+  });
+});
+
+describe('dgScanOf', () => {
+  test('preserves the dash exactly as in the file name (must be a literal substring for the machine search)', () => {
+    expect(dgScanOf('DG-619597_DONS_SB_Football')).toBe('DG-619597');
+    expect(dgScanOf('DG648617_A_3D_CAP_FRONT')).toBe('DG648617');
+  });
+  test('uppercases and returns null when no DG number present', () => {
+    expect(dgScanOf('dg-705669_ts_3409')).toBe('DG-705669');
+    expect(dgScanOf('eagle_logo.dst')).toBe(null);
+    expect(dgScanOf('')).toBe(null);
   });
 });
 
@@ -68,6 +81,17 @@ describe('barcodeSvg', () => {
     expect(svg).toContain('<svg');
     expect(svg).toContain('<rect');
     expect(svg).toContain('DG648617_A_3D_CAP_FRONT');
+  });
+  test('renders a CODE39 barcode for a DG number (machine format)', () => {
+    const svg = barcodeSvg('DG-619597', { format: 'CODE39' });
+    expect(svg).toContain('<svg');
+    expect(svg).toContain('<rect');
+    expect(svg).toContain('DG-619597');
+  });
+  test('CODE39 rejects underscores (returns empty → caller prints text fallback)', () => {
+    // The digitizer's underscores are exactly why the machine barcode encodes the
+    // DG number, not the full file name — CODE39 can't represent an underscore.
+    expect(barcodeSvg('DG-619597_DONS', { format: 'CODE39' })).toBe('');
   });
   test('returns empty string instead of throwing on unencodable input', () => {
     expect(barcodeSvg('')).toBe('');

@@ -345,6 +345,11 @@ export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attac
 // file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
 // "DG648617"; null when the name carries no DG number.
 export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
+// DG token EXACTLY as it appears in the file name (separator preserved), uppercased for the
+// machine barcode. The Barudan "USB Flash Drive Search" substring-matches the scanned value
+// against the .DST file names on the drive, so it must be a literal substring — dgCodeOf
+// strips the dash for display/dedup and would NOT match "DG-619597_DONS_SB_Football.DST".
+export const dgScanOf=name=>{const m=String(name||'').match(/DG[-_ ]?\d{4,}/i);return m?m[0].toUpperCase():null};
 // Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached),
 // or, for embroidery, a .dst attached to an art file whose CURRENT art is signed off
 // (status==='approved') — the .dst IS the production file, so a legit one confirms even when the
