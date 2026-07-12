@@ -76,6 +76,26 @@ const TILE_GRADIENTS = [
   'linear-gradient(150deg,#243a66,#1c2d4f)',
 ];
 
+// Category-tile product imagery (public/teamshop/cat-<key>.jpg) — on-brand
+// National team gear, one per launch category, each carrying a left-chest
+// team crest in a red/white/grey colorway mix. Static assets committed to the
+// repo, so the grid shows consistent branded photography rather than a mix of
+// per-SKU catalog shots. These take precedence over the DB hero photos; if a
+// file ever fails to load, the tile's <img> onError hides it and the tile
+// falls back to its gradient (same graceful degradation the DB-hero path
+// already had).
+const CATEGORY_TILE_IMG = {
+  quarter_zips: '/teamshop/cat-quarter_zips.jpg',
+  hoodies: '/teamshop/cat-hoodies.jpg',
+  polos: '/teamshop/cat-polos.jpg',
+  outerwear: '/teamshop/cat-outerwear.jpg',
+  hats: '/teamshop/cat-hats.jpg',
+  tees: '/teamshop/cat-tees.jpg',
+  bags: '/teamshop/cat-bags.jpg',
+  shorts: '/teamshop/cat-shorts.jpg',
+  footwear: '/teamshop/cat-footwear.jpg',
+};
+
 const VALUE_PROPS = [
   { label: 'Free Decoration Setup*', icon: <path d="M12 2v6M12 12v8M9 20h6" /> },
   { label: 'Fast Turnaround*', icon: <><rect x="1" y="6" width="14" height="10" rx="1" /><path d="M15 9h4l3 3v4h-7z" /><circle cx="6" cy="18" r="1.8" /><circle cx="18" cy="18" r="1.8" /></> },
@@ -416,6 +436,7 @@ export default function Home({
           </div>
           <div className="nts-category-grid">
             {LAUNCH_CATEGORIES.map((cat, i) => {
+              const tileImg = CATEGORY_TILE_IMG[cat.key];
               const hero = pickHeroForCategory(categoryHeroes, cat);
               const gradient = TILE_GRADIENTS[i % TILE_GRADIENTS.length];
               return (
@@ -427,11 +448,26 @@ export default function Home({
                   className="nts-category-tile"
                   style={{
                     position: 'relative', aspectRatio: '1 / 1', borderRadius: 12, overflow: 'hidden',
-                    display: 'flex', flexDirection: 'column', padding: 0, background: hero ? 'linear-gradient(150deg,#F7F8FB,#E4E8F0)' : gradient,
+                    display: 'flex', flexDirection: 'column', padding: 0, background: (tileImg || hero) ? 'linear-gradient(150deg,#F7F8FB,#E4E8F0)' : gradient,
                     border: 'none', cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit',
                   }}
                 >
-                  {hero ? (
+                  {tileImg ? (
+                    <>
+                      <img
+                        src={tileImg}
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }}
+                      />
+                      <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, background: NAVY, padding: '10px 14px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                        <span style={displayType(16, { letterSpacing: '0.04em', color: '#fff' })}>{cat.label}</span>
+                        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="2.2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+                      </span>
+                    </>
+                  ) : hero ? (
                     <>
                       <span style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '18px 18px 6px', minHeight: 0 }}>
                         <img
