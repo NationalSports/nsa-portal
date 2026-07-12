@@ -659,6 +659,15 @@ const _flyerDecos = (it) => (Array.isArray(it?.decorations) ? it.decorations : [
 // Resolved placement (a decoration's own x/y/w override the preset), in % of the
 // storefront card box the garment photo cover-fills.
 const _decoPos = (d) => { const pl = placementById(d.placement); return { x: d.x != null ? d.x : pl.x, y: d.y != null ? d.y : pl.y, w: d.w != null ? d.w : pl.w }; };
+// Trim SanMar garment photos to a uniform 4:5 frame via Cloudinary (mirrors the
+// storefront's normGarment) so a logo drawn at a stored % lands consistently on
+// the flyer too. Non-SanMar URLs (store mockups, logo art) pass through unchanged.
+const normGarment = (url) => {
+  if (!url || typeof url !== 'string') return url;
+  let host; try { host = new URL(url).hostname; } catch (e) { return url; }
+  if (!/(?:^|\.)cdn[pm]\.sanmar\.com$/i.test(host)) return url;
+  return 'https://res.cloudinary.com/dwlyljyuz/image/fetch/e_trim:10/c_pad,w_800,h_1000,b_white,f_jpg,q_auto/' + encodeURIComponent(url);
+};
 
 // Launch email written for families (coach receives + forwards). Branded with team colors.
 function launchEmailHtml(store, portalUrl) {
@@ -754,14 +763,14 @@ function flyerHtml(store, items = []) {
   // Garment photo cover-fills a 4:5 box (the storefront card's geometry) so the applied
   // web-logo decorations land at the same % placements shoppers see in the store.
   const decoImgs = (it) => _flyerDecos(it).map((d) => { const p = _decoPos(d); return `<img src="${_esc(d.art_url)}" alt="" style="position:absolute;left:${p.x}%;top:${p.y}%;width:${p.w}%;transform:translate(-50%,-50%);filter:drop-shadow(0 1px 2px rgba(0,0,0,.2));z-index:1"/>`; }).join('');
-  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(it.image_front_url)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(normGarment(it.image_front_url))}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
   const pkgBand = pkg ? `
     <div style="margin:16px 40px 0">
       <div style="display:flex;align-items:stretch;border-radius:10px;overflow:hidden;border:2px solid ${accent};background:linear-gradient(120deg,${primary},${primaryDark});color:#fff">
-        ${pkgImgs.length ? `<div style="flex:0 0 130px;background:#fff;display:grid;grid-template-columns:repeat(${pkgImgs.length === 1 ? 1 : 2},1fr);gap:3px;padding:6px;align-content:center">${pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;height:${pkgImgs.length <= 2 ? 104 : 52}px"><img src="${_esc(u)}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`).join('')}</div>` : ''}
+        ${pkgImgs.length ? `<div style="flex:0 0 130px;background:#fff;display:grid;grid-template-columns:repeat(${pkgImgs.length === 1 ? 1 : 2},1fr);gap:3px;padding:6px;align-content:center">${pkgImgs.map((u) => `<div style="display:flex;align-items:center;justify-content:center;height:${pkgImgs.length <= 2 ? 104 : 52}px"><img src="${_esc(normGarment(u))}" alt="" style="max-width:100%;max-height:100%;object-fit:contain"/></div>`).join('')}</div>` : ''}
         <div style="flex:1;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 22px">
           <div>
             <div style="font-weight:700;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:${accent}">&#9733; Required For Every Player</div>
@@ -932,7 +941,9 @@ async function generateFlyerPdfBase64(store, items = []) {
     _flyerDecos(item).forEach((d) => urls.add(d.art_url));
   });
   await Promise.all([...urls].map(async (u) => {
-    const b64 = await _imgB64(u);
+    // Fetch the normalized garment (raw key preserved so addImg/drawDecos lookups
+    // by image_front_url still resolve); logo art passes through normGarment as-is.
+    const b64 = await _imgB64(normGarment(u));
     if (b64) imgCache[u] = b64;
   }));
   // Contain-fit the image inside the (x,iy,w,h) box, centered — drawing at the raw box
