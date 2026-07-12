@@ -2,7 +2,7 @@
  * src/index.js uses to send nationalteamshop.com visitors (and /teamshop paths
  * on any host) to the Team Shop chunk instead of the portal login. */
 
-const { isTeamShopHost, isFloorStationPath } = require('../lib/hostRouting');
+const { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath } = require('../lib/hostRouting');
 
 describe('isTeamShopHost', () => {
   // ── Hostname matches (any path) ────────────────────────────────────────────
@@ -104,5 +104,20 @@ describe('isFloorStationPath', () => {
     null, undefined,
   ])('false for %s', (path) => {
     expect(isFloorStationPath(path)).toBe(false);
+  });
+});
+
+// The index.js routing branch for the Top Star digitizing vendor portal chunk —
+// exact path match with optional trailing slash, same shape as isFloorStationPath.
+describe('isVendorDigitizingPath', () => {
+  test.each(['/vendor-digitizing', '/vendor-digitizing/'])('true for %s', (path) => {
+    expect(isVendorDigitizingPath(path)).toBe(true);
+  });
+  test.each([
+    '/', '', '/vendor-digitizing/extra', '/vendor-digitizings', '/x/vendor-digitizing',
+    '/VENDOR-DIGITIZING', // case-sensitive like every index.js path check
+    null, undefined,
+  ])('false for %s', (path) => {
+    expect(isVendorDigitizingPath(path)).toBe(false);
   });
 });

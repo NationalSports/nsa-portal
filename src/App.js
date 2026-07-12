@@ -10425,6 +10425,18 @@ export default function App(){
     }
     applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
   };
+  // Hand an embroidery job's art off to the Top Star digitizing vendor. Annotation-only —
+  // goes through advance_job_stage (00192) rather than the local savSO writer, mirroring
+  // TeamShopQueue's RPC call shape, since digitizing_sent stamps digitizing_vendor/sent_at
+  // columns that are deliberately NOT in _jobCols (the RPC is their sole writer). On success,
+  // patches local state to match so the button hides immediately instead of waiting on a refetch.
+  const sendToDigitizingVendor=(j)=>{
+    supabase.rpc('advance_job_stage',{p_so_id:j.soId,p_job_id:j.id,p_event:'digitizing_sent',p_actor:cu?.name||cu?.id||'',p_payload:{vendor:'topstar'}}).then(({error})=>{
+      if(error){nf('Send to digitizing failed: '+(error.message||'unknown error'),'error');return}
+      setSOs(prev=>prev.map(s=>s.id===j.soId?{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,digitizing_vendor:'topstar',digitizing_sent_at:new Date().toISOString()}:jj)}:s));
+      nf('🧵 Sent to Top Star for digitizing');
+    });
+  };
   // ── Single source of truth for stopping a job's decorator clock (audit L10) ──
   // Logs the elapsed run and clears the active timer + idle accumulator. Used by
   // applyJobMove (production board) AND passed into OrderEditor as onStopJobClock —
@@ -10831,6 +10843,7 @@ export default function App(){
                     {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
                     {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'in_process'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 Reassign</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
                     {col.id==='completed'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button>}
+                    {j.deco_type==='embroidery'&&j.art_status==='upload_emb_files'&&!j.digitizing_sent_at&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();sendToDigitizingVendor(j)}}>🧵 Send to Digitizing Vendor</button>}
                   </div>
                 </div>}
               </div>})}

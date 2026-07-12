@@ -33,4 +33,12 @@ function isFloorStationPath(pathname) {
   return path === '/floor-station' || path === '/floor-station/';
 }
 
-module.exports = { isTeamShopHost, isFloorStationPath };
+// Should this visit load the Top Star digitizing vendor portal chunk
+// (src/vendorportal/VendorDigitizing.js)? Path-exact on any host, with or without
+// a trailing slash — same shape as isFloorStationPath.
+function isVendorDigitizingPath(pathname) {
+  const path = String(pathname || '');
+  return path === '/vendor-digitizing' || path === '/vendor-digitizing/';
+}
+
+module.exports = { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath };
