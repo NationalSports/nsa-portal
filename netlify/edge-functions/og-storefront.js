@@ -157,13 +157,9 @@ function injectNoindex(html, pageUrl) {
   return out.replace(/<\/title>/, `</title>\n${block}`);
 }
 
-// Server-rendered, above-the-fold store content — a no-JS fallback placed INSIDE
-// #root (React clears + replaces it on mount). Semantic, accurate, on-brand.
-function renderStoreBody(store, products, slug) {
-  const base = `/shop/${encodeURIComponent(slug)}`;
-  const primary = /^#[0-9a-fA-F]{3,8}$/.test(store.primary_color || '') ? store.primary_color : '#16223F';
-
-  // Collapse color/size variants that share a name, cap the grid.
+// Collapse color/size variants that share a name, cap the list. Shared by the
+// rendered grid and the ItemList JSON-LD so markup + structured data stay in sync.
+function dedupeItems(products, limit) {
   const seen = new Set();
   const items = [];
   for (const p of products) {
@@ -172,8 +168,21 @@ function renderStoreBody(store, products, slug) {
     if (seen.has(key)) continue;
     seen.add(key);
     items.push(p);
-    if (items.length >= GRID_LIMIT) break;
+    if (items.length >= limit) break;
   }
+  return items;
+}
+
+// Path to a product (or bundle) page within a store.
+const itemHref = (base, p) =>
+  `${base}/${p.kind === 'bundle' ? 'b' : 'p'}/${encodeURIComponent(p.webstore_product_id)}`;
+
+// Server-rendered, above-the-fold store content — a no-JS fallback placed INSIDE
+// #root (React clears + replaces it on mount). Semantic, accurate, on-brand.
+// `items` is already deduped/capped (see dedupeItems).
+function renderStoreBody(store, items, slug) {
+  const base = `/shop/${encodeURIComponent(slug)}`;
+  const primary = /^#[0-9a-fA-F]{3,8}$/.test(store.primary_color || '') ? store.primary_color : '#16223F';
 
   const cats = [];
   const catSeen = new Set();
@@ -184,8 +193,7 @@ function renderStoreBody(store, products, slug) {
 
   const cards = items
     .map((p) => {
-      const kind = p.kind === 'bundle' ? 'b' : 'p';
-      const href = `${base}/${kind}/${encodeURIComponent(p.webstore_product_id)}`;
+      const href = itemHref(base, p);
       const price = priceStr(p.retail_price);
       const img = p.image_front_url
         ? `<img class="sfseo-img" src="${escapeHtml(p.image_front_url)}" alt="${escapeHtml(p.name)}" loading="lazy" width="300" height="300" />`
@@ -254,6 +262,54 @@ function injectBody(html, bodyHtml) {
   return html.replace('<div id="root"></div>', `<div id="root">${bodyHtml}</div>`);
 }
 
+// Serialize a JSON-LD object into a <script> tag. The `<`→< escape stops any
+// store/product text (or a stray "</script>") from breaking out of the element.
+function jsonLdScript(obj) {
+  return `  <script type="application/ld+json">${JSON.stringify(obj).replace(/</g, '\\u003c')}</script>`;
+}
+
+// Structured data for the store HOME: the store as an entity, a breadcrumb, and
+// the (rendered) product list. Product/Offer markup lives on product pages once
+// those are server-rendered (later phase) — here we only mark up what's visible.
+function buildStoreJsonLd(store, items, slug, description, image) {
+  const base = `/shop/${encodeURIComponent(slug)}`;
+  const pageUrl = `${SITE_ORIGIN}${base}`;
+  const graph = [
+    {
+      '@type': 'Store',
+      '@id': `${pageUrl}#store`,
+      name: `${store.name} Team Store`,
+      url: pageUrl,
+      description,
+      ...(image ? { image } : {}),
+      parentOrganization: {
+        '@type': 'Organization',
+        name: 'National Sports Apparel',
+        url: 'https://nationalsportsapparel.com',
+      },
+    },
+    {
+      '@type': 'BreadcrumbList',
+      itemListElement: [
+        { '@type': 'ListItem', position: 1, name: 'Team Stores', item: `${SITE_ORIGIN}/team-stores` },
+        { '@type': 'ListItem', position: 2, name: `${store.name} Team Store`, item: pageUrl },
+      ],
+    },
+  ];
+  if (items.length) {
+    graph.push({
+      '@type': 'ItemList',
+      itemListElement: items.map((p, i) => ({
+        '@type': 'ListItem',
+        position: i + 1,
+        name: p.name,
+        url: `${SITE_ORIGIN}${itemHref(base, p)}`,
+      })),
+    });
+  }
+  return jsonLdScript({ '@context': 'https://schema.org', '@graph': graph });
+}
+
 export default async function handler(request, context) {
   const url = new URL(request.url);
   const slug = slugFromPath(url.pathname);
@@ -303,6 +359,13 @@ export default async function handler(request, context) {
       ? 'index, follow, max-image-preview:large'
       : 'noindex, follow';
 
+  // Full SEO treatment — server-rendered body + structured data — is scoped to the
+  // indexable store HOME on the canonical host. Deeper pages (product/cart/checkout)
+  // and the noindex duplicate origin keep the head-only treatment; product-page SSR
+  // and Product/Offer markup are a later phase.
+  const renderHome = isHome && isCanonicalHost && indexable;
+  const items = renderHome ? dedupeItems(await fetchProducts(store.id), GRID_LIMIT) : [];
+
   const tags = [
     `  <meta name="description" content="${escapeHtml(description)}" />`,
     `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
@@ -317,19 +380,14 @@ export default async function handler(request, context) {
     `  <meta name="twitter:title" content="${escapeHtml(title)}" />`,
     `  <meta name="twitter:description" content="${escapeHtml(description)}" />`,
     `  <meta name="twitter:image" content="${escapeHtml(image)}" />`,
-  ].join('\n');
+  ];
+  if (renderHome) {
+    tags.push(buildStoreJsonLd(store, items, slug, description, store.banner_url || store.logo_url || DEFAULT_IMAGE));
+  }
 
   let html = await response.text();
-  html = injectTags(html, tags, title);
-
-  // Server-render the store's above-the-fold content into #root so crawlers get
-  // real product content — only for the indexable store HOME on the canonical
-  // host. Deeper pages (product/cart/checkout) and the noindex duplicate origin
-  // keep the head-only treatment; product-page SSR is a later phase.
-  if (isHome && isCanonicalHost && indexable) {
-    const products = await fetchProducts(store.id);
-    if (products.length) html = injectBody(html, renderStoreBody(store, products, slug));
-  }
+  html = injectTags(html, tags.join('\n'), title);
+  if (renderHome) html = injectBody(html, renderStoreBody(store, items, slug));
 
   const headers = new Headers(response.headers);
   headers.delete('content-length'); // body length changed

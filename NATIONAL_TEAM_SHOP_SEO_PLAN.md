@@ -234,16 +234,26 @@ _Shipped 2026-07-13._
   repoint the marketing `nationalsportsapparel.com/team-stores` at this directory
   — deferred; discovery is already covered by the sitemap + this hub.)_
 
-### Phase 2 — Structured data & rich results
-- [ ] **`Store` / `LocalBusiness` JSON-LD per store** — ★★ · S
-  Name, logo, URL, `parentOrganization` → National Sports Apparel, `sameAs`.
-- [ ] **`BreadcrumbList` JSON-LD** — ★★ · S
-  Team Stores → `<Store>` (→ Product). Breadcrumb rich results.
-- [ ] **`Product` + `Offer` JSON-LD on product pages** — ★★★ · M
-  Name, image, `description_ai`, price/currency, availability from size stock —
-  gated on real, in-stock inventory to stay within Google's product policy.
-  Completes finding 7.
-- [ ] **`ItemList` on the store landing** — ★ · S
+### Phase 2 — Structured data & rich results ⚙️ MOSTLY DONE
+_Shipped 2026-07-13. Product/Offer moved to Phase 3 (see below)._
+
+- [x] **`Store` JSON-LD per store** — ★★ · S
+  `og-storefront.js` `buildStoreJsonLd`: `Store` entity (name, url, image,
+  description, `parentOrganization` → National Sports Apparel) on the indexable
+  store home, in a `@graph`.
+- [x] **`BreadcrumbList` JSON-LD** — ★★ · S
+  Team Stores → `<Store>`. Breadcrumb rich-result eligible.
+- [x] **`ItemList` on the store landing** — ★ · S
+  Product list built from the **same deduped items** as the rendered grid, so
+  markup always matches visible content. `<`-escaped so store/product text can't
+  break out of the `<script>`.
+- [ ] **`Product` + `Offer` JSON-LD** — ★★★ · M → **moved to Phase 3.**
+  Deliberately paired with product-page SSR: Google wants Product markup to match
+  content visible on the page, and product pages are still head-only (no rendered
+  body yet). Shipping `Product`/`Offer` on a blank shell risks a "structured data
+  doesn't match visible content" flag, so it lands with Phase 3's product SSR —
+  name, image, `description_ai`, price/currency, availability from real in-stock
+  size inventory. Completes finding 7.
 
 ### Phase 3 — Content depth & per-store authority
 - [ ] **Server-render product detail pages** (`/shop/<slug>/p/<id>`) — ★★★ · L
