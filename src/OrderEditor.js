@@ -11386,10 +11386,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       Object.entries(sizes).forEach(([sz,v])=>{nl[sz]=v});
                       tgt.po_lines.push(nl);addedCount++;
                     });
+                    // Capture placed vendor-order lines being removed (they carry api_order_id/vendor_keys) BEFORE
+                    // the sentinel swap below overwrites them. Removing SOME-but-not-all lines of an already-ordered
+                    // PO silently drops already-purchased, receivable items — this is what emptied 3 of 4 lines on
+                    // SO-1479 / "PO 8800 TLL". Confirm, naming the styles, before letting that happen.
+                    const removedApi=willRemove
+                      .map(ln=>({ln,pl:items2[ln.lineIdx]?.po_lines?.[ln.poIdx]}))
+                      .filter(x=>x.pl&&x.pl!=='__PO_REMOVE__'&&(x.pl.api_order_id||x.pl.vendor_keys));
                     willRemove.forEach(ln=>{items2[ln.lineIdx].po_lines[ln.poIdx]='__PO_REMOVE__'});
                     const items3=items2.map(it=>({...it,po_lines:(it.po_lines||[]).filter(pl=>pl!=='__PO_REMOVE__')}));
                     const newAllLines=[];items3.forEach((it,i)=>{(it.po_lines||[]).forEach((pl,pi)=>{if(pl&&pl.po_id===po.po_id)newAllLines.push({lineIdx:i,poIdx:pi})})});
                     if(newAllLines.length===0&&!window.confirm('This removes every item from '+po.po_id+' — the PO will be deleted from this order. Continue?'))return;
+                    if(newAllLines.length>0&&removedApi.length){
+                      const _rmStyles=[...new Set(removedApi.map(x=>o.items[x.ln.lineIdx]?.sku).filter(Boolean))];
+                      if(!window.confirm('This removes '+removedApi.length+' item'+(removedApi.length!==1?'s':'')+(_rmStyles.length?' ('+_rmStyles.join(', ')+')':'')+' from placed vendor order '+po.po_id+'. Those were already ordered from the supplier and would no longer be receivable. Remove anyway?'))return;
+                    }
                     const updated={...o,items:items3,updated_at:new Date().toLocaleString()};
                     setO(updated);onSave(updated);
                     if(newAllLines.length===0){setEditPO(null);nf('PO '+po.po_id+' removed from order')}
