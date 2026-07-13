@@ -1810,7 +1810,20 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).in('so_id', soIds);
       if (error) { flash('Pull failed: ' + error.message); return; }
     }
-    flash('Transfers pulled — moved to In process'); loadDetail(sel);
+    // Surface the RPC's structured result (00215): an already-pulled no-op and,
+    // critically, any transfer SHORTFALL — an oversell used to be clamped to 0 and
+    // silently swallowed, so production hit the press short with no warning.
+    const res = rpc.data || {};
+    if (res.already_pulled) { flash('Already pulled — no changes made'); loadDetail(sel); return; }
+    const short = Array.isArray(res.shortfalls) ? res.shortfalls : [];
+    if (short.length) {
+      flash('⚠ Transfers pulled, but SHORT on: '
+        + short.map((s) => `${s.code} (need ${s.needed}, had ${s.on_hand})`).join(', ')
+        + ' — check transfer inventory before pressing');
+    } else {
+      flash('Transfers pulled — moved to In process');
+    }
+    loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations, category, kit_name, required, options }) => {
