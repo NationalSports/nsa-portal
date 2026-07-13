@@ -91,7 +91,13 @@ def main():
     if not TOKEN:
         log.error('EMB_MACHINE_TOKEN is not set — refusing to start')
         sys.exit(1)
-    os.makedirs(TARGET_DIR, exist_ok=True)
+    if not os.path.ismount(TARGET_DIR):
+        log.error(
+            '%s is not a mounted filesystem — refusing to start '
+            '(writes would silently miss the USB gadget image and never reach the machine)',
+            TARGET_DIR,
+        )
+        sys.exit(1)
     log.info('emb-bridge starting: portal=%s target=%s interval=%ss', PORTAL_URL, TARGET_DIR, POLL_SECONDS)
     while True:
         try:

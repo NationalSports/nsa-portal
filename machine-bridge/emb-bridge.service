@@ -2,6 +2,7 @@
 Description=NSA Portal embroidery machine bridge
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor=/mnt/usbdrive
 
 [Service]
 Type=simple
