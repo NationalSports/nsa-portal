@@ -62,7 +62,7 @@ const fileUrl = (f) => (typeof f === 'string' ? f : (f && f.url) || '');
 // run-ready files (DSTs, print files); `files` after as the general art pool.
 async function fetchJobDetail(db, soId, jobId) {
   const { data: job, error: jErr } = await db.from('so_jobs')
-    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, positions, total_units, digitizing_needed, packed_at, notes, items, dtf_prints_status')
+    .select('id, so_id, art_file_id, _art_ids, art_name, deco_type, prod_status, art_status, item_status, positions, total_units, digitizing_needed, packed_at, notes, items, dtf_prints_status')
     .eq('so_id', soId).eq('id', jobId).maybeSingle();
   if (jErr) throw jErr;
   if (!job) return null;
@@ -122,6 +122,8 @@ async function fetchJobDetail(db, soId, jobId) {
     art_name: job.art_name || '',
     deco_type: job.deco_type || null,
     prod_status: job.prod_status || null,
+    art_status: job.art_status || null,
+    item_status: job.item_status || null,
     positions: job.positions || null,
     total_units: job.total_units || 0,
     digitizing_needed: !!job.digitizing_needed,

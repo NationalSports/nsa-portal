@@ -4,6 +4,7 @@ import { useStaffSession } from '../lib/useStaffSession';
 import {
   STATIONS, stationByKey, stationAccepts, stationFilesFor, previewImageFor,
   normProdStatus, nextActionFor, sortedSizeEntries, notReadyMessage,
+  jobReadiness, stageDisplay,
 } from './floorLogic';
 
 // Floor Station — scan-at-machine routing for the Team Shop fast-turn floor.
@@ -56,38 +57,83 @@ async function callJobScan(body, stationToken) {
   return { status: res.status, ...json };
 }
 
+// Connect design tokens (portal.css sidebar navy family) — Floor Station kiosk skin.
+const FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif";
 const S = {
-  page: { fontFamily: 'system-ui,-apple-system,sans-serif', background: '#0f172a', color: '#f1f5f9', minHeight: '100vh', padding: 16 },
+  page: { fontFamily: FONT, background: '#0f172a', color: '#f1f5f9', minHeight: '100vh', padding: 16 },
+  // Big touch scan field — Connect accent-blue focus (via the .fs-input CSS below).
   input: {
-    width: '100%', boxSizing: 'border-box', padding: '16px 18px', fontSize: 26, fontWeight: 700,
-    fontFamily: 'ui-monospace,monospace', background: '#1e293b', color: '#f1f5f9',
-    border: '2px solid #334155', borderRadius: 12, outline: 'none',
+    width: '100%', boxSizing: 'border-box', padding: '0 22px', height: 72, fontSize: 32, fontWeight: 600,
+    letterSpacing: 2, fontVariantNumeric: 'tabular-nums', background: '#1e293b', color: '#f1f5f9',
+    border: '2px solid #334155', borderRadius: 6, outline: 'none',
   },
+  label: { display: 'block', color: '#94a3b8', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10 },
   bigBtn: (bg) => ({
-    width: '100%', padding: '20px 16px', fontSize: 28, fontWeight: 800, background: bg,
-    color: '#fff', border: 'none', borderRadius: 14, cursor: 'pointer', marginTop: 14,
+    width: '100%', minHeight: 96, padding: '20px 16px', fontSize: 28, fontWeight: 800, background: bg,
+    color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', marginTop: 'auto',
+    textTransform: 'uppercase', letterSpacing: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16,
+    boxShadow: bg === '#334155' ? 'none' : '0 8px 24px rgba(37,99,235,0.4)',
   }),
+};
+
+// Small scoped CSS for states inline styles can't express: accent-blue focus glow
+// on the scan field and the hover darken on the stage button.
+const FS_CSS = `
+.fs-input:focus { border-color:#3b82f6; box-shadow:0 0 0 4px rgba(59,130,246,0.15); }
+.fs-btn:hover:not(:disabled) { background:#1d4ed8; }
+`;
+
+// Tone → color for the "current stage" badge (stageDisplay) and readiness rows.
+const TONE = {
+  ready:  { dot: '#60a5fa', border: '#334155' },
+  active: { dot: '#60a5fa', border: '#334155' },
+  wait:   { dot: '#f59e0b', border: '#d97706' },
+  done:   { dot: '#22c55e', border: '#166534' },
 };
 
 function StationPicker({ value, onPick }) {
   return (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
-      {STATIONS.map((st) => (
-        <button
-          key={st.key}
-          type="button"
-          aria-label={'station-' + st.key}
-          onClick={() => onPick(st.key)}
-          style={{
-            padding: '10px 16px', fontSize: 15, fontWeight: 800, borderRadius: 10, cursor: 'pointer',
-            border: value === st.key ? '2px solid #38bdf8' : '2px solid #334155',
-            background: value === st.key ? '#0c4a6e' : '#1e293b',
-            color: value === st.key ? '#e0f2fe' : '#94a3b8',
-          }}
-        >
-          {st.label}
-        </button>
-      ))}
+      {STATIONS.map((st) => {
+        const active = value === st.key;
+        return (
+          <button
+            key={st.key}
+            type="button"
+            aria-label={'station-' + st.key}
+            onClick={() => onPick(st.key)}
+            style={{
+              padding: '10px 18px', fontSize: 15, fontWeight: 800, borderRadius: 6, cursor: 'pointer',
+              textTransform: 'uppercase', letterSpacing: 0.5,
+              border: '1px solid ' + (active ? '#3b82f6' : '#334155'),
+              background: active ? '#1e3a5f' : '#1e293b',
+              color: active ? '#fff' : '#94a3b8',
+            }}
+          >
+            {st.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// One readiness row (Artwork / Garments) in the job card checklist. ok → green
+// check; a failure is amber for goods-on-order, red for art-not-approved — the
+// same danger/warning split the two mockup states show.
+function ReadinessCard({ label, state, danger }) {
+  const tone = state.ok ? { border: '#166534', ring: 'rgba(34,197,94,0.15)', text: '#22c55e' }
+    : danger ? { border: '#7f1d1d', ring: 'rgba(220,38,38,0.15)', text: '#f87171' }
+    : { border: '#d97706', ring: 'rgba(217,119,6,0.18)', text: '#fbbf24' };
+  return (
+    <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 14, background: '#0f172a', border: '1px solid ' + tone.border, borderRadius: 8, padding: '18px 20px' }}>
+      <div style={{ width: 40, height: 40, borderRadius: '50%', background: tone.ring, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: tone.text, fontSize: 24, fontWeight: 800, lineHeight: 1 }}>
+        {state.ok ? '✓' : danger ? '✕' : '!'}
+      </div>
+      <div>
+        <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>{label}</div>
+        <div style={{ color: tone.text, fontSize: 19, fontWeight: 700 }}>{state.label}</div>
+      </div>
     </div>
   );
 }
@@ -98,102 +144,149 @@ function JobPanel({ station, job, resolvedCode, busy, onAdvance }) {
   const files = stationFilesFor(station, job.files);
   const preview = previewImageFor(job.files);
   const action = nextActionFor(job);
+  const stationLabel = stationByKey(station) ? stationByKey(station).label : station;
+
+  const disp = stageDisplay(job);
+  const tone = TONE[disp.tone] || TONE.wait;
+  const readiness = jobReadiness(job);
+  // Readiness only gates the pre-release (hold) tap — past release those checks
+  // are moot. When a held job isn't ready, show the banner up front instead of a
+  // release button that would bounce off the 00205 server gate.
+  const preRelease = stage === 'hold' && !job.packed_at;
+  const blocked = preRelease && !readiness.ready;
+  const blockReason = !readiness.art.ok
+    ? "Artwork isn't approved yet."
+    : "Garments aren't all in hand yet.";
+
+  const labelCap = { color: '#94a3b8', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' };
 
   return (
-    <div style={{ background: '#1e293b', border: '1px solid #334155', borderRadius: 14, padding: 18, marginTop: 14 }}>
-      {mismatch && (
-        <div
-          role="alert"
-          style={{ background: '#7f1d1d', color: '#fecaca', border: '3px solid #ef4444', borderRadius: 10, padding: '14px 16px', fontSize: 22, fontWeight: 800, marginBottom: 14 }}
-        >
-          WRONG STATION — this is a {job.deco_type || 'unknown'} job, not {stationByKey(station) ? stationByKey(station).label : station} work. You can still proceed.
+    <div style={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 16, overflow: 'hidden', marginTop: 14, display: 'flex', flexDirection: 'column', boxShadow: '0 24px 60px rgba(0,0,0,0.45)' }}>
+      {/* Station identity bar */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 32px', background: '#1e293b', borderBottom: '1px solid #334155' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 12, height: 12, borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 0 4px rgba(34,197,94,0.18)' }} />
+          <span style={{ color: '#e2e8f0', fontSize: 20, fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase' }}>{stationLabel}</span>
         </div>
-      )}
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        {preview && (
-          <img src={preview.url} alt={preview.name} style={{ width: 130, height: 130, objectFit: 'contain', background: '#fff', borderRadius: 10 }} />
-        )}
-        <div style={{ flex: 1, minWidth: 220 }}>
-          <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.15 }}>{job.art_name || 'Unassigned Art'}</div>
-          <div style={{ fontSize: 18, color: '#94a3b8', marginTop: 4 }}>
-            {job.so_id} · {job.job_id}
-          </div>
-          <div style={{ fontSize: 20, marginTop: 8 }}>
-            <b>{job.deco_type || '—'}</b>
-            {job.positions ? ' · ' + job.positions : ''} · <b>{job.total_units || 0}</b> units
-          </div>
-          <div style={{ fontSize: 16, marginTop: 6, color: '#38bdf8', fontWeight: 800, textTransform: 'uppercase', letterSpacing: 1 }}>
-            Stage: {stage}{job.packed_at ? ' · packed' : ''}
-          </div>
-          {job.dtf_prints_status && (
-            <div style={{ marginTop: 10, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1 }}>DTF prints</span>
-              <span style={{ fontSize: 15, fontWeight: 800, padding: '3px 10px', borderRadius: 8,
-                background: job.dtf_prints_status === 'received' ? '#052e16' : '#422006',
-                border: '1px solid ' + (job.dtf_prints_status === 'received' ? '#15803d' : '#a16207'),
-                color: job.dtf_prints_status === 'received' ? '#4ade80' : '#fbbf24' }}>
-                {job.dtf_prints_status === 'received' ? 'RECEIVED' : job.dtf_prints_status === 'ordered' ? 'ON ORDER' : 'NEEDED'}
-              </span>
-              {job.dtf_bin && <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>· BIN {job.dtf_bin}</span>}
-            </div>
-          )}
-          {job.size_breakdown && Object.keys(job.size_breakdown).length > 0 && (
-            <div style={{ marginTop: 10 }}>
-              <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Sizes</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                {sortedSizeEntries(job.size_breakdown).map(([sz, qty]) => (
-                  <span key={sz} style={{ fontSize: 17, fontWeight: 700, background: '#0f172a', border: '1px solid #334155', borderRadius: 8, padding: '4px 10px' }}>
-                    <span style={{ color: '#94a3b8' }}>{sz}</span> <span style={{ color: '#e2e8f0' }}>{qty}</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
+        <span style={{ color: '#64748b', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>NSA Connect · Floor</span>
       </div>
-      {job.notes && (
-        <div style={{ marginTop: 12, background: '#422006', border: '1px solid #a16207', borderRadius: 10, padding: '12px 14px' }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: '#fbbf24', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>Notes</div>
-          <div style={{ fontSize: 17, color: '#fef3c7', whiteSpace: 'pre-wrap' }}>{job.notes}</div>
-        </div>
-      )}
 
-      {station !== 'packing' && (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 800, color: '#64748b', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>
-            {station === 'embroidery' ? 'DST file' : 'Production file'}
+      <div style={{ padding: 32, display: 'flex', flexDirection: 'column', gap: 22 }}>
+        {mismatch && (
+          <div role="alert" style={{ background: 'rgba(220,38,38,0.12)', color: '#fecaca', border: '1px solid #dc2626', borderLeft: '6px solid #dc2626', borderRadius: 6, padding: '14px 18px', fontSize: 20, fontWeight: 800 }}>
+            WRONG STATION — this is a {job.deco_type || 'unknown'} job, not {stationLabel} work. You can still proceed.
           </div>
-          {files.length === 0 ? (
-            <div style={{ fontSize: 16, color: '#fbbf24', fontWeight: 700 }}>
-              No {station === 'embroidery' ? 'DST' : 'print'} file on this job yet.
-            </div>
-          ) : files.map((f) => (
-            <a
-              key={f.url}
-              href={f.url}
-              target="_blank"
-              rel="noreferrer"
-              style={{ display: 'block', fontSize: 18, fontWeight: 700, color: '#7dd3fc', margin: '4px 0', wordBreak: 'break-all' }}
-            >
-              {f.name || f.url}
-            </a>
-          ))}
-        </div>
-      )}
+        )}
 
-      {action && (
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onAdvance(job, action, resolvedCode)}
-          style={S.bigBtn(busy ? '#334155' : '#15803d')}
-        >
-          {busy ? 'Working…' : action.label}
-        </button>
-      )}
-      {!action && (
-        <div style={{ marginTop: 14, fontSize: 18, color: '#4ade80', fontWeight: 800 }}>Done — packed.</div>
-      )}
+        {/* Header: name + current-stage badge */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 24, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 240, flex: 1 }}>
+            <div style={{ ...labelCap, marginBottom: 8 }}>Job {job.so_id} · {job.job_id}</div>
+            <div style={{ color: '#f1f5f9', fontSize: 52, fontWeight: 800, lineHeight: 1.02, letterSpacing: '-0.5px' }}>{job.art_name || 'Unassigned Art'}</div>
+            <div style={{ color: '#94a3b8', fontSize: 20, marginTop: 6 }}>
+              {job.deco_type || '—'}{job.positions ? ' · ' + job.positions : ''} · {job.total_units || 0} pieces
+            </div>
+          </div>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ ...labelCap, marginBottom: 8 }}>Current stage</div>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, background: '#0f172a', border: '1px solid ' + tone.border, borderRadius: 6, padding: '14px 20px' }}>
+              <div style={{ width: 10, height: 10, borderRadius: '50%', background: tone.dot }} />
+              <span style={{ color: '#e2e8f0', fontSize: 28, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5 }}>{disp.label}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Readiness checklist — only meaningful before release */}
+        {preRelease && (
+          <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <ReadinessCard label="Artwork" state={readiness.art} danger />
+            <ReadinessCard label="Garments" state={readiness.goods} danger={false} />
+          </div>
+        )}
+
+        {/* DTF prints status */}
+        {job.dtf_prints_status && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ ...labelCap }}>DTF prints</span>
+            <span style={{ fontSize: 15, fontWeight: 800, padding: '3px 10px', borderRadius: 4,
+              background: job.dtf_prints_status === 'received' ? '#052e16' : '#422006',
+              border: '1px solid ' + (job.dtf_prints_status === 'received' ? '#166534' : '#d97706'),
+              color: job.dtf_prints_status === 'received' ? '#22c55e' : '#fbbf24' }}>
+              {job.dtf_prints_status === 'received' ? 'RECEIVED' : job.dtf_prints_status === 'ordered' ? 'ON ORDER' : 'NEEDED'}
+            </span>
+            {job.dtf_bin && <span style={{ fontSize: 15, fontWeight: 800, color: '#e2e8f0' }}>· BIN {job.dtf_bin}</span>}
+          </div>
+        )}
+
+        {/* Sizes */}
+        {job.size_breakdown && Object.keys(job.size_breakdown).length > 0 && (
+          <div>
+            <div style={{ ...labelCap, marginBottom: 6 }}>Sizes</div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              {sortedSizeEntries(job.size_breakdown).map(([sz, qty]) => (
+                <span key={sz} style={{ fontSize: 17, fontWeight: 700, background: '#0f172a', border: '1px solid #334155', borderRadius: 4, padding: '4px 10px' }}>
+                  <span style={{ color: '#94a3b8' }}>{sz}</span> <span style={{ color: '#e2e8f0' }}>{qty}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Production files (+ preview) */}
+        {station !== 'packing' && (
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+            {preview && (
+              <img src={preview.url} alt={preview.name} style={{ width: 72, height: 72, objectFit: 'contain', background: '#fff', borderRadius: 8, flexShrink: 0 }} />
+            )}
+            <div style={{ flex: 1 }}>
+              <div style={{ ...labelCap, marginBottom: 6 }}>{station === 'embroidery' ? 'DST file' : 'Production file'}</div>
+              {files.length === 0 ? (
+                <div style={{ fontSize: 16, color: '#fbbf24', fontWeight: 700 }}>
+                  No {station === 'embroidery' ? 'DST' : 'print'} file on this job yet.
+                </div>
+              ) : files.map((f) => (
+                <a key={f.url} href={f.url} target="_blank" rel="noreferrer"
+                  style={{ display: 'block', fontSize: 18, fontWeight: 700, color: '#60a5fa', margin: '4px 0', wordBreak: 'break-all' }}>
+                  {f.name || f.url}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Notes */}
+        {job.notes && (
+          <div style={{ background: 'rgba(217,119,6,0.12)', border: '1px solid #d97706', borderRadius: 6, padding: '12px 16px' }}>
+            <div style={{ color: '#fbbf24', fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Notes</div>
+            <div style={{ fontSize: 17, color: '#fef3c7', whiteSpace: 'pre-wrap' }}>{job.notes}</div>
+          </div>
+        )}
+
+        {/* Action: not-ready banner, stage button, or done */}
+        {blocked ? (
+          <div style={{ background: 'rgba(220,38,38,0.12)', border: '1px solid #dc2626', borderLeft: '6px solid #dc2626', borderRadius: 6, padding: '22px 26px', display: 'flex', alignItems: 'center', gap: 18 }}>
+            <span style={{ color: '#f87171', fontSize: 34, flexShrink: 0, lineHeight: 1 }}>⚠</span>
+            <div>
+              <div style={{ color: '#f87171', fontSize: 13, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>Not ready to run</div>
+              <div style={{ color: '#e2e8f0', fontSize: 24, fontWeight: 700, lineHeight: 1.25 }}>{blockReason} Set this aside and scan the next job.</div>
+            </div>
+          </div>
+        ) : action ? (
+          <button
+            type="button"
+            className="fs-btn"
+            disabled={busy}
+            onClick={() => onAdvance(job, action, resolvedCode)}
+            style={S.bigBtn(busy ? '#334155' : '#2563eb')}
+          >
+            {busy ? 'Working…' : action.label}
+          </button>
+        ) : (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#22c55e', fontSize: 20, fontWeight: 800 }}>
+            <span style={{ fontSize: 24, lineHeight: 1 }}>✓</span> Done — packed.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -303,14 +396,21 @@ function FloorStationScreen({ stationToken }) {
 
   return (
     <div style={S.page}>
-      <div style={{ maxWidth: 640, margin: '0 auto' }}>
-        <h1 style={{ fontSize: 18, fontWeight: 800, color: '#64748b', margin: '0 0 10px', textTransform: 'uppercase', letterSpacing: 2 }}>
-          Floor Station{stationToken ? ' · station mode' : ''}
-        </h1>
+      <style>{FS_CSS}</style>
+      <div style={{ maxWidth: 1024, margin: '0 auto' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', margin: '0 0 14px' }}>
+          <h1 style={{ fontSize: 18, fontWeight: 800, color: '#64748b', margin: 0, textTransform: 'uppercase', letterSpacing: 2 }}>
+            Floor Station{stationToken ? ' · station mode' : ''}
+          </h1>
+          <span style={{ color: '#64748b', fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>NSA Connect · Floor</span>
+        </div>
         <StationPicker value={station} onPick={pickStation} />
         <form onSubmit={onScanSubmit}>
+          <label htmlFor="fs-scan" style={S.label}>Scan job barcode</label>
           <input
+            id="fs-scan"
             ref={inputRef}
+            className="fs-input"
             autoFocus
             aria-label="scan-input"
             placeholder="Scan job barcode…"
@@ -324,8 +424,10 @@ function FloorStationScreen({ stationToken }) {
 
         {msg && (
           <div style={{
-            marginTop: 12, padding: '12px 14px', borderRadius: 10, fontSize: 18, fontWeight: 700,
-            background: msg.kind === 'err' ? '#7f1d1d' : '#064e3b',
+            marginTop: 12, padding: '14px 18px', borderRadius: 6, fontSize: 18, fontWeight: 700,
+            background: msg.kind === 'err' ? 'rgba(220,38,38,0.12)' : 'rgba(34,197,94,0.12)',
+            border: '1px solid ' + (msg.kind === 'err' ? '#dc2626' : '#166534'),
+            borderLeft: '6px solid ' + (msg.kind === 'err' ? '#dc2626' : '#22c55e'),
             color: msg.kind === 'err' ? '#fecaca' : '#a7f3d0',
           }}>
             {msg.text}
@@ -336,8 +438,9 @@ function FloorStationScreen({ stationToken }) {
           <button
             key={j.job_id}
             type="button"
+            className="fs-btn"
             onClick={() => resolve(pickJobs.code, j.job_id)}
-            style={{ ...S.bigBtn('#1d4ed8'), fontSize: 20, padding: '14px 16px' }}
+            style={{ ...S.bigBtn('#2563eb'), fontSize: 20, minHeight: 0, padding: '14px 16px', marginTop: 10 }}
           >
             {j.art_name || j.job_id} · {j.so_id}
           </button>
@@ -357,6 +460,11 @@ function FloorStationScreen({ stationToken }) {
             Scan a job ticket to begin
           </div>
         )}
+
+        <div style={{ marginTop: 22, display: 'flex', justifyContent: 'space-between', alignItems: 'center', color: '#64748b', fontSize: 13 }}>
+          <span>Scan next job to continue</span>
+          <span style={{ fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase' }}>{stationByKey(station) ? stationByKey(station).label : station}</span>
+        </div>
       </div>
     </div>
   );

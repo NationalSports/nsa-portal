@@ -142,6 +142,7 @@ describe('job-scan event:resolve (read-only)', () => {
 // ── floorLogic pure helpers ────────────────────────────────────────────────
 const {
   stationAccepts, stationFilesFor, previewImageFor, nextActionFor, sortedSizeEntries, notReadyMessage,
+  jobReadiness, stageDisplay,
 } = require('../floorstation/floorLogic');
 
 describe('floorLogic', () => {
@@ -207,6 +208,36 @@ describe('floorLogic', () => {
     expect(notReadyMessage('NSA_STALE_STATE:completed')).toBe(null);
     expect(notReadyMessage('some network blip')).toBe(null);
     expect(notReadyMessage(null)).toBe(null);
+  });
+
+  test('jobReadiness mirrors the 00205 gate (art_complete AND goods past need_to_order)', () => {
+    const ready = jobReadiness({ art_status: 'art_complete', item_status: 'items_received' });
+    expect(ready).toMatchObject({ ready: true, art: { ok: true, label: 'Approved' }, goods: { ok: true, label: 'All received' } });
+    // Art not done → not ready.
+    expect(jobReadiness({ art_status: 'needs_art', item_status: 'items_received' }))
+      .toMatchObject({ ready: false, art: { ok: false, label: 'Not approved' } });
+    // Awaiting sign-off gets its own label, still not ready.
+    expect(jobReadiness({ art_status: 'waiting_approval', item_status: 'items_received' }))
+      .toMatchObject({ ready: false, art: { ok: false, label: 'Waiting approval' } });
+    // Goods still on order → not ready, goods flagged.
+    expect(jobReadiness({ art_status: 'art_complete', item_status: 'need_to_order' }))
+      .toMatchObject({ ready: false, goods: { ok: false, label: 'On order' } });
+    // Missing fields → not ready, never throws.
+    expect(jobReadiness({}).ready).toBe(false);
+    expect(jobReadiness(null).ready).toBe(false);
+  });
+
+  test('stageDisplay reflects readiness before release and stage after', () => {
+    expect(stageDisplay({ prod_status: 'hold', art_status: 'art_complete', item_status: 'items_received' }))
+      .toEqual({ label: 'Ready to Run', tone: 'ready' });
+    expect(stageDisplay({ prod_status: 'hold', art_status: 'art_complete', item_status: 'need_to_order' }))
+      .toEqual({ label: 'On Order', tone: 'wait' });
+    expect(stageDisplay({ prod_status: 'hold', art_status: 'needs_art', item_status: 'items_received' }))
+      .toEqual({ label: 'Needs Art', tone: 'wait' });
+    expect(stageDisplay({ prod_status: 'staging' })).toEqual({ label: 'In Line', tone: 'active' });
+    expect(stageDisplay({ prod_status: 'in_process' })).toEqual({ label: 'Running', tone: 'active' });
+    expect(stageDisplay({ prod_status: 'completed' })).toEqual({ label: 'Decorated', tone: 'done' });
+    expect(stageDisplay({ prod_status: 'completed', packed_at: '2026-07-13' })).toEqual({ label: 'Packed', tone: 'done' });
   });
 });
 
@@ -312,8 +343,8 @@ describe('FloorStation UI', () => {
     expect(advanceBody).toMatchObject({
       code: 'DG-99999', event: 'start_run', expected: 'staging', so_id: 'SO-9', job_id: 'j9',
     });
-    // re-resolved: the shown stage is now the server's current one
-    await waitFor(() => expect(screen.getByText(/Stage: in_process/i)).toBeTruthy());
+    // re-resolved: the shown stage badge is now the server's current one
+    await waitFor(() => expect(screen.getByText('Running')).toBeTruthy());
   });
 
   test('?token= station mode skips the staff gate and sends x-machine-token, never a JWT', async () => {

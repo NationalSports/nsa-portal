@@ -89,6 +89,41 @@ export function nextActionFor(job) {
   return map[status] || null;
 }
 
+// Readiness of a not-yet-released (hold) job, mirroring advance_job_stage's
+// 00205 gate: art must be 'art_complete' AND garments must be past
+// 'need_to_order'. Drives the Floor Station readiness checklist and whether the
+// release button or the "not ready" banner shows. The server gate stays the
+// authoritative backstop — this only decides what the tablet offers up front so
+// the operator doesn't tap a release that will bounce.
+export function jobReadiness(job) {
+  const art = (job && job.art_status) || null;
+  const item = (job && job.item_status) || null;
+  const artOk = art === 'art_complete';
+  const goodsOk = !!item && item !== 'need_to_order';
+  return {
+    art: { ok: artOk, label: artOk ? 'Approved' : (art === 'waiting_approval' ? 'Waiting approval' : 'Not approved') },
+    goods: { ok: goodsOk, label: goodsOk ? 'All received' : 'On order' },
+    ready: artOk && goodsOk,
+  };
+}
+
+// The big "current stage" badge for the Floor Station job card: a label + a
+// semantic tone the card maps to a color. Past release it names the production
+// stage; for a still-held job it reflects readiness at a glance (Ready to Run /
+// On Order / Needs Art), matching the two mockup states.
+export function stageDisplay(job) {
+  if (job && job.packed_at) return { label: 'Packed', tone: 'done' };
+  const s = normProdStatus(job && job.prod_status);
+  if (s === 'completed') return { label: 'Decorated', tone: 'done' };
+  if (s === 'in_process') return { label: 'Running', tone: 'active' };
+  if (s === 'staging') return { label: 'In Line', tone: 'active' };
+  const r = jobReadiness(job);
+  if (r.ready) return { label: 'Ready to Run', tone: 'ready' };
+  if (!r.goods.ok) return { label: 'On Order', tone: 'wait' };
+  if (!r.art.ok) return { label: 'Needs Art', tone: 'wait' };
+  return { label: 'On Hold', tone: 'wait' };
+}
+
 // Releasing a job whose art isn't finished or whose garments are still on order
 // makes advance_job_stage's readiness gate (00205) raise
 // NSA_NOT_READY:art=<art_status>,item=<item_status>. On the floor tablet that
