@@ -141,7 +141,7 @@ describe('job-scan event:resolve (read-only)', () => {
 
 // ── floorLogic pure helpers ────────────────────────────────────────────────
 const {
-  stationAccepts, stationFilesFor, previewImageFor, nextActionFor, sortedSizeEntries,
+  stationAccepts, stationFilesFor, previewImageFor, nextActionFor, sortedSizeEntries, notReadyMessage,
 } = require('../floorstation/floorLogic');
 
 describe('floorLogic', () => {
@@ -191,6 +191,22 @@ describe('floorLogic', () => {
     expect(nextActionFor({ prod_status: 'in_process' })).toMatchObject({ event: 'decorated', expected: 'in_process' });
     expect(nextActionFor({ prod_status: 'completed' })).toMatchObject({ event: 'packed', expected: 'completed' });
     expect(nextActionFor({ prod_status: 'completed', packed_at: '2026-07-11' })).toBe(null);
+  });
+
+  test('notReadyMessage translates the 00205 gate rejection into floor language', () => {
+    // Art not done + garments still on order → both reasons.
+    expect(notReadyMessage('NSA_NOT_READY:art=needs_art,item=need_to_order'))
+      .toBe('Not ready to run — art not done yet and garments not in hand yet. Check with the office before running this job.');
+    // Art done but garments still on order → only the goods reason.
+    expect(notReadyMessage('NSA_NOT_READY:art=art_complete,item=need_to_order'))
+      .toBe('Not ready to run — garments not in hand yet. Check with the office before running this job.');
+    // Art awaiting sign-off → the approval-specific phrasing.
+    expect(notReadyMessage('NSA_NOT_READY:art=waiting_approval,item=items_received'))
+      .toBe('Not ready to run — art still waiting for approval. Check with the office before running this job.');
+    // Any other error is NOT a readiness rejection → null (caller shows generic message).
+    expect(notReadyMessage('NSA_STALE_STATE:completed')).toBe(null);
+    expect(notReadyMessage('some network blip')).toBe(null);
+    expect(notReadyMessage(null)).toBe(null);
   });
 });
 

@@ -276,9 +276,11 @@ exports.handler = async (event) => {
       p_payload: payload,
     });
     if (error) {
-      // Surface NSA_STALE_STATE:* / NSA_NOT_FOUND:* etc. as a 409 the scanner can show.
+      // Surface NSA_STALE_STATE:* / NSA_NOT_FOUND:* / NSA_NOT_READY:* etc. as a
+      // 409 the scanner can show — these are actionable job-state conflicts, not
+      // server faults (NSA_NOT_READY is the 00205 release-gate rejection).
       const msg = error.message || 'RPC error';
-      const status = /NSA_STALE_STATE|NSA_NOT_FOUND|NSA_FORBIDDEN|NSA_BAD_INPUT/.test(msg) ? 409 : 500;
+      const status = /NSA_STALE_STATE|NSA_NOT_FOUND|NSA_FORBIDDEN|NSA_BAD_INPUT|NSA_NOT_READY/.test(msg) ? 409 : 500;
       return { statusCode: status, headers: cors(), body: JSON.stringify({ ok: false, error: msg, resolution: res }) };
     }
     return { statusCode: 200, headers: cors(), body: JSON.stringify({ ok: true, resolution: res, result: data }) };

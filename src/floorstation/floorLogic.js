@@ -88,3 +88,26 @@ export function nextActionFor(job) {
   };
   return map[status] || null;
 }
+
+// Releasing a job whose art isn't finished or whose garments are still on order
+// makes advance_job_stage's readiness gate (00205) raise
+// NSA_NOT_READY:art=<art_status>,item=<item_status>. On the floor tablet that
+// raw code reads as a broken scanner, so translate it into plain language the
+// operator can act on. Returns null when the error is NOT a readiness rejection
+// (so the caller falls back to its generic "move failed" handling). Same parse
+// shape as TeamShopQueue's parseNotReady.
+export function notReadyMessage(errMsg) {
+  const m = /NSA_NOT_READY:art=([^,]*),item=(.*)$/.exec(String(errMsg || ''));
+  if (!m) return null;
+  const art = m[1];
+  const item = m[2];
+  const reasons = [];
+  if (art !== 'art_complete') {
+    reasons.push(art === 'waiting_approval' ? 'art still waiting for approval' : 'art not done yet');
+  }
+  if (item === 'need_to_order') {
+    reasons.push('garments not in hand yet');
+  }
+  if (reasons.length === 0) reasons.push('not ready to run yet');
+  return 'Not ready to run — ' + reasons.join(' and ') + '. Check with the office before running this job.';
+}

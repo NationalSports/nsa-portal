@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import {
   STATIONS, stationByKey, stationAccepts, stationFilesFor, previewImageFor,
-  normProdStatus, nextActionFor, sortedSizeEntries,
+  normProdStatus, nextActionFor, sortedSizeEntries, notReadyMessage,
 } from './floorLogic';
 
 // Floor Station — scan-at-machine routing for the Team Shop fast-turn floor.
@@ -289,7 +289,8 @@ function FloorStationScreen({ stationToken }) {
       }
       if (!r.ok) {
         setBusy(false);
-        setMsg({ kind: 'err', text: 'Move failed: ' + (r.error || 'unknown error') });
+        const notReady = notReadyMessage(r.error);
+        setMsg({ kind: 'err', text: notReady || ('Move failed: ' + (r.error || 'unknown error')) });
         return;
       }
       const shown = await resolve(scannedCode, shownJob.job_id); // refresh the shown stage
