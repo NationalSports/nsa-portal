@@ -139,12 +139,17 @@ describe('art-branch transfer decos use cost_each as cost-of-record', () => {
   test('decoPricing: transfer deco cost = unit_cost, not DTF matrix', () => {
     const r = DECO.dP(DECO.DEFAULTS, xferDeco, 24, [xferArt]);
     expect(r.cost).toBe(1.85);
-    expect(r.sell).toBe(DECO.DTF[0].sell); // sell side unchanged (0 is falsy → t.sell)
+    // sell is SUPPRESSED to 0 — an explicit sell_override:0 is honored (nullish),
+    // not swallowed by a falsy || that fell through to the DTF matrix. The garment's
+    // unit_sell already carries all revenue, so a matrix sell here double-counts it
+    // in GP/commissions (build-audit fix; was DECO.DTF[0].sell = 4.5).
+    expect(r.sell).toBe(0);
   });
 
   test('businessLogic: same', () => {
     const r = BL.dP(xferDeco, 24, [xferArt]);
     expect(r.cost).toBe(1.85);
+    expect(r.sell).toBe(0); // commission copy must agree — no phantom revenue in GP
   });
 
   test('non-transfer art dtf decos keep the DTF matrix cost', () => {
