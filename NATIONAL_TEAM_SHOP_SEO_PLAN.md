@@ -6,6 +6,42 @@ directory that feeds them._
 
 ---
 
+## ⚠️ Course correction (2026-07-13): retargeted to the deployed Team Shop
+
+Phases 0–2 below were built on `main` against the **old** `/shop/<slug>` club-store
+model. Production `nationalteamshop.com` actually runs the **new retail Team Shop**
+from branch `claude/orchestrator-vs-advisor-4i7qlh` (portal #1646 / website #30) —
+`Home`/`Catalog`/`ProductPage` at `/`, `/catalog`, `/product/<sku>`, with its own
+`og-teamshop.js`. This work has been **rebased onto that branch** and retargeted to
+the Team Shop (the club stores still exist as secondary pages, so the Phase 0–2
+work stays valid for them). New Team Shop SEO (built 2026-07-13):
+
+- **`robots.js`** — reworked allow-list: opens the Team Shop's public routes (`/`,
+  `/catalog`, `/product/`, `/stores`, `/decoration`, `/faq`) + club stores +
+  `/static`; default-denies the funnel and every staff/app route. (The prior
+  version would have `noindex`-blocked the entire Team Shop.) 24/24 path checks.
+- **`sitemap.js`** — now enumerates the Team Shop: landing, catalog + 9 category
+  views, `/stores`, `/faq`, `/decoration`, and every `/product/<sku>` (via the anon
+  `search_products` RPC, launch-category filtered) — plus the club stores.
+- **`og-teamshop.js`** — extended from landing-only OG into the Team Shop's full
+  SEO renderer: per-route head (title/description/canonical→apex/lifecycle robots/
+  OG), SSR of landing/catalog/product into `#root` (createRoot-replace, no
+  cloaking), and JSON-LD (OnlineStore/WebSite on landing; Breadcrumb+ItemList on
+  catalog; **Product with NO price** on product pages — the shop is quote-based, so
+  a marked-up price would be invisible/mismatched). Bails (pass-through) on every
+  non-Team-Shop path, so it never collides with `og-storefront.js` (`/shop/*`) or
+  `directory-seo.js` (`/team-stores`).
+
+Verified locally with stubbed globals (robots longest-match sim; sitemap product
+filtering/pagination; og-teamshop across all routes incl. bail/no-collision and
+Product-no-price) + a manual adversarial review across SEO-policy, render-safety,
+security/RLS, and data-accuracy lenses. **Still needs a deploy-preview check on the
+real apex** (the edge SEO is host-gated to nationalteamshop.com). Product-detail is
+now server-rendered, so the earlier "Product/Offer deferred" item is resolved
+(minus price, by design).
+
+---
+
 ## Domain model (confirmed)
 
 | URL | Serves | Notes |
