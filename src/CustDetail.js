@@ -372,7 +372,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Build unified transaction list
       const txns=[];
       // Existing orders (est, SO, inv)
-      orders.forEach(o=>{txns.push({id:o.id,type:o.type,date:o.date||o.created_at?.split(' ')[0],memo:o.memo,customer_id:o.customer_id,total:o.total,status:o.status,so_id:o.type==='sales_order'?o.id:null,_src:'order',_o:o})});
+      orders.forEach(o=>{txns.push({id:o.id,type:o.type,date:o.date||o.created_at?.split(' ')[0],memo:o.memo,customer_id:o.customer_id,total:o.total,status:o.type==='sales_order'?calcSOStatus(o):o.status,so_id:o.type==='sales_order'?o.id:null,_src:'order',_o:o})});
       // IFs and POs from SOs
       custSOs.forEach(so=>{
         const subC=allCustomers.find(c=>c.id===so.customer_id);
@@ -401,7 +401,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Filter
       const filt=deduped.filter(t=>{
         if(oF!=='all'&&t.type!==oF)return false;
-        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
+        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','items_received','ready_to_invoice','booking','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
         if(sF==='closed')return(t.type==='estimate'?['converted','cancelled']:['approved','paid','pulled','received','complete','completed','shipped','cancelled']).includes(t.status);
         return true;
       }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
