@@ -200,7 +200,15 @@ async function reject(admin, body, staff) {
   if (!order) return bad(404, 'Order not found');
   if (order.order_source !== 'teamshop') return bad(409, 'Not a Team Shop order.');
   if (order.so_id) return bad(409, 'Order already converted to a Sales Order — it can no longer be rejected here.');
-  if (order.status !== 'unpaid') return bad(409, `Order is not awaiting PO review (status: ${order.status}).`);
+  // Rejectable from EITHER pre-conversion state: 'unpaid' (awaiting review) OR
+  // 'po_verified' (audit fix — an earlier approve whose conversion leg failed and
+  // stranded the order; previously reject refused it, so a fraudulent/invalid PO
+  // stuck at po_verified could only be retried into conversion, never cancelled).
+  // so_id is null in both (guarded above), and create_teamshop_sales_order is
+  // transactional, so a failed conversion left no SO/jobs/invoice to clean up.
+  if (order.status !== 'unpaid' && order.status !== 'po_verified') {
+    return bad(409, `Order is not awaiting PO review (status: ${order.status}).`);
+  }
 
   // Terminal, compare-and-set. 'cancelled' is the stack's existing terminal
   // value: 00199 refuses to convert it and the coach label map shows Cancelled.
@@ -211,7 +219,7 @@ async function reject(admin, body, staff) {
       po_reviewed_by: staff.teamMemberId || null,
       po_reviewed_at: new Date().toISOString(),
     })
-    .eq('id', orderId).eq('status', 'unpaid').select('id');
+    .eq('id', orderId).in('status', ['unpaid', 'po_verified']).select('id');
   if (updErr) return bad(500, updErr.message);
   if (!upd || !upd.length) return bad(409, 'Order was already reviewed by someone else — refresh the list.');
 

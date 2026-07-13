@@ -135,16 +135,28 @@ async function autoSubmitPo(admin, { po, vendor, setting, group }) {
     const toEmail = String(setting.contact_email || '').trim();
     if (!toEmail) return { submitted: false, reason: 'no_vendor_email' };
 
-    const emailed = await sendVendorPoEmail(po, vendor, group, toEmail);
-    if (!emailed) return { submitted: false, reason: 'email_failed' };
-
-    // Same compare-and-set from 'draft' that markSubmitted uses, submitted_by='auto'.
+    // CLAIM FIRST, then email (audit fix). The old order — email, THEN compare-and-set —
+    // meant a transient status-write failure AFTER a successful send left the PO 'draft',
+    // so the staff Auto-PO workflow would order it AGAIN: a real double order to the vendor.
+    // Claiming first (CAS draft->created) closes that window: once claimed, staff/next sweep
+    // see it's no longer draft and won't re-send.
     const upd = await admin.from('purchase_orders')
       .update({ status: 'created', submitted_at: new Date().toISOString(), submitted_by: 'auto' })
       .eq('id', po.id).eq('status', 'draft')
       .select('id,status,submitted_at,submitted_by');
     if (upd.error) return { submitted: false, reason: 'mark_failed', error: upd.error.message };
     if (!upd.data || !upd.data.length) return { submitted: false, reason: 'not_draft' }; // raced with a staff mark
+
+    const emailed = await sendVendorPoEmail(po, vendor, group, toEmail);
+    if (!emailed) {
+      // Roll the claim back to draft so the PO is RETRIED rather than stranded as
+      // 'created' but never actually sent. Scoped to our own auto-claim (submitted_by
+      // 'auto') so we never revert a PO a staffer marked created in the meantime.
+      await admin.from('purchase_orders')
+        .update({ status: 'draft', submitted_at: null, submitted_by: null })
+        .eq('id', po.id).eq('status', 'created').eq('submitted_by', 'auto');
+      return { submitted: false, reason: 'email_failed' };
+    }
     return { submitted: true, emailed: true, po_id: po.id };
   } catch (e) {
     return { submitted: false, reason: 'error', error: e.message || String(e) };

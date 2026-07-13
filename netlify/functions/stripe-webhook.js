@@ -217,15 +217,26 @@ exports.handler = async (event) => {
       const charge = evt.data.object;
       const piId = charge && charge.payment_intent;
       if (sb && piId) {
-        const { data: orders } = await sb.from('webstore_orders').select('id').eq('stripe_pi_id', piId).limit(1);
+        const { data: orders } = await sb.from('webstore_orders')
+          .select('id,store_id,buyer_name,buyer_email,total,so_id').eq('stripe_pi_id', piId).limit(1);
         const order = orders && orders[0];
         if (order) {
           const refunds = (charge.refunds && charge.refunds.data) || [];
+          let appliedAny = false;
           for (const rf of refunds) {
-            await sb.rpc('apply_webstore_refund', {
+            const { data: res } = await sb.rpc('apply_webstore_refund', {
               p_order_id: order.id, p_amount: (Number(rf.amount) || 0) / 100, p_kind: 'card',
               p_stripe_refund_id: rf.id, p_actor: null, p_reason: rf.reason || 'Stripe refund',
             });
+            if (res && res.ok && !res.duplicate) appliedAny = true;
+          }
+          // A refund on an order that ALREADY converted to production (so_id set)
+          // otherwise passes silently — jobs keep running and POs stay live with no
+          // signal, unlike a dispute which alerts. Tell staff so they can halt the
+          // jobs / cancel POs / void the invoice. Gated on a freshly-applied refund
+          // (res.ok && !duplicate) so Stripe webhook redelivery never re-alerts.
+          if (appliedAny && order.so_id) {
+            try { await alertStaffOfRefund(order, charge); } catch (e) { console.warn('[stripe-webhook] refund alert failed:', e.message); }
           }
         }
       }
@@ -262,6 +273,44 @@ exports.handler = async (event) => {
 
   return { statusCode: 200, body: JSON.stringify({ received: true }) };
 };
+
+// Best-effort staff alert when a refund lands on an order that already converted to
+// production. Mirrors alertStaffOfDispute — a converted order's jobs/POs don't stop
+// on their own, so staff need a signal to halt the run, cancel POs, and void the
+// invoice. (Whether to AUTO-hold jobs/void is a separate, deliberate decision.)
+async function alertStaffOfRefund(order, charge) {
+  const brevoKey = process.env.BREVO_API_KEY || process.env.REACT_APP_BREVO_API_KEY;
+  if (!brevoKey) return;
+  const to = process.env.STORES_ALERT_EMAIL || 'stores@nationalsportsapparel.com';
+  const refunded = (Number(charge.amount_refunded) || 0) / 100;
+  const total = Number(order.total) || 0;
+  const full = refunded >= total - 0.01;
+  const fmt = (n) => (Number(n) || 0).toLocaleString(undefined, { style: 'currency', currency: 'usd' });
+  const safe = (s) => String(s == null ? '' : s).replace(/[<>&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));
+  const html = `<div style="font-family:Segoe UI,Roboto,sans-serif;color:#2A2F3E;max-width:560px;margin:0 auto">
+    <div style="background:#b45309;color:#fff;padding:16px 20px;border-radius:10px 10px 0 0;font-size:18px;font-weight:800">⚠️ ${full ? 'Full' : 'Partial'} refund on an in-production order</div>
+    <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:20px">
+      <p>A refund was applied to a webstore order that <b>already converted to production</b>. Jobs and POs do not stop automatically — review and halt if needed.</p>
+      <ul style="font-size:14px;line-height:1.6">
+        <li>Order: ${safe(order.id)}</li>
+        <li>Sales order: <b>${safe(order.so_id)}</b></li>
+        <li>Buyer: ${safe(order.buyer_name)} ${order.buyer_email ? '(' + safe(order.buyer_email) + ')' : ''}</li>
+        <li>Order total: ${fmt(total)}</li>
+        <li>Refunded so far: <b>${fmt(refunded)}</b> ${full ? '(FULL)' : '(partial)'}</li>
+      </ul>
+      <p style="font-size:13px;color:#64748b">If this order should not ship: hold the jobs in Production HQ, cancel any open POs, and void the conversion invoice so commissions/A-R don't overstate.</p>
+    </div></div>`;
+  await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
+    body: JSON.stringify({
+      sender: { name: 'NSA Order Portal', email: 'stores@nationalsportsapparel.com' },
+      to: [{ email: to }],
+      subject: `⚠️ ${full ? 'Full' : 'Partial'} refund on in-production order ${order.id} (${order.so_id})`,
+      htmlContent: html,
+    }),
+  });
+}
 
 // Best-effort staff alert when a chargeback is opened, so fulfillment can be halted.
 async function alertStaffOfDispute(order, dispute) {

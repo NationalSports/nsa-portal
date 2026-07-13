@@ -49,7 +49,7 @@ function fakeSb(script) {
         select: () => chain,
         eq: (col, val) => { call.filters.push([col, val]); return chain; },
         not: (col, op, val) => { call.filters.push([col, op, val]); return chain; },
-        in: () => chain, order: () => chain, limit: () => chain,
+        in: (col, arr) => { call.filters.push([col, 'in', arr]); return chain; }, order: () => chain, limit: () => chain,
         update: (payload) => { call.op = 'update'; call.payload = payload; return chain; },
         then: (resolve, reject) => Promise.resolve(nextResult(table + '.' + call.op, call)).then(resolve, reject),
       };
@@ -218,7 +218,7 @@ describe('reject', () => {
     expect(upd.payload.status).toBe('cancelled');
     expect(upd.payload.po_rejected_reason).toBe('PO number not on file with the district');
     expect(upd.payload.po_reviewed_by).toBe('tm-1');
-    expect(upd.filters).toEqual(expect.arrayContaining([['id', 'ordpo1'], ['status', 'unpaid']]));
+    expect(upd.filters).toEqual(expect.arrayContaining([['id', 'ordpo1'], ['status', 'in', ['unpaid', 'po_verified']]]));
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     const [url, opts] = global.fetch.mock.calls[0];
@@ -240,9 +240,9 @@ describe('reject', () => {
     expect(sb.calls.find((c) => c.op === 'update').payload.po_rejected_reason).toBe('Illegible document');
   });
 
-  test('already reviewed / converted orders are refused', async () => {
+  test('already reviewed / converted orders are refused (no update attempted)', async () => {
+    // po_verified is NO LONGER here — it is now rejectable (see next test).
     for (const row of [
-      { ...PENDING, status: 'po_verified' },
       { ...PENDING, status: 'cancelled' },
       { ...PENDING, so_id: 'SO-1002', status: 'batched' },
     ]) {
@@ -251,5 +251,18 @@ describe('reject', () => {
       expect(res.statusCode).toBe(409);
       expect(sb.calls.filter((c) => c.op === 'update')).toHaveLength(0);
     }
+  });
+
+  test('a po_verified order (conversion-failed limbo) CAN be rejected', async () => {
+    const sb = fakeSb({
+      'webstore_orders.select': [{ data: [{ ...PENDING, status: 'po_verified' }], error: null }],
+      'webstore_orders.update': [{ data: [{ id: 'ordpo1' }], error: null }],
+    });
+    const res = await po.reject(sb, { order_id: 'ordpo1', reason: 'invalid PO, cancel it' }, STAFF);
+    expect(res.statusCode).toBe(200);
+    const upd = sb.calls.find((c) => c.op === 'update');
+    expect(upd.payload.status).toBe('cancelled');
+    // CAS still guards on the pre-conversion states, so a concurrent conversion can't be clobbered.
+    expect(upd.filters).toEqual(expect.arrayContaining([['id', 'ordpo1'], ['status', 'in', ['unpaid', 'po_verified']]]));
   });
 });
