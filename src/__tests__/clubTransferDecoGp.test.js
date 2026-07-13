@@ -42,3 +42,37 @@ describe('decoPricing.dP — club transfer-code decos use webstore_transfers.uni
     expect(r).toEqual({ cost: 2.4, sell: 0 });
   });
 });
+
+// The OTHER transfer shape: the team-store batch path (src/Webstores.js:3001-3002)
+// writes the deco WITH art_file_id 'xfer_<code>' AND registers a matching art file
+// (deco_type 'heat_press'), so dP takes the art-file heat_press/dtf branch — NOT the
+// no-art-file branch the club shape above uses. That branch read sell_override with a
+// FALSY `||`, so an explicit sell_override:0 fell through to the DTF matrix sell ($4.50/
+// $7.50), double-counting revenue already inside unit_sell → GP/commissions overstated
+// (audit MEDIUM). It must honor an explicit 0, exactly like the screen_print/embroidery/
+// names/numbers branches already do.
+describe('decoPricing.dP — team-store batch transfer deco (art-file heat_press branch) honors sell_override=0', () => {
+  const batchTransferDeco = (code) => ({
+    kind: 'art', art_file_id: 'xfer_' + code, type: 'heat_press',
+    transfer_code: code, placement: 'full_front', side: 'front',
+    color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 1.2,
+  });
+  const artFiles = [{ id: 'xfer_LOGO1', deco_type: 'heat_press' }];
+
+  test('decoPricing.dP: sell suppressed to 0, real transfer cost preserved', () => {
+    const r = DECO.dP(DECO.DEFAULTS, batchTransferDeco('LOGO1'), 24, artFiles);
+    expect(r).toEqual({ cost: 1.2, sell: 0 });
+  });
+
+  test('businessLogic.dP (commissions copy) agrees — no phantom $4.50 revenue', () => {
+    const r = BL.dP(batchTransferDeco('LOGO1'), 24, artFiles);
+    expect(r).toEqual({ cost: 1.2, sell: 0 });
+  });
+
+  test('a normal DTF art deco with NO override is still matrix-priced (fix did not over-reach)', () => {
+    const normal = { kind: 'art', art_file_id: 'a1', type: 'dtf' };
+    const files = [{ id: 'a1', deco_type: 'dtf', dtf_size: 0 }];
+    const r = DECO.dP(DECO.DEFAULTS, normal, 24, files);
+    expect(r.sell).toBe(DECO.DEFAULTS.DTF[0].sell);
+  });
+});

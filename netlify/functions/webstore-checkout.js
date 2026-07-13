@@ -688,6 +688,15 @@ async function finalize(sb, body) {
   if (!order) return bad(404, 'Order not found');
   if (order.stripe_pi_id !== stripePiId) return bad(409, 'Payment reference does not match this order.');
 
+  // Never resurrect a terminated order. A buyer re-opening the checkout return
+  // URL (or a retried finalize) on a refunded/cancelled order must NOT flip it
+  // back to 'paid' or trigger conversion — the money was already returned. The
+  // PaymentIntent still reads 'succeeded' (a refund is a separate Stripe object),
+  // so the guard must be on our order status, not the PI (audit HIGH).
+  if (['refunded', 'cancelled', 'void', 'disputed', 'deleted', 'archived'].includes(order.status)) {
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, orderId: order.id, status: order.status, skipped: 'terminal' }) };
+  }
+
   const sk = process.env.STRIPE_SECRET_KEY;
   if (!sk) return bad(500, 'Stripe not configured');
   const pi = await stripe(sk).paymentIntents.retrieve(stripePiId);
@@ -695,7 +704,9 @@ async function finalize(sb, body) {
   if (pi.amount !== Math.round((Number(order.total) || 0) * 100)) return bad(409, 'Payment amount does not match the order.');
   if (pi.metadata && pi.metadata.webstore_order_id && pi.metadata.webstore_order_id !== order.id) return bad(409, 'Payment does not belong to this order.');
 
-  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).neq('status', 'paid');
+  // Promote ONLY from a genuine pre-paid state — never from a post-paid status
+  // (e.g. 'batched'), so a re-called finalize can't regress a downstream order.
+  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
 
   // Club store order -> production conversion (migration 00204), the same
   // post-payment trigger point as stripe-webhook's teamshop conversion fallback.

@@ -168,7 +168,12 @@ async function loadSettings(admin) {
 
 async function teamshopClubSoIds(admin) {
   const res = await admin.from('webstore_orders')
-    .select('so_id, order_source').in('order_source', SOURCES).not('so_id', 'is', null).limit(5000);
+    .select('so_id, order_source').in('order_source', SOURCES).not('so_id', 'is', null)
+    // Exclude terminated orders. Without this gate a refunded/cancelled order's
+    // jobs (still hold + art_complete, never cleaned up) get auto-released into
+    // production and decorated — money already returned to the buyer (audit HIGH).
+    .not('status', 'in', '(refunded,cancelled,void,disputed,deleted,archived)')
+    .limit(5000);
   if (res.error) throw res.error;
   const map = {};
   (res.data || []).forEach((r) => { if (r.so_id) map[r.so_id] = r.order_source; });

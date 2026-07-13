@@ -85,7 +85,7 @@ function _dPInner(T,d,q,artFiles,cq){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
       if(tType==='embroidery'){const c=emP(T,d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
+      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
@@ -94,7 +94,7 @@ function _dPInner(T,d,q,artFiles,cq){
     // Heat-transfer designs (transfer_code decos, batched club/team stores) carry their
     // real cost-of-record on cost_each (webstore_transfers.unit_cost, 00204) — prefer it
     // over the generic DTF matrix cost, which was never the actual transfer price.
-    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
   // Team Shop conversion decos (00199): kind 'art' with NO art_file_id and a rate-card
   // cost_each stamped at conversion (00198 teamshop_deco_rates.cost) — cost_each is the
   // cost-of-record. Sell stays as written (0): deco revenue is already folded into
@@ -110,7 +110,7 @@ function _dPInner(T,d,q,artFiles,cq){
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
   // (club conversion writes sell_override=0: names revenue is already inside unit_sell).
   if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
-  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
+  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
