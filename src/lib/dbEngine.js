@@ -1268,17 +1268,34 @@ const _dbSaveSOInner = async (so) => {
         let _restored=0,_unrestorable=0;
         _dbPoRows.forEach(row=>{
           const poId=row.po_id;
-          // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
-          if(_clientPoIds.has(poId))return;
-          // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
-          if(_posHydrated&&_knownPoIds.has(poId))return;
-          // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
+          // A placed vendor/API order writes ONE row per item, all sharing this po_id and carrying
+          // api_order_id (inside the row's sizes jsonb). The skips below key on po_id alone, so if a client
+          // dropped some-but-not-all of those per-item rows (SO-1479 / "PO 8800 TLL": 3 of 4 lines lost while
+          // the LST350 line survived), the survivor keeps the po_id in _clientPoIds and the other items' rows
+          // would be silently wiped. Detect that partial loss and preserve the missing rows per item.
+          const _isApiOrder=!!(row.sizes&&(row.sizes.api_order_id||(row.sizes.vendor_keys&&row.sizes.vendor_keys.order_no)));
+          // Match this DB row to a current item up front — needed for the per-item po_id presence check below.
           const oi=_oldById.get(row.so_item_id);
           // Match by original position first, falling back to SKU(+color) across all items so a
           // removed/reordered sibling line doesn't make this row unmatchable and block the save.
           const _ti=oi?_matchRestoreItem(oi,items):-1;
           const ci=_ti>=0?items[_ti]:null;
-          if(!ci){_unrestorable++;return;}
+          if(_isApiOrder&&_clientPoIds.has(poId)){
+            // Partial loss of a placed order: the client still holds this po_id on at least one item, so this is
+            // NOT a whole-PO removal. Preserve this item's row unless the matched item already carries a line for
+            // this po_id (in which case that item re-saves its own copy).
+            if(ci&&(ci.po_lines||[]).some(p=>p.po_id===poId))return;
+            if(!ci){_unrestorable++;return;}
+          }else{
+            // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
+            if(_clientPoIds.has(poId))return;
+            // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
+            // (For an API order this branch is reached only when the client holds NONE of its lines — a genuine
+            // whole-PO removal — so an intentional full deletion is still honored.)
+            if(_posHydrated&&_knownPoIds.has(poId))return;
+            // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
+            if(!ci){_unrestorable++;return;}
+          }
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
           if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
