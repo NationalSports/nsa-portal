@@ -210,17 +210,29 @@ Safe, self-contained, no storefront re-architecture. _Shipped 2026-07-12._
   the edge function forcing `noindex` on any non-canonical host. Fixes findings
   4 + 5.
 
-### Phase 1 — Crawlable store pages (the core fix)
-- [ ] **Edge-render the store `<head>` per store** — ★★★ · M
-  Real `<title>`, unique `<meta name="description">` (from `hero_blurb`/templated
-  copy), canonical, OG/Twitter. Completes finding 3.
-- [ ] **Edge-render above-the-fold store body** — ★★★ · L
-  Server-render `<h1>` store name, hero blurb, category nav, and product grid
-  (name, image + descriptive `alt`, price, link to `/shop/<slug>/p/<id>`); React
-  hydrates over it. Fixes finding 1.
-- [ ] **Crawlable store directory** at `nationalteamshop.com/team-stores` — ★★★ · M
-  Real HTML anchors to every open store; repoint the marketing `/team-stores`.
-  Fixes finding 6.
+### Phase 1 — Crawlable store pages (the core fix) ✅ DONE
+_Shipped 2026-07-13._
+
+- [x] **Edge-render the store `<head>` per store** — ★★★ · M
+  Done in Phase 0 (`og-storefront.js`): real `<title>`, unique `<meta
+  name="description">`, canonical, lifecycle robots, OG/Twitter. Completes
+  finding 3.
+- [x] **Edge-render above-the-fold store body** — ★★★ · L
+  `og-storefront.js` now renders the store's `<h1>`, logo, hero blurb, category
+  list, and a deduped product grid (name, image + `alt`, price, link to
+  `/shop/<slug>/p|b/<id>`) INTO `#root`. React's `createRoot` clears + replaces
+  it on mount — a no-JS fallback, not hydration, so no mismatch and no cloaking.
+  Scoped to the indexable store **home** on the canonical host; deeper/
+  transactional pages and the noindex duplicate stay head-only; fail-safe to
+  head-only if the store/products lookup or the `#root` markup ever changes.
+  Fixes finding 1. _(Product-detail SSR is Phase 3; those subpages are head-only
+  for now.)_
+- [x] **Crawlable store directory** at `nationalteamshop.com/team-stores` — ★★★ · M
+  New `directory-seo.js`: renders real `<a href="/shop/<slug>">` anchors for
+  every open, publicly-listed store into `#root` (the SPA directory is otherwise
+  search-only, so nothing linked to stores before). Fixes finding 6. _(Optionally
+  repoint the marketing `nationalsportsapparel.com/team-stores` at this directory
+  — deferred; discovery is already covered by the sitemap + this hub.)_
 
 ### Phase 2 — Structured data & rich results
 - [ ] **`Store` / `LocalBusiness` JSON-LD per store** — ★★ · S

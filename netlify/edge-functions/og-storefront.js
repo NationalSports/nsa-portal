@@ -1,17 +1,22 @@
-// Rich link previews for public team stores (/shop/<slug>).
+// SEO + rich link previews for public team stores (/shop/<slug>).
 //
-// The storefront is a client-rendered React SPA, so every store ships the same
-// static index.html with only the generic National Sports Apparel preview tags.
-// Link-preview bots (iMessage, Slack, Facebook, X) read Open Graph <meta> tags
-// from the RAW HTML and never execute JavaScript — so without this, texting a
-// store link shows a bare domain + generic icon instead of the store's image.
+// The storefront is a client-rendered React SPA (createRoot into an empty
+// <div id="root">), so without help every store ships the same static
+// index.html: generic <head> tags and no product content. Link-preview bots and
+// most search/AI crawlers never run JS, so they'd see a bare shell.
 //
 // This edge function runs on every /shop/* request. For a real store slug it
-// looks up that store in the anon-readable `webstores_public` view and rewrites
-// the <title> + og:/twitter: tags in index.html with the store's own name,
-// tagline, and banner (falling back to logo, then the NSA default) BEFORE the
-// HTML reaches the bot. Human visitors still get the same HTML and React boots
-// over it normally — only the <head> metadata changed.
+// looks the store up in the anon-readable webstores_public view and rewrites the
+// served HTML BEFORE it reaches the crawler:
+//   • <head> — store-specific <title>, description, canonical (→ the canonical
+//     nationalteamshop.com domain), lifecycle-aware robots, and OG/Twitter tags.
+//   • <body> — for the indexable store HOME on the canonical host, the store's
+//     above-the-fold content (name, blurb, category list, product grid with
+//     names/prices/images/links) is rendered INTO #root. React's createRoot
+//     clears + replaces those children on mount, so this is a no-JS fallback,
+//     not hydration: same HTML for bots and humans (no cloaking), just crawlable.
+// Everything is fail-safe — any lookup/markup problem falls back to the
+// unmodified (or head-only) response, never a broken page.
 
 const SUPABASE_URL =
   Netlify.env.get('REACT_APP_SUPABASE_URL') || Netlify.env.get('SUPABASE_URL') || '';
@@ -26,6 +31,7 @@ const SUPABASE_ANON_KEY =
 const SITE_ORIGIN = 'https://nationalteamshop.com';
 const CANONICAL_HOSTS = new Set(['nationalteamshop.com', 'www.nationalteamshop.com']);
 const DEFAULT_IMAGE = 'https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png';
+const GRID_LIMIT = 48; // products shown in the crawlable grid
 
 const escapeHtml = (s) =>
   String(s == null ? '' : s)
@@ -54,6 +60,18 @@ const ogImage = (url) => {
   return `${url.slice(0, cut)}c_pad,w_1200,h_630,b_white/${url.slice(cut)}`;
 };
 
+const priceStr = (v) => {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? '$' + n.toFixed(2) : '';
+};
+
+const closesText = (closeAt) => {
+  if (!closeAt) return '';
+  const d = new Date(closeAt);
+  if (isNaN(d.getTime())) return '';
+  return 'Store closes ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+};
+
 // Pull the <slug> out of /shop/<slug>[/...]. Bare /shop or /shop/ has none.
 const slugFromPath = (pathname) => {
   const segs = pathname.split('/').filter(Boolean); // ['shop', '<slug>', ...]
@@ -64,7 +82,8 @@ async function fetchStore(slug) {
   if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
   const qs = new URLSearchParams({
     slug: `eq.${slug}`,
-    select: 'name,logo_url,banner_url,hero_blurb,status,public_listed,require_login',
+    select:
+      'id,name,logo_url,banner_url,hero_blurb,status,public_listed,require_login,primary_color,close_at',
     limit: '1',
   });
   try {
@@ -82,6 +101,30 @@ async function fetchStore(slug) {
     return store;
   } catch {
     return null;
+  }
+}
+
+async function fetchProducts(storeId) {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY || !storeId) return [];
+  const qs = new URLSearchParams({
+    store_id: `eq.${storeId}`,
+    select: 'webstore_product_id,name,category,image_front_url,retail_price,kind,sort_order',
+    order: 'sort_order.asc',
+    limit: '100',
+  });
+  try {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/webstore_storefront_products?${qs}`, {
+      headers: {
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok) return [];
+    const rows = await res.json();
+    return Array.isArray(rows) ? rows : [];
+  } catch {
+    return [];
   }
 }
 
@@ -108,10 +151,107 @@ function injectNoindex(html, pageUrl) {
     `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
     `  <meta name="robots" content="noindex, follow" />`,
   ].join('\n');
-  let out = html
+  const out = html
     .replace(/\s*<link\s+rel="canonical"[^>]*>/gi, '')
     .replace(/\s*<meta\s+name="robots"[^>]*>/gi, '');
   return out.replace(/<\/title>/, `</title>\n${block}`);
+}
+
+// Server-rendered, above-the-fold store content — a no-JS fallback placed INSIDE
+// #root (React clears + replaces it on mount). Semantic, accurate, on-brand.
+function renderStoreBody(store, products, slug) {
+  const base = `/shop/${encodeURIComponent(slug)}`;
+  const primary = /^#[0-9a-fA-F]{3,8}$/.test(store.primary_color || '') ? store.primary_color : '#16223F';
+
+  // Collapse color/size variants that share a name, cap the grid.
+  const seen = new Set();
+  const items = [];
+  for (const p of products) {
+    if (!p || !p.name) continue;
+    const key = String(p.name).trim().toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push(p);
+    if (items.length >= GRID_LIMIT) break;
+  }
+
+  const cats = [];
+  const catSeen = new Set();
+  for (const p of items) {
+    const c = (p.category || '').trim();
+    if (c && !catSeen.has(c.toLowerCase())) { catSeen.add(c.toLowerCase()); cats.push(c); }
+  }
+
+  const cards = items
+    .map((p) => {
+      const kind = p.kind === 'bundle' ? 'b' : 'p';
+      const href = `${base}/${kind}/${encodeURIComponent(p.webstore_product_id)}`;
+      const price = priceStr(p.retail_price);
+      const img = p.image_front_url
+        ? `<img class="sfseo-img" src="${escapeHtml(p.image_front_url)}" alt="${escapeHtml(p.name)}" loading="lazy" width="300" height="300" />`
+        : `<span class="sfseo-img sfseo-noimg" aria-hidden="true"></span>`;
+      return (
+        `<li class="sfseo-item"><a class="sfseo-link" href="${escapeHtml(href)}">` +
+        img +
+        `<span class="sfseo-name">${escapeHtml(p.name)}</span>` +
+        (price ? `<span class="sfseo-price">${price}</span>` : '') +
+        `</a></li>`
+      );
+    })
+    .join('');
+
+  const closes = closesText(store.close_at);
+  const logo = store.logo_url
+    ? `<img class="sfseo-logo" src="${escapeHtml(store.logo_url)}" alt="${escapeHtml(store.name)} logo" width="96" height="96" />`
+    : '';
+  const blurb = store.hero_blurb ? `<p class="sfseo-blurb">${escapeHtml(store.hero_blurb)}</p>` : '';
+  const catNav = cats.length
+    ? `<nav class="sfseo-cats" aria-label="Product categories">${cats
+        .map((c) => `<span class="sfseo-cat">${escapeHtml(c)}</span>`)
+        .join('')}</nav>`
+    : '';
+
+  return `<div id="sfseo" style="--sfseo-primary:${escapeHtml(primary)}">
+<style>
+  #sfseo{font-family:'Source Sans 3',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#2A2F3E;background:#FAF6EF;min-height:100vh}
+  #sfseo .sfseo-wrap{max-width:1180px;margin:0 auto;padding:28px 20px 64px}
+  #sfseo .sfseo-head{text-align:center;padding:12px 0 8px}
+  #sfseo .sfseo-logo{display:inline-block;height:96px;width:auto;object-fit:contain;margin:0 auto 12px}
+  #sfseo h1{font-family:'Barlow Condensed','Arial Narrow',Impact,sans-serif;font-weight:800;text-transform:uppercase;letter-spacing:.02em;font-size:clamp(30px,5vw,52px);line-height:1.02;margin:0 0 10px;color:var(--sfseo-primary)}
+  #sfseo .sfseo-blurb{max-width:640px;margin:0 auto 8px;font-size:17px;line-height:1.5;color:#4A4636}
+  #sfseo .sfseo-closes{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#8A2B2F;margin:8px 0 0}
+  #sfseo .sfseo-cats{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:18px 0 6px}
+  #sfseo .sfseo-cat{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6B6256;border:1px solid #E7DFD0;border-radius:999px;padding:5px 12px}
+  #sfseo .sfseo-grid{list-style:none;margin:24px 0 0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:20px}
+  #sfseo .sfseo-item{margin:0}
+  #sfseo .sfseo-link{display:flex;flex-direction:column;text-decoration:none;color:inherit;background:#fff;border:1px solid #E7DFD0;border-radius:10px;overflow:hidden;height:100%}
+  #sfseo .sfseo-img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover;background:#F2ECE0}
+  #sfseo .sfseo-noimg{background:#F2ECE0}
+  #sfseo .sfseo-name{font-weight:600;font-size:15px;padding:12px 14px 2px}
+  #sfseo .sfseo-price{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:18px;color:var(--sfseo-primary);padding:0 14px 14px}
+  #sfseo .sfseo-cta{text-align:center;margin:36px 0 0}
+  #sfseo .sfseo-cta a{display:inline-block;font-family:'Barlow Condensed',sans-serif;font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:16px;color:#fff;background:var(--sfseo-primary);text-decoration:none;padding:13px 30px;border-radius:6px}
+  @media (max-width:600px){#sfseo .sfseo-grid{grid-template-columns:1fr 1fr;gap:12px}}
+</style>
+<div class="sfseo-wrap">
+  <header class="sfseo-head">
+    ${logo}
+    <h1>${escapeHtml(store.name)}</h1>
+    ${blurb}
+    ${closes ? `<p class="sfseo-closes">${escapeHtml(closes)}</p>` : ''}
+  </header>
+  ${catNav}
+  ${items.length ? `<ul class="sfseo-grid">${cards}</ul>` : ''}
+  <p class="sfseo-cta"><a href="${escapeHtml(base)}">Shop the ${escapeHtml(store.name)} store</a></p>
+</div>
+</div>`;
+}
+
+// Place the crawlable store content inside the empty CRA root. Fail-safe: if the
+// expected markup isn't present (build changed), leave the HTML untouched.
+function injectBody(html, bodyHtml) {
+  if (!html.includes('<div id="root"></div>')) return html;
+  return html.replace('<div id="root"></div>', `<div id="root">${bodyHtml}</div>`);
 }
 
 export default async function handler(request, context) {
@@ -127,6 +267,12 @@ export default async function handler(request, context) {
 
   const isCanonicalHost = CANONICAL_HOSTS.has(url.hostname.toLowerCase());
   const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
+
+  // Sub-path after the slug: [] = store home; ['p'|'b', <id>] = product/bundle;
+  // ['cart'|'checkout'] = transactional (never index, never body-render).
+  const sub = url.pathname.split('/').filter(Boolean).slice(2);
+  const isHome = sub.length === 0;
+  const isTransactional = sub[0] === 'cart' || sub[0] === 'checkout';
 
   const store = await fetchStore(slug);
   if (!store) {
@@ -147,12 +293,13 @@ export default async function handler(request, context) {
   const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
 
   // Index only the real, public, open, ungated stores — and only on the canonical
-  // host (the raw netlify.app duplicate always stays noindex). Mirrors the
-  // directory's open/listed filter (src/storefront/TeamStores.js).
+  // host (the raw netlify.app duplicate always stays noindex). Transactional
+  // sub-pages never index. Mirrors the directory's open/listed filter
+  // (src/storefront/TeamStores.js).
   const indexable =
     store.status === 'open' && store.public_listed === true && store.require_login !== true;
   const robots =
-    isCanonicalHost && indexable
+    isCanonicalHost && indexable && !isTransactional
       ? 'index, follow, max-image-preview:large'
       : 'noindex, follow';
 
@@ -172,12 +319,21 @@ export default async function handler(request, context) {
     `  <meta name="twitter:image" content="${escapeHtml(image)}" />`,
   ].join('\n');
 
-  const html = await response.text();
-  const rewritten = injectTags(html, tags, title);
+  let html = await response.text();
+  html = injectTags(html, tags, title);
+
+  // Server-render the store's above-the-fold content into #root so crawlers get
+  // real product content — only for the indexable store HOME on the canonical
+  // host. Deeper pages (product/cart/checkout) and the noindex duplicate origin
+  // keep the head-only treatment; product-page SSR is a later phase.
+  if (isHome && isCanonicalHost && indexable) {
+    const products = await fetchProducts(store.id);
+    if (products.length) html = injectBody(html, renderStoreBody(store, products, slug));
+  }
 
   const headers = new Headers(response.headers);
   headers.delete('content-length'); // body length changed
-  return new Response(rewritten, {
+  return new Response(html, {
     status: response.status,
     headers,
   });
