@@ -34,7 +34,7 @@
 //   art, then calls advance_job_stage with event 'digitizing_received' (an
 //   annotation-only event per migration 00192 — it does NOT touch prod_status). Actor
 //   is the fixed string 'vendor:topstar'.
-const { corsHeaders, getSupabaseAdmin } = require('./_shared');
+const { corsHeaders, getSupabaseAdmin, safeEqualStr } = require('./_shared');
 
 const bad = (status, error) => ({ statusCode: status, headers: corsHeaders(), body: JSON.stringify({ ok: false, error }) });
 const ok = (data) => ({ statusCode: 200, headers: corsHeaders(), body: JSON.stringify({ ok: true, ...data }) });
@@ -56,7 +56,7 @@ function checkAuth(event) {
   const token = process.env.VENDOR_DIGITIZING_TOKEN;
   if (!token) return { ok: false, status: 503, error: 'VENDOR_DIGITIZING_TOKEN not configured' };
   const presented = event.headers?.['x-vendor-token'] || event.queryStringParameters?.token;
-  if (presented !== token) return { ok: false, status: 401, error: 'Bad or missing vendor token' };
+  if (!safeEqualStr(presented, token)) return { ok: false, status: 401, error: 'Bad or missing vendor token' };
   return { ok: true };
 }
 

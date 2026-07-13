@@ -122,13 +122,16 @@ function StationPicker({ value, onPick }) {
 // check; a failure is amber for goods-on-order, red for art-not-approved — the
 // same danger/warning split the two mockup states show.
 function ReadinessCard({ label, state, danger }) {
-  const tone = state.ok ? { border: '#166534', ring: 'rgba(34,197,94,0.15)', text: '#22c55e' }
-    : danger ? { border: '#7f1d1d', ring: 'rgba(220,38,38,0.15)', text: '#f87171' }
+  // A partial receive counts as releasable (ok) but is shown amber with a '!', not
+  // green with a '✓', so the operator sees that not all garments are in hand.
+  const fullyOk = state.ok && !state.partial;
+  const tone = fullyOk ? { border: '#166534', ring: 'rgba(34,197,94,0.15)', text: '#22c55e' }
+    : (danger && !state.ok) ? { border: '#7f1d1d', ring: 'rgba(220,38,38,0.15)', text: '#f87171' }
     : { border: '#d97706', ring: 'rgba(217,119,6,0.18)', text: '#fbbf24' };
   return (
     <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 14, background: '#0f172a', border: '1px solid ' + tone.border, borderRadius: 8, padding: '18px 20px' }}>
       <div style={{ width: 40, height: 40, borderRadius: '50%', background: tone.ring, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: tone.text, fontSize: 24, fontWeight: 800, lineHeight: 1 }}>
-        {state.ok ? '✓' : danger ? '✕' : '!'}
+        {fullyOk ? '✓' : (danger && !state.ok) ? '✕' : '!'}
       </div>
       <div>
         <div style={{ color: '#94a3b8', fontSize: 11, fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>{label}</div>
@@ -232,25 +235,30 @@ function JobPanel({ station, job, resolvedCode, busy, onAdvance }) {
           </div>
         )}
 
-        {/* Production files (+ preview) */}
-        {station !== 'packing' && (
+        {/* Art preview + production files. The preview thumbnail shows at EVERY
+            station — including Packing, where the packer eyeballs the decoration
+            against the garment (regression fix: the redesign had gated it out of
+            packing). Only the production-file LINKS are hidden at packing. */}
+        {(preview || station !== 'packing') && (
           <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
             {preview && (
               <img src={preview.url} alt={preview.name} style={{ width: 72, height: 72, objectFit: 'contain', background: '#fff', borderRadius: 8, flexShrink: 0 }} />
             )}
-            <div style={{ flex: 1 }}>
-              <div style={{ ...labelCap, marginBottom: 6 }}>{station === 'embroidery' ? 'DST file' : 'Production file'}</div>
-              {files.length === 0 ? (
-                <div style={{ fontSize: 16, color: '#fbbf24', fontWeight: 700 }}>
-                  No {station === 'embroidery' ? 'DST' : 'print'} file on this job yet.
-                </div>
-              ) : files.map((f) => (
-                <a key={f.url} href={f.url} target="_blank" rel="noreferrer"
-                  style={{ display: 'block', fontSize: 18, fontWeight: 700, color: '#60a5fa', margin: '4px 0', wordBreak: 'break-all' }}>
-                  {f.name || f.url}
-                </a>
-              ))}
-            </div>
+            {station !== 'packing' && (
+              <div style={{ flex: 1 }}>
+                <div style={{ ...labelCap, marginBottom: 6 }}>{station === 'embroidery' ? 'DST file' : 'Production file'}</div>
+                {files.length === 0 ? (
+                  <div style={{ fontSize: 16, color: '#fbbf24', fontWeight: 700 }}>
+                    No {station === 'embroidery' ? 'DST' : 'print'} file on this job yet.
+                  </div>
+                ) : files.map((f) => (
+                  <a key={f.url} href={f.url} target="_blank" rel="noreferrer"
+                    style={{ display: 'block', fontSize: 18, fontWeight: 700, color: '#60a5fa', margin: '4px 0', wordBreak: 'break-all' }}>
+                    {f.name || f.url}
+                  </a>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

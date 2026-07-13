@@ -1,6 +1,19 @@
 // Shared helpers for team-list / team-invite / team-deactivate functions.
 // Holds CORS boilerplate + admin verification using the user's JWT.
 const { createClient } = require('@supabase/supabase-js');
+const crypto = require('crypto');
+
+// Constant-time string compare for shared secrets (station/vendor tokens). A plain
+// === short-circuits on the first differing byte, leaking the match length via
+// response timing; timingSafeEqual compares in fixed time. Returns false on any
+// null/length mismatch (length itself isn't secret-dependent for fixed tokens).
+function safeEqualStr(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const ba = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ba.length !== bb.length) return false;
+  return crypto.timingSafeEqual(ba, bb);
+}
 
 function corsHeaders() {
   return {
@@ -343,4 +356,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
+module.exports = { corsHeaders, getSupabaseAdmin, safeEqualStr, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };

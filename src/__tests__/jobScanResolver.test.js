@@ -141,7 +141,7 @@ jest.mock('@supabase/supabase-js', () => ({
     rpc: () => Promise.resolve({ data: { ok: true }, error: null }),
   }),
 }));
-jest.mock('../../netlify/functions/_shared', () => ({ verifyUser: jest.fn() }));
+jest.mock('../../netlify/functions/_shared', () => ({ verifyUser: jest.fn(), safeEqualStr: (a, b) => typeof a === 'string' && typeof b === 'string' && a === b }));
 const { verifyUser } = require('../../netlify/functions/_shared');
 const { handler } = require('../../netlify/functions/job-scan');
 

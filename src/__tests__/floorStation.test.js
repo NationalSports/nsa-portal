@@ -30,7 +30,7 @@ jest.mock('@supabase/supabase-js', () => ({
     rpc: (...args) => global.__fnRpc(...args),
   }),
 }));
-jest.mock('../../netlify/functions/_shared', () => ({ verifyUser: jest.fn() }));
+jest.mock('../../netlify/functions/_shared', () => ({ verifyUser: jest.fn(), safeEqualStr: (a, b) => typeof a === 'string' && typeof b === 'string' && a === b }));
 const { verifyUser } = require('../../netlify/functions/_shared');
 const { handler } = require('../../netlify/functions/job-scan');
 
@@ -222,6 +222,10 @@ describe('floorLogic', () => {
     // Goods still on order → not ready, goods flagged.
     expect(jobReadiness({ art_status: 'art_complete', item_status: 'need_to_order' }))
       .toMatchObject({ ready: false, goods: { ok: false, label: 'On order' } });
+    // Partially received → releasable per the gate, but labelled honestly + flagged
+    // partial (so the card shows amber, not a green 'All received').
+    expect(jobReadiness({ art_status: 'art_complete', item_status: 'partially_received' }))
+      .toMatchObject({ ready: true, goods: { ok: true, partial: true, label: 'Partially received' } });
     // Missing fields → not ready, never throws.
     expect(jobReadiness({}).ready).toBe(false);
     expect(jobReadiness(null).ready).toBe(false);

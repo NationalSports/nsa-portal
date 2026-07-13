@@ -99,10 +99,19 @@ export function jobReadiness(job) {
   const art = (job && job.art_status) || null;
   const item = (job && job.item_status) || null;
   const artOk = art === 'art_complete';
+  // goodsOk mirrors the 00205 gate exactly (anything past 'need_to_order' can
+  // release, INCLUDING a partial receive). But 'partially_received' must not read
+  // as "All received" — the operator needs to know some garments aren't in yet, so
+  // it's flagged partial and labelled honestly while still counting as releasable.
   const goodsOk = !!item && item !== 'need_to_order';
+  const partial = item === 'partially_received';
+  const goodsLabel = item === 'items_received' ? 'All received'
+    : partial ? 'Partially received'
+    : goodsOk ? 'Received'
+    : 'On order';
   return {
     art: { ok: artOk, label: artOk ? 'Approved' : (art === 'waiting_approval' ? 'Waiting approval' : 'Not approved') },
-    goods: { ok: goodsOk, label: goodsOk ? 'All received' : 'On order' },
+    goods: { ok: goodsOk, partial, label: goodsLabel },
     ready: artOk && goodsOk,
   };
 }

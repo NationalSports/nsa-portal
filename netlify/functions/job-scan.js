@@ -21,7 +21,7 @@
 //   job_id  — optional: required when a box scan maps to more than one active job
 //   expected — optional prod_status the scanner believes the job is in (optimistic guard)
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser } = require('./_shared');
+const { verifyUser, safeEqualStr } = require('./_shared');
 const { resolveScan, isDst, dgCodeOf } = require('./_jobScanResolver');
 
 const VALID_EVENTS = new Set([
@@ -199,7 +199,7 @@ exports.handler = async (event) => {
   let authed = false;
   const stationToken = process.env.PROD_SCAN_TOKEN;
   const presented = event.headers?.['x-machine-token'] || event.queryStringParameters?.token;
-  if (stationToken && presented && presented === stationToken) {
+  if (stationToken && presented && safeEqualStr(presented, stationToken)) {
     authed = true;
     actor = 'station';
   }

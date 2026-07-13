@@ -10,6 +10,7 @@ let mockAdmin = null;
 jest.mock('../../netlify/functions/_shared', () => ({
   corsHeaders: () => ({ 'Content-Type': 'application/json' }),
   getSupabaseAdmin: () => mockAdmin,
+  safeEqualStr: (a, b) => typeof a === 'string' && typeof b === 'string' && a === b,
 }));
 
 const vendorDigitizing = require('../../netlify/functions/vendor-digitizing');
