@@ -94,7 +94,7 @@ test('signed-out visitor sees the plain gate, not a login form', async () => {
 test('signed-in staff sees the board with columns and the job card', async () => {
   setMocks({ session: SESSION, tables: baseTables() });
   render(<TeamShopQueue />);
-  await waitFor(() => expect(screen.getByText('Team Shop — Fast Turn Queue')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('Production HQ')).toBeTruthy());
   await waitFor(() => expect(screen.getByText('Eagles LC')).toBeTruthy());
   expect(screen.getByText(/Hold \(1\)/)).toBeTruthy();
   expect(screen.getByText(/Staging \(0\)/)).toBeTruthy();
@@ -202,7 +202,7 @@ test('Production HQ renders 3 tabs; Production & Pull (the original board) is th
   expect(screen.getByText('Production & Pull')).toBeTruthy();
   expect(screen.getByText('Settings')).toBeTruthy();
   // Default tab is the unchanged Kanban board.
-  await waitFor(() => expect(screen.getByText('Team Shop — Fast Turn Queue')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('Production HQ')).toBeTruthy());
 
   fireEvent.click(screen.getByText('Pipeline'));
   await waitFor(() => expect(screen.getByText('Order pipeline')).toBeTruthy());

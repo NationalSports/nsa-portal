@@ -74,7 +74,7 @@ const setMocks = (handlers) => {
 
 const openSettings = async () => {
   render(<TeamShopQueue />);
-  await waitFor(() => expect(screen.getByText('Team Shop — Fast Turn Queue')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('Production HQ')).toBeTruthy());
   fireEvent.click(screen.getByText('Settings'));
   await waitFor(() => expect(screen.getByText('Team Shop — Settings')).toBeTruthy());
 };

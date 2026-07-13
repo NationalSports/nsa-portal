@@ -2,6 +2,12 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../lib/supabase';
 import { useStaffSession } from '../lib/useStaffSession';
 import { fetchTicketArts, openTicket } from './ticket';
+// Connect design system. This route renders standalone (App.js — the only other
+// importer — is a sibling lazy chunk that never mounts here), so CRA 5 would not
+// otherwise load portal.css on /teamshop-queue. Importing it here puts the shared
+// .card/.btn/.badge/.tabs vocabulary on this route so Production HQ matches the
+// rest of Connect. Scoped to this chunk; no other surface is affected.
+import '../portal.css';
 
 // Production HQ (formerly "Team Shop — Fast Turn Queue"). A staff-only lazy
 // chunk, routed at /teamshop-queue (and, as of this pass, the alias /production
@@ -379,32 +385,24 @@ function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }
   }[status];
 
   return (
-    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 10 }}>
+    <div className="card" style={{ padding: 12, marginBottom: 10 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <span style={{ fontWeight: 700, fontSize: 13 }}>{job.so_id} / {job.id}</span>
+        <span style={{ fontWeight: 700, fontSize: 13, color: '#0f172a' }}>{job.so_id} / {job.id}</span>
         <span style={{ fontSize: 11, color: '#64748b' }}>{job.created_at || ''}</span>
       </div>
-      <div style={{ fontWeight: 600, marginTop: 4 }}>{job.art_name || 'Unassigned Art'}</div>
+      <div style={{ fontWeight: 600, marginTop: 4, color: '#0f172a' }}>{job.art_name || 'Unassigned Art'}</div>
       <div style={{ fontSize: 12, color: '#475569', marginTop: 2 }}>
         {job.deco_type || '—'}{job.positions ? ' · ' + job.positions : ''} · {job.total_units || 0} units
       </div>
       {buyer && <div style={{ fontSize: 12, color: '#334155', marginTop: 2 }}>{buyer}</div>}
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
         {job.digitizing_needed && (
-          <span style={{ background: '#dc2626', color: '#fff', fontSize: 10, fontWeight: 700, padding: '2px 6px', borderRadius: 4 }}>
-            Needs digitizing
-          </span>
+          <span className="badge badge-red">Needs digitizing</span>
         )}
-        <span style={{ background: '#f1f5f9', color: '#334155', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
-          art: {job.art_status || 'needs_art'}
-        </span>
-        <span style={{ background: '#f1f5f9', color: '#334155', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
-          item: {job.item_status || 'need_to_order'}
-        </span>
+        <span className="badge badge-gray">art: {job.art_status || 'needs_art'}</span>
+        <span className="badge badge-gray">item: {job.item_status || 'need_to_order'}</span>
         {job.packed_at && (
-          <span style={{ background: '#dcfce7', color: '#166534', fontSize: 10, fontWeight: 600, padding: '2px 6px', borderRadius: 4 }}>
-            packed
-          </span>
+          <span className="badge badge-green">packed</span>
         )}
       </div>
       {notReady && (
@@ -416,26 +414,18 @@ function JobCard({ job, order, onAction, onTicket, actionsDisabled, actionBusy }
         {actionFor && (
           <button
             type="button"
+            className="btn btn-primary btn-sm"
             disabled={actionsDisabled || busy}
             onClick={() => onAction(job, actionFor.event, status)}
-            style={{
-              padding: '6px 12px', fontSize: 12, fontWeight: 700,
-              background: actionsDisabled ? '#e2e8f0' : '#1d4ed8', color: actionsDisabled ? '#94a3b8' : '#fff',
-              border: 'none', borderRadius: 6, cursor: actionsDisabled ? 'not-allowed' : 'pointer',
-            }}
           >
             {busy ? 'Working…' : actionFor.label}
           </button>
         )}
         <button
           type="button"
+          className="btn btn-secondary btn-sm"
           aria-label={'ticket-' + job.id}
           onClick={() => onTicket(job)}
-          style={{
-            padding: '6px 12px', fontSize: 12, fontWeight: 700,
-            background: '#fff', color: '#334155', border: '1px solid #cbd5e1',
-            borderRadius: 6, cursor: 'pointer',
-          }}
         >
           Ticket
         </button>
@@ -611,15 +601,12 @@ function TeamShopQueueBoard({ email }) {
   }, [overrideDialog, overrideReason, email, refetch]);
 
   return (
-    <div style={{ fontFamily: 'system-ui,-apple-system,sans-serif', background: '#f8fafc', minHeight: '100vh', padding: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 12 }}>
-        <h1 style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', margin: 0 }}>Team Shop — Fast Turn Queue</h1>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          {loading && <span style={{ fontSize: 12, color: '#64748b' }}>Loading…</span>}
-          <button type="button" onClick={refetch} style={{ padding: '6px 14px', fontSize: 12, fontWeight: 700, background: '#0f172a', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
-            Refresh
-          </button>
-        </div>
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', marginBottom: 16, gap: 10 }}>
+        {loading && <span style={{ fontSize: 12, color: '#64748b' }}>Loading…</span>}
+        <button type="button" className="btn btn-secondary btn-sm" onClick={refetch}>
+          Refresh
+        </button>
       </div>
 
       {rpcMissing && (
@@ -641,10 +628,11 @@ function TeamShopQueueBoard({ email }) {
       <div style={{ display: 'flex', gap: 12, marginBottom: 16, flexWrap: 'wrap', alignItems: 'center' }}>
         <input
           type="text"
+          className="form-input"
           placeholder="Search SO id / buyer / art name"
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          style={{ padding: '6px 10px', fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, minWidth: 240 }}
+          style={{ maxWidth: 280 }}
         />
         <label style={{ fontSize: 13, color: '#334155', display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
           <input type="checkbox" checked={digitizingOnly} onChange={(e) => setDigitizingOnly(e.target.checked)} />
@@ -682,38 +670,38 @@ function TeamShopQueueBoard({ email }) {
       </div>
 
       {overrideDialog && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50 }}>
-          <div style={{ background: '#fff', borderRadius: 10, padding: 20, maxWidth: 420, width: '90%' }}>
-            <h3 style={{ marginTop: 0, fontSize: 16, fontWeight: 800, color: '#0f172a' }}>Job isn't release-ready</h3>
-            <div style={{ fontSize: 13, color: '#334155', marginBottom: 10 }}>
-              Job <b>{overrideDialog.job.id}</b> — art status <b>{overrideDialog.art}</b>, item status <b>{overrideDialog.item}</b>.
-              Releasing anyway skips the readiness gate and is recorded on the job's audit trail.
+        <div className="modal-overlay" style={{ alignItems: 'center' }}>
+          <div className="modal" style={{ maxWidth: 440 }}>
+            <div className="modal-header">
+              <h2>Job isn't release-ready</h2>
             </div>
-            <textarea
-              aria-label="override-reason"
-              placeholder="Reason (required, staff-audited)"
-              value={overrideReason}
-              onChange={(e) => setOverrideReason(e.target.value)}
-              style={{ width: '100%', minHeight: 60, padding: 8, fontSize: 13, border: '1px solid #cbd5e1', borderRadius: 6, boxSizing: 'border-box' }}
-            />
-            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+            <div className="modal-body">
+              <div style={{ fontSize: 13, color: '#334155', marginBottom: 12 }}>
+                Job <b>{overrideDialog.job.id}</b> — art status <b>{overrideDialog.art}</b>, item status <b>{overrideDialog.item}</b>.
+                Releasing anyway skips the readiness gate and is recorded on the job's audit trail.
+              </div>
+              <textarea
+                className="form-textarea"
+                aria-label="override-reason"
+                placeholder="Reason (required, staff-audited)"
+                value={overrideReason}
+                onChange={(e) => setOverrideReason(e.target.value)}
+              />
+            </div>
+            <div className="modal-footer">
               <button
                 type="button"
+                className="btn btn-secondary"
                 onClick={() => { setOverrideDialog(null); setOverrideReason(''); }}
-                style={{ padding: '6px 14px', fontSize: 12, background: 'none', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer' }}
               >
                 Cancel
               </button>
               <button
                 type="button"
+                className="btn btn-danger"
                 aria-label="confirm-override-release"
                 disabled={overrideBusy || !overrideReason.trim()}
                 onClick={handleOverrideConfirm}
-                style={{
-                  padding: '6px 14px', fontSize: 12, fontWeight: 700,
-                  background: overrideReason.trim() ? '#b91c1c' : '#e2e8f0', color: overrideReason.trim() ? '#fff' : '#94a3b8',
-                  border: 'none', borderRadius: 6, cursor: overrideReason.trim() ? 'pointer' : 'not-allowed',
-                }}
               >
                 {overrideBusy ? 'Releasing…' : 'Override & release'}
               </button>
@@ -2481,31 +2469,31 @@ function TeamShopQueueTabs({ email }) {
   const tabBtn = (key, label) => (
     <button
       type="button"
+      className={'tab' + (tab === key ? ' active' : '')}
       onClick={() => setTab(key)}
-      style={{
-        padding: '6px 14px', fontSize: 13, fontWeight: 700, borderRadius: 6, cursor: 'pointer',
-        border: tab === key ? '1px solid #1d4ed8' : '1px solid #cbd5e1',
-        background: tab === key ? '#1d4ed8' : '#fff',
-        color: tab === key ? '#fff' : '#334155',
-      }}
     >
       {label}
     </button>
   );
 
+  // Connect shell: fixed topbar (same 52px bar the main portal uses) + a light
+  // #f1f5f9 content surface. Standalone route, so there's no sidebar nav — the
+  // topbar carries the section title in its place.
   return (
-    <div>
-      <div style={{ padding: '16px 20px 0', background: '#f8fafc' }}>
-        <div style={{ fontSize: 20, fontWeight: 800, color: '#0f172a', marginBottom: 10 }}>Production HQ</div>
-        <div style={{ display: 'flex', gap: 8 }}>
+    <div style={{ minHeight: '100vh', background: '#f1f5f9' }}>
+      <div className="topbar" style={{ position: 'static' }}>
+        <h1>Production HQ</h1>
+      </div>
+      <div className="content content-wide">
+        <div className="tabs">
           {tabBtn('pipeline', 'Pipeline')}
           {tabBtn('production', 'Production & Pull')}
           {tabBtn('settings', 'Settings')}
         </div>
+        {tab === 'pipeline' ? <PipelineTab />
+          : tab === 'production' ? <TeamShopQueueBoard email={email} />
+          : <TeamShopSettings />}
       </div>
-      {tab === 'pipeline' ? <PipelineTab />
-        : tab === 'production' ? <TeamShopQueueBoard email={email} />
-        : <TeamShopSettings />}
     </div>
   );
 }
