@@ -668,11 +668,24 @@ async function sweepDtf(admin, actor) {
   const decision = dtfBatchDecision({ pendingNeeds: pending, setting, now: new Date().toISOString() });
   if (!decision.batch) return { ok: true, batched: false, ...decision, recorded: rec.recorded || 0 };
 
-  const lines = pending
-    .filter((n) => (Number(n.qty) || 0) > 0)
-    .map((n) => ({ so_id: n.so_id, sku: 'DTF-PRINT', size: 'PRINT', qty: Math.max(1, Number(n.qty) || 0), unit_cost_cents: 0, meta: { job_id: n.job_id, deco_type: DTF_DECO } }));
-  if (!lines.length) return { ok: true, batched: false, reason: 'no_pending', ...decision };
-  const clientRef = 'tsdtf:' + Math.max(...pending.map((n) => Number(n.id) || 0));
+  // CLAIM the needs FIRST, atomically, THEN build the PO from ONLY the rows we
+  // actually claimed (audit fix). The old order — create the PO (client_ref keyed
+  // on the max need id), THEN mark needs ordered — let two overlapping sweeps that
+  // both read needs [1,2,3] create TWO POs (different max-id refs) both containing
+  // 1,2,3 → a double DTF order. Now a concurrent sweep's claim of the same ids
+  // updates zero rows (they're no longer 'pending'), so its PO can't overlap.
+  const claimIds = pending.filter((n) => (Number(n.qty) || 0) > 0).map((n) => n.id);
+  if (!claimIds.length) return { ok: true, batched: false, reason: 'no_pending', ...decision };
+  const claimRes = await admin.from('teamshop_dtf_print_needs')
+    .update({ status: 'ordered', vendor: setting.vendor, ordered_at: new Date().toISOString() })
+    .in('id', claimIds).eq('status', 'pending')
+    .select('id, so_id, job_id, qty');
+  if (claimRes.error) return { ok: false, error: 'DTF claim failed: ' + claimRes.error.message };
+  const claimed = claimRes.data || [];
+  if (!claimed.length) return { ok: true, batched: false, reason: 'already_claimed', ...decision };
+
+  const lines = claimed.map((n) => ({ so_id: n.so_id, sku: 'DTF-PRINT', size: 'PRINT', qty: Math.max(1, Number(n.qty) || 0), unit_cost_cents: 0, meta: { job_id: n.job_id, deco_type: DTF_DECO } }));
+  const clientRef = 'tsdtf:' + Math.max(...claimed.map((n) => Number(n.id) || 0));
   const rpc = await admin.rpc('create_purchase_order', {
     p_client_ref: clientRef,
     p_po: {
@@ -681,25 +694,30 @@ async function sweepDtf(admin, actor) {
       threshold_eval: {
         lane: 'dtf', reason: decision.reason, total_prints: decision.totalQty,
         threshold_qty: decision.threshold, max_age_days: decision.maxAgeDays,
-        oldest_age_days: Math.round(decision.oldestAgeDays), needs: pending.length,
+        oldest_age_days: Math.round(decision.oldestAgeDays), needs: claimed.length,
       },
     },
     p_lines: lines,
   });
   if (rpc.error) {
+    // PO creation failed — release the claim so these needs are re-swept next time,
+    // not stranded as 'ordered' with no PO. Scoped to our own just-claimed rows.
+    await admin.from('teamshop_dtf_print_needs')
+      .update({ status: 'pending', vendor: null, ordered_at: null })
+      .in('id', claimed.map((n) => n.id)).eq('status', 'ordered').is('po_id', null);
     if (isMissingRelation(rpc.error)) return { ok: true, enabled: false, batched: false };
     return { ok: false, error: 'DTF batch PO failed: ' + rpc.error.message };
   }
   const po = rpc.data && rpc.data.purchase_order;
   const replayed = !!(rpc.data && rpc.data.replayed);
 
-  const ids = pending.map((n) => n.id);
-  const mark = await admin.from('teamshop_dtf_print_needs')
-    .update({ status: 'ordered', po_id: po ? po.id : null, vendor: setting.vendor, ordered_at: new Date().toISOString() })
-    .in('id', ids).eq('status', 'pending');
-  if (mark.error) return { ok: false, error: 'DTF needs mark failed: ' + mark.error.message, po_id: po ? po.id : null };
+  // Link the claimed needs (already 'ordered') to the PO. A failure here leaves the
+  // needs ordered with a null po_id — recoverable, and never a double order.
+  if (po && po.id) {
+    await admin.from('teamshop_dtf_print_needs').update({ po_id: po.id }).in('id', claimed.map((n) => n.id)).is('po_id', null);
+  }
   // Advance the job readiness signal (00212): these jobs' prints are on order.
-  await stampDtfStatus(admin, pending.map((n) => ({ so_id: n.so_id, job_id: n.job_id })), 'ordered', false);
+  await stampDtfStatus(admin, claimed.map((n) => ({ so_id: n.so_id, job_id: n.job_id })), 'ordered', false);
 
   let autoSubmit = null;
   if (po && po.id && !replayed && po.status === 'draft' && setting.auto_submit_enabled === true) {
@@ -710,7 +728,7 @@ async function sweepDtf(admin, actor) {
   }
   return {
     ok: true, batched: true, reason: decision.reason, po_id: po ? po.id : null, po_number: po ? po.po_number : null,
-    replayed, needs: pending.length, total_prints: decision.totalQty, recorded: rec.recorded || 0,
+    replayed, needs: claimed.length, total_prints: decision.totalQty, recorded: rec.recorded || 0,
     ...(autoSubmit ? { auto_submit: autoSubmit } : {}),
   };
 }

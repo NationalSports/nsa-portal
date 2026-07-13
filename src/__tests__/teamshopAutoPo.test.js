@@ -460,7 +460,12 @@ describe('sweepDtf', () => {
     ],
     'teamshop_dtf_print_needs.upsert': [{ data: null, error: null }],
     'rpc.create_purchase_order': [{ data: { ok: true, replayed: false, purchase_order: { id: 'po-dtf', po_number: 'NSA 900', status: 'draft' } }, error: null }],
-    'teamshop_dtf_print_needs.update': [{ data: [{ id: 5 }], error: null }],
+    // Two updates now: (1) the CLAIM (returns the rows the PO is built from), then
+    // (2) the po_id link after the PO is created.
+    'teamshop_dtf_print_needs.update': [
+      { data: [{ id: 5, so_id: 'SO-1', job_id: 'JOB-1', qty: 120 }], error: null }, // claim
+      { data: [{ id: 5 }], error: null }, // po_id link
+    ],
     ...over,
   });
 
@@ -476,9 +481,13 @@ describe('sweepDtf', () => {
     expect(rpc.payload.p_po.threshold_eval).toMatchObject({ lane: 'dtf', reason: 'threshold', total_prints: 120 });
     expect(rpc.payload.p_lines[0]).toMatchObject({ so_id: 'SO-1', qty: 120, meta: { job_id: 'JOB-1', deco_type: 'dtf' } });
 
-    const upd = sb.calls.find((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs');
-    expect(upd.payload).toMatchObject({ status: 'ordered', po_id: 'po-dtf', vendor: 'DTF Transfers' });
-    expect(upd.filters).toEqual(expect.arrayContaining([['eq', 'status', 'pending']]));
+    // Claim-first: the FIRST needs update is the claim (status->ordered, gated on
+    // 'pending'); po_id is NOT set yet. The SECOND update links the PO.
+    const updates = sb.calls.filter((c) => c.op === 'update' && c.table === 'teamshop_dtf_print_needs');
+    expect(updates[0].payload).toMatchObject({ status: 'ordered', vendor: 'DTF Transfers' });
+    expect(updates[0].payload.po_id).toBeUndefined();
+    expect(updates[0].filters).toEqual(expect.arrayContaining([['eq', 'status', 'pending']])); // claim CAS
+    expect(updates[1].payload).toMatchObject({ po_id: 'po-dtf' }); // links the PO after creation
   });
 
   test('below threshold → holds, creates no PO', async () => {
