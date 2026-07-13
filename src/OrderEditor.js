@@ -1307,6 +1307,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }
     }
   };
+  // Settle inventory when an already-pulled IF's quantities are edited in place (status is 'pulled' both
+  // before and after the edit). Returns the previously-pulled units and re-draws the new ones in a single
+  // write so the two sides can't clobber each other on a stale `products` snapshot — a plain
+  // restore-then-draw pair of adjustInvForPick calls would both read the same base and the last write wins.
+  const reconcilePulledInv=(oldPick,curPick,item)=>{
+    if(!onAdjustInv)return;
+    const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
+    if(!p)return;
+    const newInv={...p._inv};
+    const applyPick=(pick,sign)=>{if(!pick)return;Object.entries(pick).forEach(([k,v])=>{if(k!=='status'&&k!=='pick_id'&&typeof v==='number'&&v>0){newInv[k]=Math.max(0,(newInv[k]||0)+sign*v)}})};
+    applyPick(oldPick,1);   // return what the old pulled line drew
+    applyPick(curPick,-1);  // draw what the edited pulled line now needs
+    onAdjustInv(p.id,newInv);
+  };
   const[editPick,setEditPick]=useState(null);const[editPO,setEditPO]=useState(null);const[editBatchPO,setEditBatchPO]=useState(null);const[poFullPage,setPoFullPage]=useState(null);const[poEmail,setPoEmail]=useState(null);const[apiOrder,setApiOrder]=useState(null);// apiOrder: {vendorKey,poNumber,vendorName,batchPOs} — single-PO API order modal
   // Shown after a PO partial/full receive — summary modal with Print/Download label actions for the box that was just received.
   const[receivedConfirm,setReceivedConfirm]=useState(null);
@@ -10948,6 +10962,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ?<div style={{padding:'10px 14px',borderRadius:8,border:'2px solid #f59e0b',background:'#fffbeb',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}><span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>⚠ 0 units entered — this will flag as a Short Pull. Confirm?</span><div style={{marginLeft:'auto',display:'flex',gap:6}}><button className="btn btn-sm btn-secondary" onClick={()=>setEditPick(p=>({...p,_confirmShortPull:false}))}>Cancel</button><button className="btn btn-sm" style={{background:'#d97706',color:'white',fontWeight:700}} onClick={()=>setEditPick(p=>({...p,_confirmShortPull:false,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:'pulled',...(!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))} >Yes, Short Pull</button></div></div>
             :<div style={{display:'flex',gap:6}}>{['pick','pulled'].map(s=><button key={s} className={`btn btn-sm ${overallStatus===s?'btn-primary':'btn-secondary'}`} onClick={()=>{if(s==='pulled'&&grandTotal===0&&overallStatus!=='pulled'){setEditPick(p=>({...p,_confirmShortPull:true}))}else{setEditPick(p=>({...p,picks:p.picks.map(pp=>({...pp,pick:{...pp.pick,status:s,...(s==='pulled'&&!pp.pick.pulled_at?{pulled_at:new Date().toLocaleString()}:{})}}))}))}}}>{s==='pulled'?'✓ Pulled':'Needs Pull'}</button>)}</div>}
         </div>
+        {overallStatus==='pulled'&&!isShortPullIF&&<div style={{padding:'8px 12px',marginBottom:12,marginTop:-4,borderRadius:6,border:'1px solid #bbf7d0',background:'#f0fdf4',fontSize:11,color:'#166534'}}>Fulfilled{firstPk.pulled_at?' · '+firstPk.pulled_at:''}. Marked by mistake? Switch to <strong>Needs Pull</strong> and Save to reopen it — the pulled units go back into inventory. You can also adjust the quantities below before saving.</div>}
         {isShortPullIF&&<div style={{padding:'10px 14px',marginBottom:12,borderRadius:8,border:'2px solid #f59e0b',background:'#fffbeb'}}><div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ Short Pull — 0 units pulled</div><div style={{fontSize:11,color:'#78350f'}}>Remove items from this IF to free them up for a new SKU or PO.</div></div>}
         {/* Per-item product info + quantities */}
         {itemInfos.map(info=><div key={info.idx} style={{marginBottom:12,padding:10,border:'1px solid #e2e8f0',borderRadius:6,background:'#fafafa'}}>
@@ -11015,7 +11030,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           picks.forEach(p=>{const oldPick=o.items[p.lineIdx]?.pick_lines?.[p.pickIdx];const it=o.items[p.lineIdx];if(oldPick&&it&&oldPick.status==='pulled')adjustInvForPick(oldPick,it,1)});
           const removeMap=new Map();picks.forEach(p=>{if(!removeMap.has(p.lineIdx))removeMap.set(p.lineIdx,new Set());removeMap.get(p.lineIdx).add(p.pickIdx)});
           const updatedItems=o.items.map((it,i)=>removeMap.has(i)?{...it,pick_lines:(it.pick_lines||[]).filter((_,pi)=>!removeMap.get(i).has(pi))}:it);
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
+          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick deleted');
         }}><Icon name="trash" size={12}/> Delete</button>
         <button className="btn btn-primary" onClick={()=>{
           // Rebuild each affected item's pick lines for this pick_id from the modal state. This covers quantity
@@ -11024,12 +11039,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const curByLine=new Map();picks.forEach(p=>curByLine.set(p.lineIdx,p.pick));
           const affected=new Set(picks.map(p=>p.lineIdx));
           o.items.forEach((it,i)=>{if((it.pick_lines||[]).some(pl=>pl.pick_id===pkId))affected.add(i)});
-          // Inventory transitions (stock only moves on the pulled status)
+          // Inventory reconciliation. Stock is drawn only while a pick is 'pulled', so any change to the
+          // pulled footprint must move inventory: reopening a pulled IF returns its units, pulling draws
+          // them, and editing the quantities of an IF that stays pulled settles the per-size difference
+          // (previously skipped — an in-place edit silently desynced stock).
           affected.forEach(i=>{const it=o.items[i];const old=(it.pick_lines||[]).find(pl=>pl.pick_id===pkId);const cur=curByLine.get(i);
-            if(old&&old.status==='pulled'&&(!cur||cur.status!=='pulled'))adjustInvForPick(old,it,1);
-            if(cur&&cur.status==='pulled'&&(!old||old.status!=='pulled'))adjustInvForPick(cur,it,-1);});
+            const oldPulled=!!(old&&old.status==='pulled');const curPulled=!!(cur&&cur.status==='pulled');
+            if(oldPulled&&!curPulled)adjustInvForPick(old,it,1);
+            else if(!oldPulled&&curPulled)adjustInvForPick(cur,it,-1);
+            else if(oldPulled&&curPulled)reconcilePulledInv(old,cur,it);});
           const updatedItems=o.items.map((it,i)=>{if(!affected.has(i))return it;const others=(it.pick_lines||[]).filter(pl=>pl.pick_id!==pkId);const cur=curByLine.get(i);return{...it,pick_lines:cur?[...others,cur]:others}});
-          const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
+          // Recalc job fulfillment so deco-readiness reflects the reopened/edited pull state, matching the warehouse pull path.
+          const updated={...o,items:updatedItems,jobs:recalcJobFulfillment(o,updatedItems),updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setEditPick(null);nf('Pick updated');
         }}>Save Changes</button>
       </div>
     </div></div>})()}
