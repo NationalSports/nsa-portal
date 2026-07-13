@@ -29,6 +29,7 @@ function fakeSb(script) {
       const chain = {
         select: () => chain,
         eq: (col, val) => { call.filters.push([col, val]); return chain; },
+        not: (col, op, val) => { call.filters.push(['not:' + col, op + ':' + String(val)]); return chain; },
         in: (col, vals) => { call.filters.push(['in:' + col, vals]); return chain; },
         limit: () => chain,
         update: (payload) => { call.op = 'update'; call.payload = payload; return chain; },
@@ -68,6 +69,13 @@ describe('RPC path', () => {
     expect(r.status).toBe(409);
     expect(r.code).toBe('mocks_changed');
   });
+
+  test('NSA_NOT_SENT maps to 409 not_sent (A1 — un-forwarded art may not be decided)', async () => {
+    const sb = fakeSb({ 'rpc.apply_coach_art_decision': [{ data: null, error: { message: 'NSA_NOT_SENT:JOB-1-01' } }] });
+    const r = await applyArtDecision(sb, APPROVE, null);
+    expect(r.status).toBe(409);
+    expect(r.code).toBe('not_sent');
+  });
 });
 
 describe('pre-00172 fallback', () => {
@@ -83,6 +91,8 @@ describe('pre-00172 fallback', () => {
     const jobUpd = sb.calls.find((c) => c.table === 'so_jobs' && c.op === 'update');
     // H1 guard: the update must be conditioned on the job still awaiting the coach
     expect(jobUpd.filters).toContainEqual(['art_status', 'waiting_approval']);
+    // A1 guard: …and on the art actually having been sent to the coach
+    expect(jobUpd.filters).toContainEqual(['not:sent_to_coach_at', 'is:null']);
     // M4: approve clears coach_rejected in the same write
     expect(jobUpd.payload.coach_rejected).toBe(false);
     expect(jobUpd.payload.art_status).toBe('production_files_needed');
@@ -115,6 +125,7 @@ describe('pre-00172 fallback', () => {
     expect(r.ok).toBe(true);
     const jobUpd = sb.calls.find((c) => c.table === 'so_jobs' && c.op === 'update');
     expect(jobUpd.filters).toContainEqual(['art_status', 'waiting_approval']); // H1
+    expect(jobUpd.filters).toContainEqual(['not:sent_to_coach_at', 'is:null']); // A1
     expect(jobUpd.payload.art_status).toBe('art_requested');
     expect(jobUpd.payload.coach_rejected).toBe(true);
     expect(jobUpd.payload.sent_to_coach_at).toBeNull();                       // M4

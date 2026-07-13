@@ -21,7 +21,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser, syncOrderItems } = require('./_shared');
+const { verifyUser, syncOrderItems, skuFromProductName, skuFromCatalogName } = require('./_shared');
 
 // Content columns updated on re-ingest, excluding the (sku,size) match key and the
 // fulfillment columns (line_status/shipped_qty/missing_qty). See omg-player-report-ingest.
@@ -73,8 +73,10 @@ exports.handler = async (event) => {
     {
       const { data: sp } = await sb.from('omg_store_products')
         .select('sku,name,image_url').eq('store_id', `OMG-sale_${saleCode}`);
-      storeProducts = (sp || []).filter((p) => p.image_url);
-      storeProducts.forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
+      // Keep the FULL catalog (SKU fallback matching needs image-less rows too);
+      // the image map only keys products that actually have a photo.
+      storeProducts = sp || [];
+      storeProducts.filter((p) => p.image_url).forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
     }
     const imgFor = (sku, productName) => {
       if (sku) {
@@ -84,7 +86,7 @@ exports.handler = async (event) => {
       if (productName) {
         const lower = productName.toLowerCase();
         const sorted = [...storeProducts].sort((a, b) => (b.name || '').length - (a.name || '').length);
-        const match = sorted.find((p) => p.name && lower.includes(p.name.toLowerCase()));
+        const match = sorted.find((p) => p.name && p.image_url && lower.includes(p.name.toLowerCase()));
         if (match) return match.image_url;
       }
       return null;
@@ -133,7 +135,10 @@ exports.handler = async (event) => {
       const items = Array.isArray(o.items) ? o.items.filter((i) => (i.product || i.color) && (i.qty || 1) > 0) : [];
       if (items.length) {
         const lineItems = items.map((i) => {
-          const sku = extractSku(i.color) || '';
+          // Catalog containment before the trailing-token heuristic (see
+          // player-report ingest): the token rule can false-positive on
+          // display-alias words; the catalog match is unique-or-nothing.
+          const sku = extractSku(i.color) || skuFromCatalogName(i.product, storeProducts) || skuFromProductName(i.product);
           return {
             sku,
             name: i.product || '',

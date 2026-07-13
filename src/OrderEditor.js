@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -316,7 +316,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const _cwMatchForItem=(artFile,item,garmentColor)=>{const cws=safeArr(artFile?.color_ways);if(!cws.length)return null;const deco=safeDecos(item).find(d=>d.kind==='art'&&d.art_file_id===artFile?.id&&d.color_way_id);if(deco&&cws.some(c=>c.id===deco.color_way_id))return{id:deco.color_way_id,exact:true};const cls=garmentColorClass(garmentColor);const byLD=cls?cws.find(c=>garmentColorClass(c.garment_color)===cls):null;return byLD?{id:byLD.id,exact:true}:{id:cws[0].id,exact:false}};
   // Open the existing "Send to Coach for Approval" modal for a job index (same initializer as
   // the waiting-approval banner's Send to Coach button).
-  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
+  const openCoachSend=(jIdx)=>{const jb0=safeJobs(o)[jIdx];if(!jb0)return;
+    // Same per-garment mock gate as the Send-to-Coach button — this opener is also reached
+    // from applyPriorMock, which may have mocked only one of the job's garments.
+    const _mmO=skusMissingMockups(jb0,o);
+    if(_mmO.length>0){nf(missingMockupsMsg('send to coach',_mmO),'error');return}
+    const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||jb0.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(jb0)})};
   // Apply a chosen prior mock to a garment on this order's art file, tagged with the CW inherited
   // from the item. sendToCoach=true also moves the job to Waiting Approval and opens the send
   // modal; otherwise the art stays approved/complete.
@@ -336,19 +341,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const updArt=safeArt(o).map(a=>{
       let na=a;
       if(a.id===artId){const cur=(a.item_mockups||{})[key]||[];const have=new Set(cur.map(f=>typeof f==='string'?f:f?.url));const add=(files||[]).filter(m=>!have.has(m.url)).map(m=>({url:m.url,name:m.name||('mock-'+sku),art_file_id:a.id,sku,...(cwId?{color_way_id:cwId}:{})}));if(add.length)na={...a,item_mockups:{...(a.item_mockups||{}),[key]:[...cur,...add]}};}
-      if(jobArtIds.includes(a.id))na={...na,status:sendToCoach?'needs_approval':'approved'};
+      // Only the design whose mock was actually applied changes status — flipping every
+      // art id on the job marked sibling designs "approved" with zero review (audit A6).
+      if(a.id===artId)na={...na,status:sendToCoach?'needs_approval':'approved'};
       return na;
     });
     const _actDeco=(artFile?.deco_type)||'';
+    // The job only advances when EVERY design it decorates with is approved after this
+    // apply — a sibling design still waiting on art/approval keeps the job where it is
+    // (the reused mock is saved either way; the job moves once the rest catches up).
+    const _allApproved=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&(af2.status==='approved'||af2.status==='art_complete')});
     const _allProd=jobArtIds.every(aid=>{const af2=updArt.find(a=>a.id===aid);return af2&&artProdFilesConfirmed(af2)});
-    const newJobStatus=sendToCoach?'waiting_approval':(_allProd?'art_complete':prodFilesStatusFor(_actDeco));
-    const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,art_status:newJobStatus,coach_rejected:false}:jj)}:{}),updated_at:new Date().toLocaleString()};
+    const newJobStatus=sendToCoach?'waiting_approval':(_allApproved?(_allProd?'art_complete':prodFilesStatusFor(_actDeco)):null);
+    // coach_rejected clears even when the job doesn't advance — the rep confirmed the
+    // override above, and leaving the flag stranded is the SO-1199 class this path fixed.
+    const updated={...o,art_files:updArt,...(jIdx>=0?{jobs:safeJobs(o).map((jj,i)=>i===jIdx?{...jj,...(newJobStatus?{art_status:newJobStatus}:{}),coach_rejected:false}:jj)}:{}),updated_at:new Date().toLocaleString()};
     setMockApplyModal(null);
     const ok=await saveSONow(updated,'Reused mock',null);
     if(ok){
       const _cwNote=cwLabel?' · CW: '+cwLabel:cwUnconf?' · color-way unconfirmed — verify the mock matches this garment':'';
       if(sendToCoach){nf('Mock applied'+_cwNote+' — sending to coach for approval');if(jIdx>=0)openCoachSend(jIdx);}
-      else nf('Mock applied'+_cwNote+' — art stays approved');
+      else if(newJobStatus)nf('Mock applied'+_cwNote+' — art stays approved');
+      else nf('Mock applied'+_cwNote+' — this design is approved; the job advances once its other designs are approved too');
     }
   };
   // Prior-mock reuse cards for ONE garment entry from garmentsNeedingMockCheck
@@ -597,6 +611,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[artRevisionNote,setArtRevisionNote]=useState('');
   const[showPrevArt,setShowPrevArt]=useState(false);// Previous Artwork picker modal
   const[prevArtFilter,setPrevArtFilter]=useState('all');// Previous Artwork deco-type filter: all|screen_print|embroidery|heat_transfer (heat_transfer is the catch-all, incl. DTF)
+  const[prevArtFamily,setPrevArtFamily]=useState(false);// Previous Artwork: opt-in to see ALL of the parent program's teams (labeled per team) instead of just this team + the parent
   const[priorMocks,setPriorMocks]=useState({});// {name||deco_type:[{from,files:[{url,name}]}]} — approved mocks for reused art, fetched from the customer's OTHER orders (their art isn't always hydrated in memory). Drives the Check Mock panel.
   const[mockApplyModal,setMockApplyModal]=useState(null);// {sku,color,artId,files,mockUrl,jobId} — after picking a prior mock, choose: already approved vs send to coach.
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
@@ -1824,7 +1839,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const toggleItemCollapse=(idx)=>setCollapsedItems(c=>({...c,[idx]:!c[idx]}));
   const collapseAllItems=()=>{const all={};safeItems(o).forEach((_,i)=>{all[i]=true});setCollapsedItems(all)};
   const expandAllItems=()=>setCollapsedItems({});
-  const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}sv('items',safeItems(o).filter((_,x)=>x!==i))};
+  const uI=(i,k,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===i?{...it,[k]:v}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
+  // A sku/color edit changes the garment's `sku|color` identity — its per-garment mockups
+  // and mock links must move with it, or the mock strands under the departed key and the
+  // approval gate reports the garment unmocked (SO-1480). This runs at COMMIT boundaries
+  // (input blur / dropdown change), never inside uI: text inputs fire per keystroke, and
+  // re-keying through partial values breaks the migration chain the moment one step is
+  // skipped (e.g. another line momentarily sharing the old key). fromSku/fromColor are
+  // the identity captured when editing began (focus time).
+  const _rekeyLineMocks=(i,fromSku,fromColor)=>{setO(e=>{const items=safeItems(e);const cur=items[i];if(!cur)return e;
+    if(String(fromSku||'')===String(cur.sku||'')&&String(fromColor||'')===String(cur.color||''))return e;
+    // Another line still on the old key keeps the bucket — identical lines share it by design.
+    const stillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||'')&&(it2.color||'')===(fromColor||''));
+    if(stillUsed)return e;
+    // The legacy bare-sku bucket serves every color of the SKU — only move it when no
+    // other line carries the old SKU in ANY color.
+    const skuStillUsed=items.some((it2,x2)=>x2!==i&&(it2.sku||'')===(fromSku||''));
+    const arts=rekeyGarmentMocks(safeArr(e.art_files),fromSku,fromColor,cur.sku,cur.color,{moveBareSku:!skuStillUsed});
+    return arts===e.art_files?e:{...e,art_files:arts,updated_at:new Date().toLocaleString()}});setDirty(true)};const rmI=i=>{const item=safeItems(o)[i];if(item&&isSO){const pos=safePOs(item);if(pos.length>0){const hasReceived=pos.some(po=>Object.values(po.received||{}).some(v=>v>0));const hasBilled=pos.some(po=>Object.values(po.billed||{}).some(v=>v>0));if(hasReceived||hasBilled){nf('Cannot delete — this item has '+(hasReceived?'received':'')+(hasReceived&&hasBilled?' and ':'')+(hasBilled?'billed':'')+' PO quantities. Remove billing/receiving first.','error');return}nf('Cannot delete — this item has PO(s). Delete the PO(s) first before removing the item.','error');return}}
+    // Jobs and deco POs reference lines by INDEX; deleting a middle line shifts every later
+    // line down. Auto jobs rebuild from lines, but FROZEN jobs (released/merged/split) carry
+    // item_idx verbatim — without remapping, their rows silently point at the WRONG line,
+    // so jobHasLiveDecorations could retire a live released job (its so_jobs row + fulfillment
+    // history deleted on the next save) or misattribute its garments (2026-07-10 audit).
+    // Mirrors applyItemOrder's remap, plus dropping rows for the deleted line itself.
+    const _frozenRefs=safeJobs(o).filter(j=>(j._released||j.key?.startsWith('released_')||j._merged||j.split_from)&&(j.items||[]).some(gi=>gi.item_idx===i));
+    if(_frozenRefs.length&&!window.confirm('This line is part of released/merged job(s) '+_frozenRefs.map(j=>j.id).join(', ')+' — deleting it removes the garment from those jobs. Delete anyway?'))return;
+    const _ri=ii=>ii>i?ii-1:ii;
+    setO(e=>({...e,
+      items:safeItems(e).filter((_,x)=>x!==i),
+      jobs:safeJobs(e).map(j=>({...j,items:(j.items||[]).filter(gi=>gi.item_idx!==i).map(gi=>({...gi,item_idx:_ri(gi.item_idx)}))})),
+      deco_pos:(e.deco_pos||[]).map(dp=>({...dp,item_idxs:(dp.item_idxs||[]).filter(ii=>ii!==i).map(_ri)})),
+      updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Reassign which vendor a line item is ordered from (e.g. OMG parsed an S&S item as
   // Adidas). vendor_id is the key the PO builder groups on (see resolveVendor), so this
   // moves the item onto the right vendor's PO. Clear any session-only "live" flags so
@@ -1858,7 +1904,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // The clone carried the OLD SKU's per-size maps — rebuild them from the new product (or clear
     // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
     if(!au&&p._sizeCosts&&Object.keys(p._sizeCosts).length>1){clone._sizeCosts=p._sizeCosts;clone._sizeSells=Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))}else{delete clone._sizeCosts;delete clone._sizeSells}
-    sv('items',[...o.items,clone]);setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku)};
+    // Style swaps clone to a NEW sku, so the source garment's mock can't be re-keyed (the
+    // source line may stay). Link the new garment to the source's mock instead — same-color
+    // only, via the visible "uses the same mockup as…" mechanism (SO-1480 class).
+    const _linked=linkSwappedGarmentMock(safeArt(o),it,p.sku,p.color)!==safeArt(o);
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,p.sku,p.color);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
+    setCopySkuModal(null);nf('📋 Copied decorations from '+it.sku+' → '+p.sku+(_linked?' — mockup linked to '+it.sku:''))};
   // Momentec API order SKUs (_mt_style/_mt_color/_mt_sku/_mt_skus) must always describe the
   // item's CURRENT garment. Every flow that swaps the style or color has to re-stamp (or clear)
   // them: a stale stamp silently survives into the batch queue, and the API order ships the OLD
@@ -1917,7 +1968,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const mk=o.default_markup||1.65;
     const sizeSell={};Object.entries(sizePrice).forEach(([sz,c])=>{sizeSell[sz]=rQ(c*mk)});
     clone._sizeSells=sizeSell;
-    sv('items',[...o.items,clone]);
+    // Same-color style swap: link the new garment to the source's mock so it follows the
+    // swap (see copyIWithSku — shared linkSwappedGarmentMock, color-exact only).
+    setO(e=>{const arts=linkSwappedGarmentMock(safeArr(e.art_files),it,style.sku,color.colorName);return{...e,items:[...safeItems(e),clone],...(arts!==e.art_files?{art_files:arts}:{}),updated_at:new Date().toLocaleString()}});setDirty(true);
     if(Object.keys(vInv).length>0){
       vendorInvCache.current[style.sku]={sizes:vInv,price:sizePrice,fetchedAt:Date.now(),source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize};
       setVendorInv(prev=>({...prev,[style.sku]:{sizes:vInv,price:sizePrice,loading:false,error:null,source,nextAvail:color.nextAvail||'',sizeNextAvail:vNextBySize}}));
@@ -2047,6 +2100,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return next;
     }),updated_at:new Date().toLocaleString()}));
     setDirty(true);
+    // The garment's `sku|color` identity changed — move its per-garment mocks/links with it (SO-1480).
+    if(cur)_rekeyLineMocks(itemIdx,cur.sku,cur.color);
     setColorPickerModal(null);setSsResults([]);setSmResults([]);setMtResults([]);setRsResults([]);
     // Refresh live per-size stock for the newly chosen color (inventory cache is keyed by sku).
     if(cur){delete vendorInvCache.current[cur.sku];setVendorInv(prev=>{const n={...prev};delete n[cur.sku];return n;});fetchVendorInventory(cur.sku,cur.vendor_id,{...cur,color:color.colorName});}
@@ -2624,6 +2679,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // must retire — otherwise a _merged / released snapshot keeps regenerating forever with no
     // live deco behind it (SO-1057 JOB-1057-01 after line art was wiped).
     const _jobHasLiveDeco=j=>jobHasLiveDecorations(j,o);
+    // A frozen job's items[] snapshot must still track the live line's IDENTITY: swapping a
+    // line's product (stock sub) or color leaves the snapshot's sku/color/name describing a
+    // garment that is no longer on the order — the Jobs tab and coach portal then show the
+    // phantom garment (SO-1480: job read KD5416 while the line was JM5228), and the split
+    // parent-dedup below (keyed item_idx+'-'+sku) stops matching. Quantities, allocations,
+    // and deco ownership stay frozen — only sku/color/name refresh; a deleted line (no live
+    // item at item_idx) keeps the snapshot so nothing goes blank.
+    const _refreshGarmentIdentity=gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;
+      const nName=safeStr(it.name)||gi.name;
+      if((gi.sku||'')===(it.sku||'')&&(gi.color||'')===(it.color||'')&&(gi.name||'')===nName)return gi;
+      return{...gi,sku:it.sku,color:it.color||'',name:nName}};
     const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
@@ -2865,7 +2931,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // keeps both split_from and _merged). The auto-sync effect feeds this list back in as its own
     // input, so any such duplicate compounds exponentially on every render — that's the runaway
     // that spawned thousands of identical split jobs. The dedupe at the return is a second backstop.
-    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id));
+    const splitJobs=safeJobs(o).filter(j=>j.split_from&&!_isRel(j)&&!j._merged&&_jobHasLiveDeco(j)&&!newJobs.find(nj=>nj.id===j.id))
+      .map(j=>({...j,items:(j.items||[]).map(_refreshGarmentIdentity)}));
     // Subtract split-off units from parent jobs so totals stay correct (skip parents that already
     // have per-item size overrides — those totals are derived from the preserved sizes).
     // For SKU-splits (key ends '__split__B'), also remove the moved garments from the parent's
@@ -2913,7 +2980,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // ALSO split (parent keeps _merged after a slice is carved off) owns only its slice of the
       // line, so re-deriving from the full line inflated it back to the whole quantity — the split
       // modal then offered to "split off" phantom units that were really on the sibling slice.
-      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return{...gi,units:u,fulfilled:f};});
+      const healedItems=uniqueItems.map(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return gi;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];let u=0,f=0;_szE.forEach(([sz,v])=>{u+=v;if(giSz&&gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);f+=Math.min(v,pQ+rQ)}});total+=u;fulfilled+=f;return _refreshGarmentIdentity({...gi,units:u,fulfilled:f});});
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:healedItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
@@ -2923,13 +2990,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // department already committed to printing that many. Zero-total snapshots (legacy jobs released
     // before the est_qty fallback existed) are always healed up.
     const recalcedReleased=releasedJobs.map(j=>{
+      // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
+      // the frozen thing is the quantity commitment, not which product the line now is.
+      const _snapItems=(j.items||[]).map(_refreshGarmentIdentity);
+      const _idCh=_snapItems.some((gi,ix)=>gi!==(j.items||[])[ix]);
       let total=0,fulfilled=0;
-      (j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
-      if(total===0)return j;// no real units anywhere — leave the (empty) snapshot as-is
+      _snapItems.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
+      if(total===0)return _idCh?{...j,items:_snapItems}:j;// no real units anywhere — leave the (empty) snapshot as-is
       const frozenTotal=safeNum(j.total_units);
-      if(frozenTotal>0&&total<frozenTotal)return j;// fewer units than snapshot — keep frozen
+      if(frozenTotal>0&&total<frozenTotal)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
-      return{...j,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
+      return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     });
     // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
     // could have been approved, so a completed-ish art status must never survive — it read
@@ -2997,7 +3068,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Per-item units/fulfilled are part of the signature too: a heal that only fixes a stale
     // gi.units (e.g. a split parent's item still carrying the full line quantity while the
     // job totals were already correct) must still land, or the item rows keep showing "56/90".
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)).join('|')).sort().join(',');
+    // Garment identity (sku|color) is included so a _refreshGarmentIdentity heal (line product
+    // swapped after release — SO-1480's phantom KD5416) also lands; the refresh converges on
+    // the live line, so this can't ping-pong either.
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>{
         const next={...e,jobs:synced};
@@ -3032,8 +3106,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // style, real per-color dealer cost), so keep their per-colorway catalog rows
   // (one per color, MSRP-based cost) out of this local list to avoid duplicates.
   const _serverFp=serverProducts.filter(p=>{if(!pS||pS.length<2)return false;const toks=pS.toLowerCase().split(/\s+/).filter(Boolean);if(!toks.length)return false;const sk=(p.sku||'').toLowerCase(),nm=(p.name||'').toLowerCase(),br=(p.brand||'').toLowerCase(),cl=(p.color||'').toLowerCase();return toks.every(t=>sk.includes(t)||nm.includes(t)||br.includes(t)||cl.includes(t));});
-  const _liveVendorSources=new Set(['momentec','sanmar','ss_activewear']);
-  const allFp=(fp.length>0?fp:_serverFp).filter(p=>!_liveVendorSources.has(p.inventory_source)&&(p.brand||'').toLowerCase()!=='momentec');
+  // Richardson, S&S, SanMar and Momentec each have their own live API search block below, so keep their
+  // catalog rows out of these results — matched by the product's real vendor (api_provider, via the
+  // isXItem helpers), not inventory_source: S&S/SanMar rows carry mixed source tags (click/ua/nike) a
+  // string filter misses, and the server-search fallback (_serverFp) can still return them.
+  const allFp=(fp.length>0?fp:_serverFp).filter(p=>!(isRichardsonItem(p)||isSSItem(p)||isSanMarItem(p)||isMomentecItem(p)));
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
   return(<div>
@@ -3882,12 +3959,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
               </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
+                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
                   :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
                 {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
-                {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>uI(idx,'color',e.target.value)}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
-                  :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} style={{fontSize:12,width:100}} placeholder="Color"/>
+                {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
+                  :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :(()=>{const liveSrc=item._ss_live?'ss':item._sm_live?'sm':item._mt_live?'mt':item._rs_live?'rs':(isSSItem(item)?'ss':isSanMarItem(item)?'sm':isMomentecItem(item)?'mt':isRichardsonItem(item)?'rs':null);
                     return liveSrc?<button onClick={()=>setColorPickerModal(m=>m&&m.itemIdx===idx?null:{itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
                       :<span className="badge badge-gray">{item.color}</span>;
@@ -5161,8 +5238,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {/* PREVIOUS ARTWORK PICKER MODAL */}
     {showPrevArt&&(()=>{
       const custId=o.customer_id;const parentCust2=allCustomers.find(c=>c.id===custId);
-      // Only cross-pollinate art from the parent account; sibling sub-accounts are segmented (e.g. OLu Basketball shouldn't see OLu Football art).
-      const custIds2=parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId];
+      // Default: only cross-pollinate art from the parent account; sibling sub-accounts are
+      // segmented (e.g. OLu Basketball shouldn't see OLu Football art — the SO-1057 class).
+      // In practice many programs never promote art to the parent library, so the shared
+      // school logos live on ONE team's orders and are unreachable from siblings. The
+      // family toggle below makes that reachable EXPLICITLY: every card is labeled with its
+      // source team, nothing is merged silently, and adding is still a deliberate rep act.
+      const _famParentId=parentCust2?.parent_id||( (allCustomers||[]).some(c=>c.parent_id===custId)?custId:null );
+      const _famIds=_famParentId?[_famParentId,...(allCustomers||[]).filter(c=>c.parent_id===_famParentId).map(c=>c.id)]:[custId];
+      const custIds2=prevArtFamily&&_famParentId?[...new Set(_famIds)]:(parentCust2?.parent_id?[parentCust2.parent_id,custId]:[custId]);
+      const _famParentName=_famParentId?(allCustomers.find(c=>c.id===_famParentId)?.name||'program'):null;
+      const _teamLabel=cid=>{if(cid===custId)return'';const c=allCustomers.find(cc=>cc.id===cid);return c?(c.name||c.alpha_tag||''):''};
       const prevArtList=[];
       const _byKey=new Map();
       const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
@@ -5170,7 +5256,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
       const _mergeFiles=(a=[],b=[])=>{const seen=new Set((a||[]).map(_fKey));const out=[...(a||[])];(b||[]).forEach(f=>{const k=_fKey(f);if(k&&!seen.has(k)){seen.add(k);out.push(f)}});return out};
-      const _pushArt=(art,meta)=>{if(art.archived)return;const k=_dedupKey(art);
+      // ART TBD rows are system placeholders (a priced deco with no design yet) — there is
+      // nothing to reuse, and they were polluting the picker as "ART TBD 1..4" cards.
+      const _pushArt=(art,meta)=>{if(art.archived)return;if((art.name||'').startsWith('ART TBD'))return;const k=_dedupKey(art);
         if(_byKey.has(k)){const cur=_byKey.get(k);
           cur.prod_files=_mergeFiles(cur.prod_files,art.prod_files);
           cur.mockup_files=_mergeFiles(cur.mockup_files,art.mockup_files);
@@ -5182,7 +5270,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // Pull from estimates + sales orders (artSourceOrders) so a new estimate also surfaces art created
       // on prior estimates; fall back to allOrders for any caller that doesn't supply the combined list.
       (artSourceOrders||allOrders||[]).filter(so=>custIds2.includes(so.customer_id)&&so.id!==o.id).forEach(so=>{
-        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:so.memo||''}));
+        const _tl=_teamLabel(so.customer_id);
+        (so.art_files||[]).forEach(art=>_pushArt(art,{_so_id:so.id,_so_memo:(_tl?_tl+' · ':'')+(so.memo||'')}));
       });
       // Bucket every deco_type into one of three groups; "heat transfer" is the catch-all (incl. DTF, sublimation, vinyl), matching the 🔥 icon used elsewhere.
       const _artCat=dt=>dt==='screen_print'?'screen_print':dt==='embroidery'?'embroidery':'heat_transfer';
@@ -5198,26 +5287,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-body" style={{maxHeight:500,overflowY:'auto'}}>
           {prevArtList.length===0?<div className="empty">No previous artwork found for this customer</div>:
           <>
-            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12}}>
+            <div style={{display:'flex',gap:6,flexWrap:'wrap',marginBottom:12,alignItems:'center'}}>
               {PREV_TABS.map(t=>{const cnt=t.id==='all'?prevArtList.length:_catCount(t.id);const active=prevArtFilter===t.id;const col=_tabColor[t.id];
                 return<button key={t.id} style={{fontSize:11,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?col:'#e2e8f0'),background:active?col+'15':'white',color:active?col:'#94a3b8',cursor:'pointer',fontWeight:600}} onClick={()=>setPrevArtFilter(t.id)}>{t.label} ({cnt})</button>})}
+              {_famParentId&&<label style={{fontSize:11,display:'inline-flex',alignItems:'center',gap:5,marginLeft:'auto',padding:'3px 10px',borderRadius:12,border:'1px solid '+(prevArtFamily?'#7c3aed':'#e2e8f0'),background:prevArtFamily?'#f5f3ff':'white',color:prevArtFamily?'#6d28d9':'#64748b',cursor:'pointer',fontWeight:600}} title="Show artwork from every team under this program — each card is labeled with its source team. Reusing another team's art is an explicit choice; double-check it's the right design for this team.">
+                <input type="checkbox" checked={prevArtFamily} onChange={e=>setPrevArtFamily(e.target.checked)} style={{margin:0}}/> All {_famParentName} teams</label>}
             </div>
             {visibleArt.length===0?<div className="empty">No {prevArtFilter.replace(/_/g,' ')} artwork for this customer</div>:
             <div style={{display:'flex',flexDirection:'column',gap:8}}>
             {visibleArt.map((art,i)=>{
               const alreadyAdded=af.some(a=>a.id===art.id||(a.name===art.name&&a.deco_type===art.deco_type&&a.art_size===art.art_size));
               const previewImg=art.preview_url||'';
-              // Only include actual mockup sources (not prod seps/AIs) and filter to files tagged for this art when art_file_id is present.
+              // Only include actual mockup sources (not prod seps/AIs) and prefer files tagged for
+              // this art when art_file_id is present — but library/promoted COPIES carry entries
+              // still tagged with the SOURCE art's id, which used to filter out every mock and
+              // blank the card. If nothing matches the tag, fall back to all files.
               const _artId=art.id;
               const _tagMatches=f=>{const fid=typeof f==='object'&&f?.art_file_id;return!fid||fid===_artId};
-              const _rawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(f=>f&&_tagMatches(f));
+              const _allRawMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()].filter(Boolean);
+              const _tagged=_allRawMocks.filter(_tagMatches);
+              const _rawMocks=_tagged.length>0?_tagged:_allRawMocks;
               const _urlOf=f=>typeof f==='string'?f:(f?.url||'');
               const _seenUrls=new Set();
               const mockups=_rawMocks.filter(f=>{const u=_urlOf(f);if(!u||_seenUrls.has(u))return false;_seenUrls.add(u);return true});
-              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];const imgUrl=previewImg||(firstMockup?_urlOf(firstMockup):'');
+              // Thumbnail cascade: explicit preview → store/web logo cutout → first image mock →
+              // first PDF mock via its Cloudinary page-1 render → generic deco icon.
+              const _webLogo=art.web_logo_url||((art.web_logos||[]).find(w=>w&&w.url)?.url)||'';
+              const firstMockup=mockups.find(f=>{const u=_urlOf(f);return _isImgUrl(u,f)})||mockups[0];
+              let imgUrl=previewImg||_webLogo||(firstMockup?_urlOf(firstMockup):'');
+              // A Cloudinary pg_1 render keeps the .pdf filename, so _isImgUrl stays false —
+              // track it explicitly for the render gate (mirrors CoachPortal's pdfThumb branch).
+              let _pdfThumbed=false;
+              if(imgUrl&&!_isImgUrl(imgUrl)&&_isPdfUrl(imgUrl)){const _pt=_cloudinaryPdfThumb(imgUrl);if(_pt){imgUrl=_pt;_pdfThumbed=true;}}
               return<div key={art.id+'-'+i} style={{padding:12,background:'#f8fafc',borderRadius:8,border:'1px solid #e2e8f0'}}>
                 <div style={{display:'flex',gap:12,alignItems:'flex-start'}}>
-                  {imgUrl&&_isImgUrl(imgUrl)?<img src={imgUrl} alt="" style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
+                  {imgUrl&&(_isImgUrl(imgUrl)||_pdfThumbed)?<img src={imgUrl} alt="" onError={e=>{e.target.style.display='none'}} style={{width:80,height:80,borderRadius:8,objectFit:'contain',flexShrink:0,cursor:'pointer',background:'white',border:'1px solid #e2e8f0'}} onClick={()=>previewImg?window.open(previewImg,'_blank'):openFile(firstMockup)}/>:
                     <div style={{width:80,height:80,borderRadius:8,background:art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:28,flexShrink:0}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':'🔥'}</div>}
                   <div style={{flex:1}}>
                     <div style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</div>
@@ -8995,7 +9099,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           const _gc2=dAf?.garment_colors?.[_gk2]||{};
                           const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
                           const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
-                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _fbCols=dAf?realInkLines(dAf.ink_colors||dAf.thread_colors):[];// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                           const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                           const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                           const cwLabel=cwObj?.garment_color||'';
@@ -9079,16 +9183,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </div>)}
                 </div>:null})()}
               <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:10}}>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* A NEW logo still on the __tbd placeholder must NOT skip the gate — it used to land in production with no files stage at all. A job with no art ids and no placeholder (names/numbers-only) has nothing to gate and approves straight through. */if(_allConfirmed||(_apArtIds.length===0&&!_apHasTbd)){_approveArtTo(j.id,_apArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
-                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(j)})}}>📤 Send to Coach</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#22c55e,#16a34a)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(34,197,94,0.3)'}} onClick={()=>{/* Every garment needs its own mock (or a mock link) before approval — same
+                gate the artist's Send-for-Approval enforces. Without this, a garment whose mock
+                was orphaned (e.g. a stock-swap SKU change) ships unmocked (SO-1480). */
+                const _mmA=skusMissingMockups(j,o);
+                if(_mmA.length>0){nf(missingMockupsMsg('approve',_mmA),'error');return}
+                const _apArtIds=(j._art_ids||[j.art_file_id].filter(Boolean)).filter(id=>id&&id!=='__tbd');const _apHasTbd=(j._art_ids||[j.art_file_id]).filter(Boolean).some(id=>id==='__tbd');const _apDeco=(af.find(a=>_apArtIds.includes(a.id))?.deco_type)||j.deco_type;const _allConfirmed=_apArtIds.length>0&&_apArtIds.every(id=>artProdFilesConfirmed(af.find(a=>a.id===id)));/* A NEW logo still on the __tbd placeholder must NOT skip the gate — it used to land in production with no files stage at all. A job with no art ids and no placeholder (names/numbers-only) has nothing to gate and approves straight through. */if(_allConfirmed||(_apArtIds.length===0&&!_apHasTbd)){_approveArtTo(j.id,_apArtIds,'art_complete',false)}else{setArtApproveGate({jobId:j.id,artIds:_apArtIds,deco:_apDeco,artName:j.art_name})}}}>✅ Approve Artwork</button>
+                <button className="btn" style={{fontSize:13,padding:'8px 20px',background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white',border:'none',borderRadius:8,fontWeight:800,boxShadow:'0 2px 8px rgba(59,130,246,0.3)'}} onClick={()=>{/* Same per-garment mock gate as Approve — the coach must never be asked to
+                approve a proof with unmocked garments (they could approve it; the portal blocks too,
+                but don't send them a broken proof in the first place). */
+                const _mmS=skusMissingMockups(j,o);
+                if(_mmS.length>0){nf(missingMockupsMsg('send to coach',_mmS),'error');return}
+                const c2=ic||allCustomers?.find?.(x=>x.id===o.customer_id);const contacts=(c2?.contacts||[]).filter(ct2=>ct2.email||ct2.phone);const ct=contacts[0]||{};const pUrl=c2?.alpha_tag?('https://nationalsportsapparel.com/coach?portal='+c2.alpha_tag):'';const _label=(o.memo&&o.memo.trim())||j.art_name;const defMsg='Hi '+(ct.name||'Coach')+',\n\nYour artwork mockup for "'+_label+'" is ready for review!\n\nPlease review and approve it through your portal:\n'+(pUrl||'(portal link unavailable)')+'\n\nLet us know if you\'d like any changes.\n\n'+cu.name+'\nNational Sports Apparel';setCoachApprovalModal({jIdx:ji,contacts,contact:ct,portalUrl:pUrl,sendEmail:!!ct.email,sendText:_smsUiEnabled&&!!ct.phone,checkedEmails:Object.fromEntries((c2?.contacts||[]).filter(ct2=>ct2.email).map(ct2=>[ct2.email,true])),customEmails:[],addingEmail:'',message:defMsg,sending:false,followUpDays:portalSettings?.followUpDays||7,followUp:seedFollowUp(j)})}}>📤 Send to Coach</button>
               </div>
               <div style={{borderTop:'1px solid #fde68a',paddingTop:10}}>
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
                 <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
                 <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
-                  const rejection={by:cu.name,at:new Date().toISOString(),reason:artRevisionNote.trim()};
-                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
-                  const updArt2=af.map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
+                  const _revAt=new Date().toISOString();
+                  const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason:artRevisionNote.trim()};
+                  // Same pullback semantics as Update/Recall (audit M1/A5): the redo covers EVERY
+                  // design on the job (_art_ids, not just the primary), stale coach state is cleared
+                  // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
+                  // nag), and the seps confirmation is invalidated so the redone art can't skip the
+                  // production-files re-check on the next approve. Stays art_in_progress — the
+                  // assigned artist keeps the job on their board.
+                  const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                  const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
                   const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};
                   setArtRevisionNote('');
                   saveSONow(updated,'Revision request','Art sent back to artist for revision');
@@ -9221,7 +9343,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                           const _gc2=dAf?.garment_colors?.[_gk2]||{};
                           const _gcCols=Object.values(_gc2).flat().filter(c=>c&&c.trim());
                           const _cwCols=cwObj?cwObj.inks.filter(c=>c&&c.trim()):[];
-                          const _fbCols=(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                          const _fbCols=dAf?realInkLines(dAf.ink_colors||dAf.thread_colors):[];// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                           const _allCwInks=[...new Set((dAf?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                           const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                           const cwLabel=cwObj?.garment_color||'';
@@ -9718,24 +9840,35 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               actions.push('text opened');
             }
           }
-          // Record sent_to_coach_at timestamp, follow-up, and history on the job.
+          // Record the send on the job — but "Sent to Coach" means a CONFIRMED delivery
+          // (Brevo accepted the email/text). A mailto/sms draft only opened a compose window;
+          // stamping sent_to_coach_at for it produced phantom "Sent to Customer" badges and
+          // follow-up nags for messages that never left the building (audit M9/A3). Drafts
+          // still get a sent_history entry (draft:true) so the attempt is visible.
+          const _confirmedSend=actions.some(a=>a.startsWith('email sent')||a.startsWith('text sent'));
           // Automated follow-ups (server sweep) take priority; else fall back to the manual reminder.
-          const _artAuto=cam.followUp&&cam.followUp.auto&&allTargets.length>0;
-          const fuAt=_artAuto?new Date(Date.now()+((cam.followUp.firstDays||3)*86400000)).toISOString():(cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null);
+          const _artAuto=_confirmedSend&&cam.followUp&&cam.followUp.auto&&allTargets.length>0;
+          const fuAt=!_confirmedSend?null:_artAuto?new Date(Date.now()+((cam.followUp.firstDays||3)*86400000)).toISOString():(cam.followUpDays?new Date(Date.now()+cam.followUpDays*86400000).toISOString():null);
+          // Read the LIVE order, not the render closure: the Brevo awaits above leave a real
+          // window where an autosave/portal-merge can land; building from stale `o` would
+          // silently revert it (audit F5). Mirrors _approveArtTo's oRef.current pattern.
+          const curO=oRef.current;
           // Snapshot the mock URLs being sent, so the send record pins WHICH images the coach
           // was asked to approve — an artist re-upload after this send is detectable instead of
           // the records describing a different image than the coach saw.
-          const _sentJob=safeJobs(o)[coachApprovalModal.jIdx];
+          const _sentJob=safeJobs(curO)[coachApprovalModal.jIdx];
           const _sentArtIds=_sentJob?(_sentJob._art_ids||[_sentJob.art_file_id].filter(Boolean)):[];
-          const _sentArtFiles=_sentArtIds.map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
+          const _sentArtFiles=_sentArtIds.map(aid=>safeArt(curO).find(a=>a.id===aid)).filter(Boolean);
           const _smSeen=new Set();
           const _sentMocks=[..._sentArtFiles.flatMap(a=>a.mockup_files||a.files||[]),..._sentArtFiles.flatMap(a=>Object.values(a.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_smSeen.has(u))return false;_smSeen.add(u);return true});
-          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks};
+          const histEntry={sent_at:new Date().toISOString(),sent_by:cu.name||cu.id,type:'art_approval',methods:actions,to:allTargets.join(', '),messageId:actions._messageId||null,mocks:_sentMocks,...(!_confirmedSend?{draft:true}:{})};
           const _artAutoCols=_artAuto?{follow_up_auto:true,follow_up_interval_days:cam.followUp.intervalDays||0,follow_up_message:cam.followUp.message||'',follow_up_to:allTargets.join(', '),follow_up_max:cam.followUp.max||4,follow_up_count:0,follow_up_last_sent_at:null}:{follow_up_auto:false,follow_up_interval_days:null,follow_up_message:null,follow_up_to:null,follow_up_max:null,follow_up_count:0,follow_up_last_sent_at:null};
-          const updJobs3=safeJobs(o).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,sent_history:[...(jj.sent_history||[]),histEntry],..._artAutoCols}:jj);
-          const updated3={...o,jobs:updJobs3,updated_at:new Date().toLocaleString()};setO(updated3);onSave(updated3);setDirty(false);
+          const updJobs3=safeJobs(curO).map((jj,i)=>i===coachApprovalModal.jIdx?{...jj,...(_confirmedSend?{sent_to_coach_at:new Date().toISOString(),follow_up_at:fuAt,..._artAutoCols}:{}),sent_history:[...(jj.sent_history||[]),histEntry]}:jj);
+          const updated3={...curO,jobs:updJobs3,updated_at:new Date().toLocaleString()};
           setCoachApprovalModal(null);
-          nf(actions.length>0?'Sent to coach — '+actions.join(' + '):'No notification method selected');
+          await saveSONow(updated3,'Send to coach',null);
+          if(_confirmedSend)nf('Sent to coach — '+actions.join(' + '));
+          else nf(actions.length>0?'⚠️ '+actions.join(' + ')+' — finish sending from your mail app. Job NOT marked as sent (no delivery confirmation).':'No notification method selected — job NOT marked as sent','error');
         };
         return<div className="modal-overlay" style={{zIndex:10001}} onClick={()=>setCoachApprovalModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
           <div className="modal-header" style={{background:'linear-gradient(135deg,#3b82f6,#2563eb)',color:'white'}}>
@@ -9922,7 +10055,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // deco must not release straight to art_complete (it read "Ready for Production" with
             // unassigned artwork). Send it out for approval instead.
             const _hasTbd=artIds.some(aid=>aid==='__tbd');
-            artStatus=(_hasMock&&!_hasTbd)?'art_complete':'waiting_approval'}
+            // EVERY released garment needs its own mock (or link) — a group where only garment 1
+            // was ever mocked must not carry garment 2 to "Ready for Production" (audit A7). Same
+            // per-garment oracle as the approval gates, run against a pseudo-job of the release set.
+            const _skipPseudo={_art_ids:artIds.filter(aid=>aid&&aid!=='__tbd'),art_file_id:artIds.find(aid=>aid&&aid!=='__tbd')||null,items:releaseItems.map(it=>({item_idx:it.item_idx,sku:it.sku,color:it.color}))};
+            const _skipMissing=_hasMock&&!_hasTbd?skusMissingMockups(_skipPseudo,o):[];
+            if(_skipMissing.length>0)nf('Skip Artist: no mockup yet for '+_skipMissing.join(', ')+' — releasing for approval instead of Art Complete');
+            artStatus=(_hasMock&&!_hasTbd&&_skipMissing.length===0)?'art_complete':'waiting_approval'}
           // Quick mock — rep built the mockup themselves; send to coach for approval,
           // skipping the artist on the mockup phase. Artist still does separations after approval.
           if(g.quickMock&&activateAll){artStatus='waiting_approval'}

@@ -1,13 +1,13 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
 import { artWriteMatches } from './lib/artIdentity';
 import { dP, rQ, DTF, mergeColors, calcPaidQualifyingSpend } from './pricing';
-import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey } from './utils';
+import { fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, pdfDecoLabel, openFile, getBillingContacts, getAthleticDirectorContacts, sendBrevoEmail, buildBrandedEmailHtml, _brevoKey, _portalAction } from './utils';
 import { StripePaymentModal } from './modals';
 import CoachCatalogAccess from './CoachCatalogAccess';
 import { RosterOrdersStaff } from './RosterOrders';
@@ -1823,30 +1823,56 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
             </div>
           </div>)}
 
-          {/* Approve / Reject */}
-          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {/* Approve / Reject — routed through the SAME guarded server transaction as the real
+              coach portal (portal-action → apply_coach_art_decision). This preview used to write
+              the decision locally with a hand-mirrored (and drifted) write set: no state guard,
+              no atomicity, reject missing the coach_approved_at clear (audit A4). Server first;
+              the local update below is just a cache mirror of what the RPC committed. */}
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Not sent to the coach yet — this proof is still in internal review. To approve it internally, use the job's Approve Artwork button on the order.</div>}
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
             <div style={{fontWeight:700,color:'#92400e',marginBottom:8}}>⏳ This artwork needs your approval</div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                {/* Mirror the coach portal's approve write set exactly: deco-specific prod-files stage
-                    (dtf→transfers, embroidery→emb files) and coach_rejected cleared in the SAME write —
-                    this path used to hardcode production_files_needed and leave the rejection flag stranded. */}
-                {/* An already-attached confirmed separation (checkbox / embroidery .dst) skips the
-                    upload stage and lands on art_complete — matches the buildJobs derivation. */}
-                const artId=j.art_file_id;if(artId&&onSaveSO){const _apAf=(so.art_files||[]).find(af3=>af3.id===artId);const _apSt=artProdFilesConfirmed(_apAf)?'art_complete':prodFilesStatusFor(_apAf?.deco_type||j.deco_type);const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_rejected:false}:jj);const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};onSaveSO(updatedSO)}
-                setPortalJobView(null)}}>✅ Approve</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={()=>{
-                if(portalComment.trim()){
-                  const artId=j.art_file_id;if(artId&&onSaveSO){
-                    {/* Mirror the coach portal's reject write set: coach_rejected SET, send timestamp and
-                        seps confirmation cleared, timestamp under both key spellings (portal reads `at`,
-                        the dashboard todo reads `rejected_at`). This path used to omit coach_rejected entirely. */}
-                    const _rejAt=new Date().toISOString();
-                    const rej={reason:portalComment.trim(),by:'Coach',at:_rejAt,rejected_at:_rejAt};
-                    const updJobs2=safeJobs(so).map(jj=>jj.id===j.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
-                    const updatedSO={...so,art_files:(so.art_files||[]).map(af3=>af3.id===artId?{...af3,status:'waiting_for_art',prod_files_attached:false}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
-                    onSaveSO(updatedSO)}
-                  setPortalComment('');setPortalJobView(null)}else{alert('Please add a comment explaining what needs to change.')}
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                {/* Re-derive the LIVE SO: `so` was captured when the row was clicked, and the
+                    await below leaves a real window for other saves to land — mirroring a stale
+                    snapshot would silently revert them (the F5 class). */}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
+                if(!jArtIds.length)return;
+                const _mm=skusMissingMockups(liveJob,liveSO);
+                if(_mm.length>0){alert('No mockup yet for: '+_mm.join(', ')+' — complete the proof before approving.');return}
+                {/* Deco-specific prod-files stage (dtf→transfers, embroidery→emb files); confirmed
+                    seps (checkbox / approved-art .dst) skip straight to art_complete — matches the
+                    coach portal's derivation. */}
+                const _apArts=jArtIds.map(id=>(liveSO.art_files||[]).find(af3=>af3.id===id)).filter(Boolean);
+                const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apArts[0]?.deco_type||liveJob.deco_type);
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'approve',comment:portalComment.trim()||null,art_ids:jArtIds,approved_status:_apSt}});
+                if(!_res.ok){alert(_res.error||'Could not record the approval — please refresh and try again.');return}
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:_apSt,coach_approved_at:new Date().toISOString(),coach_approval_comment:portalComment.trim()||jj.coach_approval_comment,coach_rejected:false}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'approved'}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                onSaveSO(updatedSO);
+                setPortalComment('');setPortalJobView(null)}}>✅ Approve</button>
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center'}} onClick={async()=>{
+                if(!portalComment.trim()){alert('Please add a comment explaining what needs to change.');return}
+                if(!onSaveSO)return;
+                if(!customer?.alpha_tag){alert('This customer has no portal tag (alpha_tag) yet — set one on the customer record to use the portal preview actions.');return}
+                const liveSO=custSOs.find(s=>s.id===so.id)||so;
+                const liveJob=safeJobs(liveSO).find(jj=>jj.id===j.id)||j;
+                const jArtIds=((liveJob._art_ids&&liveJob._art_ids.length?liveJob._art_ids:[liveJob.art_file_id])||[]).filter(Boolean);
+                const _fb=portalComment.trim();
+                const _res=await _portalAction({alphaTag:customer.alpha_tag,artDecision:{so_id:liveSO.id,job_id:liveJob.id,decision:'reject',comment:_fb,art_ids:jArtIds}});
+                if(!_res.ok){alert(_res.error||'Could not record the change request — please refresh and try again.');return}
+                const freshSO=custSOs.find(s=>s.id===so.id)||liveSO;
+                const _rejAt=new Date().toISOString();
+                const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
+                const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                onSaveSO(updatedSO);
+                setPortalComment('');setPortalJobView(null)
               }}>❌ Request Changes</button>
             </div>
             <textarea className="form-input" rows={2} placeholder="Tell us what needs to change..." value={portalComment} onChange={e=>setPortalComment(e.target.value)} style={{marginTop:8,fontSize:12,resize:'vertical'}}/>

@@ -244,6 +244,44 @@ async function reconcileInvoiceFromIntent(admin, pi) {
 // so a shipment link is never orphaned. `contentKeys` are the columns copied from each lineItem
 // onto a matched row (must exclude the fulfillment columns). Each lineItem must include `sku`
 // and `size` (the match key) plus the columns needed to insert a brand-new row.
+// OMG report product names often end with the SKU, sometimes duplicated by the
+// report ("Sport-Tek Repeat 7\" Short ST485 ST485" → ST485). Fallback for rows
+// whose color string carries no "(SKU)" suffix, so parent order lines don't
+// land with an empty SKU (which breaks receiving-based status sync — see
+// OMG_TRACKING_AUDIT_2026-07-11.md fix #5). SKU-ish = 3-12 alphanumerics
+// containing a digit, or 4+ all-caps characters.
+function skuFromProductName(name) {
+  const toks = String(name || '').trim().split(/\s+/);
+  const last = toks[toks.length - 1] || '';
+  const skuish = /^[A-Za-z0-9-]{3,12}$/.test(last)
+    && (/\d/.test(last) || (last === last.toUpperCase() && last.length >= 4));
+  return skuish ? last.toUpperCase() : '';
+}
+
+// Unique-containment SKU lookup against the OMG store catalog
+// (omg_store_products): returns the catalog SKU when EXACTLY ONE product's
+// name (>= 8 chars) appears inside the line's product name. OMG line names
+// are often "<catalog name> <display alias>" concatenations; the catalog is
+// the same source, so containment is reliable — but ambiguity returns ''
+// rather than guessing (same guarded rule as migration 00192's backfill).
+function skuFromCatalogName(productName, catalog) {
+  const hay = String(productName || '').toUpperCase().replace(/\s+/g, ' ').trim();
+  if (!hay) return '';
+  const skus = new Set();
+  for (const p of catalog || []) {
+    const nm = String(p.name || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    if (nm.length >= 8 && p.sku && hay.includes(nm)) skus.add(String(p.sku).toUpperCase().trim());
+  }
+  if (skus.size === 1) return skus.values().next().value;
+  if (skus.size > 1) return '';
+  // No name containment — try tokens: a whitespace token of the line name that
+  // equals a catalog SKU ("…FULL-ZIP JACKET - BLACK A268 BLACK" → A268).
+  // Unique-or-nothing, same as above.
+  const catSkus = new Set((catalog || []).map((p) => String(p.sku || '').toUpperCase().trim()).filter(Boolean));
+  const hits = new Set(hay.split(' ').filter((t) => catSkus.has(t)));
+  return hits.size === 1 ? hits.values().next().value : '';
+}
+
 async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   const items = Array.isArray(lineItems) ? lineItems : [];
   const key = (o) => `${String(o.sku || '').toUpperCase()}|${String(o.size || '')}`;
@@ -305,4 +343,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
+module.exports = { corsHeaders, getSupabaseAdmin, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };

@@ -18,7 +18,7 @@
 //
 // Env: REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY
 const { createClient } = require('@supabase/supabase-js');
-const { verifyUser, syncOrderItems } = require('./_shared');
+const { verifyUser, syncOrderItems, skuFromProductName, skuFromCatalogName } = require('./_shared');
 
 // Columns copied onto an existing line when re-ingesting. Excludes the (sku,size) match key
 // and the fulfillment columns (line_status/shipped_qty/missing_qty), which must survive.
@@ -134,9 +134,10 @@ exports.handler = async (event) => {
     {
       const { data: sp } = await sb.from('omg_store_products')
         .select('sku,name,image_url').eq('store_id', `OMG-sale_${saleCode}`);
-      // Key by both the full and base SKU so matching works either way.
-      storeProducts = (sp || []).filter((p) => p.image_url);
-      storeProducts.forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
+      // Keep the FULL catalog (SKU fallback matching needs image-less rows too);
+      // the image map only keys products that actually have a photo.
+      storeProducts = sp || [];
+      storeProducts.filter((p) => p.image_url).forEach((p) => { imgBySku[normSku(p.sku)] = p.image_url; imgBySku[baseSku(p.sku)] = p.image_url; });
     }
     // Find the best image for a line item: SKU lookup first, then fall back to
     // checking whether any store-product name appears as a substring of the
@@ -150,7 +151,7 @@ exports.handler = async (event) => {
         const lower = productName.toLowerCase();
         // Sort longest name first so more-specific matches win.
         const sorted = [...storeProducts].sort((a, b) => (b.name || '').length - (a.name || '').length);
-        const match = sorted.find((p) => p.name && lower.includes(p.name.toLowerCase()));
+        const match = sorted.find((p) => p.name && p.image_url && lower.includes(p.name.toLowerCase()));
         if (match) return match.image_url;
       }
       return null;
@@ -174,7 +175,10 @@ exports.handler = async (event) => {
 
         // Build line items from rows.
         const lineItems = (section.rows || []).map((row) => {
-          const sku = extractSku(row.color) || (row.sku || '').toUpperCase();
+          // Catalog containment before the trailing-token heuristic: the token
+          // rule can false-positive on display-alias words (e.g. "... 3 STRIPE
+          // SHORT" → "SHORT"); the catalog match is unique-or-nothing.
+          const sku = extractSku(row.color) || (row.sku || '').toUpperCase() || skuFromCatalogName(row.product, storeProducts) || skuFromProductName(row.product);
           // row.quantity is the store-wide total for this SKU/size, not the
           // per-order quantity. Use 1 per line; presence (> 0) is the signal.
           const ordered = row.quantity > 0;

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
 import { statusChipLabel } from './lib/teamshopOrderStatus';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, jobItemDecosOfKind } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
@@ -136,20 +136,20 @@ function CoachStore({ customer, storeIds }) {
     (async () => {
       const ids = _storeIdKey ? _storeIdKey.split(',') : [];
       if (!ids.length) { setLoaded(true); return; }
-      const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
+      const { data: ws, error } = await supabase.from('coach_webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
       setStores(ws);
       const out = {};
       for (const s of ws) {
         const [o, r] = await Promise.all([
-          supabase.from('webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
+          supabase.from('coach_webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
           supabase.from('webstore_roster').select('*').eq('store_id', s.id),
         ]);
         const orders = o.data || [];
         const orderIds = orders.map((x) => x.id);
         let items = [];
-        if (orderIds.length) { const it = await supabase.from('webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
+        if (orderIds.length) { const it = await supabase.from('coach_webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
         out[s.id] = { orders, items, roster: r.data || [] };
       }
       if (!cancel) { setData(out); setLoaded(true); }
@@ -699,7 +699,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>{let cancel=false;(async()=>{
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
-    const{data}=await supabase.from('webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
+    const{data}=await supabase.from('coach_webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
     if(!cancel)setCpStores(data||[]);
   })();return()=>{cancel=true;};},[_cpStoreKey]);
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
@@ -822,8 +822,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Resolve CC-pay setting; sub-customers inherit from their parent.
   const _parentForCC=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
   const ccDisabled=!!(customer.disable_cc_pay||(_parentForCC&&_parentForCC.disable_cc_pay));
-  // Artwork awaiting coach approval — surface at top of portal
-  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval');
+  // Artwork awaiting coach approval — surface at top of portal. ONLY art a rep actually
+  // forwarded (sent_to_coach_at): every artist mockup parks at waiting_approval for
+  // INTERNAL rep review first, and listing those here let a coach approve a draft the
+  // rep never sent — bypassing the rep-review gate entirely (audit A1).
+  const waitingArtJobs=allPortalJobs.filter(j=>j.art_status==='waiting_approval'&&j.sent_to_coach_at);
   const artLabelsP={needs_art:'Art Needed',art_requested:'Art Requested',art_in_progress:'Art In Progress',waiting_approval:'Awaiting Your Approval',production_files_needed:'Art Approved — Waiting',art_complete:'Approved'};
   const prodLabelsP={hold:'On Hold',staging:'In Line',in_process:'In Production',completed:'Done',shipped:'Shipped'};
   const contactEmail=(customer.contacts||[])[0]?.email||'';
@@ -1404,8 +1407,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     const _liveJob=(safeJobs(_liveSO)).find(jj=>jj.id===jobView.job.id)||jobView.job;
     const j=_liveJob;const so=_liveSO;
     const artFile=safeArt(so).find(a=>a.id===j.art_file_id);
+    // Scoped to the decorations THIS JOB OWNS (deco_idxs), mirroring jobLiveArtIds in
+    // businessLogic.js: an unscoped union pulled a sibling job's art into this job's view
+    // on shared garment lines (mixed-deco items always split into two jobs), so the coach
+    // saw the OTHER job's mocks here — and, worse, those URLs entered seen_mocks while
+    // art_ids stayed narrow, making every approve 409 with NSA_MOCKS_CHANGED (audit follow-up).
+    // The decision payloads below use this same set, so what's shown, what's pinned, and
+    // what gets approved/reset are one set. Legacy items without deco_idxs keep the
+    // unscoped fallback, matching businessLogic.
     const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));
-    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
+    (j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;const _dis=jobItemDecoIdxs(gi);safeDecos(it).forEach((d,di)=>{if(_dis&&!_dis.includes(di))return;if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});
     const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
     // Mock links: a garment the rep linked to another garment shows a "same mockup as X"
     // note instead of repeating the image; the source garment shows it once with an
@@ -1496,7 +1507,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     const _gcCols=Object.values(_gc2).flat().filter((v,idx,arr)=>v&&v.trim()&&arr.indexOf(v)===idx);
                     const cwObj=d?.color_way_id&&_aF?.color_ways?_aF.color_ways.find(c=>c.id===d.color_way_id):null;
                     const _cwCols=cwObj?(cwObj.inks||[]).filter(c=>c&&c.trim()):[];
-                    const _fbCols=(_aF?.ink_colors||_aF?.thread_colors||'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);
+                    const _fbCols=realInkLines(_aF?.ink_colors||_aF?.thread_colors);// 'Color N' count placeholders skipped — fall through to real CW inks (SO-1496)
                     const _allCwInks=[...new Set((_aF?.color_ways||[]).flatMap(cw=>cw.inks||[]).map(c=>c&&c.trim()).filter(Boolean))];
                     const dColors=_gcCols.length>0?_gcCols:_cwCols.length>0?_cwCols:_fbCols.length>0?_fbCols:_allCwInks;
                     const method=((d?.type||_aF?.deco_type||j.deco_type||'')+'').replace(/_/g,' ')||'—';
@@ -1585,7 +1596,9 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:24,marginBottom:4}}>🎨</div>
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}
-          {j.art_status==='waiting_approval'&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:16,padding:18,marginBottom:16}}>
+          {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:16,padding:18,marginBottom:16}}>
+
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
             {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
@@ -1594,7 +1607,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{display:'flex',gap:8}}>
               <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
-                const jArtIds=j._art_ids||[j.art_file_id].filter(Boolean);
+                // A coach must never approve a proof with unmocked garments — they'd be
+                // approving art they can't see. Same per-garment gate the rep side enforces
+                // (skusMissingMockups honors mock links and legacy general-mockup art).
+                const _liveJob=(liveSO.jobs||safeJobs(liveSO)).find(jj=>jj.id===j.id)||j;
+                const _mmC=skusMissingMockups(_liveJob,liveSO);
+                if(_mmC.length>0){alert('This proof is missing a mockup for: '+_mmC.join(', ')+'.\n\nPlease ask your rep to complete the proof — you can also use "Request Changes" below to send them a note.');return}
+                // The SAME scoped set the view renders (_jobArtIds): seen_mocks are collected
+                // from these files, so the RPC's pinning pools must be built from the same ids —
+                // a narrower art_ids made every mixed-deco approval conflict (NSA_MOCKS_CHANGED).
+                const jArtIds=[..._jobArtIds];
                 const coachComment=comment.trim();
                 // Folder already carries a confirmed production separation (checkbox, or an
                 // embroidery .dst)? Approval sends it straight to art_complete instead of the
