@@ -7,22 +7,37 @@
 // A single static /robots.txt can't vary per host, so this edge function emits
 // the right rules for each.
 //
-// Only the canonical store domain is crawlable, and even there only the
-// storefront routes (/shop, /team-stores) plus the render assets under /static —
-// never the app/checkout routes, since nationalteamshop.com is an alias of the
-// WHOLE portal app (its /coach, /adidas, /onboarding, … routes all resolve too).
-// Every other host is fully disallowed so the app shell and the off-brand
-// netlify.app duplicate never get indexed.
+// nationalteamshop.com is an alias of the WHOLE portal app, so besides the public
+// Team Shop retail storefront it also serves staff/app routes (/onboarding, /auth,
+// /adidas, /teamshop-queue, /production, /floor-station, /vendor-digitizing, the
+// coach portal, …). So this is an ALLOW-LIST: default-deny (`Disallow: /`) with the
+// public retail surface opened up, so a new staff route never leaks into the index.
+//
+// Public (indexable) on nationalteamshop.com:
+//   • Team Shop retail — / (home), /catalog, /product/<sku>, /stores, /decoration, /faq
+//   • Club stores (still live here) — /shop/<slug>, /team-stores
+//   • Render assets — /static
+// Deny: the funnel (/order, /cart, /account, /search) + club-store /shop/*/cart|
+// checkout fall under the catch-all (or an explicit rule where a broader Allow
+// would otherwise expose them). Every non-canonical host is fully disallowed so the
+// staff portal and the off-brand netlify.app duplicate never get indexed.
 
 const CANONICAL_HOSTS = new Set(['nationalteamshop.com', 'www.nationalteamshop.com']);
 
-// Longest-match wins in Google/Bing, and the specific Disallows are listed first
-// so first-match crawlers also keep checkout/cart out while /shop/ stays open.
+// `/$` anchors the home page so it's crawlable without `Allow: /` opening the whole
+// app. Specific Disallows come first (first-match crawlers); Google/Bing use
+// longest-match, under which the anchored/deeper rules win as intended.
 const STORE_ROBOTS = `User-agent: *
-Disallow: /shop/*/checkout
 Disallow: /shop/*/cart
-Allow: /shop/
+Disallow: /shop/*/checkout
+Allow: /$
+Allow: /catalog
+Allow: /product/
+Allow: /stores
+Allow: /decoration
+Allow: /faq
 Allow: /team-stores
+Allow: /shop/
 Allow: /static/
 Allow: /sitemap.xml
 Disallow: /
