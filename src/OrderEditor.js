@@ -7276,7 +7276,41 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return[];
       };
       const vendorMap={};safeItems(o).forEach((it,i)=>{const vk=resolveVendor(it);if(!vk)return;if(!vendorMap[vk])vendorMap[vk]=[];vendorMap[vk].push({...it,_idx:i})});
-      const unlinkedItems=safeItems(o).filter(it=>{const vk=resolveVendor(it);return!vk&&(Object.values(safeSizes(it)).some(v=>safeNum(v)>0)||safeNum(it.est_qty)>0)});
+      const unlinkedItems=safeItems(o).filter(it=>{const vk=resolveVendor(it);return!vk&&!it.customer_supplied&&(Object.values(safeSizes(it)).some(v=>safeNum(v)>0)||safeNum(it.est_qty)>0)});
+      // Customer-supplied garments (the customer buys them and ships them to us) never get a real
+      // vendor PO — there's nothing to purchase. They still need a *receiving* record so the warehouse
+      // can check them in and the job can advance to production. createCustomerDelivered lays down a
+      // zero-cost po_line flagged po_type:'customer_supplied' with its own CD-<so>-<n> id (never a
+      // vendor PO number), receivable through the normal receive UI / warehouse check-in but carrying
+      // no vendor cost and never matching a bill. Without this they fall into "Items Without Vendor"
+      // and the only offered action is picking a vendor — wrong for goods we aren't buying.
+      const custSuppliedItems=safeItems(o).filter(it=>it.customer_supplied&&(Object.values(safeSizes(it)).some(v=>safeNum(v)>0)||safeNum(it.est_qty)>0));
+      const createCustomerDelivered=(it)=>{
+        if(_poCreatingRef.current)return;
+        const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
+        if(idx<0)return;
+        const openSz=openSizesFor(it);const openTot=openSz.reduce((a,[,v])=>a+v,0);
+        if(openTot<=0){nf('No open units to receive on '+(it.name||it.sku||'this item'),'error');return}
+        _poCreatingRef.current=true;setTimeout(()=>{_poCreatingRef.current=false},1500);
+        const soNum=(o.id||'').replace('SO-','');
+        const cdCount=safeItems(o).reduce((a,x)=>a+(x.po_lines||[]).filter(pl=>pl&&pl.po_type==='customer_supplied').length,0);
+        const poId='CD-'+soNum+'-'+(cdCount+1);
+        const poLine={po_id:poId,vendor:'Customer (supplied)',po_type:'customer_supplied',status:'waiting',
+          created_at:new Date().toLocaleDateString(),memo:'Customer-delivered goods — no vendor PO',received:{},shipments:[],unit_cost:0};
+        openSz.forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
+        const updatedItems=safeItems(o).map((x,i)=>i===idx?{...x,po_lines:[...(x.po_lines||[]),poLine]}:x);
+        const updated={...o,items:updatedItems,updated_at:new Date().toLocaleString()};
+        setO(updated);onSave(updated);
+        const poIdx=updatedItems[idx].po_lines.length-1;
+        setShowPO(null);
+        setEditPO({lineIdx:idx,poIdx,po:poLine,allLines:[{lineIdx:idx,poIdx}]});
+        nf('🎁 '+poId+' created — receive the customer-delivered goods (no vendor cost)');
+      };
+      const openCustDelivered=(it)=>{
+        const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
+        const poIdx=(safeItems(o)[idx]?.po_lines||[]).findIndex(pl=>pl&&pl.po_type==='customer_supplied');
+        if(idx>=0&&poIdx>=0){setShowPO(null);setEditPO({lineIdx:idx,poIdx,po:safeItems(o)[idx].po_lines[poIdx],allLines:[{lineIdx:idx,poIdx}]})}
+      };
       if(showPO==='select')return<div className="modal-overlay" onClick={()=>setShowPO(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
         <div className="modal-header"><h2>Create PO — Select Vendor</h2><button className="modal-close" onClick={()=>setShowPO(null)}>x</button></div>
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
@@ -7306,6 +7340,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </div>
               </div>
             </div>})}
+          </div>}
+          {custSuppliedItems.length>0&&<div style={{borderTop:'2px solid #a5f3fc',marginTop:8,paddingTop:8}}>
+            <div style={{fontSize:10,fontWeight:700,color:'#0e7490',textTransform:'uppercase',marginBottom:4}}>🎁 Customer-Delivered Items</div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:6}}>The customer buys these and ships them to us — no vendor, no cost. Create a receiving record to check them in (and move the job to production) without a real PO.</div>
+            {custSuppliedItems.map((it,i)=>{const openTot=openSizesFor(it).reduce((a,[,v])=>a+v,0);const cdLine=(it.po_lines||[]).find(pl=>pl&&pl.po_type==='customer_supplied');
+              return<div key={i} style={{padding:'8px 12px',border:'1px solid #a5f3fc',borderRadius:8,marginBottom:4,background:'#ecfeff',display:'flex',alignItems:'center',gap:10}}>
+                <div style={{flex:1,minWidth:0}}>
+                  <div style={{fontSize:12,fontWeight:700,color:'#0e7490'}}>{it.name||'Customer-supplied item'}{it.color?' · '+it.color:''}</div>
+                  <div style={{fontSize:11,color:'#64748b'}}>{openTot>0?openTot+' unit'+(openTot!==1?'s':'')+' to receive':(cdLine?'✓ Receiving record '+cdLine.po_id:'Fully received')}</div>
+                </div>
+                {openTot>0?<button className="btn btn-sm" style={{background:'#0891b2',color:'#fff',border:'none',whiteSpace:'nowrap'}} onClick={()=>createCustomerDelivered(it)}>🎁 Receive — no PO</button>
+                  :cdLine?<button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>openCustDelivered(it)}>View</button>:null}
+              </div>})}
           </div>}
           {/* Outside Decoration PO section */}
           <div style={{borderTop:'2px solid #e2e8f0',marginTop:8,paddingTop:8}}>
@@ -11103,6 +11150,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {po.batch_po_number&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#f5f3ff',color:'#7c3aed',fontFamily:'monospace'}}>Batch: {po.batch_po_number}</span>}
             <ApiOrderBadge po={po} showId style={{fontSize:10,padding:'2px 8px'}}/>
             {isDropShip&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ede9fe',color:'#7c3aed'}}>Drop Ship</span>}
+            {po.po_type==='customer_supplied'&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,fontWeight:700,background:'#ecfeff',color:'#0e7490'}} title="Customer-delivered goods — no vendor, no cost, no bill">🎁 Customer-Delivered</span>}
             <span className={`badge ${poWideStatus==='received'||poWideStatus==='shipped'?'badge-green':poWideStatus==='partial'?'badge-amber':'badge-gray'}`}>{poWideStatus==='shipped'?'Shipped':poWideStatus==='received'?'Fully Received':poWideStatus==='partial'?(isDropShip?_poWide.bld+'/'+_poWide.ord+' Billed':'Partial — '+_poWide.open+' open'):'Waiting'}</span>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>{setPoFullPage({po,item,allLines,soId:o.id,soItems:o.items});setEditPO(null)}}>View Full Page</button>
             <button className="modal-close" onClick={()=>setEditPO(null)}>x</button>
