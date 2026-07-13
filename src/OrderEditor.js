@@ -34,6 +34,19 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
+// Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
+// any line whose total quantity was 0, which silently hid legitimately-quoted items
+// that just don't have a committed quantity yet — e.g. a price-per-unit add-on on an
+// estimate (EST-1538 quoted a fence topper at $308/ea with qty still TBD and it
+// vanished from the PDF). Every real line always carries a SKU (catalog SKU, "CUSTOM",
+// or "CUST-SUPPLIED"), so keep hiding only genuinely-empty placeholder rows (no name,
+// no SKU, no qty) and show every real line regardless of quantity. Validation gates
+// (Save / Convert to SO) keep their own quantity requirement and are unaffected.
+const _docPdfItems=o=>safeItems(o).filter(it=>{
+  const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);
+  return sq>0||safeNum(it.est_qty)>0||!!String(it.name||'').trim()||!!String(it.sku||'').trim();
+});
+
 // "Placed via API" badge — surfaces wherever a PO that was submitted electronically to a
 // vendor (SanMar / S&S / Momentec) is shown, so a rep can tell at a glance it's a real
 // API-placed order rather than a manual website order. The vendor's returned order number
@@ -3422,7 +3435,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
-              const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+              const items=_docPdfItems(o);
               const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
               const isRolled=(o.pricing_mode||'itemized')==='rolled_up';
               const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
@@ -3431,7 +3444,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               items.forEach(it=>{
                 const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
                 const decos=safeDecos(it);
-                const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(eq2/qty)*dp2.sell},0);
+                const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(qty>0?(eq2/qty)*dp2.sell:0)},0);
                 const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
                 const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);
                 const lineAmt=qty*unitPrice;subTotal+=lineAmt;
@@ -6233,13 +6246,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
     <SendModal isOpen={showSend} onClose={()=>setShowSend(false)} estimate={o} customer={cust} docType={isE?'estimate':'so'} buildAttachmentHtml={()=>{
       const _$=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-      const items=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+      const items=_docPdfItems(o);
       const _pAQ={};items.forEach(it=>{const sq2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q2=sq2>0?sq2:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_pAQ[d.art_file_id]=(_pAQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
       const isRolled=(o.pricing_mode||'itemized')==='rolled_up';const taxRate=o.tax_exempt?0:(o.tax_rate||cust?.tax_rate||0);
       const rows=[];let subTotal=0;
       items.forEach(it=>{
         const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);
-        const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(eq2/qty)*dp2.sell},0);
+        const decos=safeDecos(it);const decoSell=decos.reduce((a,d)=>{const cq=d.kind==='art'&&d.art_file_id?_pAQ[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq2=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);return a+(qty>0?(eq2/qty)*dp2.sell:0)},0);
         const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
         const unitPrice=isRolled?safeNum(it.unit_sell)+decoSell:safeNum(it.unit_sell);const lineAmt=qty*unitPrice;subTotal+=lineAmt;
         let itemName=(it.name||'')+(it.color?' - '+it.color:'');
