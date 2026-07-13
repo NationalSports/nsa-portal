@@ -134,7 +134,7 @@ describe('fetchCategoryHeroes', () => {
 describe('Home.js — category tile grid', () => {
   const noop = () => {};
 
-  test('renders 9 category tiles, all with real product photos when heroes resolve for every category', async () => {
+  test('renders a branded tile for every launch category except footwear', async () => {
     const allRows = LAUNCH_CATEGORIES.map((cat) => ({
       id: cat.key,
       sku: CATEGORY_HERO_SKUS[cat.key],
@@ -152,15 +152,20 @@ describe('Home.js — category tile grid', () => {
 
     const tiles = await screen.findAllByRole('button', { name: /^Shop / });
     const categoryTiles = tiles.filter((t) => t.className.includes('nts-category-tile'));
-    expect(categoryTiles).toHaveLength(LAUNCH_CATEGORIES.length);
+    // Footwear is intentionally excluded from the home grid (Home.js filters
+    // cat.key !== 'footwear'); every other launch category renders a committed
+    // branded tile image (CATEGORY_TILE_IMG), which takes precedence over the DB
+    // hero rows fetched above.
+    const gridCategories = LAUNCH_CATEGORIES.filter((c) => c.key !== 'footwear');
+    expect(categoryTiles).toHaveLength(gridCategories.length);
     categoryTiles.forEach((tile) => {
       const img = tile.querySelector('img');
       expect(img).toBeTruthy();
-      expect(img.getAttribute('src')).toMatch(/^https:\/\/cdn\//);
+      expect(img.getAttribute('src')).toMatch(/^\/teamshop\/cat-/);
     });
   });
 
-  test('falls back to the gradient tile (no img) when no hero rows are fetched', async () => {
+  test('renders the branded static tiles even when no DB hero rows are fetched', async () => {
     const q = makeQuery({ data: [], error: null });
     mockFrom.mockReturnValue(q);
 
@@ -170,12 +175,17 @@ describe('Home.js — category tile grid', () => {
 
     const tiles = await screen.findAllByRole('button', { name: /^Shop / });
     const categoryTiles = tiles.filter((t) => t.className.includes('nts-category-tile'));
-    expect(categoryTiles).toHaveLength(LAUNCH_CATEGORIES.length);
+    const gridCategories = LAUNCH_CATEGORIES.filter((c) => c.key !== 'footwear');
+    expect(categoryTiles).toHaveLength(gridCategories.length);
+    // The committed CATEGORY_TILE_IMG images render regardless of DB heroes; the
+    // gradient is now only a runtime <img> onError fallback, not a no-img state.
     categoryTiles.forEach((tile) => {
-      expect(tile.querySelector('img')).toBeNull();
+      const img = tile.querySelector('img');
+      expect(img).toBeTruthy();
+      expect(img.getAttribute('src')).toMatch(/^\/teamshop\/cat-/);
       expect(tile.textContent).not.toBe('');
     });
-    // Sanity: labels still render as visible text on the fallback tile.
+    // Sanity: labels still render as visible text.
     expect(screen.getByText('1/4 Zips')).toBeTruthy();
   });
 });
