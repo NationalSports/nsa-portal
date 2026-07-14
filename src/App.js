@@ -19542,7 +19542,7 @@ export default function App(){
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -20129,7 +20129,7 @@ export default function App(){
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -20528,7 +20528,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');

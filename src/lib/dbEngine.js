@@ -885,9 +885,26 @@ const _dbSaveEstimateInner = async (est) => {
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
       // dropped customers. Falls back to the un-versioned call when the versioned RPC (migration 00128)
       // isn't deployed yet, so client/DB deploy order can't break saving.
-      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
-      if(_rpcRes.error&&(_rpcRes.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(_rpcRes.error.message||''))){
-        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      // New-vs-existing (mirrors _isNewSO in the SO path): a brand-new estimate must INSERT, not upsert —
+      // nextEstId mints ids from _dbMaxIds (synced only at page load), so a stale tab can re-mint an id
+      // another session already saved, and the RPC's ON CONFLICT upsert would silently REPLACE that
+      // estimate (the SO-1514 class). p_is_new (migration 00195) makes the create fail loud instead.
+      // Confident-new only when the lookup succeeded AND returned no row — never on a SELECT error.
+      const{data:_existEst,error:_existErr}=await supabase.from('estimates').select('id').eq('id',est.id).maybeSingle();
+      const _isNewEst=!_existErr&&!_existEst;
+      const _fnMissing=r=>!!r.error&&(r.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(r.error.message||''));
+      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
+      // Fallbacks for older deployed RPC signatures (pre-00195, then pre-00128) so deploy order can't break saving.
+      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
+      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      // Id collision on create: re-mint from a fresh DB-wide max and retry ONCE, still as a create —
+      // a second collision falls through to the generic error handler below instead of ever upserting.
+      if(_isNewEst&&_rpcRes.error&&(_rpcRes.error.message||'').includes('ESTIMATE_ID_EXISTS')){
+        const oldId=est.id;const freshMax=await _refreshMaxId('estimates','EST-');
+        est.id=_estPayload.id='EST-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        console.warn('[DB] Estimate id collision on create —',oldId,'already exists in DB, re-minted to',est.id);
+        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true}));
+        if(!_rpcRes.error&&_dataLossAlert)_dataLossAlert({kind:'est_id_reminted',soId:est.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
       }
       const _rpcErr=_rpcRes.error;
       // A write rejected by the version guard means another save (usually another open tab) advanced this
@@ -913,6 +930,8 @@ const _dbSaveEstimateInner = async (est) => {
         if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id,_rpcErr);
         const _friendly=_m.includes('CUSTOMER_MISSING')
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
+          :_m.includes('ESTIMATE_ID_EXISTS')
+            ?'Could not create '+est.id+' — the estimate number is already in use. Please save again to get a fresh number.'
           :(_m.includes('ESTIMATE_ID_MISSING')||_m.includes('ESTIMATE_PAYLOAD_EMPTY'))
             ?'Estimate could not be saved — required fields are missing. Please reload and try again.'
             :'Estimate save failed — please try again, or reload the page if it keeps happening.';
@@ -1020,6 +1039,17 @@ const _countInsertedChildRows=async(table,itemIds)=>{
   if(error)({count,error}=await supabase.from(table).select('id',{count:'exact',head:true}).in('so_item_id',itemIds));
   return{count:count||0,error};
 };
+// Authoritative DB-wide max SO number, for re-minting after an id collision on create (see _isNewSO below).
+// App.js's _dbMaxIds/_syncDbMaxIds is only refreshed at page load and lives in a module that imports THIS
+// one, so it can't be reused here without a circular import — this does its own full scan instead (id-only
+// select, cheap) rather than an order-by-string top-1, which can pick a lexicographically-larger-but-
+// numerically-smaller id (e.g. 'SO-999' sorts after 'SO-1000'). Ordered desc because PostgREST caps
+// unordered selects at 1000 rows — desc keeps the largest ids inside that window as the table grows.
+const _refreshMaxId=async(table,prefix)=>{
+  const{data}=await supabase.from(table).select('id').like('id',prefix+'%').order('id',{ascending:false}).limit(1000);
+  return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
+};
+const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
@@ -1056,11 +1086,35 @@ const _dbSaveSOInner = async (so) => {
         if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_missingDeco.length});
       }
     }
-    let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
+    // Brand-new orders INSERT rather than upsert: nextSOId (App.js) mints ids from _dbMaxIds, which is only
+    // synced at page load, so a stale tab can re-mint an id another tab already saved (the SO-1514 incident)
+    // — an upsert would then silently REPLACE that order's header while the item-write guards below block
+    // the item write, leaving one order's header on another order's items. INSERT fails loud (23505) instead.
+    let{error:soErr}=await(_isNewSO?supabase.from('sales_orders').insert(soRowInitial):supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'}));
+    if(soErr&&_isNewSO&&soErr.code==='23505'){
+      // Id collision on create: re-mint from a fresh DB-wide max (not the stale in-memory one) and retry
+      // ONCE, still as an insert — a second collision falls through to the block below instead of ever upserting.
+      const oldId=so.id;const freshMax=await _refreshSoMaxId();
+      so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+      console.warn('[DB] SO id collision on create —',oldId,'already exists in DB, re-minted to',so.id);
+      ;({error:soErr}=await supabase.from('sales_orders').insert(soRowInitial));
+      if(!soErr&&_dataLossAlert)_dataLossAlert({kind:'so_id_reminted',soId:so.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
+    }
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
-      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
+      const retry=await(_isNewSO?supabase.from('sales_orders').insert(coreSoRow):supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'}));
+      if(retry.error){
+        if(_isNewSO&&retry.error.code==='23505'){
+          // Still colliding after a re-mint — refuse to fall through to an upsert that would silently
+          // overwrite the order that already owns this id. Data-loss prevention over UX: block and let the
+          // rep retry the save (which mints a new id from the now-current in-memory list).
+          console.error('[DB] sales_orders insert still colliding for new SO',so.id,':',retry.error.message);
+          if(_dbNotify)_dbNotify('Save blocked — could not create '+so.id+' (id already in use). Please retry.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'sales_orders insert still collided after re-mint: '+retry.error.message});
+          return false;
+        }
+        console.error('[DB] sales_orders '+(_isNewSO?'insert':'upsert')+' failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message
+      }
       else console.warn('[DB] SO saved with core columns only')
     }
     // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
@@ -1409,14 +1463,47 @@ const _dbSaveSOInner = async (so) => {
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
       const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
       const jobRows=dedupedJobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
-      const{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
-      if(jobErr){
-        if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
+      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
+      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
+      // decision columns and silently reverts it. Never null a non-null coach column unless this save
+      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
+      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
+      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
+      {const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected').eq('so_id',so.id);
+      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
+      let _preserved=0;
+      jobRows.forEach((row,i)=>{
+        if(dedupedJobs[i]._coach_cleared)return;
+        const db=_dbCoachById.get(row.id);if(!db)return;
+        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
+        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
+      });
+      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      const _isSchemaErr=e=>!!e&&(e.message?.includes('schema cache')||e.message?.includes('column')||e.code==='PGRST204'||e.message?.includes('not found'));
+      let{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
+      if(jobErr&&_isSchemaErr(jobErr)){
+        // Retry per-missing-column (audit A9): the old path stripped EVERY _jobExtraCols entry in one
+        // shot, so one unknown column landed the art_status change but dropped all the coach flags
+        // (sent_to_coach_at, coach_approved_at, coach_rejected, follow_up_*) with it. PGRST204 names
+        // the missing column — drop just that one and retry, bounded; the strip-all fallback only
+        // remains for an unparseable error.
+        let _rows=jobRows;
+        for(let _a=0;_a<4&&jobErr&&_isSchemaErr(jobErr);_a++){
+          const _m=(jobErr.message||'').match(/'([^']+)' column/)||(jobErr.message||'').match(/column "([^".]+)"/);
+          if(!_m||!_rows.some(r=>_m[1] in r))break;
+          console.warn('[DB] so_jobs: column',_m[1],'missing in schema — retrying without it');
+          _rows=_rows.map(r=>{const{[_m[1]]:_x,...cr}=r;return cr});
+          ({error:jobErr}=await supabase.from('so_jobs').upsert(_rows,{onConflict:'so_id,id'}));
+        }
+        if(jobErr&&_isSchemaErr(jobErr)){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
-          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
-        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
+          ({error:jobErr}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'}));
+          if(!jobErr)console.warn('[DB] so_jobs saved with core columns only — coach/follow-up fields NOT persisted this save');
+        }
       }
+      if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
+      else dedupedJobs.forEach(j=>{if(j._coach_cleared)delete j._coach_cleared});// one-shot marker — consumed by the save that carried it
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){

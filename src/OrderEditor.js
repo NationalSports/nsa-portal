@@ -85,6 +85,11 @@ const ssCdnImg=u=>{
 // a refill as "within a week" in that tooltip and keeps it out of the
 // Backordered summary strip. Past/stale dates are ignored.
 const RESTOCK_SOON_DAYS=7;
+// Same "does this art file actually have anything to review" check the approval-card UI uses (App.js
+// totalMocks) — mirrors businessLogic.js's buildJobs copy. An art file can carry a stale 'needs_approval'
+// status with 0 files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as
+// waiting_approval or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
+const _hasMockupContent=(af)=>Math.max((af.mockup_files||af.files||[]).length,Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0))>0;
 const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)return null;if(/^\d{4}-\d{2}-\d{2}$/.test(str))str+='T00:00';const d=new Date(str);return isNaN(d.getTime())?null:d;};
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
@@ -150,7 +155,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Every path that pulls art back for rework (Recall or an Update request) must clear the same
   // approval residue — one shared list so the call sites can't drift apart. Stale coach flags
   // produce phantom todos/"Sent to Customer" badges; a stale follow_up_at keeps nagging the coach.
-  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false};
+  // _coach_cleared marks the nulls as DELIBERATE for dbEngine's coach-decision guard (audit A9) —
+  // without it a save nulling a non-null coach column is treated as stale and the DB value is kept.
+  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false,_coach_cleared:true};
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
   // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
@@ -2832,7 +2839,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
-            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
+            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');
@@ -3051,6 +3058,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // LESS than the frozen snapshot (e.g. units were removed), keep the frozen value — the art
     // department already committed to printing that many. Zero-total snapshots (legacy jobs released
     // before the est_qty fallback existed) are always healed up.
+    // Released jobs' art_name is a frozen display-name snapshot stamped at release time from the
+    // wizard's locally-typed group name (see the jobRow build below, art_name:g.name) — release an
+    // "ART TBD n" placeholder around the same time it's renamed and the job reads "ART TBD 1"
+    // forever (SO-1218 / JOB-1218-03): the recompute below heals identity/totals/art_status but
+    // never the name. Refresh it from the live linked art file(s), same heal pattern: only when
+    // every declared art id resolves to a live named file, the joined live name differs, and the
+    // live name isn't itself a TBD-ish placeholder. _name_locked (a rep's manual rename) wins.
+    const _healReleasedArtName=j=>{
+      if(j._name_locked)return j;
+      const _ids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(id=>id&&id!=='__tbd');
+      if(!_ids.length)return j;
+      const _live=_ids.map(id=>af.find(a=>a.id===id)).filter(a=>a&&!a.archived&&(a.name||'').trim());
+      if(_live.length!==_ids.length)return j;// some art missing/unnamed — leave the snapshot alone
+      const _nm=_live.map(a=>a.name.trim()).join(' + ');
+      if(_nm===j.art_name||/^art tbd/i.test(_nm))return j;
+      return{...j,art_name:_nm};
+    };
     const recalcedReleased=releasedJobs.map(j=>{
       // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
       // the frozen thing is the quantity commitment, not which product the line now is.
@@ -3063,7 +3087,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(frozenTotal>0&&total<frozenTotal)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
-    });
+    }).map(_healReleasedArtName);
     // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
     // could have been approved, so a completed-ish art status must never survive — it read
     // "Art Complete — Ready for Production" with no real art applied. Applies uniformly to
@@ -7415,7 +7439,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#0891b2',textTransform:'uppercase',marginBottom:6}}>🧵 Digitizing / Vector File — Topstar</div>
-            <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>Order Digitizing / Vector File</button>
+            {(()=>{const _tsPos=(o.deco_pos||[]).filter(dp=>dp.topstar_service);return _tsPos.length>0&&
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:6}}>
+                {_tsPos.map(dp=>{const _planned=dp.status==='planned';return<span key={dp.id||dp.po_id} style={{fontSize:11,padding:'3px 8px',borderRadius:6,background:_planned?'#fef9c3':'#ecfeff',border:'1px solid '+(_planned?'#fde047':'#a5f3fc'),color:_planned?'#854d0e':'#0e7490',fontWeight:700}}>{dp.po_id||dp.id} — {_planned?'Planned':(dp.status||'waiting')}</span>})}
+              </div>})()}
+            {/* Multiple digitizing/vector jobs can legitimately be needed on one order, so the button always
+                stays enabled — this list just makes an existing PO visible before a rep clicks it again. */}
+            <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>{(o.deco_pos||[]).some(dp=>dp.topstar_service)?'Order Another Digitizing / Vector File':'Order Digitizing / Vector File'}</button>
           </div>
         </div></div></div>;
       // OUTSIDE DECORATION PO FORM
