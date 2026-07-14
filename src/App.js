@@ -18121,13 +18121,56 @@ export default function App(){
                         const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                         const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
-                        setManualShipModal(prev=>({...prev,tracking:label.trackingNumber||prev.tracking||'',carrier:label.carrierCode||prev.carrier,cost:cost!=null?cost.toString():prev.cost,charge:(prev.charge===''||prev.charge==null)&&cost!=null?cost.toString():prev.charge,labelUrl:label.labelDownload||labelUrl||null}));
+                        const labelDownload=label.labelDownload||labelUrl||null;
+                        setManualShipModal(prev=>({...prev,tracking:label.trackingNumber||prev.tracking||'',carrier:label.carrierCode||prev.carrier,cost:cost!=null?cost.toString():prev.cost,charge:(prev.charge===''||prev.charge==null)&&cost!=null?cost.toString():prev.charge,labelUrl:labelDownload}));
                         nf('Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                         addWhAction({type:'manual_label_created',customer:c?.name||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||manualShipModal.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                        if(labelDownload){
+                          // Auto-download the label PDF (mirrors the against-an-order path)
+                          if(labelDownload.startsWith('data:application/pdf;base64,')){
+                            try{
+                              const b64=labelDownload.replace('data:application/pdf;base64,','');
+                              const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                              const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                              const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+((label.trackingNumber||c?.name||'manual')+'').replace(/[^a-zA-Z0-9_-]+/g,'-')+'.pdf';a.click();
+                              setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                              nf('Label downloaded as PDF');
+                            }catch(e2){const a=document.createElement('a');a.href=labelDownload;a.download='label.pdf';a.click()}
+                          } else {window.open(labelDownload,'_blank')}
+                        }
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
-                {manualShipModal.labelUrl&&<div style={{fontSize:10,color:'#166534',fontWeight:700}}>✓ Label created — printed/downloaded from the package view</div>}
+                {manualShipModal.labelUrl&&<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{
+                      const url=manualShipModal.labelUrl;
+                      if(url.startsWith('data:application/pdf;base64,')){
+                        try{
+                          const b64=url.replace('data:application/pdf;base64,','');
+                          const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                          const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                          iframe.src=blobUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(blobUrl,'_blank')}
+                            setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(blobUrl)}catch{}},60000)};
+                        }catch(e){nf('Could not print — try downloading instead','error')}
+                      } else {const pw=window.open(url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                    }}>🏷️ Print Label</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                    onClick={()=>{
+                      const url=manualShipModal.labelUrl;
+                      if(url.startsWith('data:application/pdf;base64,')){
+                        try{
+                          const b64=url.replace('data:application/pdf;base64,','');
+                          const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                          const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                          const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+((manualShipModal.tracking||'manual')+'').replace(/[^a-zA-Z0-9_-]+/g,'-')+'.pdf';a.click();
+                          setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                        }catch(e){const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                      } else {const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                    }}>📄 Download Label</button>
+                  <span style={{fontSize:10,color:'#166534',fontWeight:700}}>Label created</span>
+                </div>}
                 <div style={{display:'flex',gap:8}}>
                   <div style={{flex:1}}><label style={_lbl}>Shipping Cost ($) — what we paid</label>
                     <input className="form-input" type="number" min="0" step="0.01" value={manualShipModal.cost} placeholder="0.00" style={{fontSize:11}}
