@@ -727,6 +727,11 @@ const fetchAdidasInventoryBulk = async (skus) => {
     for (let i = 0; i < uniq.length; i += CHUNK) batches.push(uniq.slice(i, i + CHUNK));
     const bySku = {};
     for (let i = 0; i < batches.length; i += POOL) {
+      // Pace waves under the client circuit breaker's 300-req/10s-per-path ceiling (requestBreaker.js).
+      // Unpaced, a large catalog fires 100+ batches in a few seconds, trips the breaker, and the
+      // remaining batches all get synthetic 429s — silently returning no inventory for those SKUs —
+      // while every OTHER inventory_unified caller (SO editor, webstores) is collaterally throttled too.
+      if (i) await new Promise(r => setTimeout(r, 350));
       const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
         supabase.from('inventory_unified').select('*').in('sku', batch)
           .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
@@ -2269,6 +2274,10 @@ export default function App(){
                   console.log('[Outbox] restored unsaved edit for',en.id,'(base v'+(en.baseVersion??'—')+')');
                   return;
                 }
+                // Conflict: the server moved past this edit's base. The card (below) owns the decision —
+                // take the id OUT of the failed-save auto-retry so boot doesn't re-save the freshly
+                // loaded server copy (or, worse, a stale local one) every 60s while the card is pending.
+                _dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);
                 _obConflicts.push(en);
               });
               _persistFailedIds();

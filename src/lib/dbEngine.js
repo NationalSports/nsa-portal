@@ -760,6 +760,7 @@ const _dbSaveEstimateInner = async (est) => {
   // Optimistic locking: check version before saving (auto-heal on conflict)
   if(est._version){const vc=await _checkVersion('estimates',est.id,est._version);if(vc!==true&&typeof vc==='number'){
     await _mergeDbEstStatus(est);
+    if(est._obBaseVersion==null)est._obBaseVersion=est._version;
     est._version=vc;
   }}
   // For background _diffSave syncs: if local status is below 'approved', always verify DB hasn't been
@@ -1074,7 +1075,7 @@ const _dbSaveSOInner = async (so) => {
   // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
   // items or deco POs the other session added (the SO-1333 wipe, 2026-06-30).
   let _versionConflict=null;
-  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};so._version=vc}}
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};if(so._obBaseVersion==null)so._obBaseVersion=so._version;so._version=vc}}
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
@@ -1191,6 +1192,12 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
         if(_dbNotify)_dbNotify('Save blocked — '+so.id+' was changed in another session ('+_uncovered.join(', ')+' would be dropped). Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'stale-version save would drop DB item(s) ['+_uncovered.join(', ')+'] — local v'+_versionConflict.local+' vs server v'+_versionConflict.server});
+        // TERMINAL for auto-retry: re-POSTing this same stale copy can never succeed — the server has
+        // content this tab never loaded. Preserve the edit in the outbox conflict card (rep decides
+        // apply/discard) and take it out of the failed-ID auto-retry loop, which would otherwise re-fire
+        // this exact rejection every 60s forever (the SO-1514 stuck-retry loop).
+        _emitOutboxConflict('sales_orders',so);
+        _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         return false;
       }
     }
@@ -1378,6 +1385,11 @@ const _dbSaveSOInner = async (so) => {
           console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items');
           if(_dbNotify)_dbNotify('Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'});
+          // TERMINAL for auto-retry: the unmatched PO line lives on an item this tab's copy doesn't
+          // have, so retrying the identical payload re-fails deterministically. Route to the conflict
+          // card and stop the background retry loop instead of erroring forever on every page.
+          _emitOutboxConflict('sales_orders',so);
+          _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
           return false;
         }
       }
@@ -1861,7 +1873,7 @@ const _dbSaveInvoiceInner = async (inv) => {
     // use: a numeric return means another session saved after our copy loaded; adopt the server
     // version so the counter doesn't fall behind (the poll/realtime merge guards key off it).
     // _version itself is never written — the DB trigger owns it (not in _invCols).
-    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){inv._version=vc}}
+    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){if(inv._obBaseVersion==null)inv._obBaseVersion=inv._version;inv._version=vc}}
     const{payments,items,...rest}=inv;
     let invRow=_pick(rest,_invCols);
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
@@ -2069,7 +2081,7 @@ const _dbSaveCustomerInner = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   await _ensureFreshSession();
   // Optimistic locking: check version before saving
-  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number')c._version=vc;return false}}
+  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number'){if(c._obBaseVersion==null)c._obBaseVersion=c._version;c._version=vc}return false}}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
@@ -2509,7 +2521,14 @@ const _outboxAdd=(table,entity)=>{try{
   const box=_outboxRead();const key=table+':'+entity.id;
   const payload={...entity};delete payload._retry;// transient retry-poke marker, not part of the edit
   const prev=box[key];
-  box[key]={table,id:entity.id,payload,baseVersion:(payload._version!=null&&isFinite(Number(payload._version))?Number(payload._version):null),ts:Date.now(),attempts:(prev?.attempts||0)+1};
+  // Base = the version this edit's CONTENT was authored against. The optimistic-lock auto-heal
+  // (_checkVersion conflict → entity._version=serverVersion) advances _version without touching the
+  // content, so recording _version here would stamp stale content as "current" and make _outboxGate
+  // silently re-apply it over newer server data on the next boot (the SO-1514 stuck-retry loop).
+  // _obBaseVersion preserves the true pre-heal base; it's set at every auto-heal site and cleared on
+  // a fully-successful save (_outboxWrap).
+  const _obBase=payload._obBaseVersion!=null?payload._obBaseVersion:payload._version;
+  box[key]={table,id:entity.id,payload,baseVersion:(_obBase!=null&&isFinite(Number(_obBase))?Number(_obBase):null),ts:Date.now(),attempts:(prev?.attempts||0)+1};
   _outboxWrite(box);
 }catch(e){console.error('[Outbox] add failed:',e)}};
 const _outboxRemove=(table,id)=>{try{const box=_outboxRead();const key=table+':'+id;if(!(key in box))return;delete box[key];_outboxWrite(box)}catch{}};
@@ -2547,7 +2566,7 @@ const _outboxWrap=(table,entity,resultPromise,addOnly)=>{
       // FULL entity payload — only the full save may clear. 'stale' deliberately does NOT clear:
       // the rejected edit's content is preserved for the conflict card (_emitOutboxConflict) so a
       // version rejection no longer silently destroys what the rep typed.
-      else if(r===true&&!addOnly){if(entity&&entity.id)_outboxRemove(table,entity.id)}
+      else if(r===true&&!addOnly){if(entity&&entity.id){_outboxRemove(table,entity.id);try{delete entity._obBaseVersion}catch{}}}
     }catch(e){console.error('[Outbox] hook failed:',e)}
     return r;
   },err=>{try{if(entity&&entity.id&&_dbSaveFailedIds.has(entity.id))_outboxAdd(table,entity)}catch{}throw err});
