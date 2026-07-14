@@ -1454,6 +1454,86 @@ const _dbSaveSOInner = async (so) => {
     // next save, and the guard re-restores forever — turning into a hard block as soon as the
     // line-item structure shifts (the SO-1132 failure).
     if(_restoredLines.length&&_restoredLinesSync){try{_restoredLinesSync(so.id,_restoredLines)}catch(e){console.warn('[DB] restored-line state sync failed:',e)}}
+    // Cross-type over-commit guard (SO-1514, so_items 228531): one re-save persisted BOTH a carried-over
+    // batch-PO line (all 26 units, already API-ordered) AND a freshly generated pick line for the same
+    // item — double-committing the garments. The Duplicate-PO guard above only compares PO lines to PO
+    // lines; this closes the cross-type pair (and pick-vs-pick). For each item, sum the units already
+    // committed by lines ALREADY in the DB (po_id/pick_id in the pre-read sets; cancelled PO units
+    // excluded — received/billed lines still occupy their ordered units), then trim any NEWLY-introduced
+    // po/pick line's sizes to what the item's ordered sizes still allow, dropping the line when nothing
+    // remains. Persisted lines are never rewritten, so a deliberate over-order that already saved sticks;
+    // items with fewer than 2 committing lines are skipped so a lone intentional over-order PO isn't
+    // trimmed (no second line = no double-commit possible). Qty-only items (no per-size sizes) are skipped.
+    if(items&&items.length&&oldItemIds.length){
+      let _ocPoIds=new Set(),_ocPickIds=new Set(),_ocReadOk=true;
+      try{
+        const[pr,kr]=await Promise.all([
+          supabase.from('so_item_po_lines').select('po_id').in('so_item_id',oldItemIds),
+          supabase.from('so_item_pick_lines').select('pick_id').in('so_item_id',oldItemIds)
+        ]);
+        if(pr.error||kr.error)_ocReadOk=false;
+        _ocPoIds=new Set((pr.data||[]).map(x=>x.po_id).filter(Boolean));
+        _ocPickIds=new Set((kr.data||[]).map(x=>x.pick_id).filter(Boolean));
+      }catch{_ocReadOk=false}
+      if(_ocReadOk){
+        const _ocPoMeta=new Set(['po_id','vendor','status','received','shipments','cancelled','created_at','expected_date','memo','po_type','deco_vendor','deco_type','unit_cost','drop_ship','billed','tracking_numbers','preexisting','batch_queue_id','batch_po_number','notes']);
+        const _ocPickMeta=new Set(['pick_id','status','created_at','memo','ship_dest','ship_addr','deco_vendor']);
+        const _ocSizes=(l,meta)=>{const o={};Object.keys(l||{}).forEach(k=>{if(!k.startsWith('_')&&!meta.has(k)&&typeof l[k]==='number'&&l[k]>0)o[k]=l[k]});return o};
+        let _ocDropped=0,_ocTrimmed=0;const _ocSummary=[];
+        items.forEach((it,ii)=>{
+          const ordered={};Object.entries(it.sizes||{}).forEach(([k,v])=>{if(typeof v==='number'&&v>0)ordered[k]=v});
+          if(!Object.keys(ordered).length)return;
+          const pls=Array.isArray(it.po_lines)?it.po_lines:[];
+          const pks=Array.isArray(it.pick_lines)?it.pick_lines:[];
+          if(pls.length+pks.length<2)return;
+          const committed={};const _add=(sz,onto)=>Object.entries(sz).forEach(([k,v])=>{onto[k]=(onto[k]||0)+v});
+          const _newLines=[];// {line,kind,idx} in po-then-pick order
+          pls.forEach((pl,pi)=>{
+            const sz=_ocSizes(pl,_ocPoMeta);
+            if(pl.po_id&&_ocPoIds.has(pl.po_id)){Object.entries(sz).forEach(([k,v])=>{committed[k]=(committed[k]||0)+Math.max(0,v-((pl.cancelled||{})[k]||0))})}
+            else _newLines.push({line:pl,kind:'po',idx:pi,sz,cancelled:pl.cancelled||{}});
+          });
+          pks.forEach((pk,pi)=>{
+            const sz=_ocSizes(pk,_ocPickMeta);
+            if(pk.pick_id&&_ocPickIds.has(pk.pick_id))_add(sz,committed);
+            else _newLines.push({line:pk,kind:'pick',idx:pi,sz,cancelled:{}});
+          });
+          if(!_newLines.length)return;
+          const dropPo=new Set(),dropPick=new Set(),replPo=new Map(),replPick=new Map();
+          _newLines.forEach(nl=>{
+            const trimmedSz={};let kept=0,cut=0;
+            Object.entries(nl.sz).forEach(([k,v])=>{
+              const eff=Math.max(0,v-(nl.cancelled[k]||0));
+              const allow=Math.max(0,(ordered[k]||0)-(committed[k]||0));
+              const take=Math.min(eff,allow);
+              if(take<eff)cut+=eff-take;
+              if(take>0){trimmedSz[k]=take;kept+=take}
+            });
+            if(!cut){_add(nl.sz,committed);return}// fits — accept unchanged
+            const label=(nl.kind==='po'?nl.line.po_id:nl.line.pick_id)||'?';
+            if(kept===0){
+              (nl.kind==='po'?dropPo:dropPick).add(nl.idx);_ocDropped++;
+              _ocSummary.push(nl.kind+' '+label+' dropped ('+cut+'u over-commit)');
+            }else{
+              // Partial fit: zero the overflowing sizes on the line, keep what still fits.
+              const upd={...nl.line};Object.keys(nl.sz).forEach(k=>{if(trimmedSz[k])upd[k]=trimmedSz[k];else delete upd[k]});
+              (nl.kind==='po'?replPo:replPick).set(nl.idx,upd);
+              _ocTrimmed++;_add(trimmedSz,committed);
+              _ocSummary.push(nl.kind+' '+label+' trimmed (-'+cut+'u over-commit)');
+            }
+          });
+          if(dropPo.size||dropPick.size||replPo.size||replPick.size){
+            items[ii]={...it,
+              po_lines:pls.map((pl,pi)=>replPo.get(pi)||pl).filter((_,pi)=>!dropPo.has(pi)),
+              pick_lines:pks.map((pk,pi)=>replPick.get(pi)||pk).filter((_,pi)=>!dropPick.has(pi))};
+          }
+        });
+        if(_ocDropped||_ocTrimmed){
+          console.warn('[DB] Over-commit guard: dropped',_ocDropped,'and trimmed',_ocTrimmed,'new line(s) on',so.id,'-',_ocSummary.join(', '));
+          if(_dataLossAlert)_dataLossAlert({kind:'overcommit_blocked',soId:so.id,dropped:_ocDropped,trimmed:_ocTrimmed,reason:'new PO/pick line(s) exceeded ordered sizes: '+_ocSummary.join(', ')});
+        }
+      }
+    }
     // DATA-LOSS FIX: do NOT delete old item rows (or their decorations/picks/POs) here. We insert the new rows
     // first and only remove the old ones once the insert is verified (see "Commit/rollback the swap" below).
     // so_items has no unique (so_id,item_index) constraint, so new+old rows can briefly coexist. This closes the
