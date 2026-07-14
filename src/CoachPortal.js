@@ -96,11 +96,49 @@ const cpShade = (hex, pct) => {
     return `rgb(${f(r)},${f(g)},${f(b)})`;
   } catch { return hex; }
 };
-// Resolve a {primary, accent} header theme from a customer's school colors.
+// CP_HEX as RGB triples, for nearest-family matching of a raw Pantone hex.
+const CP_HEX_RGB = Object.fromEntries(Object.entries(CP_HEX).map(([f, h]) => {
+  const n = h.replace('#', '');
+  return [f, [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]];
+}));
+// Map one saved Pantone color (customer.pantone_colors entry: {code,name,hex})
+// to a catalog color-family name. The color NAME wins over the hex, so a
+// mis-stored swatch still resolves — e.g. "1815 Cardinal" → Cardinal even though
+// its saved hex is a placeholder grey. Numeric codes ("458") fall to the nearest
+// family by the canonical Pantone hex.
+function cpPantoneFamily(entry) {
+  if (!entry) return null;
+  const label = `${entry.code || ''} ${entry.name || ''}`.trim();
+  const named = Object.keys(CP_HEX).find((f) => new RegExp(`\\b${f}\\b`, 'i').test(label));
+  if (named) return named;
+  const hex = pantoneHex(entry.code) || entry.hex;
+  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  const h = hex.replace('#', ''), rgb = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  let best = null, bestD = Infinity;
+  for (const [f, c] of Object.entries(CP_HEX_RGB)) {
+    const d = (rgb[0] - c[0]) ** 2 + (rgb[1] - c[1]) ** 2 + (rgb[2] - c[2]) ** 2;
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return best;
+}
+// The catalog color-families a customer effectively carries for portal theming:
+// the explicit family picker (school_colors) when set, otherwise derived from the
+// team's saved Pantone colors (pantone_colors). Most customers only ever fill the
+// "School Colors (Pantone)" card, so without this fallback the portal ignores
+// their real colors and paints the NSA navy/red default instead.
+function cpEffectiveFamilies(customer) {
+  const explicit = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  if (explicit.length) return explicit;
+  const pan = Array.isArray(customer && customer.pantone_colors) ? customer.pantone_colors : [];
+  const fams = [];
+  for (const p of pan) { const f = cpPantoneFamily(p); if (f && !fams.includes(f)) fams.push(f); }
+  return fams;
+}
+// Resolve a {primary, accent} header theme from a customer's colors.
 // primary is always a dark, readable banner color (a dark team color or the NSA
 // navy default); accent is the team's brightest color (or a tonal fallback).
 function cpTeamTheme(customer, supplement) {
-  const own = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  const own = cpEffectiveFamilies(customer);
   // Parent-department colors the team doesn't already carry — used to fill the
   // accent only (e.g. a sub-team borrows the school's gold), never the primary.
   const sup = Array.isArray(supplement) ? supplement.filter((f) => CP_HEX[f] && !own.includes(f)) : [];
@@ -668,14 +706,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // still borrows the school's gold — which is what stops a red-only team's
   // accent from falling back to a lightened tint that reads pink.
   const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
-  const cpTheme=cpTeamTheme(customer,_parentCust&&_parentCust.school_colors);
+  const cpTheme=cpTeamTheme(customer,_parentCust?cpEffectiveFamilies(_parentCust):null);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
-  const _hasFam=cols=>Array.isArray(cols)&&cols.some(f=>CP_HEX[f]);
-  const _nsaHasColors=_hasFam(customer.school_colors)||(!!_parentCust&&_hasFam(_parentCust.school_colors));
+  // Effective families come from the family picker (school_colors) or, for the
+  // ~95% of customers who only filled the "School Colors (Pantone)" card, from
+  // their saved Pantone colors — so the portal wears the real team colors.
+  const _cpFamilies=cpEffectiveFamilies(customer);
+  const _nsaHasColors=_cpFamilies.length>0||(!!_parentCust&&cpEffectiveFamilies(_parentCust).length>0);
   const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
   const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
   const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
   const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
+  // Hero "Team Colors" swatches: the team's actual colors, not the themed
+  // primary/accent. Falls back to the theme tokens only when no colors are known.
+  const cpSwatches=_cpFamilies.length?_cpFamilies.map(f=>CP_HEX[f]):[tPrimary,tAccent,'#ffffff'];
   const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
   const _nsaFont="'Source Sans 3',system-ui,sans-serif";
   const _nsaImport="@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');";
@@ -1989,7 +2033,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{fontSize:15,color:'rgba(255,255,255,.78)',marginTop:10}}>{isP?(adData?adData.teamCount:subs.length)+' teams · ':''}Powered by National Sports Apparel</div>
               <div style={{display:'flex',alignItems:'center',gap:12,marginTop:18}}>
                 <span className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Team Colors</span>
-                {[tPrimary,tAccent,'#ffffff'].map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
+                {cpSwatches.map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
               </div>
               {totalDue>0&&<><div style={{height:1,background:'rgba(255,255,255,.15)',margin:'22px 0 18px',maxWidth:400}}/>
               <div style={{display:'flex',alignItems:'center',gap:22,flexWrap:'wrap'}}>
@@ -2671,3 +2715,5 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
 
 export default CoachPortal;
+// Exported for unit tests — pure color-resolution helpers (no React/Supabase).
+export { cpPantoneFamily, cpEffectiveFamilies, cpTeamTheme, CP_HEX };
