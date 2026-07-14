@@ -2019,6 +2019,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const changeItemSku=(i,p)=>{
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
+    // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
+    // timed out sees an empty list and sails through, and the DB pick then rides onto the swapped-in
+    // garment verbatim (SO-1514: IF-1067, pulled for the Adidas JX4461 line, followed an in-place swap
+    // onto the Gildan 5000 and double-committed against its batch PO). Same hydration gate as Create PO.
+    if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's existing IFs/POs haven't finished loading. Reload the page before changing the SKU so an unseen pick or PO can't ride onto the new garment.",'error');return}
     const au=isAU(p.brand);const isFw=(p.category||'').toLowerCase()==='footwear';
     const sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
     setO(e=>({...e,items:safeItems(e).map((x,xi)=>{
@@ -2047,6 +2052,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const changeItemWithVendorResult=(i,style,color,source)=>{
     const it=o.items[i];if(!it)return;
     if(safePicks(it).length>0||safePOs(it).length>0){nf('Cannot change SKU — item has PO or IF. Remove them first.','error');return}
+    // The check above reads the CLIENT's copy — a tab whose so_item_pick_lines/so_item_po_lines load
+    // timed out sees an empty list and sails through, and the DB pick then rides onto the swapped-in
+    // garment verbatim (SO-1514: IF-1067, pulled for the Adidas JX4461 line, followed an in-place swap
+    // onto the Gildan 5000 and double-committed against its batch PO). Same hydration gate as Create PO.
+    if(o._picksHydrated===false||o._posHydrated===false){nf("⚠️ This order's existing IFs/POs haven't finished loading. Reload the page before changing the SKU so an unseen pick or PO can't ride onto the new garment.",'error');return}
     const isSM=source==='sm';const isMT=source==='mt';const isRS=source==='rs';
     const vendor=vendorList.find(v=>isRS?(v.api_provider==='richardson'||v.name==='Richardson'):isMT?(v.api_provider==='momentec'||v.name==='Momentec'):isSM?(v.api_provider==='sanmar'||v.name==='SanMar'):(v.api_provider==='ss_activewear'||v.name==='S&S Activewear'));
     const vId=vendor?.id||(isRS?'v5':isMT?'v8':isSM?'v3':'v4');
