@@ -104,6 +104,14 @@ const _API_CATALOG_VENDOR_OR='vendor_id.is.null,vendor_id.not.in.('+API_CATALOG_
 // heaviest recurring query (the full-catalog products fetch, historically ~58% of DB CPU) on heap
 // fetches, JSON serialization and transfer. Keep this list in sync with the products table columns.
 const _CATALOG_PROD_COLS='id,vendor_id,sku,name,brand,color,category,retail_price,nsa_cost,is_active,available_sizes,_colors,created_at,updated_at,image_front_url,image_back_url,color_category,is_archived,is_clearance,clearance_cost,size_costs,pricing_group,bin,catalog_sell_price,inventory_source,is_featured,description_ai_at';
+// Paged .range() fetches are only deterministic when the sort is UNIQUE. Most _safeQuery orders
+// aren't (item_index ties on nearly every row; several tables pass no order at all), and Postgres
+// gives no stable order for ties — so separate page queries could overlap (the "phantom duplicate
+// items per item_index" the loader dedups below) or SKIP rows entirely (SO-1514's Gildan line
+// present in the DB but never rendering client-side). Every _safeQuery table has `id`
+// (information_schema-verified), so `id` is appended as the final tiebreaker; the three
+// composite-PK tables where `id` alone isn't unique get their parent column first.
+const _PAGE_TIEBREAK_PARENT={so_jobs:'so_id',so_art_files:'so_id',estimate_art_files:'estimate_id'};
 const _safeQuery=(table,opts)=>{
   const cachedAt=_missing404Tables.get(table);
   if(cachedAt&&(Date.now()-cachedAt)<_MISSING_TABLE_TTL)return Promise.resolve({data:[],error:null,status:200});
@@ -117,6 +125,10 @@ const _safeQuery=(table,opts)=>{
     if(opts?.not)for(const[c,o,v]of opts.not)q=q.not(c,o,v);// raw PostgREST not.<op>.<val> filters
     if(opts?.or)q=q.or(opts.or);// raw PostgREST or=(cond,cond,…) filter — applied to every page
     if(opts?.order)q=q.order(opts.order,opts.orderOpts||{});
+    // Unique tiebreaker so page boundaries are deterministic (see _PAGE_TIEBREAK_PARENT above).
+    const _parent=_PAGE_TIEBREAK_PARENT[table];
+    if(_parent&&opts?.order!==_parent)q=q.order(_parent,{ascending:true});
+    if(opts?.order!=='id')q=q.order('id',{ascending:true});
     return q.range(start,start+pageSize-1);
   };
   const _classifyPage=(r)=>{

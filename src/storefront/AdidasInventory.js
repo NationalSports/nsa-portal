@@ -1823,8 +1823,10 @@ export default function AdidasInventory() {
           // only featured Momentec shows in the grid (the rest is search-only).
           // (brand != Momentec) OR (is_featured = true) keeps everything else
           // plus the hand-picked Momentec styles.
+          // id tiebreaker: paging by non-unique name alone lets tied rows shuffle between
+          // pages (rows skipped/duplicated) — same class as the SO-1514 missing-line bug.
           const allProds = await fetchAllPages(
-            () => baseQ().or('brand.neq.Momentec,is_featured.eq.true').order('name'));
+            () => baseQ().or('brand.neq.Momentec,is_featured.eq.true').order('name').order('id', { ascending: true }));
           if (!alive) return;
 
           const allSkus = [...new Set(allProds.map((p) => p.sku))];

@@ -26,7 +26,8 @@ const WEEKLY_EXTRA_RECIPIENTS = {
 async function loadAll(admin, table, cols, apply) {
   const out = []; let from = 0; const PAGE = 1000;
   for (;;) {
-    let q = admin.from(table).select(cols).range(from, from + PAGE - 1);
+    // Order by id so .range() pages are deterministic — unordered paging over ties can skip/duplicate rows.
+    let q = admin.from(table).select(cols).order('id', { ascending: true }).range(from, from + PAGE - 1);
     if (apply) q = apply(q);
     const { data, error } = await q;
     if (error) throw new Error(`${table}: ${error.message}`);
