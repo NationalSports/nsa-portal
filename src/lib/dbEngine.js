@@ -1024,9 +1024,10 @@ const _countInsertedChildRows=async(table,itemIds)=>{
 // App.js's _dbMaxIds/_syncDbMaxIds is only refreshed at page load and lives in a module that imports THIS
 // one, so it can't be reused here without a circular import — this does its own full scan instead (id-only
 // select, cheap) rather than an order-by-string top-1, which can pick a lexicographically-larger-but-
-// numerically-smaller id (e.g. 'SO-999' sorts after 'SO-1000').
+// numerically-smaller id (e.g. 'SO-999' sorts after 'SO-1000'). Ordered desc because PostgREST caps
+// unordered selects at 1000 rows — desc keeps the largest ids inside that window as the table grows.
 const _refreshSoMaxId=async()=>{
-  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%');
+  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%').order('id',{ascending:false}).limit(1000);
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
 const _dbSaveSOInner = async (so) => {
