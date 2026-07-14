@@ -3727,7 +3727,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSelItems(remIdxs.length?remIdxs:safeItems(o).map((_,i)=>i));
             setInvMemo(o.memo||'');setInvType(typeHint||(_hasAnyInv?'partial':'final'));setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
           };
-          if(o.promo_applied)return null;// promo flow handled below
+          // Promo orders: only skip the invoice flow when promo FULLY covers the order (customer owes $0).
+          // A partial-promo order has a real customer-pays balance that still needs an invoice; the Create
+          // Invoice modal already bills the promo-adjusted amount (see isPromoOrder handling there).
+          if(o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays):0)<=0.005)return null;
           if(o.status==='complete'&&_hasAnyInv)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
           if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
           // Has prior invoices with un-billed remaining qty: only show Create Invoice — nothing left to "close ahead of".
@@ -3738,7 +3741,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
           }}><Icon name="check" size={14}/> Close Sales Order</button>;
         })()}
-        {o.promo_applied&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
+        {o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays)<=0.005:true)&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
           // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
           if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
@@ -6569,7 +6572,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
       const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
-      const nonPromoTax=isPromoOrder?0:totals.tax;
+      // Tax on the non-promo (customer-paid) portion. Promo-covered revenue is taxed $0, but a
+      // partial-promo order's remaining balance is still taxable — bill the tax on that portion
+      // (promoTotals.normalTax), not a blanket $0 which would under-bill a partial-promo invoice.
+      const nonPromoTax=isPromoOrder?(promoTotals?safeNum(promoTotals.normalTax):0):totals.tax;
       // For deposits, bill the whole shipping/tax (the deposit percentage applies later).
       // For everything else, prorate by the fraction of the order being billed in this invoice.
       const _billingAll=invType==='deposit';
