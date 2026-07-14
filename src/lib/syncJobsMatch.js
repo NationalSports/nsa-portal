@@ -80,6 +80,49 @@ export function matchExistingJob(built, lookups, claimedIds = new Set()) {
 }
 
 /**
+ * Drop frozen-job decoration claims whose LIVE decoration is a different method.
+ *
+ * Released/merged jobs claim decorations positionally (item_idx + deco_idx). If those
+ * indexes drift — a line deleted through a client that didn't remap (SO-1468: a stale
+ * pre-2cad58a tab), or a decoration's method changed after release — the frozen job keeps
+ * claiming decorations that now belong to another method. syncJobs then skips them when
+ * grouping, so the REAL job for that method is never rebuilt and gets deleted (SO-1468:
+ * the polo's embroidery job vanished because a released screen-print job claimed its
+ * embroidery decorations).
+ *
+ * A claim whose live decoration resolves to a DIFFERENT deco type than the job cannot be
+ * legitimate — release it. A claim with no live item/decoration behind it is kept: that is
+ * the existing deleted-line preservation semantics (snapshot rows survive so released work
+ * doesn't go blank on a bad save).
+ *
+ * @param {object} job — a released/merged job (has deco_type and items[] with deco claims)
+ * @param {(itemIdx:number, decoIdx:number) => string|null} resolveLiveDecoType — returns the
+ *   live decoration's resolved method at that position, or null when item/deco doesn't exist
+ * @returns {{job: object, changed: boolean}} — job with stale claims removed (rows whose
+ *   every claim mismatched are dropped entirely); `changed` false returns the original ref
+ */
+export function dropMismatchedFrozenClaims(job, resolveLiveDecoType) {
+  const jobType = job?.deco_type || null;
+  if (!jobType) return { job, changed: false };
+  let changed = false;
+  const items = [];
+  (job.items || []).forEach((gi) => {
+    const dis = Array.isArray(gi.deco_idxs) && gi.deco_idxs.length
+      ? gi.deco_idxs
+      : (gi.deco_idx != null ? [gi.deco_idx] : []);
+    const kept = dis.filter((di) => {
+      const liveType = resolveLiveDecoType(gi.item_idx, di);
+      return liveType == null || liveType === jobType;
+    });
+    if (kept.length === dis.length) { items.push(gi); return; }
+    changed = true;
+    if (kept.length === 0) return; // every claimed deco belongs to another method now
+    items.push({ ...gi, deco_idx: kept[0], deco_idxs: kept });
+  });
+  return { job: changed ? { ...job, items } : job, changed };
+}
+
+/**
  * Workflow fields that must not cross-contaminate across distinct jobs.
  * Copied only when matchExistingJob found a real match (key or unique art id).
  */

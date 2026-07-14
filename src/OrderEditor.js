@@ -21,7 +21,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -2717,12 +2717,34 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const nName=safeStr(it.name)||gi.name;
       if((gi.sku||'')===(it.sku||'')&&(gi.color||'')===(it.color||'')&&(gi.name||'')===nName)return gi;
       return{...gi,sku:it.sku,color:it.color||'',name:nName}};
-    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
+    // Frozen jobs claim decorations positionally, so after INDEX DRIFT — a line deleted by a
+    // client that didn't run rmI's frozen-snapshot remap (SO-1468: a stale pre-2cad58a tab) —
+    // their claims land on the wrong lines. A drifted claim whose LIVE decoration resolves to a
+    // DIFFERENT method than the job then blocks the real job for that method from ever being
+    // rebuilt (SO-1468: a released screen-print job claimed the polo's embroidery decorations,
+    // so the embroidery job was deleted on the next sync). Release such claims — but ONLY when
+    // the order shows drift evidence (some frozen row's item_idx has no live line behind it;
+    // rmI's remap drops deleted-line rows, so a dangling index means an unremapped delete).
+    // Without that gate this would break intentional cross-type Merge Jobs, which legitimately
+    // hold claims of another method under one deco_type label. A missing live item/deco resolves
+    // null and is KEPT (deleted-line snapshot preservation). A frozen job whose every claim
+    // mismatched retires, like the all-outsourced case above.
+    const _liveDecoType=(ii,di)=>{const it=safeItems(o)[ii];if(!it)return null;const d=safeDecos(it)[di];if(!d)return null;
+      if(d.kind==='art'){const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;return artF?.deco_type||d.deco_type||'screen_print'}
+      if(d.kind==='numbers')return d.num_method||'heat_transfer';
+      if(d.kind==='names')return d.name_method||'heat_press';
+      return d.deco_type||d.type||null};
+    const _liveItemCount=safeItems(o).length;
+    const _frozenIdxDrift=safeJobs(o).some(j=>j&&(_isRel(j)||j._merged||j.split_from)&&(j.items||[]).some(gi=>safeNum(gi.item_idx)>=_liveItemCount));
+    const _dropStaleClaims=j=>_frozenIdxDrift?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
-    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j));
+    const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
+      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
