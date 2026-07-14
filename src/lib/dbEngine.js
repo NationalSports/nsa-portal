@@ -1027,10 +1027,14 @@ const _dbSaveEstimate = (est) => _outboxWrap('estimates', est, _queuedEntitySave
 // color is known and DIFFERENT is never used (navy's PO line on the red row would mislead receiving).
 // Returns the items[] index, or -1 when no current item can safely take the row.
 const _matchRestoreItem=(oi,items)=>{
-  const pos=items[oi.item_index];
-  if(pos&&(!oi.sku||!pos.sku||pos.sku===oi.sku))return oi.item_index;
-  if(!oi.sku)return -1;
   const _norm=c=>String(c||'').trim().toLowerCase();
+  const pos=items[oi.item_index];
+  // Positional fast-path is subject to the same color rule as the fallback search: a known
+  // DIFFERENT color disqualifies the candidate. Without this, replacing a line with a new
+  // same-SKU/different-color entry at the same index silently re-attached the old line's
+  // picks to it (SO-1165: IF-1024 auto-assigned to freshly added S&S items).
+  if(pos&&(!oi.sku||!pos.sku||pos.sku===oi.sku)&&(!oi.color||!pos.color||_norm(pos.color)===_norm(oi.color)))return oi.item_index;
+  if(!oi.sku)return -1;
   let best=-1,bestScore=-Infinity;
   items.forEach((it,idx)=>{
     if((it.sku||'')!==oi.sku)return;
@@ -1366,7 +1370,7 @@ const _dbSaveSOInner = async (so) => {
           if(recovered._billed&&!recovered.billed){recovered.billed=recovered._billed;delete recovered._billed;}
           if(recovered._tracking_numbers&&!recovered.tracking_numbers){recovered.tracking_numbers=recovered._tracking_numbers;delete recovered._tracking_numbers;}
           ci.po_lines=[...(ci.po_lines||[]),recovered];_restored++;
-          _restoredLines.push({idx:_ti,sku:ci.sku||null,kind:'po',line:recovered});
+          _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'po',line:recovered});
         });
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){
@@ -1450,7 +1454,7 @@ const _dbSaveSOInner = async (so) => {
           if(!ci){_unrestorable++;return;}
           const{id:_id,so_item_id:_sid,sizes,...rest}=row;const recovered={...rest,...(sizes||{})};
           ci.pick_lines=[...(ci.pick_lines||[]),recovered];_restored++;
-          _restoredLines.push({idx:_ti,sku:ci.sku||null,kind:'pick',line:recovered});
+          _restoredLines.push({idx:_ti,sku:ci.sku||null,color:ci.color||null,kind:'pick',line:recovered});
         });
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted pick line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'picks_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){

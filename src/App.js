@@ -3130,7 +3130,10 @@ export default function App(){
       const out=s.items.slice();let applied=0;
       for(const r of restores){
         const it=out[r.idx];
-        if(!it||(r.sku&&it.sku&&it.sku!==r.sku))return s;
+        // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
+        // moved on mid-save and r.idx now points at another garment — bail untouched.
+        const _norm=c=>String(c||'').trim().toLowerCase();
+        if(!it||(r.sku&&it.sku&&it.sku!==r.sku)||(r.color&&it.color&&_norm(it.color)!==_norm(r.color)))return s;
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);

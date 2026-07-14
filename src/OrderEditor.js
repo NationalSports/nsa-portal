@@ -484,8 +484,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const mergedItems=(hasExternalPickChange||hasExternalPoChange)?safeItems(prev).map((it,idx)=>{
           const ext=safeItems(order)[idx];if(!ext)return it;
           let next=it;
-          if(hasExternalPickChange&&(!next.sku||!ext.sku||next.sku===ext.sku)){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
-          if(hasExternalPoChange&&(!next.sku||!ext.sku||next.sku===ext.sku)){
+          // Index-matched adoption is only safe when neither sku NOR color contradicts — items have no
+          // stable id, so after local adds/deletes shift the array, index N in the snapshot can be a
+          // different garment. A same-SKU/different-color (or blank-SKU) line at the same index used to
+          // adopt the snapshot line's IFs wholesale (SO-1165: IF-1024 stamped onto new S&S lines).
+          const _nc=c=>String(c||'').trim().toLowerCase();
+          const _sameLine=(!next.sku||!ext.sku||next.sku===ext.sku)&&(!next.color||!ext.color||_nc(next.color)===_nc(ext.color));
+          if(hasExternalPickChange&&_sameLine){const ePicks=safePicks(ext);const lPicks=safePicks(next);if(JSON.stringify(ePicks)!==JSON.stringify(lPicks))next={...next,pick_lines:ePicks}}
+          if(hasExternalPoChange&&_sameLine){
             const eLines=Array.isArray(ext.po_lines)?ext.po_lines:[];const lLines=Array.isArray(next.po_lines)?next.po_lines:[];
             if(eLines.length>lLines.length){const have=new Set(lLines.map(l=>JSON.stringify(l)));const add=eLines.filter(l=>!have.has(JSON.stringify(l)));if(add.length)next={...next,po_lines:[...lLines,...add]}}
           }
