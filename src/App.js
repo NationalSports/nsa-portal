@@ -28779,7 +28779,7 @@ export default function App(){
           for(;;){
             let q=supabase.from('products')
               .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
-              .eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('is_active',true).order('name').order('id',{ascending:true}).range(from,from+PAGE-1);
             q=isSanMar?q.in('brand',SANMAR_BRANDS):q.eq('brand',brand);
             const{data,error}=await q;
             if(error){nf('Error loading: '+error.message,'error');break;}
@@ -28985,7 +28985,7 @@ export default function App(){
           for(;;){
             const{data,error}=await supabase.from('products')
               .select('id,sku,name,vendor_id,color,image_front_url,nsa_cost,catalog_sell_price')
-              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('brand',brand).eq('is_active',true).order('name').order('id',{ascending:true}).range(from,from+PAGE-1);
             if(error||!data?.length)break;all=all.concat(data);if(data.length<PAGE)break;from+=PAGE;
           }
           const sm={};
