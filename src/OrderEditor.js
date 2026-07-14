@@ -3056,6 +3056,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // LESS than the frozen snapshot (e.g. units were removed), keep the frozen value — the art
     // department already committed to printing that many. Zero-total snapshots (legacy jobs released
     // before the est_qty fallback existed) are always healed up.
+    // Released jobs' art_name is a frozen display-name snapshot stamped at release time from the
+    // wizard's locally-typed group name (see the jobRow build below, art_name:g.name) — release an
+    // "ART TBD n" placeholder around the same time it's renamed and the job reads "ART TBD 1"
+    // forever (SO-1218 / JOB-1218-03): the recompute below heals identity/totals/art_status but
+    // never the name. Refresh it from the live linked art file(s), same heal pattern: only when
+    // every declared art id resolves to a live named file, the joined live name differs, and the
+    // live name isn't itself a TBD-ish placeholder. _name_locked (a rep's manual rename) wins.
+    const _healReleasedArtName=j=>{
+      if(j._name_locked)return j;
+      const _ids=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(id=>id&&id!=='__tbd');
+      if(!_ids.length)return j;
+      const _live=_ids.map(id=>af.find(a=>a.id===id)).filter(a=>a&&!a.archived&&(a.name||'').trim());
+      if(_live.length!==_ids.length)return j;// some art missing/unnamed — leave the snapshot alone
+      const _nm=_live.map(a=>a.name.trim()).join(' + ');
+      if(_nm===j.art_name||/^art tbd/i.test(_nm))return j;
+      return{...j,art_name:_nm};
+    };
     const recalcedReleased=releasedJobs.map(j=>{
       // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
       // the frozen thing is the quantity commitment, not which product the line now is.
@@ -3068,7 +3085,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(frozenTotal>0&&total<frozenTotal)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
-    });
+    }).map(_healReleasedArtName);
     // A job whose art is still the TBD placeholder (or a deleted art file) has no artwork that
     // could have been approved, so a completed-ish art status must never survive — it read
     // "Art Complete — Ready for Production" with no real art applied. Applies uniformly to
