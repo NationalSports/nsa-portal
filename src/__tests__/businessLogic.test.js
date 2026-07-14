@@ -558,7 +558,9 @@ describe('Job Building — buildJobs()', () => {
     const o = {
       id: 'SO-100',
       items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
-      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'uploaded' }]
+      // mockup_files present — an 'uploaded' art file with no mockups must fall through to
+      // 'needs_art' instead (SO-1038 phantom-approval fix), so a real proof is required here.
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'uploaded', mockup_files: ['proof.jpg'] }]
     };
     const jobs = BL.buildJobs(o);
     expect(jobs[0].art_status).toBe('waiting_approval');

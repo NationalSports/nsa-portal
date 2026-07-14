@@ -85,6 +85,11 @@ const ssCdnImg=u=>{
 // a refill as "within a week" in that tooltip and keeps it out of the
 // Backordered summary strip. Past/stale dates are ignored.
 const RESTOCK_SOON_DAYS=7;
+// Same "does this art file actually have anything to review" check the approval-card UI uses (App.js
+// totalMocks) — mirrors businessLogic.js's buildJobs copy. An art file can carry a stale 'needs_approval'
+// status with 0 files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as
+// waiting_approval or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
+const _hasMockupContent=(af)=>Math.max((af.mockup_files||af.files||[]).length,Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0))>0;
 const _restockDate=(s)=>{if(!s)return null;let str=String(s).trim();if(!str)return null;if(/^\d{4}-\d{2}-\d{2}$/.test(str))str+='T00:00';const d=new Date(str);return isNaN(d.getTime())?null:d;};
 const restockDaysOut=(s)=>{const d=_restockDate(s);return d?Math.round((d.getTime()-Date.now())/86400000):null;};
 const fmtRestockLong=(s)=>{const d=_restockDate(s);return d?d.toLocaleDateString('en-US',{month:'short',day:'numeric'}):String(s||'');};
@@ -2832,7 +2837,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
-            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?'waiting_approval':'needs_art';
+            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');

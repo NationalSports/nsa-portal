@@ -17,6 +17,11 @@ const safeDecos = (it) => safeArr(it?.decorations);
 const safeItems = (o) => safeArr(o?.items);
 const safeArt = (o) => safeArr(o?.art_files);
 const safeJobs = (o) => safeArr(o?.jobs);
+// Same "does this art file actually have anything to review" check the approval-card UI uses
+// (App.js totalMocks) — an art file can carry a stale 'needs_approval'/'uploaded' status with 0
+// files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as waiting_approval
+// or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
+const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).length, Object.values(af.item_mockups || {}).reduce((a, arr) => a + (arr || []).length, 0)) > 0;
 
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
@@ -344,7 +349,7 @@ const buildJobs = (o) => {
           // confirms on its own; staleness after a recall is gated by af.status, not this check.
           const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
-          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : (af.status === 'needs_approval' || af.status === 'uploaded') ? (_hasMockupContent(af) ? 'waiting_approval' : 'needs_art') : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
