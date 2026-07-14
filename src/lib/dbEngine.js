@@ -885,9 +885,26 @@ const _dbSaveEstimateInner = async (est) => {
       // stale clobber — the multi-tab / realtime-echo fight that silently wiped sizes, deleted items, and
       // dropped customers. Falls back to the un-versioned call when the versioned RPC (migration 00128)
       // isn't deployed yet, so client/DB deploy order can't break saving.
-      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
-      if(_rpcRes.error&&(_rpcRes.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(_rpcRes.error.message||''))){
-        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      // New-vs-existing (mirrors _isNewSO in the SO path): a brand-new estimate must INSERT, not upsert —
+      // nextEstId mints ids from _dbMaxIds (synced only at page load), so a stale tab can re-mint an id
+      // another session already saved, and the RPC's ON CONFLICT upsert would silently REPLACE that
+      // estimate (the SO-1514 class). p_is_new (migration 00195) makes the create fail loud instead.
+      // Confident-new only when the lookup succeeded AND returned no row — never on a SELECT error.
+      const{data:_existEst,error:_existErr}=await supabase.from('estimates').select('id').eq('id',est.id).maybeSingle();
+      const _isNewEst=!_existErr&&!_existEst;
+      const _fnMissing=r=>!!r.error&&(r.error.code==='PGRST202'||/Could not find the function|No function matches|does not exist/i.test(r.error.message||''));
+      let _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:_isNewEst}));
+      // Fallbacks for older deployed RPC signatures (pre-00195, then pre-00128) so deploy order can't break saving.
+      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null)}));
+      if(_fnMissing(_rpcRes))_rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems}));
+      // Id collision on create: re-mint from a fresh DB-wide max and retry ONCE, still as a create —
+      // a second collision falls through to the generic error handler below instead of ever upserting.
+      if(_isNewEst&&_rpcRes.error&&(_rpcRes.error.message||'').includes('ESTIMATE_ID_EXISTS')){
+        const oldId=est.id;const freshMax=await _refreshMaxId('estimates','EST-');
+        est.id=_estPayload.id='EST-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        console.warn('[DB] Estimate id collision on create —',oldId,'already exists in DB, re-minted to',est.id);
+        _rpcRes=await _retryNet(()=>supabase.rpc('save_estimate',{p_estimate:_estPayload,p_items:_rpcItems,p_base_version:(est._version??null),p_is_new:true}));
+        if(!_rpcRes.error&&_dataLossAlert)_dataLossAlert({kind:'est_id_reminted',soId:est.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
       }
       const _rpcErr=_rpcRes.error;
       // A write rejected by the version guard means another save (usually another open tab) advanced this
@@ -913,6 +930,8 @@ const _dbSaveEstimateInner = async (est) => {
         if(_isAuthError(_rpcErr))return _handleAuthSaveFailure(est.id,_rpcErr);
         const _friendly=_m.includes('CUSTOMER_MISSING')
           ?"This customer isn't saved yet. Re-select or re-create the customer, then save."
+          :_m.includes('ESTIMATE_ID_EXISTS')
+            ?'Could not create '+est.id+' — the estimate number is already in use. Please save again to get a fresh number.'
           :(_m.includes('ESTIMATE_ID_MISSING')||_m.includes('ESTIMATE_PAYLOAD_EMPTY'))
             ?'Estimate could not be saved — required fields are missing. Please reload and try again.'
             :'Estimate save failed — please try again, or reload the page if it keeps happening.';
@@ -1026,10 +1045,11 @@ const _countInsertedChildRows=async(table,itemIds)=>{
 // select, cheap) rather than an order-by-string top-1, which can pick a lexicographically-larger-but-
 // numerically-smaller id (e.g. 'SO-999' sorts after 'SO-1000'). Ordered desc because PostgREST caps
 // unordered selects at 1000 rows — desc keeps the largest ids inside that window as the table grows.
-const _refreshSoMaxId=async()=>{
-  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%').order('id',{ascending:false}).limit(1000);
+const _refreshMaxId=async(table,prefix)=>{
+  const{data}=await supabase.from(table).select('id').like('id',prefix+'%').order('id',{ascending:false}).limit(1000);
   return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
 };
+const _refreshSoMaxId=()=>_refreshMaxId('sales_orders','SO-');
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
