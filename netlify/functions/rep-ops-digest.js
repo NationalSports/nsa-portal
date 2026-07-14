@@ -421,10 +421,14 @@ function buildOpsHtml({ rep, b, dayLabel, portal, custName, invTotalBySo, testNo
   const approvedBlock = b.approved.length ? sectionHead('✅ Estimates Approved') + table(b.approved.map((e) =>
     row(esc(e.id), `${esc(custName(e.customer_id))}${e.approved_by ? ` · approved by ${esc(e.approved_by)}` : ''}`, '', estLink(e.id))).join('')) : '';
   const pickedBlock = b.picked.length ? sectionHead('📦 IFs Picked') + table(b.picked.map((p) => {
+    // Completeness at a glance: a green ✓ when the pull came up complete, or the exact
+    // shorted SKU(s)/size(s) in red when stock fell short with no covering PO. (shortOnPull
+    // is null only when nothing on the order fell short, so the ✓ never over-claims.)
+    const checkTag = p.short ? '' : ` <span style="color:#047857;font-weight:800">✓</span>`;
     const shortTag = p.short ? `<div style="font-size:12px;color:#B91C1C;font-weight:700">⚠️ Short ${p.short.units}: ${esc(p.short.detail)}</div>` : '';
     const sku = p.skus.slice(0, 3).join(', ') + (p.skus.length > 3 ? ` +${p.skus.length - 3}` : '');
     // Shorts deep-link straight to the SO's Items tab, where the Create PO flow lives.
-    return row(`${esc(p.pickId || p.so.id)} <span style="color:${SUB};font-weight:600">· ${p.units} unit${p.units === 1 ? '' : 's'}</span>`,
+    return row(`${esc(p.pickId || p.so.id)} <span style="color:${SUB};font-weight:600">· ${p.units} unit${p.units === 1 ? '' : 's'}</span>${checkTag}`,
       `${esc(custName(p.so.customer_id))} · ${esc(p.so.id)}${sku ? ` · ${esc(sku)}` : ''}${shortTag}`, '',
       soLink(p.so.id, p.short ? 'items' : ''), p.short ? 'Create PO →' : 'Open →');
   }).join('')) : '';
