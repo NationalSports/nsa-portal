@@ -1020,6 +1020,15 @@ const _countInsertedChildRows=async(table,itemIds)=>{
   if(error)({count,error}=await supabase.from(table).select('id',{count:'exact',head:true}).in('so_item_id',itemIds));
   return{count:count||0,error};
 };
+// Authoritative DB-wide max SO number, for re-minting after an id collision on create (see _isNewSO below).
+// App.js's _dbMaxIds/_syncDbMaxIds is only refreshed at page load and lives in a module that imports THIS
+// one, so it can't be reused here without a circular import — this does its own full scan instead (id-only
+// select, cheap) rather than an order-by-string top-1, which can pick a lexicographically-larger-but-
+// numerically-smaller id (e.g. 'SO-999' sorts after 'SO-1000').
+const _refreshSoMaxId=async()=>{
+  const{data}=await supabase.from('sales_orders').select('id').like('id','SO-%');
+  return(data||[]).reduce((mx,r)=>{const m=String(r.id).match(/(\d+)/);return m?Math.max(mx,parseInt(m[1])):mx},0);
+};
 const _dbSaveSOInner = async (so) => {
   if(!supabase)return;
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner) — fewer reactive 401s from an idle tab
@@ -1056,11 +1065,35 @@ const _dbSaveSOInner = async (so) => {
         if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_missingDeco.length});
       }
     }
-    let{error:soErr}=await supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'});
+    // Brand-new orders INSERT rather than upsert: nextSOId (App.js) mints ids from _dbMaxIds, which is only
+    // synced at page load, so a stale tab can re-mint an id another tab already saved (the SO-1514 incident)
+    // — an upsert would then silently REPLACE that order's header while the item-write guards below block
+    // the item write, leaving one order's header on another order's items. INSERT fails loud (23505) instead.
+    let{error:soErr}=await(_isNewSO?supabase.from('sales_orders').insert(soRowInitial):supabase.from('sales_orders').upsert(soRowInitial,{onConflict:'id'}));
+    if(soErr&&_isNewSO&&soErr.code==='23505'){
+      // Id collision on create: re-mint from a fresh DB-wide max (not the stale in-memory one) and retry
+      // ONCE, still as an insert — a second collision falls through to the block below instead of ever upserting.
+      const oldId=so.id;const freshMax=await _refreshSoMaxId();
+      so.id=soRowInitial.id='SO-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+      console.warn('[DB] SO id collision on create —',oldId,'already exists in DB, re-minted to',so.id);
+      ;({error:soErr}=await supabase.from('sales_orders').insert(soRowInitial));
+      if(!soErr&&_dataLossAlert)_dataLossAlert({kind:'so_id_reminted',soId:so.id,reason:'create collided with existing '+oldId+' — re-minted to avoid overwriting it'});
+    }
     if(soErr){
       const coreSoRow={};Object.keys(soRowInitial).forEach(k=>{if(!_soExtraCols.has(k))coreSoRow[k]=soRowInitial[k]});
-      const retry=await supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'});
-      if(retry.error){console.error('[DB] sales_orders upsert failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message}
+      const retry=await(_isNewSO?supabase.from('sales_orders').insert(coreSoRow):supabase.from('sales_orders').upsert(coreSoRow,{onConflict:'id'}));
+      if(retry.error){
+        if(_isNewSO&&retry.error.code==='23505'){
+          // Still colliding after a re-mint — refuse to fall through to an upsert that would silently
+          // overwrite the order that already owns this id. Data-loss prevention over UX: block and let the
+          // rep retry the save (which mints a new id from the now-current in-memory list).
+          console.error('[DB] sales_orders insert still colliding for new SO',so.id,':',retry.error.message);
+          if(_dbNotify)_dbNotify('Save blocked — could not create '+so.id+' (id already in use). Please retry.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'sales_orders insert still collided after re-mint: '+retry.error.message});
+          return false;
+        }
+        console.error('[DB] sales_orders '+(_isNewSO?'insert':'upsert')+' failed:',retry.error.message);saveFailed=true;_failMsg='sales_orders: '+retry.error.message
+      }
       else console.warn('[DB] SO saved with core columns only')
     }
     // Recycled-number guard: a brand-new SO id can collide with a deleted order whose number was reused.
