@@ -7412,7 +7412,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           <div style={{borderTop:'1px solid #e2e8f0',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#0891b2',textTransform:'uppercase',marginBottom:6}}>🧵 Digitizing / Vector File — Topstar</div>
-            <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>Order Digitizing / Vector File</button>
+            {(()=>{const _tsPos=(o.deco_pos||[]).filter(dp=>dp.topstar_service);return _tsPos.length>0&&
+              <div style={{display:'flex',flexWrap:'wrap',gap:4,marginBottom:6}}>
+                {_tsPos.map(dp=>{const _planned=dp.status==='planned';return<span key={dp.id||dp.po_id} style={{fontSize:11,padding:'3px 8px',borderRadius:6,background:_planned?'#fef9c3':'#ecfeff',border:'1px solid '+(_planned?'#fde047':'#a5f3fc'),color:_planned?'#854d0e':'#0e7490',fontWeight:700}}>{dp.po_id||dp.id} — {_planned?'Planned':(dp.status||'waiting')}</span>})}
+              </div>})()}
+            {/* Multiple digitizing/vector jobs can legitimately be needed on one order, so the button always
+                stays enabled — this list just makes an existing PO visible before a rep clicks it again. */}
+            <button className="btn btn-sm" style={{background:'#0891b2',color:'white',border:'none',width:'100%'}} onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}}>{(o.deco_pos||[]).some(dp=>dp.topstar_service)?'Order Another Digitizing / Vector File':'Order Digitizing / Vector File'}</button>
           </div>
         </div></div></div>;
       // OUTSIDE DECORATION PO FORM
