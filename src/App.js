@@ -18059,6 +18059,19 @@ export default function App(){
               {/* Ship-to */}
               <div style={{marginBottom:12,padding:10,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Ship To</div>
+                {/* Destination toggle — send to the customer or back to our warehouse */}
+                <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+                  {[['customer','📦 Customer'],['warehouse','🏠 Our Warehouse']].map(([mode,lbl])=>{
+                    const active=(manualShipModal.shipToMode||'customer')===mode;
+                    return<button key={mode} type="button" className="btn btn-sm" style={{fontSize:11,fontWeight:700,padding:'4px 12px',border:'1px solid '+(active?'#92400e':'#cbd5e1'),background:active?'#92400e':'white',color:active?'white':'#475569'}}
+                      onClick={()=>setManualShipModal(m=>{
+                        if(mode==='warehouse')return{...m,shipToMode:'warehouse',destAddr:{company:NSA.name,attn:m.cust?.name||'',street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
+                        const cc=m.cust||m.custFilter;
+                        return{...m,shipToMode:'customer',destAddr:{company:cc?.name||'',attn:'',street1:cc?.shipping_address_line1||'',street2:cc?.shipping_address_line2||'',city:cc?.shipping_city||'',state:cc?.shipping_state||'',zip:cc?.shipping_zip||'',phone:cc?.contacts?.[0]?.phone||''}};
+                      })}>{lbl}</button>;
+                  })}
+                </div>
+                {manualShipModal.shipToMode==='warehouse'&&<div style={{fontSize:10,color:'#92400e',marginBottom:6}}>Shipping to NSA — the customer name goes in Attention so receiving knows who it's for.</div>}
                 <div style={{display:'grid',gap:6}}>
                   <div style={{display:'flex',gap:6}}>
                     <div style={{flex:1}}><label style={_lbl}>Company / Recipient</label>
@@ -18102,7 +18115,7 @@ export default function App(){
                         const w=parseFloat(manualShipModal.weight)||5;if(!w||w<=0){nf('Please enter package weight','error');return}
                         const dims=manualShipModal.dimensions||{};if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
                         const _org=(_da.company||'').trim()||(c?.name||'');const _attn=(_da.attn||'').trim();
-                        const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:true};
+                        const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:manualShipModal.shipToMode!=='warehouse'};
                         if(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                         nf('Creating ShipStation label...');
                         const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
@@ -18184,7 +18197,7 @@ export default function App(){
                   return so.customer_id===manualShipModal.custFilter.id;
                 });
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
-                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
+                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
                 if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
