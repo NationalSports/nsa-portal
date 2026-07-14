@@ -235,4 +235,21 @@ describe('dropMismatchedFrozenClaims', () => {
     expect(changed).toBe(false);
     expect(job).toBe(untyped);
   });
+
+  // Hydration safety: single-method jobs now run this heal unconditionally (not only when an index
+  // is out of bounds), so a resolver that can't yet resolve a claim's method — art file not loaded —
+  // MUST report null and the claim MUST be kept, or an embroidery claim would be dropped mid-load.
+  test('a claim whose method is unresolved (null) is always kept, never dropped', () => {
+    const job = {
+      deco_type: 'screen_print',
+      items: [
+        { item_idx: 0, deco_idx: 0, deco_idxs: [0], units: 31 }, // resolves screen — kept
+        { item_idx: 3, deco_idx: 0, deco_idxs: [0], units: 31 }, // resolves null (unloaded) — kept
+      ],
+    };
+    const resolveUnloaded = (ii) => (ii === 0 ? 'screen_print' : null);
+    const { job: out, changed } = dropMismatchedFrozenClaims(job, resolveUnloaded);
+    expect(changed).toBe(false);
+    expect(out.items).toHaveLength(2);
+  });
 });

@@ -2717,26 +2717,39 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const nName=safeStr(it.name)||gi.name;
       if((gi.sku||'')===(it.sku||'')&&(gi.color||'')===(it.color||'')&&(gi.name||'')===nName)return gi;
       return{...gi,sku:it.sku,color:it.color||'',name:nName}};
-    // Frozen jobs claim decorations positionally, so after INDEX DRIFT — a line deleted by a
-    // client that didn't run rmI's frozen-snapshot remap (SO-1468: a stale pre-2cad58a tab) —
-    // their claims land on the wrong lines. A drifted claim whose LIVE decoration resolves to a
-    // DIFFERENT method than the job then blocks the real job for that method from ever being
-    // rebuilt (SO-1468: a released screen-print job claimed the polo's embroidery decorations,
-    // so the embroidery job was deleted on the next sync). Release such claims — but ONLY when
-    // the order shows drift evidence (some frozen row's item_idx has no live line behind it;
-    // rmI's remap drops deleted-line rows, so a dangling index means an unremapped delete).
-    // Without that gate this would break intentional cross-type Merge Jobs, which legitimately
-    // hold claims of another method under one deco_type label. A missing live item/deco resolves
-    // null and is KEPT (deleted-line snapshot preservation). A frozen job whose every claim
-    // mismatched retires, like the all-outsourced case above.
+    // Frozen jobs claim decorations positionally (item_idx + deco_idx), so after INDEX DRIFT — a
+    // line removed by a client that didn't run rmI's frozen-snapshot remap (SO-1468: a stale tab on
+    // the 2026-07-10 15:30–16:13 build, which had _refreshGarmentIdentity but not the remap) — their
+    // claims land on the wrong lines. A drifted claim whose LIVE decoration resolves to a DIFFERENT
+    // method than the job then blocks the real job for that method from being rebuilt (SO-1468: a
+    // released screen-print job claimed the polo's embroidery decorations, so the embroidery job was
+    // deleted on the next sync). Release such claims. A missing live item/deco — and any art deco
+    // whose method can't be positively resolved yet — reports null and is KEPT (deleted-line snapshot
+    // preservation + hydration safety). A frozen job whose every claim mismatched retires, like the
+    // all-outsourced case above.
+    //
+    // Resolve LIVE method conservatively: return null (=unknown → claim kept) whenever we can't
+    // resolve it POSITIVELY. An art deco whose art file isn't loaded/found must NOT fall through to a
+    // 'screen_print' default, or an embroidery claim would be wrongly dropped mid-hydration.
     const _liveDecoType=(ii,di)=>{const it=safeItems(o)[ii];if(!it)return null;const d=safeDecos(it)[di];if(!d)return null;
-      if(d.kind==='art'){const artF=d.art_file_id?af.find(a=>a.id===d.art_file_id):null;return artF?.deco_type||d.deco_type||'screen_print'}
+      if(d.kind==='art'){if(d.art_file_id){const artF=af.find(a=>a.id===d.art_file_id);return artF?(artF.deco_type||null):null}return d.deco_type||null}
       if(d.kind==='numbers')return d.num_method||'heat_transfer';
       if(d.kind==='names')return d.name_method||'heat_press';
       return d.deco_type||d.type||null};
+    // Out-of-bounds drift: a frozen row pointing past the live item list. Only an unremapped delete
+    // produces this, and it's the one drift signal a legit merge never creates — so it safely gates
+    // the ambiguous jobs below.
     const _liveItemCount=safeItems(o).length;
     const _frozenIdxDrift=safeJobs(o).some(j=>j&&(_isRel(j)||j._merged||j.split_from)&&(j.items||[]).some(gi=>safeNum(gi.item_idx)>=_liveItemCount));
-    const _dropStaleClaims=j=>_frozenIdxDrift?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    // A frozen job is SINGLE-METHOD by construction unless it was hand-merged (or split off a merge):
+    // a released/auto job carries exactly one deco_type. For those, ANY claim that positively resolves
+    // to a different method is drift and is released even when indices stay IN BOUNDS — closing the gap
+    // where SO-1468 went unhealed until a later delete pushed an index out of bounds. Merged/split jobs
+    // CAN legitimately hold another method's claims under one label (a cross-type Merge Jobs), so they
+    // stay gated on the out-of-bounds signal. (Giving merged jobs the same in-bounds heal needs a
+    // merge-time stamp of the intended deco types — a follow-up, since that field must be persisted.)
+    const _methodSetKnown=j=>!j._merged&&!j.split_from;
+    const _dropStaleClaims=j=>(_methodSetKnown(j)||_frozenIdxDrift)?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
     const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
       .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
