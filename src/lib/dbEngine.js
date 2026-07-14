@@ -1443,14 +1443,47 @@ const _dbSaveSOInner = async (so) => {
       // Deduplicate jobs by id to prevent "ON CONFLICT DO UPDATE cannot affect row a second time" error
       const _seenJobIds=new Set();const dedupedJobs=jobs.filter(j=>{if(!j.id||_seenJobIds.has(j.id))return false;_seenJobIds.add(j.id);return true});
       const jobRows=dedupedJobs.map(j=>({..._pick(j,_jobCols),so_id:so.id}));
-      const{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
-      if(jobErr){
-        if(jobErr.message?.includes('schema cache')||jobErr.message?.includes('column')||jobErr.code==='PGRST204'||jobErr.message?.includes('not found')){
+      // Coach-decision guard (audit A9): this upsert is a blind whole-row write, so a stale client
+      // (whose job snapshot predates a coach approve/reject via the guarded RPC) writes NULL over the
+      // decision columns and silently reverts it. Never null a non-null coach column unless this save
+      // explicitly cleared it (j._coach_cleared — stamped by the deliberate pull-back/resubmit paths,
+      // consumed below on success). coach_rejected: only a null/undefined client value defers to a DB
+      // true — an explicit false is a deliberate clear (approve paths, ART_PULLBACK_CLEARS) and passes.
+      {const _COACH_COLS=['sent_to_coach_at','coach_approved_at','coach_approval_comment'];
+      const{data:_dbCoach}=await supabase.from('so_jobs').select('id,sent_to_coach_at,coach_approved_at,coach_approval_comment,coach_rejected').eq('so_id',so.id);
+      const _dbCoachById=new Map((_dbCoach||[]).map(r=>[r.id,r]));
+      let _preserved=0;
+      jobRows.forEach((row,i)=>{
+        if(dedupedJobs[i]._coach_cleared)return;
+        const db=_dbCoachById.get(row.id);if(!db)return;
+        _COACH_COLS.forEach(c=>{if(db[c]!=null&&(c in row)&&row[c]==null){row[c]=db[c];_preserved++}});
+        if(db.coach_rejected===true&&('coach_rejected'in row)&&row.coach_rejected==null){row.coach_rejected=true;_preserved++}
+      });
+      if(_preserved)console.warn('[DB] Preserved',_preserved,'coach decision column(s) on',so.id,'that a stale save would have nulled');}
+      const _isSchemaErr=e=>!!e&&(e.message?.includes('schema cache')||e.message?.includes('column')||e.code==='PGRST204'||e.message?.includes('not found'));
+      let{error:jobErr}=await supabase.from('so_jobs').upsert(jobRows,{onConflict:'so_id,id'});
+      if(jobErr&&_isSchemaErr(jobErr)){
+        // Retry per-missing-column (audit A9): the old path stripped EVERY _jobExtraCols entry in one
+        // shot, so one unknown column landed the art_status change but dropped all the coach flags
+        // (sent_to_coach_at, coach_approved_at, coach_rejected, follow_up_*) with it. PGRST204 names
+        // the missing column — drop just that one and retry, bounded; the strip-all fallback only
+        // remains for an unparseable error.
+        let _rows=jobRows;
+        for(let _a=0;_a<4&&jobErr&&_isSchemaErr(jobErr);_a++){
+          const _m=(jobErr.message||'').match(/'([^']+)' column/)||(jobErr.message||'').match(/column "([^".]+)"/);
+          if(!_m||!_rows.some(r=>_m[1] in r))break;
+          console.warn('[DB] so_jobs: column',_m[1],'missing in schema — retrying without it');
+          _rows=_rows.map(r=>{const{[_m[1]]:_x,...cr}=r;return cr});
+          ({error:jobErr}=await supabase.from('so_jobs').upsert(_rows,{onConflict:'so_id,id'}));
+        }
+        if(jobErr&&_isSchemaErr(jobErr)){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
-          const{error:jobErr2}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'});
-          if(jobErr2){console.error('[DB] so_jobs upsert failed (core):',jobErr2.message,jobErr2.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr2.message)}
-        }else{console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
+          ({error:jobErr}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'}));
+          if(!jobErr)console.warn('[DB] so_jobs saved with core columns only — coach/follow-up fields NOT persisted this save');
+        }
       }
+      if(jobErr){console.error('[DB] so_jobs upsert failed:',jobErr.message,jobErr.details);saveFailed=true;_failMsg=_failMsg||('so_jobs: '+jobErr.message)}
+      else dedupedJobs.forEach(j=>{if(j._coach_cleared)delete j._coach_cleared});// one-shot marker — consumed by the save that carried it
       // Delete jobs that no longer exist (scoped to this SO so a shared id can't wipe another order's job)
       const currentJobIds=jobs.map(j=>j.id).filter(Boolean);
       if(currentJobIds.length){

@@ -155,7 +155,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // Every path that pulls art back for rework (Recall or an Update request) must clear the same
   // approval residue — one shared list so the call sites can't drift apart. Stale coach flags
   // produce phantom todos/"Sent to Customer" badges; a stale follow_up_at keeps nagging the coach.
-  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false};
+  // _coach_cleared marks the nulls as DELIBERATE for dbEngine's coach-decision guard (audit A9) —
+  // without it a save nulling a non-null coach column is treated as stale and the DB value is kept.
+  const ART_PULLBACK_CLEARS={sent_to_coach_at:null,follow_up_at:null,coach_approved_at:null,coach_rejected:false,_coach_cleared:true};
   const _activeProd=s=>s==='staging'||s==='in_process';
   // Jobs sharing any of the affected art files must not keep running a design that's being
   // redrawn — put them on hold along with the job being acted on. Any decorator clock on a
