@@ -7632,7 +7632,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // treats as distinct, so those never merge even when the base SKU/color match.
       const _SZ_ORDER=SZ_ORD;// full size ordering (apparel + footwear + ball/numeric) so PO size cells run smallest→largest
       const _openMapOf=osz=>{const m={};osz.forEach(([sz,v])=>{m[sz]=v});return m};
-      const _grpKeyOf=it=>[it.sku||'',it.color||'',it._mt_style||'',it._mt_color||''].join('|');
+      // Custom items share a generic non-orderable SKU ('CUSTOM' / 'CUST-SUPPLIED') and usually an
+      // empty color, so keying on SKU+color would collapse genuinely-different custom products (with
+      // different costs) into one blank PO line. They're never the same orderable garment — key each
+      // on its own line index so every custom item stays its own PO line with its own cost.
+      const _isPoolable=it=>!it.is_custom&&it.sku&&it.sku!=='CUSTOM'&&it.sku!=='CUST-SUPPLIED';
+      const _grpKeyOf=it=>_isPoolable(it)?[it.sku||'',it.color||'',it._mt_style||'',it._mt_color||''].join('|'):('solo|'+it._idx);
       const _grpMap=new Map();
       _poLinesRaw.forEach(it=>{const k=_grpKeyOf(it);if(!_grpMap.has(k))_grpMap.set(k,[]);_grpMap.get(k).push(it)});
       const poItems=[..._grpMap.values()].map(members=>{
