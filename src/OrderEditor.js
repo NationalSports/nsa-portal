@@ -3682,6 +3682,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   }
                 }
               });
+              if(fullCount===0&&!partialItem){nf('Promo not applied — remaining funds ($'+remaining.toFixed(2)+") can't cover any eligible item",'error');return}
               sv('promo_applied',true);sv('items',newItems);
               // Deduct from balance + record usage immediately on both estimates and SOs so the Promo $ tab
               // and balance reflect the spend right away. Usage is keyed by estimate_id on an estimate (so_id
@@ -3775,7 +3776,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             setInvSelItems(remIdxs.length?remIdxs:safeItems(o).map((_,i)=>i));
             setInvMemo(o.memo||'');setInvType(typeHint||(_hasAnyInv?'partial':'final'));setInvDepositPct(50);setInvDate(new Date().toLocaleDateString('en-CA'));setShowInvCreate(true);
           };
-          if(o.promo_applied)return null;// promo flow handled below
+          // Promo orders: only skip the invoice flow when promo FULLY covers the order (customer owes $0).
+          // A partial-promo order has a real customer-pays balance that still needs an invoice; the Create
+          // Invoice modal already bills the promo-adjusted amount (see isPromoOrder handling there).
+          if(o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays):0)<=0.005)return null;
           if(o.status==='complete'&&_hasAnyInv)return<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Sales Order Closed</span>;
           if(!_hasAnyInv)return<button className="btn btn-secondary" style={{color:'#dc2626',borderColor:'#fca5a5'}} onClick={()=>_openCreateInv('final')}><Icon name="dollar" size={14}/> Create Invoice</button>;
           // Has prior invoices with un-billed remaining qty: only show Create Invoice — nothing left to "close ahead of".
@@ -3786,7 +3790,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const updated={...o,status:'complete',updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);nf(o.id+' closed');
           }}><Icon name="check" size={14}/> Close Sales Order</button>;
         })()}
-        {o.promo_applied&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
+        {o.promo_applied&&(promoTotals?safeNum(promoTotals.customerPays)<=0.005:true)&&(o.status==='complete'?<span style={{padding:'6px 10px',fontSize:12,fontWeight:700,color:'#166534',background:'#dcfce7',borderRadius:6,border:'1px solid #86efac'}}>✓ Promo Order Closed</span>:<button className="btn btn-secondary" style={{color:'#166534',borderColor:'#86efac'}} onClick={async()=>{
           if(!window.confirm('Mark promo order '+o.id+' as complete? No invoice needed — costs are tracked on the SO.'))return;
           // Backfill: if this SO has promo applied but never recorded a usage row (e.g. converted before deduction was wired up), record it now.
           if(isSO&&cust&&!(cust.promo_usage||[]).some(u=>u.so_id===o.id)){
@@ -3838,7 +3842,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <span style={{fontSize:12,fontWeight:700,color:'#92400e'}}>Promo Total: ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})}</span>
         {promoTotals.normalRev>0&&<span style={{fontSize:12}}>Customer Pays: <strong style={{color:'#166534'}}>${promoTotals.customerPays.toFixed(2)}</strong></span>}
         {promoTotals.normalRev===0&&promoTotals.promoCredit===0&&<span style={{fontSize:12,fontWeight:700,color:'#166534'}}>$0.00 Order</span>}
-        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis)return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Exceeds available funds — ${_availableForThis.toLocaleString(undefined,{maximumFractionDigits:2})} available</span>;return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {(()=>{if(!cust)return null;const _now=new Date(),_y=_now.getFullYear(),_m=_now.getMonth();const _ps=(cust.promo_periods||[]).filter(p=>p.period_start>=(_m<6?_y+'-01-01':_y+'-07-01'));const _bal=_ps.reduce((a,p)=>a+(p.allocated||0)-(p.used||0),0);const _ownDeducted=(cust.promo_usage||[]).filter(u=>isSO?u.so_id===o.id:(u.estimate_id===o.id&&!u.so_id)).reduce((a,u)=>a+safeNum(u.amount),0);const _availableForThis=_bal+_ownDeducted;if(promoTotals.promoAmount>_availableForThis){const _covered=Math.max(0,_availableForThis);const _over=promoTotals.promoAmount-_covered;return<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠️ Overdraws promo funds — ${_covered.toLocaleString(undefined,{maximumFractionDigits:2})} covered, ${_over.toLocaleString(undefined,{maximumFractionDigits:2})} overdraft (carries to next semester)</span>}return<span style={{fontSize:11,color:'#64748b'}}>Remaining: ${_bal.toLocaleString(undefined,{maximumFractionDigits:2})}</span>})()}
+        {safeNum(o.promo_amount)>0&&Math.abs(safeNum(o.promo_amount)-promoTotals.promoAmount)>1&&<span style={{fontSize:12,fontWeight:700,color:'#dc2626',background:'#fef2f2',padding:'2px 8px',borderRadius:6}}>⚠ Recorded promo draw ${safeNum(o.promo_amount).toLocaleString(undefined,{maximumFractionDigits:2})} ≠ current promo lines ${promoTotals.promoAmount.toLocaleString(undefined,{maximumFractionDigits:2})} — promo items were edited after funds were applied</span>}
       </div>}
       {/* Credit Summary */}
       {o.credit_applied&&safeNum(o.credit_amount)>0&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
@@ -6616,7 +6621,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const selFraction=Math.min(1,selTotals.subtotal/fullOrderSub);
       // For promo orders: shipping/tax on promo portion is covered by promo, only charge for non-promo portion
       const nonPromoShip=isPromoOrder?(promoTotals?totals.ship-promoTotals.promoShip:0):totals.ship;
-      const nonPromoTax=isPromoOrder?0:totals.tax;
+      // Tax on the non-promo (customer-paid) portion. Promo-covered revenue is taxed $0, but a
+      // partial-promo order's remaining balance is still taxable — bill the tax on that portion
+      // (promoTotals.normalTax), not a blanket $0 which would under-bill a partial-promo invoice.
+      const nonPromoTax=isPromoOrder?(promoTotals?safeNum(promoTotals.normalTax):0):totals.tax;
       // For deposits, bill the whole shipping/tax (the deposit percentage applies later).
       // For everything else, prorate by the fraction of the order being billed in this invoice.
       const _billingAll=invType==='deposit';
