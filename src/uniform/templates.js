@@ -203,6 +203,29 @@ const TEMPLATES = {
       },
     },
   },
+  // Sahrul's upgraded base (Blender → GLB). Built to the production-pipeline spec:
+  // a full PBR set (clean albedo + normal + packed metallic-roughness + AO) plus
+  // REAL modeled stitch geometry (40 StitchMatShape meshes) along every seam, not
+  // a fake normal-map trick. Zones split by mesh/material — FRONT/BACK + SIDE
+  // panels (body), SLEVEE + SIDE SLEVEE (sleeves), Collar. Draco-compressed from
+  // 26MB → 5.2MB. 2D proof reuses octa flat art as a placeholder for now.
+  sahrul2_jersey: {
+    id: 'sahrul2_jersey', name: 'Sahrul v2 (Production)', category: 'Photoreal', type: 'raster',
+    credit: 'Base garment by Sahrul (Blender)',
+    model3d: PUB('/uniform/sahrul-v2-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.33, y: 0.2, size: 88 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
   // Vikram's base (Blender → GLB, delivered web-ready at 3.5MB, 10.7K tris, native
   // .blend included). Zones are separated by MATERIAL (Body/Sleeves/Collar) on one
   // clean mesh, with a full PBR set (albedo + normal + metallic-roughness). 3D
