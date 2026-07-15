@@ -15973,6 +15973,17 @@ export default function App(){
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
+    // Print the 4×6 receiving label — parity with the desktop "Confirm Received" flow
+    // (rBatchPOs → printLabel/printQrLabel) so the iPad can send it to the check-in
+    // Brother. Wrapped so a blocked pop-up / print failure can never abort the receive.
+    try{
+      const _lblItems=[];
+      lines.forEach(({itemIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const sz=Object.entries(rcv||{}).filter(([,v])=>v>0);if(!sz.length)return;const q=sz.reduce((a,[,v])=>a+v,0);_lblItems.push({title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')})});
+      let _poId='';for(const {itemIdx,poLineIdx} of lines){const pl=items[itemIdx]&&items[itemIdx].po_lines&&items[itemIdx].po_lines[poLineIdx];const pid=pl&&(pl.batch_po_number||pl.po_id);if(pid){_poId=pid;break}}
+      if(!_poId)_poId=soId;
+      const _r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));
+      printQrLabel({code:_poId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_poId),program:(cc&&cc.name)||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:soId,note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534',items:_lblItems,codeSub:grand+' units · scan to open PO'});
+    }catch(_){}
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
@@ -30772,7 +30783,11 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary>;
+  // Render the shared <Toast> here too: nf() sets `toast` state, but the desktop
+  // <Toast> in the return below is never reached in mobile mode (this early return),
+  // so without this every mobile toast — the green "🎽 Ready for decoration" and
+  // "✅ Received N units" confirmations included — was silently dropped.
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
