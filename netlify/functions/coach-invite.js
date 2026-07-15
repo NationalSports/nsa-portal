@@ -7,6 +7,7 @@
 // role — that path bypasses RLS so a signed-in coach can invite a teammate even
 // though coach_accounts INSERT is otherwise staff-only.
 const { verifyUser, resolveCustomerFamily, rosterTeamCustomerId, getSupabaseAdmin: _getSupabaseAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Shared factory throws when creds are missing; this endpoint's callers expect null.
@@ -144,7 +145,7 @@ exports.handler = async (event) => {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
       body: JSON.stringify({
-        sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+        sender: resolveSender({ name: 'National Sports Apparel' }),
         to: [{ email, name: name || email }],
         subject: 'Your National Sports Apparel team portal access',
         htmlContent: `

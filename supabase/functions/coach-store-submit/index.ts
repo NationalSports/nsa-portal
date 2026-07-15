@@ -58,7 +58,7 @@ async function notifyStaff(
       method: "POST",
       headers: { accept: "application/json", "content-type": "application/json", "api-key": BREVO_API_KEY },
       body: JSON.stringify({
-        sender: { name: "NSA Store Builder", email: "noreply@nationalsportsapparel.com" },
+        sender: { name: "NSA Store Builder", email: Deno.env.get("BREVO_DEFAULT_SENDER") || "hello@nationalsportsapparel.com" },
         to: to.map((email) => ({ email })),
         subject: `New coach store to review: ${storeName}`,
         htmlContent: html,

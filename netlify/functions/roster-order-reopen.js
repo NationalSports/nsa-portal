@@ -5,6 +5,7 @@
 // Service role for reads (bypasses RLS); Brevo for the send. No-op-safe when
 // creds are absent.
 const { createClient } = require('@supabase/supabase-js');
+const { resolveSender } = require('./_emailSender');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function getSupabaseAdmin() {
@@ -62,7 +63,7 @@ exports.handler = async (event) => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: [{ email, name: name || email }],
           subject: `Action needed: ${sess.name} roster reopened`,
           htmlContent: `

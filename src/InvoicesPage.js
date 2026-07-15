@@ -983,7 +983,7 @@ export default function InvoicesPage(){
                   +(portalUrl?'<br/><br/><a href="'+portalUrl+'" style="display:inline-block;padding:10px 20px;background:#2563eb;color:white;text-decoration:none;border-radius:6px;font-weight:600">View Invoice in Portal</a>':'')
                   +(si.review?buildReviewButtonHtml():''),companyInfo);
                 const _invText=si.review?(si.msg+'\n\n'+reviewTextBlock()):undefined;
-                const _invFrom=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:'noreply@nationalsportsapparel.com';
+                const _invFrom=(cu?.email&&/@nationalsportsapparel\.com$/i.test(cu.email))?cu.email:undefined;
                 const _invSubj='National Sports Invoice - '+siInv.id+(siInv.memo?' - "'+siInv.memo+'"':'');
                 const res=await sendBrevoEmail({to:toEmails.map(em=>({email:em,name:em})),subject:_invSubj,
                   htmlContent:emailHtml,textContent:_invText,senderName:cu.name||'National Sports Apparel',senderEmail:_invFrom,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
@@ -1538,7 +1538,7 @@ export default function InvoicesPage(){
         const senderOpts=[
           ...(cu?.email?[{key:'rep',name:cu.name||'My email',email:cu.email}]:[]),
           {key:'accounting',name:'NSA Accounting',email:'accounting@nationalsportsapparel.com'},
-          {key:'noreply',name:'NSA Notifications',email:'noreply@nationalsportsapparel.com'},
+          {key:'hello',name:'NSA Notifications',email:'hello@nationalsportsapparel.com'},
         ];
         const activeSender=senderOpts.find(s=>s.key===pd.senderKey)||senderOpts[0];
         const sendAll=async()=>{

@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Scheduled Netlify function — calls public.get_health_report() and emails
 // steve@nationalsportsapparel.com if orphan jobs are detected (a regression
 // of the save-guard at src/App.js:636-642).
@@ -183,7 +184,7 @@ exports.handler = async () => {
         'api-key': brevoKey,
       },
       body: JSON.stringify({
-        sender: { name: 'NSA Portal Health Check', email: 'noreply@nationalsportsapparel.com' },
+        sender: resolveSender({ name: 'NSA Portal Health Check' }),
         to: [{ email: ALERT_EMAIL }],
         subject,
         htmlContent,

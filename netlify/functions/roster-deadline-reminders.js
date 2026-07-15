@@ -4,6 +4,7 @@
 // once per session as the deadline nears (deadline_reminded_at). Safe no-op if
 // service creds or Brevo are absent.
 const { createClient } = require('@supabase/supabase-js');
+const { resolveSender } = require('./_emailSender');
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const REMIND_WINDOW_DAYS = 3; // start nagging this many days out
@@ -66,7 +67,7 @@ exports.handler = async () => {
             method: 'POST',
             headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
             body: JSON.stringify({
-              sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+              sender: resolveSender({ name: 'National Sports Apparel' }),
               to: [{ email, name: info.name || email }],
               subject: `Reminder: ${sess.name} sizes due ${sess.deadline}`,
               htmlContent: `

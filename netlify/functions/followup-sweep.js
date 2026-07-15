@@ -18,6 +18,7 @@
 
 const { getSupabaseAdmin } = require('./_shared');
 const { unsubUrl } = require('./_followupShared');
+const { resolveSender } = require('./_emailSender');
 
 // Matches the client-side default (Send modals seed follow_up_max||4) — the two used to
 // disagree (client 4 vs sweep 6), so a row saved without an explicit max got 2 extra nags.
@@ -56,7 +57,9 @@ async function sendEmail({ toList, subject, html, replyTo, unsubLink }) {
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      // Prefer the rep's NSA mailbox as From when available — school filters often
+      // quarantine noreply@ and From≠Reply-To mismatches.
+      sender: resolveSender({ name: 'National Sports Apparel', replyTo }),
       to: toList,
       subject,
       htmlContent: html,

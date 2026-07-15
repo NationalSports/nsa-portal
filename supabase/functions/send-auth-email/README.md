@@ -28,7 +28,7 @@ the Netlify deploy and must be done once for the fix to take effect.
    - `SEND_EMAIL_HOOK_SECRET` — the `v1,whsec_...` value generated in step 3.
    - *(optional)* `AUTH_EMAIL_SENDER_NAME` (default `National Sports Apparel`)
    - *(optional)* `AUTH_EMAIL_SENDER_EMAIL` (default
-     `noreply@nationalsportsapparel.com`)
+     `hello@nationalsportsapparel.com`)
 
 2. **Deploy without JWT verification** — GoTrue authenticates with a Standard
    Webhooks signature, not a Supabase JWT:

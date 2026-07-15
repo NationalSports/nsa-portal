@@ -107,9 +107,21 @@ export const reviewTextBlock=()=>'Happy with how we did? A quick Google review m
 // is unreliable; flip to true (or wire to env) to re-enable. Send code paths
 // remain intact so re-enabling is a one-line change.
 export const _smsUiEnabled = false;
+// School-district filters often block noreply@ and From≠Reply-To mismatches.
+// Prefer a real @nationalsportsapparel.com mailbox; treat noreply@ as no preference.
+export const NSA_DEFAULT_SENDER_EMAIL='hello@nationalsportsapparel.com';
+export const resolveBrevoSender=({senderName,senderEmail,replyTo}={})=>{
+  const fallbackName='National Sports Apparel';
+  const isNsa=(e)=>/@nationalsportsapparel\.com$/i.test(String(e||''));
+  const preferred=(e)=>isNsa(e)&&!/^noreply@/i.test(String(e||''));
+  if(preferred(senderEmail))return{name:senderName||fallbackName,email:senderEmail};
+  if(preferred(replyTo?.email))return{name:replyTo.name||senderName||fallbackName,email:replyTo.email};
+  return{name:senderName||fallbackName,email:NSA_DEFAULT_SENDER_EMAIL};
+};
 export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,senderName,senderEmail,replyTo,attachment})=>{
-  try{const payload={sender:{name:senderName||'National Sports Apparel',email:senderEmail||'noreply@nationalsportsapparel.com'},to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
-    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||senderName||'National Sports Apparel'};
+  try{const sender=resolveBrevoSender({senderName,senderEmail,replyTo});
+    const payload={sender,to:Array.isArray(to)?to:[{email:to}],subject,htmlContent:htmlContent||undefined,textContent:textContent||undefined};
+    if(replyTo)payload.replyTo={email:replyTo.email,name:replyTo.name||sender.name};
     if(cc){const ccArr=Array.isArray(cc)?cc:[cc];const _toEmails=new Set(payload.to.map(t=>(t.email||'').toLowerCase()));const _filtered=ccArr.filter(c=>c&&c.email&&!_toEmails.has(c.email.toLowerCase()));if(_filtered.length>0)payload.cc=_filtered}
     if(bcc){const bccArr=Array.isArray(bcc)?bcc:[bcc];if(bccArr.length>0)payload.bcc=bccArr}
     if(attachment&&attachment.length>0)payload.attachment=attachment;

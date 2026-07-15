@@ -48,11 +48,18 @@ type ScheduledRow = {
 async function sendOne(row: ScheduledRow): Promise<{ ok: boolean; messageId?: string; error?: string }> {
   if (!BREVO_API_KEY) return { ok: false, error: "BREVO_API_KEY not configured" };
 
+  const defaultSender = Deno.env.get("BREVO_DEFAULT_SENDER") || "hello@nationalsportsapparel.com";
+  const isNsa = (e: string | null | undefined) => /@nationalsportsapparel\.com$/i.test(String(e || ""));
+  const preferred = (e: string | null | undefined) => isNsa(e) && !/^noreply@/i.test(String(e || ""));
+  let senderEmail = preferred(row.sender_email) ? row.sender_email! : defaultSender;
+  let senderName = row.sender_name || "National Sports Apparel";
+  if (!preferred(row.sender_email) && preferred(row.reply_to?.email)) {
+    senderEmail = row.reply_to!.email;
+    senderName = row.reply_to!.name || senderName;
+  }
+
   const payload: Record<string, unknown> = {
-    sender: {
-      name: row.sender_name || "National Sports Apparel",
-      email: row.sender_email || "noreply@nationalsportsapparel.com",
-    },
+    sender: { name: senderName, email: senderEmail },
     to: row.to_emails,
     subject: row.subject,
     htmlContent: row.html_content,

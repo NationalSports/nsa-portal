@@ -11,6 +11,7 @@
 //   REACT_APP_SUPABASE_URL (or SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY,
 //   BREVO_API_KEY, and PORTAL_PUBLIC_URL (or Netlify's URL).
 const { createClient } = require('@supabase/supabase-js');
+const { resolveSender } = require('./_emailSender');
 
 const money = (n) => '$' + (Number(n) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -208,7 +209,7 @@ async function sendShipEmail(sb, order, sh, shipItems, tracking) {
     ${logoBar}
     <div style="background:${store.primary_color || '#0b1f3a'};color:#fff;padding:18px 24px">
       <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">${store.name}</div>
-      <div style="font-size:22px;font-weight:800;margin-top:4px">${partial ? 'Part of your order shipped' : 'Your order shipped'} 📦</div>
+      <div style="font-size:22px;font-weight:800;margin-top:4px">${partial ? 'Part of your order shipped' : 'Your order shipped'}</div>
     </div>
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:22px 24px">
       <p style="margin:0 0 14px">Hi ${order.buyer_name || ''}, ${partial ? 'some of your items are on the way' : 'your order is on the way'}!</p>
@@ -227,7 +228,7 @@ async function sendShipEmail(sb, order, sh, shipItems, tracking) {
     method: 'POST',
     headers: { 'accept': 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: store.name || 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: store.name || 'National Sports Apparel' }),
       to: [{ email: order.buyer_email, name: order.buyer_name || '' }],
       subject: `${partial ? 'Part of your' : 'Your'} ${store.name} order shipped`,
       htmlContent: html,

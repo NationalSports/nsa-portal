@@ -6495,7 +6495,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const rosterUrl='https://nationalsportsapparel.com/roster.html?d='+linkData;
         try{const res=await sendBrevoEmail({to:[{email:resolvedEmail,name:rsmName}],subject:'Roster Number Assignment — '+(o.id||'Order')+' '+(rsm.item.name||'Item'),
           htmlContent:'<div style="font-family:sans-serif;max-width:600px;margin:0 auto"><div style="background:linear-gradient(135deg,#1e3a5f,#2563eb);color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center"><h2 style="margin:0">🏈 Roster Number Request</h2></div><div style="background:white;padding:20px;border:1px solid #e2e8f0;border-radius:0 0 8px 8px"><p>Hi '+rsmName+',</p><p>'+(cu?.name||'Your sales rep')+' at National Sports Apparel needs jersey numbers assigned for <strong>'+(rsm.item.name||'Item')+'</strong> ('+(o.id||'Order')+').</p><p>Please click the button below to assign numbers to each size:</p><p style="text-align:center;margin:20px 0"><a href="'+rosterUrl+'" style="display:inline-block;padding:14px 32px;background:#2563eb;color:white;text-decoration:none;border-radius:8px;font-weight:700;font-size:16px">Assign Numbers →</a></p><p style="color:#64748b;font-size:12px">If the button doesn\'t work, copy this link: '+rosterUrl+'</p></div></div>',
-          senderName:cu?.name||'National Sports Apparel',senderEmail:'noreply@nationalsportsapparel.com',replyTo:cuEmail?{email:cuEmail,name:cu?.name}:undefined});
+          senderName:cu?.name||'National Sports Apparel',senderEmail:undefined,replyTo:cuEmail?{email:cuEmail,name:cu?.name}:undefined});
           if(res.ok){nf('Roster request sent to '+resolvedEmail);setRosterSendModal(null)}else{nf('Failed: '+(res.error||'Unknown'),'error')}}catch(e){nf('Error: '+e.message,'error')}
         setRsmSending(false)};
       return<div className="modal-overlay" onClick={()=>setRosterSendModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:500}}>
@@ -7261,7 +7261,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 subject:_emailSubject,
                 html_content:emailHtml,
                 sender_name:cu.name||'National Sports Apparel',
-                sender_email:'noreply@nationalsportsapparel.com',
+                sender_email:undefined,
                 reply_to:cu?.email?{email:cu.email,name:cu.name}:null,
                 attachments:brevoAttachments,
                 related_type:'invoice',
@@ -7285,7 +7285,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 htmlContent:emailHtml,
                 textContent:_invReviewText,
                 senderName:cu.name||'National Sports Apparel',
-                senderEmail:'noreply@nationalsportsapparel.com',
+                senderEmail:undefined,
                 replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
                 attachment:brevoAttachments.length>0?brevoAttachments:undefined
               });
@@ -9989,7 +9989,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 htmlMsg=htmlMsg.split(cam.portalUrl).join(_linkBtn);
               }
               const toList=allTargets.map(em=>({email:em}));
-              const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||'noreply@nationalsportsapparel.com',replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
+              const res=await sendBrevoEmail({to:toList,subject:_emailSubject,htmlContent:'<div style="font-family:sans-serif;font-size:14px;line-height:1.6;max-width:600px;margin:0 auto">'+_emailLogoHtml+htmlMsg+'</div>',senderName:cu.name||'National Sports Apparel',senderEmail:cu?.email||undefined,replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined});
               if(res.ok){actions.push('email sent to '+allTargets.join(', '));actions._messageId=res.messageId}else{nf('Email failed: '+res.error,'error');setCoachApprovalModal(m=>({...m,sending:false}));return}
             }else{
               const subj=encodeURIComponent(_emailSubject);
@@ -11982,7 +11982,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               subject:poEmail.subject,
               htmlContent:html,
               senderName:cu?.name||'National Sports Apparel',
-              senderEmail:'noreply@nationalsportsapparel.com',
+              senderEmail:undefined,
               replyTo:cu?.email?{email:cu.email,name:cu.name}:undefined,
               attachment:[attach],
             });

@@ -12,6 +12,7 @@
 //      BREVO_API_KEY, plus the GOOGLE_SA_* / EMPLOYEE_FORMS_FOLDER_ID set used
 //      by _googleDrive.js (Drive copy is skipped if those are absent).
 const { getSupabaseAdmin } = require('./_shared');
+const { resolveSender } = require('./_emailSender');
 const { buildPacketFiles, zipFiles, safeName, hireLegalName } = require('./_onboardingPacket');
 const { brandedEmail } = require('./_onboardingEmail');
 const drive = require('./_googleDrive');
@@ -29,7 +30,7 @@ async function emailPacketToHr(invite, zipBuffer, filename, driveUrl, displayNam
     method: 'POST',
     headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
     body: JSON.stringify({
-      sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+      sender: resolveSender({ name: 'National Sports Apparel' }),
       to: [{ email: HR_EMAIL() }],
       subject: `New-hire packet complete — ${name}`,
       htmlContent: brandedEmail({

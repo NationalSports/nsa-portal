@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Scheduled function (see netlify.toml): checks active back-in-stock alerts
 // against adidas_inventory and emails coaches via Brevo when their size has
 // landed. Alerts are deactivated after notifying — one email per signup.
@@ -44,7 +45,7 @@ exports.handler = async () => {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'NSA Catalog', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'NSA Catalog' }),
           to: [{ email: a.email }],
           subject: `Back in stock: ${label}`,
           htmlContent: `

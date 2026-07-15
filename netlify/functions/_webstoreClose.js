@@ -1,3 +1,4 @@
+const { resolveSender } = require('./_emailSender');
 // Shared "a webstore closed" handler — used by the scheduled sweep (webstore-close-sweep)
 // and the manual-close endpoint (webstore-closed-notify). For a just-closed store it:
 //   1. builds an order breakdown (orders, units, gross, fundraising, delivery),
@@ -93,7 +94,7 @@ async function notifyStoreClosed(admin, store, opts = {}) {
         method: 'POST',
         headers: { accept: 'application/json', 'content-type': 'application/json', 'api-key': brevoKey },
         body: JSON.stringify({
-          sender: { name: 'National Sports Apparel', email: 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({ name: 'National Sports Apparel' }),
           to: toUniq,
           subject: `Store closed — ${store.name} (${b.orderCount} order${b.orderCount === 1 ? '' : 's'} to process)`,
           htmlContent: `

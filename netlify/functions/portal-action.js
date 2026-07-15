@@ -10,6 +10,7 @@
 // Brevo using the server-side key so it isn't exposed to the browser.
 
 const { createClient } = require('@supabase/supabase-js');
+const { resolveSender } = require('./_emailSender');
 
 // Only these columns may be written from the portal — defends against a crafted
 // payload setting arbitrary columns. Target rows are additionally verified to
@@ -247,7 +248,11 @@ exports.handler = async (event) => {
     } else {
       try {
         const payload = {
-          sender: { name: email.senderName || 'NSA Portal', email: email.senderEmail || 'noreply@nationalsportsapparel.com' },
+          sender: resolveSender({
+            name: email.senderName || 'National Sports Apparel',
+            email: email.senderEmail,
+            replyTo: email.replyTo,
+          }),
           to: Array.isArray(email.to) ? email.to : [{ email: email.to }],
           subject: email.subject,
           htmlContent: email.htmlContent || undefined,
