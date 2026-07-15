@@ -18,6 +18,8 @@ const parseSheet = (raw) => {
   if (g) gid = g[1];
   return id ? { id, gid } : null;
 };
+// Exported so coach-leads-sheet-sync.js can reuse this instead of duplicating it.
+exports.parseSheet = parseSheet;
 
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 

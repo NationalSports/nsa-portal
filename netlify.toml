@@ -94,6 +94,22 @@
 [functions."followup-sweep"]
   schedule = "0 * * * *"
 
+# Coach leads sheet sync — daily. Pulls the coach-lead Google Sheet
+# (COACH_LEADS_SHEET_URL) and inserts NEW leads into coach_leads (dedup by
+# email; never overwrites existing leads). Feeds the auto store creation
+# funnel — see COACH_AUTO_STORE_PLAN_2026-07-10.md and
+# netlify/functions/coach-leads-sheet-sync.js.
+[functions."coach-leads-sheet-sync"]
+  schedule = "45 12 * * *"
+
+# Coach leads enrichment — daily. For new coach_leads with a school, web-searches
+# the school's official team colors + mascot (Haiku) and writes suggestions back
+# (status new -> enriched). Logos stay manual. Feeds auto store creation —
+# see COACH_AUTO_STORE_PLAN_2026-07-10.md Phase 2 and
+# netlify/functions/coach-leads-enrich.js.
+[functions."coach-leads-enrich"]
+  schedule = "15 13 * * *"
+
 # Roster reminder sweep — daily at 16:20 UTC. Nudges roster players who were
 # emailed their store link but never opened it after 5 days (and haven't
 # ordered), then stamps reminder_sent_at so it fires once. See
