@@ -10055,7 +10055,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, backImg: st.image_back_url || '', color: st.color || '', decorations: it.decorations || [], styleKey: key });
+      // Normalize the garment photo to the SAME uniform 4:5 frame the storefront renders
+      // (normGarment trims + pads SanMar photos; other URLs pass through). Without this the
+      // editor places the logo against the RAW photo while the store shows the trimmed/padded
+      // one, so a logo dragged to a spot here lands somewhere else on the live store.
+      g.items.push({ id: it.id, sku: it.sku, img: normGarment(it.image_url || st.image_front_url), backImg: normGarment(st.image_back_url || ''), color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
   const allItems = groups.flatMap((g) => g.items);
