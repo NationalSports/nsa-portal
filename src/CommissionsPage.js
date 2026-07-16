@@ -51,6 +51,16 @@ export default function CommissionsPage(){
     // disabled, so a failed load can never cause a blind overwrite.
     const[repComp,setRepComp]=useState(null);
     const _repCompVer=useRef(0);
+    // Whether this browser has a REAL Supabase auth session. The LoginGate
+    // admin-override picker sets cu without one — the DB then sees anon and rejects
+    // every write (RLS + function grants), while the UI quietly reverts on the next
+    // sync. null = unknown, false = override login: show a banner and block edits.
+    const[hasAuth,setHasAuth]=useState(null);
+    useEffect(()=>{let c=false;
+      if(!supabase||!isSteve)return;
+      supabase.auth.getSession().then(({data})=>{if(!c)setHasAuth(!!(data&&data.session))}).catch(()=>{if(!c)setHasAuth(null)});
+      return()=>{c=true};
+    },[isSteve]);
     useEffect(()=>{let cancelled=false;
       if(!supabase||!isSteve)return;
       supabase.from('app_state').select('value,version').eq('id','comm_rep_comp').maybeSingle().then(({data,error})=>{
@@ -840,6 +850,7 @@ export default function CommissionsPage(){
         };
         const saveCostModal=()=>{
           const m=costModal;if(!m)return;
+          if(hasAuth===false){alert('You are signed in via the admin-override picker — the database rejects writes from this session, so this edit would silently revert.\n\nLog out, sign in with your email + password, and redo the edit.');return}
           const num=v=>{const n=parseFloat(v);return isNaN(n)||n<0?0:n};
           setSOs(prev=>prev.map(s=>{
             if(s.id!==m.soId)return s;
@@ -887,7 +898,8 @@ export default function CommissionsPage(){
             const withhold=appliedAmt!=null?appliedAmt:(loanBal>0&&!full?Math.min(Math.round(payable*pct)/100,loanBal):0);
             const payout=Math.round((payable-withhold)*100)/100;
             const hasComp=draw>0||loanBal>0||appliedAmt!=null;
-            return{b,s,id,draw,gp,underBy,excessGP,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp};
+            const paidRec=(s.paid&&s.paid[commMonth])||null;
+            return{b,s,id,draw,gp,underBy,excessGP,payable,loanBal,pct,full,appliedAmt,withhold,payout,hasComp,paidRec};
           }).sort((a,c)=>c.payout-a.payout);
         })();
         const totPayout=payoutRows.reduce((a,p)=>a+p.payout,0);
@@ -910,6 +922,33 @@ export default function CommissionsPage(){
           const log={...(p.s.loanLog||{})};delete log[commMonth];
           updateComp(p.id,{loanBalance:Math.round((safeNum(p.s.loanBalance)+p.appliedAmt)*100)/100,loanLog:log});
         };
+        // Mark a rep's month as PAID — records the payout amount, when, and by whom
+        // in comm_rep_comp, so the dashboard shows what was actually disbursed even
+        // if the month's numbers move later.
+        const markPaid=(p)=>{
+          if(repComp===null)return;
+          let msg='Mark '+repName(p.b)+"'s "+monthLabel+' commission as PAID?\n\nPayout: $'+p.payout.toFixed(2);
+          if(p.withhold>0&&p.appliedAmt==null)msg+='\n\n⚠ $'+p.withhold.toFixed(2)+' loan withholding has NOT been applied to the loan balance yet — usually you Apply to loan first.';
+          if(!window.confirm(msg))return;
+          const paid={...(p.s.paid||{})};paid[commMonth]={amount:p.payout,at:new Date().toISOString(),by:cu?.name||''};
+          updateComp(p.id,{paid});
+        };
+        const unmarkPaid=(p)=>{
+          const rec=p.paidRec;if(!rec)return;
+          if(!window.confirm('Un-mark '+repName(p.b)+"'s "+monthLabel+' payment of $'+safeNum(rec.amount).toFixed(2)+'?'))return;
+          const paid={...(p.s.paid||{})};delete paid[commMonth];
+          updateComp(p.id,{paid});
+        };
+        const markAllPaid=()=>{
+          if(repComp===null)return;
+          const unpaid=payoutRows.filter(p=>!p.paidRec);
+          if(!unpaid.length){alert('Every rep is already marked paid for '+monthLabel+'.');return}
+          const totalUnpaid=unpaid.reduce((a,p)=>a+p.payout,0);
+          if(!window.confirm('Mark ALL '+unpaid.length+' remaining reps as PAID for '+monthLabel+'?\n\nTotal payout: $'+totalUnpaid.toFixed(2)))return;
+          const next={...(repComp||{})};const at=new Date().toISOString();
+          unpaid.forEach(p=>{const cur=next[p.id]||{};next[p.id]={...cur,paid:{...(cur.paid||{}),[commMonth]:{amount:p.payout,at,by:cu?.name||''}}}});
+          saveRepComp(next);
+        };
         // ── Export / email ──
         const csvCell=v=>{const s=v==null?'':String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
         const csvString=(selIds)=>{
@@ -927,9 +966,9 @@ export default function CommissionsPage(){
           if(repComp!==null){
             const selPay=payoutRows.filter(p=>!selIds||selIds.has(p.id));
             out.push([]);
-            out.push(['PAYOUTS — '+monthLabel,'Net Commission','GP','Monthly Draw (GP)','Under Draw By','Payable','To Loan','Loan Balance Remaining','PAYOUT']);
-            selPay.forEach(p=>out.push([repName(p.b),p.b.net.toFixed(2),p.gp.toFixed(2),p.draw>0?p.draw.toFixed(2):'',p.underBy>0?p.underBy.toFixed(2):'',p.payable.toFixed(2),p.withhold>0?p.withhold.toFixed(2):'',p.loanBal>0||p.appliedAmt!=null?p.loanBal.toFixed(2):'',p.payout.toFixed(2)]));
-            out.push(['TOTAL PAYOUT','','','','','',selPay.reduce((a,p)=>a+p.payout,0).toFixed(2)]);
+            out.push(['PAYOUTS — '+monthLabel,'Net Commission','GP','Monthly Draw (GP)','Under Draw By','Payable','To Loan','Loan Balance Remaining','PAYOUT','Paid']);
+            selPay.forEach(p=>out.push([repName(p.b),p.b.net.toFixed(2),p.gp.toFixed(2),p.draw>0?p.draw.toFixed(2):'',p.underBy>0?p.underBy.toFixed(2):'',p.payable.toFixed(2),p.withhold>0?p.withhold.toFixed(2):'',p.loanBal>0||p.appliedAmt!=null?p.loanBal.toFixed(2):'',p.payout.toFixed(2),p.paidRec?'paid '+String(p.paidRec.at).substring(0,10):'']));
+            out.push(['TOTAL PAYOUT','','','','','','','',selPay.reduce((a,p)=>a+p.payout,0).toFixed(2),'']);
           }
           return out.map(r=>r.map(csvCell).join(',')).join('\r\n');
         };
@@ -975,6 +1014,9 @@ export default function CommissionsPage(){
           }finally{setEmailSending(false)}
         };
         return<>
+          {hasAuth===false&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',fontWeight:600}}>
+            ⚠ You're signed in via the admin-override picker — this session has no auth token, so the database rejects every save (cost edits, draw/loan, overrides, re-freezes) and the screen reverts on the next sync. Log out and sign in with your email + password to make changes stick.
+          </div>}
           <div className="card">
             <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
               <h2>👑 Admin Dashboard — {monthLabel}{isMTD?' (Month to Date)':''}</h2>
@@ -1126,7 +1168,10 @@ export default function CommissionsPage(){
           <div className="card" style={{marginTop:16}}>
             <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
               <h2>💰 Payouts — {monthLabel}{isMTD?' (MTD)':''}</h2>
-              <span style={{fontSize:11,color:'#64748b'}}>Draw measures against GP — commission pays on GP over the draw, then loan withholding</span>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <span style={{fontSize:11,color:'#64748b'}}>Draw measures against GP — commission pays on GP over the draw, then loan withholding</span>
+                <button className="btn btn-sm btn-primary" disabled={repComp===null||payoutRows.length===0||payoutRows.every(p=>p.paidRec)} title="Mark every remaining rep's payout as paid for this month" onClick={markAllPaid}>💵 Mark month paid</button>
+              </div>
             </div>
             <div className="card-body" style={{padding:0}}>
               {repComp===null?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>Loading draw & loan settings… (edits are disabled until they load)</div>:
@@ -1135,7 +1180,7 @@ export default function CommissionsPage(){
                 <th>Rep</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw (GP)</th><th style={{textAlign:'right'}}>Payable</th><th>Loan</th><th style={{textAlign:'right'}}>Payout</th><th style={{textAlign:'center'}}></th>
               </tr></thead><tbody>
                 {payoutRows.map(p=>{const name=repName(p.b);
-                  return<tr key={p.id} style={{background:p.hasComp?'#f8fafc':''}}>
+                  return<tr key={p.id} style={{background:p.paidRec?'#f0fdf4':p.hasComp?'#f8fafc':''}}>
                     <td style={{fontWeight:700}}>{name}</td>
                     <td style={{textAlign:'right'}}>{fmt(p.b.net)}</td>
                     <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}}>{p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9,color:'#92400e'}}>under draw ({fmt(p.draw)} − {fmt(p.gp)} GP)</div></>:<><span>met</span><div style={{fontSize:9,color:'#166534'}}>GP {fmt(p.gp)} ≥ {fmt(p.draw)}</div></>):'—'}</td>
@@ -1145,12 +1190,17 @@ export default function CommissionsPage(){
                         {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied to loan</div>
                         :<label style={{fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}><input type="checkbox" checked={p.full} onChange={()=>toggleFullMonth(p)}/>pay full this month</label>}
                       </div>:'—'}</td>
-                    <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>{fmt(p.payout)}</td>
+                    <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>{fmt(p.payout)}
+                      {p.paidRec&&<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ PAID {String(p.paidRec.at).substring(0,10)}</div>}
+                      {p.paidRec&&Math.abs(safeNum(p.paidRec.amount)-p.payout)>0.005&&<div style={{fontSize:9,fontWeight:700,color:'#dc2626'}} title="The month's numbers changed after this was marked paid">⚠ paid {fmt(safeNum(p.paidRec.amount))}</div>}
+                    </td>
                     <td style={{textAlign:'center'}}>
                       <div style={{display:'flex',gap:4,justifyContent:'center',flexWrap:'wrap'}}>
                         <button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Set this rep's monthly draw, loan balance, and loan withholding %" onClick={()=>{const s=(repComp||{})[p.id]||{};setCompEdit({id:p.id,draw:s.draw!=null?String(s.draw):'',loan:s.loanBalance!=null?String(s.loanBalance):'',pct:s.loanPct!=null?String(s.loanPct):'50'})}}>⚙ Draw/Loan</button>
                         {p.appliedAmt==null&&p.withhold>0&&<button className="btn btn-sm" style={{fontSize:9,background:'#fefce8',border:'1px solid #eab308',color:'#854d0e',padding:'2px 6px'}} title="Reduce the loan balance by this month's withholding and lock the month" onClick={()=>applyLoan(p)}>Apply to loan</button>}
-                        {p.appliedAmt!=null&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Put this month's withholding back on the loan balance" onClick={()=>undoLoan(p)}>Undo</button>}
+                        {p.appliedAmt!=null&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Put this month's withholding back on the loan balance" onClick={()=>undoLoan(p)}>Undo loan</button>}
+                        {!p.paidRec&&<button className="btn btn-sm" style={{fontSize:9,background:'#f0fdf4',border:'1px solid #86efac',color:'#166534',padding:'2px 6px',fontWeight:700}} title="Record this month's payout as paid to this rep" onClick={()=>markPaid(p)}>💵 Mark paid</button>}
+                        {p.paidRec&&<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Remove the paid mark for this month" onClick={()=>unmarkPaid(p)}>Undo paid</button>}
                       </div>
                     </td>
                   </tr>})}
