@@ -21,6 +21,17 @@
 [context.production.environment]
   PUBLIC_URL = "https://nsa-portal.netlify.app"
 
+# Team Shop launch gate — netlify/edge-functions/teamshop-gate.js. Declared here (NOT via
+# inline `export const config`) ON PURPOSE: config-file edge functions run BEFORE inline
+# ones, so this gate short-circuits a gated nationalteamshop.com request before the inline
+# /shop/* + /* SEO functions ever run. Declaring it inline too would demote it to inline
+# ordering (Netlify merges same-name declarations as inline), so keep it toml-only.
+# Inert unless the TEAMSHOP_GATE_KEY env var is set, and only ever fires on the Team Shop
+# host — safe to ship while nationalteamshop.com is dark.
+[[edge_functions]]
+  path = "/*"
+  function = "teamshop-gate"
+
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
 [[headers]]
