@@ -22375,17 +22375,18 @@ export default function App(){
     // PDF.js outputs tab-separated columns so the label can share a row with another header
     // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
     const _findLabeledPO=(lines,labelRe)=>{
-      // A PO cell value: "PO1234", "PO 3514 OLuST" (optional store tag), or a bare "1234".
-      // Anchored at the cell START only (not both ends) so a trailing description — Silver Screen
-      // prints "PO 3514 OLuST - tackle twill" in the P.O. NUMBER cell — is trimmed down to the PO,
-      // while a store-tag suffix (like Frontier's "PO4133 OLUF") is kept as part of the number.
-      const PO_CELL=/^(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})\b/i;
+      // A PO cell value: "PO1234", "PO 3514 OLuST" (optional store tag), a decoration PO
+      // "DPO 3516 OLuST" (the app mints deco POs as "DPO <n> <tag>", see OrderEditor), or a
+      // bare "1234". Anchored at the cell START only (not both ends) so a trailing description —
+      // Silver Screen prints "DPO 3516 OLuST - tackle twill" in the P.O. NUMBER cell — is trimmed
+      // to the PO, while a store-tag suffix (like Frontier's "PO4133 OLUF") is kept as part of it.
+      const PO_CELL=/^(D?PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})\b/i;
       for(let i=0;i<lines.length;i++){
         if(!labelRe.test(lines[i]))continue;
         // Same line (after label and/or in a later tab column)
         const parts=lines[i].split('\t').map(p=>p.trim());
         for(const p of parts){const m=p.match(PO_CELL);if(m)return m[1].trim()}
-        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})/i);
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(D?PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})/i);
         if(sameM)return sameM[1].trim();
         // Next 1-4 lines: check first column (i.e. below the label cell)
         for(let j=i+1;j<Math.min(i+5,lines.length);j++){
