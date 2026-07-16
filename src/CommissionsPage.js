@@ -4,7 +4,7 @@
 // behavior-identical to the old closure call.
 import { useAppData } from './AppContext';
 import { calcSOStatus } from './components';
-import { commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
@@ -22,7 +22,7 @@ export default function CommissionsPage(){
 
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
     const isSteve=cu?.id===ADMIN_DASH_USER_ID;
-    const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
+    const salesReps=REPS.filter(isCommissionRep);
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
 
@@ -565,7 +565,7 @@ export default function CommissionsPage(){
           <div className="card-header"><h2>Rep Leaderboard — YTD</h2></div>
           <div className="card-body" style={{padding:0}}>
             <table style={{fontSize:12}}><thead><tr><th>Rep</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Commission</th><th style={{textAlign:'center'}}>Invoices</th></tr></thead><tbody>
-              {salesReps.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
+              {salesReps.filter(isCommissionRep).map(r=>{
                 const rLines=ytdLines.filter(l=>l.repId===r.id);
                 const rRev=rLines.reduce((a,l)=>a+safeNum(l.inv.total),0);
                 const rGP=rLines.reduce((a,l)=>a+l.gp.gp,0);
@@ -619,7 +619,7 @@ export default function CommissionsPage(){
 
       {/* MONTHLY REPORTS TAB — admin only. Per-rep statements for the selected month with a printable view. */}
       {commTab==='monthly'&&isAdmin&&(()=>{
-        const reportableReps=salesReps.filter(r=>r.role==='rep'||r.role==='admin');
+        const reportableReps=salesReps.filter(isCommissionRep);
         const repReports=reportableReps.map(r=>{
           const lines=buildCommLines(r.id).filter(l=>{if(!l.paidDate)return false;const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');return ym===commMonth});
           const promo=buildPromoLines(r.id).filter(l=>l.soMonth===commMonth);
