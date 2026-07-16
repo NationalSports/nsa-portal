@@ -205,3 +205,67 @@ export function inheritJobWorkflowFields(existing) {
     coach_rejected: existing.coach_rejected || null,
   };
 }
+
+/**
+ * art_status advancement order, least → most advanced. The three production-files states
+ * (dtf/emb/screen) are one tier — an approved design awaiting its production files.
+ */
+const ART_STATUS_RANK = {
+  needs_art: 0, art_requested: 1, art_in_progress: 2, waiting_approval: 3,
+  production_files_needed: 4, order_dtf_transfers: 4, upload_emb_files: 4, art_complete: 5,
+};
+const rankArtStatus = (s) => (ART_STATUS_RANK[s] != null ? ART_STATUS_RANK[s] : 0);
+
+/**
+ * Art + approval state for a job formed by merging several jobs.
+ *
+ * Art and approvals must SURVIVE a merge (the whole point of the Merge Jobs action was
+ * losing them — it reset every merge to Needs Art). The merged job therefore carries:
+ *   - the UNION of every source design (`_art_ids`), so no design is dropped;
+ *   - the LEAST-ADVANCED `art_status` among the sources — a design still needing art keeps
+ *     the whole job needing art, so a partial merge can never over-report as approved. This
+ *     is the same worst-case `healFrozenJobArtDrift` derives from live decorations, computed
+ *     eagerly so approval isn't lost in the window before the next sync. The value is copied
+ *     from an ACTUAL source (never synthesized) so the correct production-files variant is kept.
+ *   - the UNION of the append-only workflow logs (`art_requests` / `art_messages` /
+ *     `sent_history` / `rejections`), so artist requests and rejection reasons survive.
+ *
+ * Coach approval is reported (`coachApproved`) only when EVERY source was coach-approved and
+ * none was rejected; the caller clears the coach columns otherwise so a partial merge can't
+ * read as customer-approved. Rejection reasons still survive in the unioned `rejections`.
+ *
+ * @param {object[]} sources — jobs being merged, TARGET FIRST (its label/artist win ties)
+ * @returns {{art_status,art_file_id,_art_ids,assigned_artist,art_requests,art_messages,sent_history,rejections,coachApproved}}
+ */
+export function mergeJobsArtState(sources) {
+  const jobs = (sources || []).filter(Boolean);
+  const target = jobs[0] || {};
+  let worst = target;
+  jobs.forEach((j) => { if (rankArtStatus(j.art_status) < rankArtStatus(worst.art_status)) worst = j; });
+  const artIds = [...new Set(
+    jobs
+      .flatMap((j) => (j._art_ids && j._art_ids.length ? j._art_ids : [j.art_file_id]))
+      .filter((id) => id && id !== '__tbd'),
+  )];
+  const uniqBy = (arr, keyOf) => {
+    const seen = new Set(); const out = [];
+    (arr || []).forEach((x) => { const k = keyOf(x); if (!seen.has(k)) { seen.add(k); out.push(x); } });
+    return out;
+  };
+  const rkey = (x) => x && String(x.id || x.created_at || JSON.stringify(x));
+  const rejections = uniqBy(jobs.flatMap((j) => j.rejections || []), rkey);
+  const coachApproved = artIds.length > 0
+    && jobs.every((j) => j.coach_approved_at)
+    && !jobs.some((j) => j.coach_rejected);
+  return {
+    art_status: worst.art_status || 'needs_art',
+    art_file_id: artIds[0] || target.art_file_id || null,
+    _art_ids: artIds,
+    assigned_artist: target.assigned_artist || jobs.map((j) => j.assigned_artist).find(Boolean) || null,
+    art_requests: uniqBy(jobs.flatMap((j) => j.art_requests || []), rkey),
+    art_messages: uniqBy(jobs.flatMap((j) => j.art_messages || []), rkey),
+    sent_history: uniqBy(jobs.flatMap((j) => j.sent_history || []), rkey),
+    rejections: rejections.length ? rejections : null,
+    coachApproved,
+  };
+}

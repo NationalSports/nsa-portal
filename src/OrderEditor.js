@@ -21,7 +21,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -10680,13 +10680,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const mergeItems=_mergeJobItems(allItems);
             const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
             const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
-            // Merging combines items only — it does NOT submit to art. Always reset to
-            // needs_art so the Submit to Art button appears and the user submits the
-            // new merged job explicitly through the wizard.
+            // Art + approvals SURVIVE the merge. Carry every design across the merged jobs
+            // (union of _art_ids) and the LEAST-ADVANCED art_status among them — a design still
+            // needing art keeps the whole job needing art, but an already-approved merge is NOT
+            // thrown back to Needs Art. This is the same worst-case syncJobs' art heal derives from
+            // the live decorations (healFrozenJobArtDrift), computed now so approval isn't lost in
+            // the window before the next sync. art_status is picked as an actual constituent's value
+            // (never synthesized) so the right production-files variant (dtf/emb/screen) is kept.
             // Clear split_from — a merged job is its own standalone job, not a split-off slice.
             // Leaving it set would make the job match BOTH the split and merged preservation filters
             // in syncJobs and get double-counted (the runaway-duplication bug).
-            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,art_status:'needs_art',_merged:true,split_from:null};
+            const _mergedFrom=[target,...[...sel.slice(1),..._extraIdxs].map(i=>jobs[i]).filter(Boolean)];
+            const _as=mergeJobsArtState(_mergedFrom);
+            // Coach columns clear unless every design carried the coach's approval (see helper);
+            // ART_PULLBACK_CLEARS also stamps _coach_cleared so dbEngine keeps the deliberate nulls.
+            const _coachFields=_as.coachApproved?{coach_rejected:false}:{...ART_PULLBACK_CLEARS};
+            const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,
+              art_status:_as.art_status,art_file_id:_as.art_file_id,_art_ids:_as._art_ids,assigned_artist:_as.assigned_artist,
+              art_requests:_as.art_requests,art_messages:_as.art_messages,sent_history:_as.sent_history,rejections:_as.rejections,
+              ..._coachFields,_merged:true,split_from:null};
             const removeIdxs=new Set([...sel.slice(1),..._extraIdxs]);const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
             const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+(sel.length+_extraIdxs.length)+' jobs into '+target.id);
