@@ -17918,9 +17918,19 @@ export default function App(){
                     const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
                       const key=it.sku+'|'+(it.color||'');shippedByItem[key]=(shippedByItem[key]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     })});
+                    // Jobs this Mark-Shipped action is explicitly clearing for this SO: the ready-to-ship
+                    // tasks grouped here (deco_done tasks carry their job; wait_complete ships the whole
+                    // order). Marking these directly reflects the user's intent and — unlike the sku|color
+                    // coverage recompute below — can't silently leave a job stuck at 'completed' when its
+                    // frozen item snapshot drifts from the live item or its unit total doesn't line up with
+                    // the item sizes. The coverage check stays as a fallback for any other completed job.
+                    const _grpItems=(clearShipModal.grp.items||[]).filter(t=>t.soId===soId);
+                    const _clearedJobIds=new Set(_grpItems.map(t=>t.job&&t.job.id).filter(Boolean));
+                    const _wholeOrder=_grpItems.some(t=>t.type==='wait_complete');
                     const origJobs=safeJobs(so);
                     const updatedJobs=origJobs.map(jj=>{
                       if(jj.prod_status!=='completed')return jj;
+                      if(_wholeOrder||_clearedJobIds.has(jj.id))return{...jj,prod_status:'shipped'};
                       const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
                       return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
                     });
