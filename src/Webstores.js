@@ -8771,6 +8771,15 @@ async function importVendorSelections(selected) {
   const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
   const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
   if (error) throw new Error(error.message);
+  // Kick an immediate live-stock backfill for each imported SanMar style (fire-and-forget).
+  // The storefront reads SYNCED vendor stock (sanmar_inventory), which otherwise only the
+  // nightly brands-sync writes — a style imported today would read "sold out" (or sell
+  // blind via the unsynced fallback) until then. Failures are fine: the nightly sync and
+  // the storefront fallback still cover the gap.
+  const smStyles = [...new Set([...selected.values()].filter(({ style }) => style.source === 'sm').map(({ style }) => String(style.sku || '').trim().toUpperCase()).filter(Boolean))];
+  for (const st of smStyles) {
+    try { fetch('/.netlify/functions/vendor-stock-backfill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ style: st, source: 'sanmar' }) }).catch(() => {}); } catch (e) { /* best-effort */ }
+  }
   return (data && data.length ? data : rows);
 }
 
