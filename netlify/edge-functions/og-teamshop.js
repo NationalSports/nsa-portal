@@ -26,14 +26,26 @@ const TEAM_SHOP_APEX = 'nationalteamshop.com';
 const SITE_ORIGIN = `https://${TEAM_SHOP_APEX}`;
 const GRID_LIMIT = 48;
 
-const SUPABASE_URL =
-  Netlify.env.get('REACT_APP_SUPABASE_URL') || Netlify.env.get('SUPABASE_URL') || '';
-const SUPABASE_ANON_KEY = Netlify.env.get('REACT_APP_SUPABASE_ANON_KEY') || '';
+// `Netlify` is a Deno-edge-only global — reading it at module load throws
+// ReferenceError under Jest (or any non-edge runtime), failing the whole
+// import. Read lazily instead: env() is only called from ensureEnv(), which
+// the handler calls on first use, never at module top level.
+const env = (k) => (typeof Netlify !== 'undefined' ? Netlify.env.get(k) : (globalThis.process?.env?.[k] ?? ''));
+let SUPABASE_URL = '';
+let SUPABASE_ANON_KEY = '';
+let _envLoaded = false;
+function ensureEnv() {
+  if (_envLoaded) return;
+  _envLoaded = true;
+  SUPABASE_URL = env('REACT_APP_SUPABASE_URL') || env('SUPABASE_URL') || '';
+  SUPABASE_ANON_KEY = env('REACT_APP_SUPABASE_ANON_KEY') || '';
+}
 
 // Launch categories the catalog renders. Mirrors src/teamshop/categories.js
 // (inline — edge functions can't import the CJS src module). `db` is the primary
 // products.category value the RPC filters on; LAUNCH_DBVALUES holds every value
 // (incl. alternate spellings) used to keep the "all" grid to launch products.
+// HAND-SYNCED COPY of LAUNCH_CATEGORIES in src/teamshop/categories.js — keep in step (see also sitemap.js)
 const CATEGORIES = [
   { key: 'quarter_zips', label: '1/4 Zips', db: '1/4 Zips' },
   { key: 'hoodies', label: 'Hoodies & Fleece', db: 'Hoods' },
@@ -124,6 +136,40 @@ async function fetchProduct(sku) {
   } catch {
     return null;
   }
+}
+
+// Perf: tiny in-isolate TTL cache in front of fetchCatalog/fetchProduct. Edge
+// isolates persist across requests best-effort, so this cuts repeat Supabase
+// calls on a hot page to ~1/min/isolate. Capped so a long-lived isolate can't
+// grow it unbounded; oldest entry evicted first (Map iterates insertion order).
+const DATA_CACHE_TTL_MS = 60_000;
+const DATA_CACHE_MAX = 500;
+const dataCache = new Map(); // key -> { value, expires }
+function cacheGet(key) {
+  const hit = dataCache.get(key);
+  if (!hit) return undefined;
+  if (hit.expires < Date.now()) { dataCache.delete(key); return undefined; }
+  return hit.value;
+}
+function cacheSet(key, value) {
+  if (dataCache.size >= DATA_CACHE_MAX) dataCache.delete(dataCache.keys().next().value); // evict oldest
+  dataCache.set(key, { value, expires: Date.now() + DATA_CACHE_TTL_MS });
+}
+async function cachedFetchCatalog(categoryDb) {
+  const key = `catalog:${categoryDb || 'all'}`;
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  const value = await fetchCatalog(categoryDb);
+  cacheSet(key, value);
+  return value;
+}
+async function cachedFetchProduct(sku) {
+  const key = `product:${sku}`;
+  const hit = cacheGet(key);
+  if (hit !== undefined) return hit;
+  const value = await fetchProduct(sku);
+  cacheSet(key, value);
+  return value;
 }
 
 const prodImg = (p) => p && (p.image_front_url || p.image_url || '');
@@ -303,6 +349,12 @@ function teamShopBase(url) {
 function classify(pathAfterBase) {
   const segs = pathAfterBase.replace(/\/+$/, '').split('/').filter(Boolean);
   if (segs.length === 0) return { name: 'landing' };
+  // Landing aliases: the static index fallback, and the /teamshop path itself
+  // (reachable directly on the real apex, not just as a preview-host base) —
+  // both must render the same as '/'.
+  if (segs.length === 1 && (segs[0] === 'index.html' || segs[0] === 'teamshop')) {
+    return { name: 'landing' };
+  }
   switch (segs[0]) {
     case 'catalog': return { name: 'catalog' };
     case 'product': return { name: 'product', sku: decodeURIComponent(segs[1] || '') };
@@ -334,6 +386,7 @@ const OG = (title, description, image, canonical) =>
 
 export default async function handler(request, context) {
   try {
+    ensureEnv();
     const url = new URL(request.url);
     const base = teamShopBase(url);
     if (base === null) return undefined; // not a Team Shop request
@@ -345,42 +398,57 @@ export default async function handler(request, context) {
     const isApex = isTeamShopHostname(url.hostname);
     const robots = isApex ? 'index, follow, max-image-preview:large' : 'noindex, follow';
 
-    // Resolve per-route SEO (+ any data) before touching the response.
+    // Perf: pick the (cached) Supabase fetch this route needs, then start it
+    // ALONGSIDE context.next() (Promise.all) rather than awaiting it first —
+    // the Supabase round trip overlaps the origin fetch instead of adding to
+    // it on every human page view.
+    let cat = null; // resolved category for the 'catalog' route; reused below
+    let dataPromise = Promise.resolve(null);
+    if (route.name === 'landing') {
+      dataPromise = isApex ? cachedFetchCatalog(null) : Promise.resolve([]);
+    } else if (route.name === 'catalog') {
+      const key = url.searchParams.get('category');
+      cat = key ? CATEGORY_BY_KEY[key] : null;
+      dataPromise = isApex ? cachedFetchCatalog(cat ? cat.db : null) : Promise.resolve([]);
+    } else if (route.name === 'product') {
+      dataPromise = route.sku ? cachedFetchProduct(route.sku) : Promise.resolve(null);
+    }
+    const [response, data] = await Promise.all([context.next(), dataPromise]);
+
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/html')) return response;
+
+    // Resolve per-route SEO from the data fetched above.
     let title, description, canonical, image = '', body = '', ld = '';
 
     if (route.name === 'landing') {
       title = 'National Team Shop — Your logo. Team-quality gear.';
       description = 'Custom team apparel with your logo — decorated and delivered by National Sports Apparel.';
       canonical = `${SITE_ORIGIN}/`;
-      const featured = isApex ? await fetchCatalog(null) : [];
+      const featured = data || [];
       body = renderLanding(featured.slice(0, 8));
       ld = landingJsonLd();
     } else if (route.name === 'catalog') {
-      const key = url.searchParams.get('category');
-      const cat = key ? CATEGORY_BY_KEY[key] : null;
       const heading = cat ? cat.label : 'Custom Team Apparel Catalog';
       title = `${heading} | National Team Shop`;
       description = `Shop ${cat ? cat.label.toLowerCase() : 'custom team apparel'} with your team logo — decorated and delivered. Quote-priced for your team.`;
       canonical = cat ? `${SITE_ORIGIN}/catalog?category=${encodeURIComponent(cat.key)}` : `${SITE_ORIGIN}/catalog`;
-      const products = isApex ? await fetchCatalog(cat ? cat.db : null) : [];
+      const products = data || [];
       body = renderCatalog(products, heading);
       ld = catalogJsonLd(products, heading, canonical);
     } else if (route.name === 'product') {
       canonical = `${SITE_ORIGIN}${productHref(route.sku)}`;
-      const product = route.sku ? await fetchProduct(route.sku) : null;
+      const product = data;
       if (!product) {
         // Unknown sku → head-only, noindex (don't index a phantom product).
-        const resp = await context.next();
-        const ct = resp.headers.get('content-type') || '';
-        if (!ct.includes('text/html')) return resp;
-        const html0 = await resp.text();
+        const html0 = await response.text();
         const tags0 = [
           `  <link rel="canonical" href="${escapeHtml(canonical)}" />`,
           `  <meta name="robots" content="noindex, follow" />`,
         ].join('\n');
-        const h0 = new Headers(resp.headers);
+        const h0 = new Headers(response.headers);
         h0.delete('content-length');
-        return new Response(injectHead(html0, tags0, 'Product | National Team Shop'), { status: resp.status, headers: h0 });
+        return new Response(injectHead(html0, tags0, 'Product | National Team Shop'), { status: response.status, headers: h0 });
       }
       title = `${product.name} | National Team Shop`;
       description = `${product.name}${product.brand ? ' by ' + product.brand : ''} — add your team logo, decorated and delivered by National Sports Apparel.`;
@@ -401,10 +469,6 @@ export default async function handler(request, context) {
     const tags = OG(title, description, image, canonical);
     tags.splice(2, 0, `  <meta name="robots" content="${robots}" />`);
     if (ld) tags.push(ld);
-
-    const response = await context.next();
-    const contentType = response.headers.get('content-type') || '';
-    if (!contentType.includes('text/html')) return response;
 
     let html = await response.text();
     html = injectHead(html, tags.join('\n'), title);

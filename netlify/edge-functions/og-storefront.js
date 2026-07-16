@@ -18,10 +18,20 @@
 // Everything is fail-safe — any lookup/markup problem falls back to the
 // unmodified (or head-only) response, never a broken page.
 
-const SUPABASE_URL =
-  Netlify.env.get('REACT_APP_SUPABASE_URL') || Netlify.env.get('SUPABASE_URL') || '';
-const SUPABASE_ANON_KEY =
-  Netlify.env.get('REACT_APP_SUPABASE_ANON_KEY') || '';
+// `Netlify` is a Deno-edge-only global — reading it at module load throws
+// ReferenceError under Jest (or any non-edge runtime), failing the whole
+// import. Read lazily instead: env() is only called from ensureEnv(), which
+// the handler calls on first use, never at module top level.
+const env = (k) => (typeof Netlify !== 'undefined' ? Netlify.env.get(k) : (globalThis.process?.env?.[k] ?? ''));
+let SUPABASE_URL = '';
+let SUPABASE_ANON_KEY = '';
+let _envLoaded = false;
+function ensureEnv() {
+  if (_envLoaded) return;
+  _envLoaded = true;
+  SUPABASE_URL = env('REACT_APP_SUPABASE_URL') || env('SUPABASE_URL') || '';
+  SUPABASE_ANON_KEY = env('REACT_APP_SUPABASE_ANON_KEY') || '';
+}
 
 // Canonical store domain. nationalteamshop.com is a Netlify alias of this site
 // that serves the storefront SPA directly; it's the one origin we consolidate
@@ -75,7 +85,12 @@ const closesText = (closeAt) => {
 // Pull the <slug> out of /shop/<slug>[/...]. Bare /shop or /shop/ has none.
 const slugFromPath = (pathname) => {
   const segs = pathname.split('/').filter(Boolean); // ['shop', '<slug>', ...]
-  return segs[0] === 'shop' && segs[1] ? decodeURIComponent(segs[1]) : '';
+  if (segs[0] !== 'shop' || !segs[1]) return '';
+  try {
+    return decodeURIComponent(segs[1]);
+  } catch {
+    return segs[1]; // malformed percent-encoding (e.g. "100%off") → use the raw segment
+  }
 };
 
 async function fetchStore(slug) {
@@ -311,90 +326,98 @@ function buildStoreJsonLd(store, items, slug, description, image) {
 }
 
 export default async function handler(request, context) {
-  const url = new URL(request.url);
-  const slug = slugFromPath(url.pathname);
+  // Top-level fail-open guard: any unexpected throw (bad input, a lookup that
+  // slips past its own try/catch, a future edit) falls through to the normal
+  // SPA response instead of a 'function crashed' 500 — mirrors og-teamshop.js.
+  try {
+    ensureEnv();
+    const url = new URL(request.url);
+    const slug = slugFromPath(url.pathname);
 
-  // Let assets and the bare directory fall through to the normal SPA response.
-  const response = await context.next();
-  if (!slug) return response;
+    // Let assets and the bare directory fall through to the normal SPA response.
+    const response = await context.next();
+    if (!slug) return response;
 
-  const contentType = response.headers.get('content-type') || '';
-  if (!contentType.includes('text/html')) return response;
+    const contentType = response.headers.get('content-type') || '';
+    if (!contentType.includes('text/html')) return response;
 
-  const isCanonicalHost = CANONICAL_HOSTS.has(url.hostname.toLowerCase());
-  const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
+    const isCanonicalHost = CANONICAL_HOSTS.has(url.hostname.toLowerCase());
+    const pageUrl = `${SITE_ORIGIN}/shop/${encodeURIComponent(slug)}`;
 
-  // Sub-path after the slug: [] = store home; ['p'|'b', <id>] = product/bundle;
-  // ['cart'|'checkout'] = transactional (never index, never body-render).
-  const sub = url.pathname.split('/').filter(Boolean).slice(2);
-  const isHome = sub.length === 0;
-  const isTransactional = sub[0] === 'cart' || sub[0] === 'checkout';
+    // Sub-path after the slug: [] = store home; ['p'|'b', <id>] = product/bundle;
+    // ['cart'|'checkout'] = transactional (never index, never body-render).
+    const sub = url.pathname.split('/').filter(Boolean).slice(2);
+    const isHome = sub.length === 0;
+    const isTransactional = sub[0] === 'cart' || sub[0] === 'checkout';
 
-  const store = await fetchStore(slug);
-  if (!store) {
-    // Unknown/archived slug → keep the default NSA preview, but canonical + noindex.
-    const html0 = await response.text();
-    const headers0 = new Headers(response.headers);
-    headers0.delete('content-length');
-    return new Response(injectNoindex(html0, pageUrl), {
+    const store = await fetchStore(slug);
+    if (!store) {
+      // Unknown/archived slug → keep the default NSA preview, but canonical + noindex.
+      const html0 = await response.text();
+      const headers0 = new Headers(response.headers);
+      headers0.delete('content-length');
+      return new Response(injectNoindex(html0, pageUrl), {
+        status: response.status,
+        headers: headers0,
+      });
+    }
+
+    const title = `${store.name} — Team Store`;
+    const description =
+      store.hero_blurb ||
+      `The official ${store.name} store — custom team apparel, decorated and delivered. Order before the window closes.`;
+    const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
+
+    // Index only the real, public, open, ungated stores — and only on the canonical
+    // host (the raw netlify.app duplicate always stays noindex). Transactional
+    // sub-pages never index. Mirrors the directory's open/listed filter
+    // (src/storefront/TeamStores.js).
+    const indexable =
+      store.status === 'open' && store.public_listed === true && store.require_login !== true;
+    const robots =
+      isCanonicalHost && indexable && !isTransactional
+        ? 'index, follow, max-image-preview:large'
+        : 'noindex, follow';
+
+    // Full SEO treatment — server-rendered body + structured data — is scoped to the
+    // indexable store HOME on the canonical host. Deeper pages (product/cart/checkout)
+    // and the noindex duplicate origin keep the head-only treatment; product-page SSR
+    // and Product/Offer markup are a later phase.
+    const renderHome = isHome && isCanonicalHost && indexable;
+    const items = renderHome ? dedupeItems(await fetchProducts(store.id), GRID_LIMIT) : [];
+
+    const tags = [
+      `  <meta name="description" content="${escapeHtml(description)}" />`,
+      `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
+      `  <meta name="robots" content="${robots}" />`,
+      `  <meta property="og:type" content="website" />`,
+      `  <meta property="og:site_name" content="National Sports Apparel" />`,
+      `  <meta property="og:title" content="${escapeHtml(title)}" />`,
+      `  <meta property="og:description" content="${escapeHtml(description)}" />`,
+      `  <meta property="og:image" content="${escapeHtml(image)}" />`,
+      `  <meta property="og:url" content="${escapeHtml(pageUrl)}" />`,
+      `  <meta name="twitter:card" content="summary_large_image" />`,
+      `  <meta name="twitter:title" content="${escapeHtml(title)}" />`,
+      `  <meta name="twitter:description" content="${escapeHtml(description)}" />`,
+      `  <meta name="twitter:image" content="${escapeHtml(image)}" />`,
+    ];
+    if (renderHome) {
+      tags.push(buildStoreJsonLd(store, items, slug, description, store.banner_url || store.logo_url || DEFAULT_IMAGE));
+    }
+
+    let html = await response.text();
+    html = injectTags(html, tags.join('\n'), title);
+    if (renderHome) html = injectBody(html, renderStoreBody(store, items, slug));
+
+    const headers = new Headers(response.headers);
+    headers.delete('content-length'); // body length changed
+    return new Response(html, {
       status: response.status,
-      headers: headers0,
+      headers,
     });
+  } catch {
+    return context.next(); // fail open — shopper gets the normal SPA, just without SEO tags
   }
-
-  const title = `${store.name} — Team Store`;
-  const description =
-    store.hero_blurb ||
-    `The official ${store.name} store — custom team apparel, decorated and delivered. Order before the window closes.`;
-  const image = ogImage(store.banner_url || store.logo_url || DEFAULT_IMAGE);
-
-  // Index only the real, public, open, ungated stores — and only on the canonical
-  // host (the raw netlify.app duplicate always stays noindex). Transactional
-  // sub-pages never index. Mirrors the directory's open/listed filter
-  // (src/storefront/TeamStores.js).
-  const indexable =
-    store.status === 'open' && store.public_listed === true && store.require_login !== true;
-  const robots =
-    isCanonicalHost && indexable && !isTransactional
-      ? 'index, follow, max-image-preview:large'
-      : 'noindex, follow';
-
-  // Full SEO treatment — server-rendered body + structured data — is scoped to the
-  // indexable store HOME on the canonical host. Deeper pages (product/cart/checkout)
-  // and the noindex duplicate origin keep the head-only treatment; product-page SSR
-  // and Product/Offer markup are a later phase.
-  const renderHome = isHome && isCanonicalHost && indexable;
-  const items = renderHome ? dedupeItems(await fetchProducts(store.id), GRID_LIMIT) : [];
-
-  const tags = [
-    `  <meta name="description" content="${escapeHtml(description)}" />`,
-    `  <link rel="canonical" href="${escapeHtml(pageUrl)}" />`,
-    `  <meta name="robots" content="${robots}" />`,
-    `  <meta property="og:type" content="website" />`,
-    `  <meta property="og:site_name" content="National Sports Apparel" />`,
-    `  <meta property="og:title" content="${escapeHtml(title)}" />`,
-    `  <meta property="og:description" content="${escapeHtml(description)}" />`,
-    `  <meta property="og:image" content="${escapeHtml(image)}" />`,
-    `  <meta property="og:url" content="${escapeHtml(pageUrl)}" />`,
-    `  <meta name="twitter:card" content="summary_large_image" />`,
-    `  <meta name="twitter:title" content="${escapeHtml(title)}" />`,
-    `  <meta name="twitter:description" content="${escapeHtml(description)}" />`,
-    `  <meta name="twitter:image" content="${escapeHtml(image)}" />`,
-  ];
-  if (renderHome) {
-    tags.push(buildStoreJsonLd(store, items, slug, description, store.banner_url || store.logo_url || DEFAULT_IMAGE));
-  }
-
-  let html = await response.text();
-  html = injectTags(html, tags.join('\n'), title);
-  if (renderHome) html = injectBody(html, renderStoreBody(store, items, slug));
-
-  const headers = new Headers(response.headers);
-  headers.delete('content-length'); // body length changed
-  return new Response(html, {
-    status: response.status,
-    headers,
-  });
 }
 
 export const config = { path: '/shop/*' };

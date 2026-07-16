@@ -48,7 +48,9 @@ describe('og-teamshop bail path (other hostnames are never affected)', () => {
     'https://nationalsportsapparel.com/',
     'https://www.nationalsportsapparel.com/index.html',
     'https://nsa-portal.netlify.app/shop/some-store',
-    'https://deploy-preview-42--nsa-portal.netlify.app/teamshop', // preview path w/o the domain: SPA handles it, no OG rewrite
+    // NOTE: 'https://deploy-preview-42--nsa-portal.netlify.app/teamshop' used to
+    // live in this bail list, but the PR intentionally changed that path — see
+    // the dedicated describe block below for the current expected behavior.
     'https://evilnationalteamshop.com/', // suffix lookalike must NOT match
     'https://nationalteamshop.com.evil.com/',
     'http://localhost:8888/',
@@ -71,6 +73,37 @@ describe('og-teamshop bail path (other hostnames are never affected)', () => {
   test('fails open (undefined) when next() throws on the landing path', async () => {
     const out = await handler({ url: 'https://nationalteamshop.com/' }, untouchableContext());
     expect(out).toBeUndefined();
+  });
+});
+
+// Deploy-preview /teamshop (no Team Shop hostname) resolves to the SAME route as
+// the apex landing page (see teamShopBase()/classify()), so it is NOT a bail path
+// — this is an intentional PR change from the old "SPA handles it untouched"
+// behavior. It still gets a head-only rewrite (noindex + canonical to the real
+// apex, since a preview host must never be indexed), but no body SSR and no
+// Supabase round trip (those are gated on isApex, which is false here).
+describe('og-teamshop preview-host /teamshop (intentional non-bail behavior)', () => {
+  test('rewrites head as noindex + canonical-to-apex, no body SSR, no Supabase fetch', async () => {
+    const fetchSpy = jest.fn(() => {
+      throw new Error('must not call Supabase for a non-apex preview host');
+    });
+    const prevFetch = global.fetch;
+    global.fetch = fetchSpy;
+    try {
+      const out = await handler(
+        { url: 'https://deploy-preview-42--nsa-portal.netlify.app/teamshop' },
+        htmlContext()
+      );
+      const body = await out.text();
+      expect(body).toContain('<title>National Team Shop — Your logo. Team-quality gear.</title>');
+      expect(body).toContain('<meta name="robots" content="noindex, follow" />');
+      expect(body).toContain('<link rel="canonical" href="https://nationalteamshop.com/" />');
+      // No body SSR on a non-apex host — the original (empty) body is untouched.
+      expect(body).toContain('<body></body>');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = prevFetch;
+    }
   });
 });
 

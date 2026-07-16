@@ -11,9 +11,20 @@
 // URLs are absolute + canonical regardless of which host serves this (advertised
 // only from nationalteamshop.com/robots.txt), so it's safe on previews too.
 
-const SUPABASE_URL =
-  Netlify.env.get('REACT_APP_SUPABASE_URL') || Netlify.env.get('SUPABASE_URL') || '';
-const SUPABASE_ANON_KEY = Netlify.env.get('REACT_APP_SUPABASE_ANON_KEY') || '';
+// `Netlify` is a Deno-edge-only global — reading it at module load throws
+// ReferenceError under Jest (or any non-edge runtime), failing the whole
+// import. Read lazily instead: env() is only called from ensureEnv(), which
+// the handler calls on first use, never at module top level.
+const env = (k) => (typeof Netlify !== 'undefined' ? Netlify.env.get(k) : (globalThis.process?.env?.[k] ?? ''));
+let SUPABASE_URL = '';
+let SUPABASE_ANON_KEY = '';
+let _envLoaded = false;
+function ensureEnv() {
+  if (_envLoaded) return;
+  _envLoaded = true;
+  SUPABASE_URL = env('REACT_APP_SUPABASE_URL') || env('SUPABASE_URL') || '';
+  SUPABASE_ANON_KEY = env('REACT_APP_SUPABASE_ANON_KEY') || '';
+}
 
 const SITE_ORIGIN = 'https://nationalteamshop.com';
 
@@ -21,6 +32,7 @@ const SITE_ORIGIN = 'https://nationalteamshop.com';
 // /catalog?category=<key> URLs; the dbValues are how products.category is matched
 // (incl. the alternate spellings the client folds in). Mirrors categories.js —
 // kept inline because edge functions can't import the CJS src module.
+// HAND-SYNCED COPY of LAUNCH_CATEGORIES in src/teamshop/categories.js — keep in step (see also og-teamshop.js)
 const CATEGORY_KEYS = ['quarter_zips', 'hoodies', 'polos', 'outerwear', 'hats', 'tees', 'bags', 'shorts', 'footwear'];
 const LAUNCH_DBVALUES = new Set(['1/4 Zips', 'Hoods', 'Hood', 'Polos', 'Outerwear', 'Hats', 'Beanies', 'Tees', 'Bags', 'Shorts', 'Footwear']);
 
@@ -116,6 +128,7 @@ async function clubStoreLocs() {
 }
 
 export default async function handler() {
+  ensureEnv();
   const [products, clubStores] = await Promise.all([teamShopProductLocs(), clubStoreLocs()]);
   const locs = [...teamShopStaticLocs(), ...products, ...clubStores];
 

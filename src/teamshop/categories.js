@@ -53,3 +53,8 @@ export function categoryForProduct(product) {
 export function inLaunchCategories(product) {
   return categoryForProduct(product) !== null;
 }
+
+// HAND-SYNCED: netlify/edge-functions/og-teamshop.js (CATEGORIES) and
+// netlify/edge-functions/sitemap.js (CATEGORY_KEYS/LAUNCH_DBVALUES) each carry
+// a hardcoded copy of LAUNCH_CATEGORIES (edge functions can't import this CJS
+// src module) — keep all three in step.
