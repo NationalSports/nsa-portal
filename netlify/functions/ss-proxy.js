@@ -45,15 +45,19 @@ exports.handler = async (event) => {
   const _m = String(event.httpMethod || 'GET').toUpperCase();
   const method = ['POST', 'PUT', 'DELETE'].includes(_m) ? _m : 'GET';
   try {
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Accept': 'application/json',
+      // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
+      'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
+    };
+    // Content-Type ONLY when a body is actually forwarded: declaring application/json on a
+    // bodyless request (the CrossRef PUT — its identifier rides the querystring) makes S&S's
+    // ASP.NET stack try to bind an empty JSON body and 500.
+    if (event.body) headers['Content-Type'] = 'application/json';
     const response = await fetch(url, {
       method,
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
-        'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
-      },
+      headers,
       ...(event.body ? { body: event.body } : {}),
     });
 

@@ -349,10 +349,10 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo } from './netsuiteOldPos';
-import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -23147,11 +23147,17 @@ export default function App(){
         nf('No S&S orders found ('+_win+')','success');
         return;
       }
+      // Style enrichment for lines with no yourSku (CrossRef not set yet): one chunked
+      // GET /Products lookup turns each S&S part # into its mfr style, which the resolver
+      // uses to split two styles sharing a color+size. Best-effort — a failed lookup just
+      // means those lines fall to the manual wizard exactly as before.
+      let styleBySku={};
+      try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
       const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let empty=0;let credits=0;let idx=0;
       const pulledOrderNos=[];// every order this pull saw — scopes the badge-clear below
       let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(parsed.si_doc_number)pulledOrderNos.push(String(parsed.si_doc_number));
         // Credits/returns (negative total) carry no positive shipped lines, so they can't flow
         // into Billed tracking — surface the count instead of silently lumping them into "not
@@ -23225,10 +23231,10 @@ export default function App(){
     // bills from a color+size guess to an exact SKU match (kills the two-styles-same-color case).
     // Grounded in matched order history: reuses the all-or-nothing resolver, so only fully-
     // confident orders contribute a mapping and we never teach S&S a wrong pairing.
-    const _ssCrossRefProposals=(orders)=>{
+    const _ssCrossRefProposals=(orders,styleBySku={})=>{
       const out=[];let cands=null;
       (orders||[]).forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(!parsed.matchedPO)return;
         let r;try{r=_ssResolveLineMappings(parsed,cands||(cands=_buildMatchCandidates()))}catch(e){return}
         if(!r)return;// all-or-nothing: only fully-resolved orders yield proposals
@@ -23245,7 +23251,11 @@ export default function App(){
       try{
         const f=ssPullFrom||'';const filters=f?{startDate:f,endDate:new Date().toISOString().slice(0,10)}:{};
         const orders=await ssGetOrders(filters);
-        const proposals=_ssCrossRefProposals(orders);
+        // Same style enrichment as the pull: fully-resolved bills are the seeder's ONLY
+        // source of proposals, so disambiguating more lines directly grows the plan.
+        let styleBySku={};
+        try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
+        const proposals=_ssCrossRefProposals(orders,styleBySku);
         if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0}}));nf('No confidently-matched S&S lines to map yet — nothing to seed','error');return}
         // What's already on the account for the styles we'd assign (idempotency).
         const styles=[...new Set(proposals.map(p=>p.yourSku))];
