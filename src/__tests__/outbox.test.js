@@ -116,6 +116,18 @@ describe('outbox store (localStorage round-trip)', () => {
     expect(received[0].id).toBe('EST-7');
   });
 
+  test('baseVersion prefers _obBaseVersion (pre-auto-heal base) over the healed _version', () => {
+    // The optimistic-lock auto-heal advances entity._version to the server's number WITHOUT
+    // changing the content. Recording that healed _version as baseVersion made _outboxGate
+    // silently re-apply stale content over newer server rows at boot (the SO-1514 stuck-retry
+    // loop). The save paths stash the true pre-heal base in _obBaseVersion; it must win here.
+    _outboxAdd('sales_orders', { id: 'SO-1514', memo: 'stale edit', _version: 112, _obBaseVersion: 111 });
+    const [en] = _outboxList();
+    expect(en.baseVersion).toBe(111);
+    // and the gate now sees the server (v112) as having moved past the edit's base → conflict card
+    expect(_outboxGate(en, { id: 'SO-1514', memo: 'newer', _version: 112 })).toBe('conflict');
+  });
+
   test('size cap evicts oldest-first, loudly, never wedging the write', () => {
     const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const big = 'x'.repeat(500 * 1024); // two of these exceed the ~768k-char cap

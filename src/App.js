@@ -23,7 +23,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
-import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -349,10 +349,10 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo } from './netsuiteOldPos';
-import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -727,6 +727,11 @@ const fetchAdidasInventoryBulk = async (skus) => {
     for (let i = 0; i < uniq.length; i += CHUNK) batches.push(uniq.slice(i, i + CHUNK));
     const bySku = {};
     for (let i = 0; i < batches.length; i += POOL) {
+      // Pace waves under the client circuit breaker's 300-req/10s-per-path ceiling (requestBreaker.js).
+      // Unpaced, a large catalog fires 100+ batches in a few seconds, trips the breaker, and the
+      // remaining batches all get synthetic 429s — silently returning no inventory for those SKUs —
+      // while every OTHER inventory_unified caller (SO editor, webstores) is collaterally throttled too.
+      if (i) await new Promise(r => setTimeout(r, 350));
       const results = await Promise.all(batches.slice(i, i + POOL).map(batch =>
         supabase.from('inventory_unified').select('*').in('sku', batch)
           .then(r => { if (r.error) { console.warn('[Adidas B2B] Bulk fetch error:', r.error.message); return []; } return r.data || []; })
@@ -1494,7 +1499,7 @@ function dP(d,q,artFiles,cq){
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
-  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
+  if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 // Module-scope helpers shared with pages extracted out of App() (QBPage, ...).
 // They stay defined here until the pricing-unification pass relocates them.
@@ -2279,6 +2284,10 @@ export default function App(){
                   console.log('[Outbox] restored unsaved edit for',en.id,'(base v'+(en.baseVersion??'—')+')');
                   return;
                 }
+                // Conflict: the server moved past this edit's base. The card (below) owns the decision —
+                // take the id OUT of the failed-save auto-retry so boot doesn't re-save the freshly
+                // loaded server copy (or, worse, a stale local one) every 60s while the card is pending.
+                _dbSaveFailedIds.delete(en.id);_clearSaveError(en.id);
                 _obConflicts.push(en);
               });
               _persistFailedIds();
@@ -2862,7 +2871,7 @@ export default function App(){
   // IMPORTANT: Supabase writes are gated behind _dbLoadSuccess to prevent demo/stale data from overwriting real cloud data
   // Uses _dbSnap to diff against last DB state — only saves records that actually changed (prevents cross-browser feedback loops)
   const _diffSave=(arr,snapKey,saveFn,cmpFn=_diffCmp)=>{if(_authErrorDetected)return;if(!_initialLoadDone.current||!_dbLoadSuccess.current){if(!_diffSaveSkipLogged.has(snapKey)){console.warn('[DB] _diffSave skipped for',snapKey,'— initialLoad:',_initialLoadDone.current,'dbSuccess:',_dbLoadSuccess.current);_diffSaveSkipLogged.add(snapKey)}if(_initialLoadDone.current){const snap=_dbSnap.current[snapKey]||[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))_dbSavePendingIds.add(item.id)})}return}const snap=_dbSnap.current[snapKey]||[];const changed=[];arr.forEach(item=>{const old=snap.find(p=>p.id===item.id);if(!old||cmpFn(old)!==cmpFn(item))changed.push(item)});_dbSnap.current[snapKey]=arr;if(changed.length===0)return;changed.forEach(item=>_dbSavePendingIds.add(item.id));const BATCH=3;const processBatch=async(idx)=>{const batch=changed.slice(idx,idx+BATCH);if(!batch.length)return;_bgSyncInc();try{await Promise.all(batch.map(async item=>{const result=saveFn(item);if(result&&typeof result.then==='function'){const ok=await result;if(ok!==false){_dbSavePendingIds.delete(item.id)}else{const oldSnap=_dbSnap.current[snapKey]||[];_dbSnap.current[snapKey]=oldSnap.map(s=>s.id===item.id?(snap.find(p=>p.id===item.id)||s):s)}}}))}finally{_bgSyncDec()}if(idx+BATCH<changed.length)await processBatch(idx+BATCH)};processBatch(0)};
-  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null})));_dbSnap.current.team=REPS}},[REPS]);
+  React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.team||[];const changed=REPS.filter(r=>{const old=snap.find(p=>p.id===r.id);return!old||JSON.stringify(old)!==JSON.stringify(r)});if(changed.length)_dbSave('team_members',changed.map(r=>({id:r.id,name:r.name,role:r.role,email:r.email,phone:r.phone,is_active:r.is_active!==false,access:r.access||null,commission_eligible:r.commission_eligible===true})));_dbSnap.current.team=REPS}},[REPS]);
   React.useEffect(()=>{_diffSave(cust,'cust',c=>_dbSaveCustomer(c))},[cust]);
   React.useEffect(()=>{if(_initialLoadDone.current&&_dbLoadSuccess.current){const snap=_dbSnap.current.vend||[];const changed=vend.filter(v=>{const old=snap.find(p=>p.id===v.id);return!old||JSON.stringify(old)!==JSON.stringify(v)});if(changed.length)_dbSave('vendors',changed.map(v=>_pick(v,_vendCols)));_dbSnap.current.vend=vend}},[vend]);
   React.useEffect(()=>{_diffSave(prod,'prod',p=>_dbSaveProduct(p),_prodDiffCmp)},[prod]);
@@ -3140,7 +3149,10 @@ export default function App(){
       const out=s.items.slice();let applied=0;
       for(const r of restores){
         const it=out[r.idx];
-        if(!it||(r.sku&&it.sku&&it.sku!==r.sku))return s;
+        // Same identity rule as _matchRestoreItem: a known DIFFERENT sku OR color means state
+        // moved on mid-save and r.idx now points at another garment — bail untouched.
+        const _norm=c=>String(c||'').trim().toLowerCase();
+        if(!it||(r.sku&&it.sku&&it.sku!==r.sku)||(r.color&&it.color&&_norm(it.color)!==_norm(r.color)))return s;
         const k=r.kind==='pick'?'pick_lines':'po_lines';
         const cur=Array.isArray(it[k])?it[k]:[];
         const lineJson=JSON.stringify(r.line);
@@ -4067,6 +4079,17 @@ export default function App(){
       const stParam=p.get('st');
       if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
         setStTab(stParam);u.searchParams.delete('st');changed=true;
+      }
+      // Commissions deep link (monthly commission-report-reminder email): open a
+      // sub-tab (?comm=adminDash) and/or a month (?month=YYYY-MM). ?pg=commissions
+      // itself is applied by the pg initializer; here we set the tab + month.
+      const commParam=p.get('comm');
+      if(commParam&&['statement','pipeline','promo','ytd','byCustomer','monthly','adminDash'].includes(commParam)){
+        setCommTab(commParam);u.searchParams.delete('comm');changed=true;
+      }
+      const monthParam=p.get('month');
+      if(monthParam&&/^\d{4}-\d{2}$/.test(monthParam)){
+        setCommMonth(monthParam);u.searchParams.delete('month');changed=true;
       }
       if(changed)window.history.replaceState({},'',u);
     }catch{}
@@ -6704,7 +6727,7 @@ export default function App(){
               </div><button className="btn btn-sm btn-secondary" style={{whiteSpace:'nowrap'}} onClick={()=>createCustFromCatReq(r)}>+ New customer</button></>}
               {est2?<button className="btn btn-sm btn-secondary" onClick={()=>{setEEst(est2);setEEstC(cust.find(x=>x.id===est2.customer_id));setPg('estimates');setCatReqOpen(false)}}>Open {est2.id}</button>
               :<button className="btn btn-sm btn-primary" onClick={()=>estFromCatReq(r)}>Build Estimate</button>}
-              <select value={(assignedTodos.find(t=>t.id===r.todo_id)||{}).assigned_to||''} onChange={e=>reassignCatReq(r,e.target.value)} title="Assign this request to a rep" style={{padding:'6px 8px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,background:'white',cursor:'pointer'}}><option value="">Assign rep…</option>{REPS.filter(x=>(x.role==='rep'||x.role==='admin'||x.role==='gm')&&x.is_active!==false).map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>
+              <select value={(assignedTodos.find(t=>t.id===r.todo_id)||{}).assigned_to||''} onChange={e=>reassignCatReq(r,e.target.value)} title="Assign this request to a rep" style={{padding:'6px 8px',border:'1px solid #e2e8f0',borderRadius:8,fontSize:12,background:'white',cursor:'pointer'}}><option value="">Assign rep…</option>{REPS.filter(x=>(isCommissionRep(x)||x.role==='gm')&&x.is_active!==false).map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>
               <button className="btn btn-sm" style={{background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:8}} onClick={()=>dismissCatReq(r)}>Dismiss</button>
               {r.status!=='new'&&!est2&&<span style={{fontSize:11,color:'#166534',fontWeight:600}}>{String(r.status).replace(/_/g,' ')}</span>}
             </div>
@@ -7063,8 +7086,11 @@ export default function App(){
         }
       });
     });
-    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready
-    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so)!=='complete').forEach(so=>{
+    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready.
+    // Use the pure auto-status ({ignoreOverride:true}): closing/invoicing an SO sets the sticky
+    // status='complete' independently of shipping, and must not hide unshipped goods from the
+    // warehouse. Auto-status only reaches 'complete' once jobs are actually shipped.
+    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so,{ignoreOverride:true})!=='complete').forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -7525,7 +7551,7 @@ export default function App(){
         <div className="card-body" style={{padding:'12px 14px',maxHeight:392,overflow:'auto'}}>
           <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
             {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs'],['sales_vs_billed','Sales vs Billed']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
-            {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin'||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
+            {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
           </div>
           {body}
         </div>
@@ -7668,7 +7694,7 @@ export default function App(){
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
         </select>
         <select value={todoFilter} onChange={e=>setTodoFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
           <option value="all">All Types</option><option value="art">Art / Approvals</option><option value="follow_up">Follow-ups</option><option value="est">Estimates</option><option value="order">Orders / Deposits</option><option value="deadline">Deadlines</option><option value="delivery">Delivery</option><option value="firm">Firm Dates</option><option value="issue">Issues</option>
@@ -7711,7 +7737,7 @@ export default function App(){
       {/* Unread messages — moved beside Notifications (each half-width) */}
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
         {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(r.role==='rep'||r.role==='admin'||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
+          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
         </select>}</div>
         <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
           {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
@@ -8504,7 +8530,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search estimates, customers..." value={estF.search} onChange={e=>setEstF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={estF.rep} onChange={e=>setEstF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Estimates</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={estF.sort} onChange={e=>setEstF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="customer">By Customer</option></select>
         {estActiveFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setEstF({status:'open',rep:'all',search:'',sort:'date_desc'})}>✕ Reset</button>}
@@ -8572,7 +8598,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search SOs, customers, SKUs, PO#..." value={soF.search} onChange={e=>setSOF(f=>({...f,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:140}} value={soF.rep} onChange={e=>setSOF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option><option value="_me_">My Orders</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:150}} value={soF.sort} onChange={e=>setSOF(f=>({...f,sort:e.target.value}))}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="expected">By Expected Date</option><option value="customer">By Customer</option></select>
         {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setSOF({status:'active',rep:'all',search:'',sort:'date_desc'})}>✕ Clear</button>}
@@ -8699,7 +8725,7 @@ export default function App(){
       nf('Renamed '+renames.length+' alpha tag'+(renames.length===1?'':'s'));
     };
     return(<><div style={{display:'flex',gap:8,marginBottom:16,flexWrap:'wrap'}}><div className="search-bar" style={{flex:1,minWidth:200}}><Icon name="search"/><input placeholder="Search..." value={q} onChange={e=>setQ(e.target.value)}/></div>
-      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+      <select className="form-select" style={{width:150}} value={rF} onChange={e=>setRF(e.target.value)}><option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
       {isA&&<button className="btn btn-secondary" onClick={refreshTaxRates} disabled={!!taxRefresh} title="Look up tax rates from TaxCloud for all active, non-exempt customers missing a rate">{taxRefresh?'Refreshing…':'Refresh Tax Rates'}</button>}
       <label style={{display:'flex',alignItems:'center',gap:6,fontSize:12,cursor:'pointer',color:'#64748b',whiteSpace:'nowrap'}}><input type="checkbox" checked={showArchived} onChange={e=>setShowArchived(e.target.checked)}/> Show Archived</label>
       <button className="btn btn-primary" onClick={()=>setCM({open:true,c:null})}><Icon name="plus" size={14}/> New</button></div>
@@ -9912,7 +9938,7 @@ export default function App(){
         <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:10}}>
           <div className="search-bar" style={{flex:1,minWidth:200,maxWidth:300}}><Icon name="search"/><input placeholder="Search jobs, SKUs, customers..." value={jf.search} onChange={e=>setJF('search',e.target.value)}/></div>
           <select className="form-select" style={{width:130,fontSize:11}} value={jf.rep} onChange={e=>setJF('rep',e.target.value)}>
-            <option value="all">All Reps</option><option value="_me_">My Jobs</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+            <option value="all">All Reps</option><option value="_me_">My Jobs</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
           <select className="form-select" style={{width:140,fontSize:11}} value={jf.deco} onChange={e=>setJF('deco',e.target.value)}>
             <option value="all">All Deco Types</option>{decoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}</select>
           <div style={{display:'flex',alignItems:'center',gap:4,fontSize:11,color:'#64748b'}}><span>Due by:</span><input type="date" className="form-input" style={{width:130,padding:'3px 6px',fontSize:11}} value={jf.dueBefore} onChange={e=>setJF('dueBefore',e.target.value)}/></div>
@@ -10564,7 +10590,7 @@ export default function App(){
             <button key={v} className={`btn btn-sm ${prodStatF===v?'btn-primary':'btn-secondary'}`} onClick={()=>setProdStatF(v)}>{l}</button>)}
         </div>
         <select className="form-select" style={{width:140,fontSize:11}} value={prodFilter} onChange={e=>setProdFilter(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          <option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
         <select className="form-select" style={{width:150,fontSize:11}} value={prodDecoF} onChange={e=>setProdDecoF(e.target.value)}>
           <option value="all">All Deco Types</option>{allDecoTypes.map(d=><option key={d} value={d}>{d.replace(/_/g,' ')}</option>)}
@@ -11452,7 +11478,7 @@ export default function App(){
         <select value={poF.vendor} onChange={e=>setPOF(f=>({...f,vendor:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="all">All Vendors</option>{allVendors.map(v=><option key={v} value={v}>{v}</option>)}</select>
         <select className="form-select" style={{width:140}} value={poF.rep} onChange={e=>setPOF(f=>({...f,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select value={poF.sort} onChange={e=>setPOF(f=>({...f,sort:e.target.value}))} style={{padding:'6px 10px',borderRadius:6,border:'1px solid #e2e8f0',fontSize:12}}>
           <option value="date_desc">Newest First</option><option value="date_asc">Oldest First</option><option value="vendor">Vendor</option><option value="po_id">PO Number</option><option value="customer">Customer</option><option value="status">Status</option><option value="rep">Rep</option></select>
         {activeFilters&&<button className="btn btn-sm btn-secondary" onClick={()=>setPOF({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false})} style={{fontSize:11}}>Clear Filters</button>}
@@ -11552,9 +11578,24 @@ export default function App(){
         const vendor=batchMatch?batchMatch.vendor_name:'';
         const isBatch=!!batchMatch;
         // Flat items: every line item on this PO
+        // A source PO frozen into this batch's snapshot may since have been re-batched or renumbered
+        // onto a different batch — its live po_line now carries a different batch_po_number/po_id. Detect
+        // those "moved" entries so the batch view can flag them (pointing the warehouse to where the units
+        // are actually tracked now) instead of listing them as live, receivable members. Display-only: the
+        // frozen source_pos snapshot (relied on by AP bill reconciliation) is never mutated here.
+        const _batchLc=(batchMatch?.po_number||'').toLowerCase();
+        const _livePoIdsLc=new Set(allPOLines.map(pl=>(pl.poId||'').toLowerCase()).filter(Boolean));
+        const _loadedSoIds=new Set(sos.map(s=>s.id));
+        const _srcMovedTo=(sp)=>{const ln=allPOLines.find(pl=>pl.soId===sp.so_id&&(pl.poLine?.batch_po_number||''));return (ln&&ln.poLine.batch_po_number)||(ln&&ln.poId)||''};
+        const _srcMoved=(sp)=>{
+          if(sp.so_id&&!_loadedSoIds.has(sp.so_id))return false;// SO not loaded — can't tell, don't flag as moved
+          const pid=sp.po_id||'';
+          if(pid)return !_livePoIdsLc.has(pid.toLowerCase());// a live PO line with this exact PO# still exists → current
+          return sp.so_id?!allPOLines.some(pl=>pl.soId===sp.so_id&&(pl.poLine?.batch_po_number||'').toLowerCase()===_batchLc):false;
+        };
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty})})});
+          batchMatch.source_pos.forEach(sp=>{const _moved=_srcMoved(sp);const _movedTo=_moved?_srcMovedTo(sp):'';sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty,_moved,_movedTo})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
@@ -11562,7 +11603,7 @@ export default function App(){
             poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty,soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl,srcPoId:pl.poId||'',unitCost:unit,lineCost:unit*qty});
           });
         }
-        const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
+        const totalUnits=poItems.reduce((a,it)=>a+(it._moved?0:it.qty),0);
         // Bulk-set every receive input: full=true fills to ordered qty, false clears to 0.
         const _setAll=(full)=>{poItems.forEach((it,i)=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{const el=document.getElementById('rcv-'+i+'-'+sz);if(el)el.value=full?v:0})});_syncRecvBtn()};
         // Live tally of entered receive qtys → drives the Confirm button's label + disabled state.
@@ -11634,16 +11675,16 @@ export default function App(){
                   <span style={{marginLeft:10,fontWeight:500,color:'#94a3b8'}}>{g.items.length} item{g.items.length!==1?'s':''} · {g.items.reduce((a,it)=>a+it.qty,0)} units</span>
                 </td></tr>}
                 {g.items.map((it)=>{const i=it._oi;const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
-                  return<tr key={i} id={'po-recv-row-'+i} style={_multi?{background:'#f8fbff'}:undefined}>
+                  return<tr key={i} id={'po-recv-row-'+i} style={{...(_multi?{background:'#f8fbff'}:{}),...(it._moved?{opacity:0.65,background:'#fafaf9'}:{})}}>
                     <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
-                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId?<span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===it.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(it.srcPoId);setPg('orders')}}}>{it.srcPoId}</span>:'—'}</td>
+                    <td style={{fontFamily:'monospace',fontWeight:700,color:it._moved?'#94a3b8':'#7c3aed',fontSize:11}}>{it.srcPoId?<span style={{cursor:'pointer',textDecoration:it._moved?'line-through':'underline',textDecorationStyle:it._moved?'solid':'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===it.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(it.srcPoId);setPg('orders')}}}>{it.srcPoId}</span>:'—'}{it._moved&&<div style={{fontSize:9,fontWeight:700,color:'#b45309',marginTop:2,whiteSpace:'nowrap',textDecoration:'none'}}>→ moved to {it._movedTo||'another batch'}</div>}</td>
                     <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                     <td style={{fontSize:12}}>{it.name}</td>
                     <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
                     <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                     <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
                     <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
-                    <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:3}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:58,padding:'10px 6px',textAlign:'center',fontSize:18,fontWeight:800,color:'#0f172a',border:'2px solid #93c5fd',borderRadius:8,background:'#fff'}} defaultValue={0} onInput={_syncRecvBtn} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
+                    <td>{it._moved?<div style={{fontSize:10,color:'#b45309',fontWeight:600,fontStyle:'italic',whiteSpace:'nowrap'}}>receive on {it._movedTo||'its current batch'}</div>:<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:3}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:58,padding:'10px 6px',textAlign:'center',fontSize:18,fontWeight:800,color:'#0f172a',border:'2px solid #93c5fd',borderRadius:8,background:'#fff'}} defaultValue={0} onInput={_syncRecvBtn} min={0} max={v} title={'Ordered '+v}/></div>)}</div>}</td>
                     <td style={{textAlign:'center'}}><button className="btn btn-sm btn-secondary" style={{padding:'3px 8px',fontSize:12}} title={'Print 4×6 box label for '+(it.srcPoId||poId)} onClick={()=>_printOnePO(it.srcPoId||'')}>🖨️</button></td>
                   </tr>})}
               </React.Fragment>)
@@ -11658,8 +11699,8 @@ export default function App(){
               </div>
               {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>
-                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace',cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sp.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(sp.po_id);setPg('orders')}}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
+                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>{const _mv=_srcMoved(sp);const _mvTo=_mv?_srcMovedTo(sp):'';return(
+                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:_mv?'#f5f5f4':'#f5f3ff',borderRadius:6,color:_mv?'#94a3b8':'#7c3aed',fontWeight:700,fontFamily:'monospace',cursor:'pointer',textDecoration:_mv?'line-through':'none'}} onClick={()=>{const so=sos.find(s=>s.id===sp.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(sp.po_id);setPg('orders')}}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400,textDecoration:'none'}}>${sp.total_cost?.toFixed(2)||'0.00'}</span>{_mv&&<span style={{color:'#b45309',fontWeight:700,textDecoration:'none'}}> → {_mvTo||'moved'}</span>}</span>)})}
               </div></>}
             </div>
           </div>
@@ -12347,7 +12388,7 @@ export default function App(){
     // Rep leaderboard
     const _parseDtLB=(d)=>{if(!d)return null;const m2=d.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m2)return null;let y2=parseInt(m2[3]);if(y2<100)y2+=2000;return{m:parseInt(m2[1])-1,y:y2,d:parseInt(m2[2])}};
     const _now=new Date();const _curM=_now.getMonth();const _curY=_now.getFullYear();const _curD=_now.getDate();
-    const repData=REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=>{
+    const repData=REPS.filter(r=>isCommissionRep(r)).map(r=>{
       const rSOs=sos.filter(s=>{const c=cust.find(x=>x.id===s.customer_id);return commissionRepId(c,s)===r.id});const rEsts=ests.filter(e=>e.created_by===r.id);
       // One soCalc pass per SO; shipRev tallied so the leaderboard pct denominator matches margin
       const _sums=rSOs.reduce((a,s)=>{const m=soCalc(s);a.rev+=m.rev;a.margin+=m.margin;a.shipRev+=safeNum(m.shipRev);return a},{rev:0,margin:0,shipRev:0});
@@ -12559,7 +12600,7 @@ export default function App(){
     const _curGroup=_rGroups.find(g=>g.tabs.includes(rptTab))||_rGroups[0];
     const _curTabs=_curGroup.tabs.map(id=>({id,label:_tabLabels[id]||id}));
     const _salesGroup=_curGroup.id==='sales';
-    const _scopeReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
+    const _scopeReps=REPS.filter(r=>isCommissionRep(r));
     const _scopeName=rptRep==='all'?'All Reps':(_repObj?_repObj.name:'All Reps');
     const _scopeSub=rptRep==='all'?'Team total':(_repObj&&_repObj.role==='admin'?'Admin view':'Rep view');
 
@@ -15054,11 +15095,11 @@ export default function App(){
                 })()}
                 · <select value={s.rep_id||''} onChange={e=>setStoreRep(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:s.rep_id?'#0f172a':'#dc2626',background:'white',cursor:'pointer'}}>
                     <option value="">⚠ No rep assigned</option>
-                    {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+                    {REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
                   </select>
                 · <span title="Customer-order messages route to the CSR (or the rep if no CSR)">CSR </span><select value={s.csr_id||''} onChange={e=>setStoreCsr(e.target.value||null)} style={{fontSize:12,padding:'1px 4px',borderRadius:4,border:'1px solid #cbd5e1',color:'#0f172a',background:'white',cursor:'pointer'}}>
                     <option value="">— none —</option>
-                    {REPS.filter(r=>(r.role==='csr'||r.role==='rep'||r.role==='admin')&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}{r.role==='csr'?'':' ('+r.role+')'}</option>)}
+                    {REPS.filter(r=>(r.role==='csr'||isCommissionRep(r))&&r.is_active!==false).map(r=><option key={r.id} value={r.id}>{r.name}{r.role==='csr'?'':' ('+r.role+')'}</option>)}
                   </select> · {s.id}
               </div>
               {s._omg_id&&<div style={{fontSize:12,marginTop:2,display:'flex',gap:10}}>
@@ -15848,7 +15889,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         <div className="search-bar" style={{flex:1,maxWidth:300}}><Icon name="search"/><input placeholder="Search stores..." value={omgFilter.search} onChange={e=>setOmgFilter(x=>({...x,search:e.target.value}))}/></div>
         <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.rep} onChange={e=>setOmgFilter(x=>({...x,rep:e.target.value}))}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
+          <option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select>
         <select className="form-select" style={{width:130,fontSize:11}} value={omgFilter.dateRange} onChange={e=>setOmgFilter(x=>({...x,dateRange:e.target.value}))}>
           <option value="30d">Last 30 Days</option>
           <option value="90d">Last 90 Days</option>
@@ -16017,6 +16058,17 @@ export default function App(){
     acts.forEach(a=>addWhAction(a));
     nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
     notifyDecoReady(jobsNowReadyForDeco(so.jobs,_newJobs));
+    // Print the 4×6 receiving label — parity with the desktop "Confirm Received" flow
+    // (rBatchPOs → printLabel/printQrLabel) so the iPad can send it to the check-in
+    // Brother. Wrapped so a blocked pop-up / print failure can never abort the receive.
+    try{
+      const _lblItems=[];
+      lines.forEach(({itemIdx,rcv})=>{const it=items[itemIdx];if(!it)return;const sz=Object.entries(rcv||{}).filter(([,v])=>v>0);if(!sz.length)return;const q=sz.reduce((a,[,v])=>a+v,0);_lblItems.push({title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')})});
+      let _poId='';for(const {itemIdx,poLineIdx} of lines){const pl=items[itemIdx]&&items[itemIdx].po_lines&&items[itemIdx].po_lines[poLineIdx];const pid=pl&&(pl.batch_po_number||pl.po_id);if(pid){_poId=pid;break}}
+      if(!_poId)_poId=soId;
+      const _r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));
+      printQrLabel({code:_poId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(_poId),program:(cc&&cc.name)||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:soId,note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534',items:_lblItems,codeSub:grand+' units · scan to open PO'});
+    }catch(_){}
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
@@ -16618,7 +16670,7 @@ export default function App(){
         <input className="form-input" placeholder="Search SO#, customer, SKU..." value={whSearch}
           onChange={e=>setWhSearch(e.target.value)} style={{width:220}}/>
         <select className="form-select" style={{width:140,fontSize:11}} value={whRepF} onChange={e=>setWhRepF(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          <option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
         <button className="btn btn-sm" style={{fontSize:10,background:whTab==='receive'?'#1e40af':'#2563eb',color:'white',border:whTab==='receive'?'2px solid #1e40af':'none',padding:whTab==='receive'?'3px 11px':'4px 12px',fontWeight:700,borderRadius:4,boxShadow:whTab==='receive'?'0 2px 6px rgba(37,99,235,0.4)':'none'}}
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
@@ -17925,9 +17977,19 @@ export default function App(){
                     const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
                       const key=it.sku+'|'+(it.color||'');shippedByItem[key]=(shippedByItem[key]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     })});
+                    // Jobs this Mark-Shipped action is explicitly clearing for this SO: the ready-to-ship
+                    // tasks grouped here (deco_done tasks carry their job; wait_complete ships the whole
+                    // order). Marking these directly reflects the user's intent and — unlike the sku|color
+                    // coverage recompute below — can't silently leave a job stuck at 'completed' when its
+                    // frozen item snapshot drifts from the live item or its unit total doesn't line up with
+                    // the item sizes. The coverage check stays as a fallback for any other completed job.
+                    const _grpItems=(clearShipModal.grp.items||[]).filter(t=>t.soId===soId);
+                    const _clearedJobIds=new Set(_grpItems.map(t=>t.job&&t.job.id).filter(Boolean));
+                    const _wholeOrder=_grpItems.some(t=>t.type==='wait_complete');
                     const origJobs=safeJobs(so);
                     const updatedJobs=origJobs.map(jj=>{
                       if(jj.prod_status!=='completed')return jj;
+                      if(_wholeOrder||_clearedJobIds.has(jj.id))return{...jj,prod_status:'shipped'};
                       const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
                       return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
                     });
@@ -18118,6 +18180,19 @@ export default function App(){
               {/* Ship-to */}
               <div style={{marginBottom:12,padding:10,background:'#f8fafc',borderRadius:6,border:'1px solid #e2e8f0'}}>
                 <div style={{fontSize:10,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Ship To</div>
+                {/* Destination toggle — send to the customer or back to our warehouse */}
+                <div style={{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap'}}>
+                  {[['customer','📦 Customer'],['warehouse','🏠 Our Warehouse']].map(([mode,lbl])=>{
+                    const active=(manualShipModal.shipToMode||'customer')===mode;
+                    return<button key={mode} type="button" className="btn btn-sm" style={{fontSize:11,fontWeight:700,padding:'4px 12px',border:'1px solid '+(active?'#92400e':'#cbd5e1'),background:active?'#92400e':'white',color:active?'white':'#475569'}}
+                      onClick={()=>setManualShipModal(m=>{
+                        if(mode==='warehouse')return{...m,shipToMode:'warehouse',destAddr:{company:NSA.name,attn:m.cust?.name||'',street1:NSA_WAREHOUSE.street1,street2:NSA_WAREHOUSE.street2,city:NSA_WAREHOUSE.city,state:NSA_WAREHOUSE.state,zip:NSA_WAREHOUSE.zip,phone:NSA.phone}};
+                        const cc=m.cust||m.custFilter;
+                        return{...m,shipToMode:'customer',destAddr:{company:cc?.name||'',attn:'',street1:cc?.shipping_address_line1||'',street2:cc?.shipping_address_line2||'',city:cc?.shipping_city||'',state:cc?.shipping_state||'',zip:cc?.shipping_zip||'',phone:cc?.contacts?.[0]?.phone||''}};
+                      })}>{lbl}</button>;
+                  })}
+                </div>
+                {manualShipModal.shipToMode==='warehouse'&&<div style={{fontSize:10,color:'#92400e',marginBottom:6}}>Shipping to NSA — the customer name goes in Attention so receiving knows who it's for.</div>}
                 <div style={{display:'grid',gap:6}}>
                   <div style={{display:'flex',gap:6}}>
                     <div style={{flex:1}}><label style={_lbl}>Company / Recipient</label>
@@ -18161,19 +18236,62 @@ export default function App(){
                         const w=parseFloat(manualShipModal.weight)||5;if(!w||w<=0){nf('Please enter package weight','error');return}
                         const dims=manualShipModal.dimensions||{};if(!dims.length||!dims.width||!dims.height){nf('Please enter box dimensions (L × W × H)','error');return}
                         const _org=(_da.company||'').trim()||(c?.name||'');const _attn=(_da.attn||'').trim();
-                        const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:true};
+                        const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:manualShipModal.shipToMode!=='warehouse'};
                         if(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                         nf('Creating ShipStation label...');
                         const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                         const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
-                        setManualShipModal(prev=>({...prev,tracking:label.trackingNumber||prev.tracking||'',carrier:label.carrierCode||prev.carrier,cost:cost!=null?cost.toString():prev.cost,charge:(prev.charge===''||prev.charge==null)&&cost!=null?cost.toString():prev.charge,labelUrl:label.labelDownload||labelUrl||null}));
+                        const labelDownload=label.labelDownload||labelUrl||null;
+                        setManualShipModal(prev=>({...prev,tracking:label.trackingNumber||prev.tracking||'',carrier:label.carrierCode||prev.carrier,cost:cost!=null?cost.toString():prev.cost,charge:(prev.charge===''||prev.charge==null)&&cost!=null?cost.toString():prev.charge,labelUrl:labelDownload}));
                         nf('Label created! Tracking: '+(label.trackingNumber||'pending')+(cost?' · Cost: $'+cost.toFixed(2):''));
                         addWhAction({type:'manual_label_created',customer:c?.name||'',tracking:label.trackingNumber||'',carrier:label.carrierCode||manualShipModal.carrier,cost:cost?'$'+cost.toFixed(2):'',by:cu?.id||'warehouse'});
+                        if(labelDownload){
+                          // Auto-download the label PDF (mirrors the against-an-order path)
+                          if(labelDownload.startsWith('data:application/pdf;base64,')){
+                            try{
+                              const b64=labelDownload.replace('data:application/pdf;base64,','');
+                              const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                              const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                              const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+((label.trackingNumber||c?.name||'manual')+'').replace(/[^a-zA-Z0-9_-]+/g,'-')+'.pdf';a.click();
+                              setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                              nf('Label downloaded as PDF');
+                            }catch(e2){const a=document.createElement('a');a.href=labelDownload;a.download='label.pdf';a.click()}
+                          } else {window.open(labelDownload,'_blank')}
+                        }
                       }catch(err){nf('Label creation failed: '+err.message,'error')}
                     }}>🏷️ Create Label</button>}
                 </div>
-                {manualShipModal.labelUrl&&<div style={{fontSize:10,color:'#166534',fontWeight:700}}>✓ Label created — printed/downloaded from the package view</div>}
+                {manualShipModal.labelUrl&&<div style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:6}}>
+                  <button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}}
+                    onClick={()=>{
+                      const url=manualShipModal.labelUrl;
+                      if(url.startsWith('data:application/pdf;base64,')){
+                        try{
+                          const b64=url.replace('data:application/pdf;base64,','');
+                          const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                          const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                          const iframe=document.createElement('iframe');iframe.style.display='none';document.body.appendChild(iframe);
+                          iframe.src=blobUrl;iframe.onload=()=>{try{iframe.contentWindow.print()}catch(e){window.open(blobUrl,'_blank')}
+                            setTimeout(()=>{try{document.body.removeChild(iframe);URL.revokeObjectURL(blobUrl)}catch{}},60000)};
+                        }catch(e){nf('Could not print — try downloading instead','error')}
+                      } else {const pw=window.open(url,'_blank');if(pw)setTimeout(()=>{try{pw.print()}catch(e){}},1500)}
+                    }}>🏷️ Print Label</button>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:10}}
+                    onClick={()=>{
+                      const url=manualShipModal.labelUrl;
+                      if(url.startsWith('data:application/pdf;base64,')){
+                        try{
+                          const b64=url.replace('data:application/pdf;base64,','');
+                          const bin=atob(b64);const arr=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)arr[i]=bin.charCodeAt(i);
+                          const blob=new Blob([arr],{type:'application/pdf'});const blobUrl=URL.createObjectURL(blob);
+                          const a=document.createElement('a');a.href=blobUrl;a.download='shipping-label-'+((manualShipModal.tracking||'manual')+'').replace(/[^a-zA-Z0-9_-]+/g,'-')+'.pdf';a.click();
+                          setTimeout(()=>URL.revokeObjectURL(blobUrl),5000);
+                        }catch(e){const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                      } else {const a=document.createElement('a');a.href=url;a.download='label.pdf';a.click()}
+                    }}>📄 Download Label</button>
+                  <span style={{fontSize:10,color:'#166534',fontWeight:700}}>Label created</span>
+                </div>}
                 <div style={{display:'flex',gap:8}}>
                   <div style={{flex:1}}><label style={_lbl}>Shipping Cost ($) — what we paid</label>
                     <input className="form-input" type="number" min="0" step="0.01" value={manualShipModal.cost} placeholder="0.00" style={{fontSize:11}}
@@ -18243,7 +18361,7 @@ export default function App(){
                   return so.customer_id===manualShipModal.custFilter.id;
                 });
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
-                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
+                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
                 if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
@@ -19601,7 +19719,7 @@ export default function App(){
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -19631,7 +19749,7 @@ export default function App(){
       <div style={{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
         {_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
           <option value="all">All Reps</option>
-          {REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          {REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>}
         {!_isArtistUser&&!_isRepUser&&<select className="form-select" style={{width:160,fontSize:12}} value={artFilter} onChange={e=>setArtFilter(e.target.value)}>
           <option value="all">All Artists</option><option value="">Unassigned</option>
@@ -20188,7 +20306,7 @@ export default function App(){
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -20587,7 +20705,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');
@@ -21315,7 +21433,7 @@ export default function App(){
           <option value="all">All Decorators</option>{decorators.map(d=><option key={d.id} value={d.name}>{d.name}</option>)}
         </select>}
         <select className="form-select" style={{width:140,fontSize:11}} value={decoRepF} onChange={e=>setDecoRepF(e.target.value)}>
-          <option value="all">All Reps</option>{REPS.filter(r=>r.role==='rep'||r.role==='admin').map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
+          <option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
         </select>
         <input className="form-input" placeholder="Search..." value={decoSearch}
           onChange={e=>setDecoSearch(e.target.value)} style={{width:180}}/>
@@ -22340,19 +22458,25 @@ export default function App(){
     // PDF.js outputs tab-separated columns so the label can share a row with another header
     // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
     const _findLabeledPO=(lines,labelRe)=>{
+      // A PO cell value: "PO1234", "PO 3514 OLuST" (optional store tag), a decoration PO
+      // "DPO 3516 OLuST" (the app mints deco POs as "DPO <n> <tag>", see OrderEditor), or a
+      // bare "1234". Anchored at the cell START only (not both ends) so a trailing description —
+      // Silver Screen prints "DPO 3516 OLuST - tackle twill" in the P.O. NUMBER cell — is trimmed
+      // to the PO, while a store-tag suffix (like Frontier's "PO4133 OLUF") is kept as part of it.
+      const PO_CELL=/^(D?PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})\b/i;
       for(let i=0;i<lines.length;i++){
         if(!labelRe.test(lines[i]))continue;
         // Same line (after label and/or in a later tab column)
         const parts=lines[i].split('\t').map(p=>p.trim());
-        for(const p of parts){const m=p.match(/^(PO\s*\d{3,}|\d{3,})$/i);if(m)return m[1]}
-        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}|\d{3,})/i);
-        if(sameM)return sameM[1];
+        for(const p of parts){const m=p.match(PO_CELL);if(m)return m[1].trim()}
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(D?PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})/i);
+        if(sameM)return sameM[1].trim();
         // Next 1-4 lines: check first column (i.e. below the label cell)
         for(let j=i+1;j<Math.min(i+5,lines.length);j++){
           const nParts=lines[j].split('\t').map(p=>p.trim());
           const first=nParts[0]||'';
-          const m=first.match(/^(PO\s*\d{3,}|\d{3,})$/i);
-          if(m)return m[1];
+          const m=first.match(PO_CELL);
+          if(m)return m[1].trim();
         }
       }
       return '';
@@ -22364,9 +22488,13 @@ export default function App(){
       const parts=line.split('\t').map(p=>p.trim());
       if(parts.length<(cfg.minCols||3))return null;
       const at=i=>parts[i<0?parts.length+i:i];
-      const qtyStr=at(cfg.qty)||'';
-      const rateStr=at(cfg.rate)||'';
-      const amtStr=(at(cfg.amount)||'').replace(/T$/,'');// strip SilverScreen taxable marker
+      // Strip thousands separators so a line like "…\t264\t13.00\t3,432.00T" parses. Once a line
+      // hits $1,000 the amount column carries a comma; without this the row fails the numeric
+      // check, gets dropped, and the bill's line items no longer sum to its printed total.
+      const _n=s=>String(s==null?'':s).replace(/,/g,'');
+      const qtyStr=_n(at(cfg.qty));
+      const rateStr=_n(at(cfg.rate));
+      const amtStr=_n(at(cfg.amount)).replace(/T$/,'');// strip SilverScreen taxable marker
       if(!/^\d{1,4}$/.test(qtyStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(rateStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(amtStr))return null;
@@ -22461,6 +22589,24 @@ export default function App(){
       if(dateM)bill.doc_date=dateM[1];
       const dueM=text.match(/DUE\s+DATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
       if(dueM)bill.due_date=dueM[1];
+      // DATE / DUE DATE print as a header table — the label sits one row above its value in the
+      // same tab column (exactly like the P.O. NUMBER cell), so the adjacency regexes above miss
+      // this columnar layout. Fall back to the date in the column beneath an exact DATE / DUE DATE
+      // header cell (^DATE$ so the DATE inside "DUE DATE" doesn't capture the wrong column).
+      const _colDate=(cellRe)=>{
+        for(let i=0;i<lines.length;i++){
+          const cells=lines[i].split('\t').map(c=>c.trim());
+          const ci=cells.findIndex(c=>cellRe.test(c));
+          if(ci<0)continue;
+          for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+            const m=((lines[j].split('\t')[ci]||'').trim()).match(/\d{1,2}\/\d{1,2}\/\d{2,4}/);
+            if(m)return m[0];
+          }
+        }
+        return '';
+      };
+      if(!bill.doc_date)bill.doc_date=_colDate(/^DATE$/i);
+      if(!bill.due_date)bill.due_date=_colDate(/^DUE\s+DATE$/i);
       const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
       if(po)bill.po_number=_normalizeDecoPO(po);
       const dueTotM=text.match(/TOTAL\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
@@ -23073,11 +23219,17 @@ export default function App(){
         nf('No S&S orders found ('+_win+')','success');
         return;
       }
+      // Style enrichment for lines with no yourSku (CrossRef not set yet): one chunked
+      // GET /Products lookup turns each S&S part # into its mfr style, which the resolver
+      // uses to split two styles sharing a color+size. Best-effort — a failed lookup just
+      // means those lines fall to the manual wizard exactly as before.
+      let styleBySku={};
+      try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
       const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let empty=0;let credits=0;let idx=0;
       const pulledOrderNos=[];// every order this pull saw — scopes the badge-clear below
       let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(parsed.si_doc_number)pulledOrderNos.push(String(parsed.si_doc_number));
         // Credits/returns (negative total) carry no positive shipped lines, so they can't flow
         // into Billed tracking — surface the count instead of silently lumping them into "not
@@ -23105,6 +23257,11 @@ export default function App(){
       const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
       _markSsReviewed(pulledOrderNos);// staff have now seen these → clear the "new" badge from the daily cron
+      // The list this pull just REPLACED the review session with — pullAllBills passes it to
+      // _siSendToReview so its in-review dedup sees the fresh list, not the stale pre-pull state
+      // (same-tick setState hasn't re-rendered yet). null on the early-outs above = "no replace
+      // happened", so callers know the state read is still valid.
+      return results;
     };
     // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
     // review, so the Import & Review badge clears. Scoped to the order #s THIS pull actually
@@ -23151,10 +23308,10 @@ export default function App(){
     // bills from a color+size guess to an exact SKU match (kills the two-styles-same-color case).
     // Grounded in matched order history: reuses the all-or-nothing resolver, so only fully-
     // confident orders contribute a mapping and we never teach S&S a wrong pairing.
-    const _ssCrossRefProposals=(orders)=>{
+    const _ssCrossRefProposals=(orders,styleBySku={})=>{
       const out=[];let cands=null;
       (orders||[]).forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(!parsed.matchedPO)return;
         let r;try{r=_ssResolveLineMappings(parsed,cands||(cands=_buildMatchCandidates()))}catch(e){return}
         if(!r)return;// all-or-nothing: only fully-resolved orders yield proposals
@@ -23171,7 +23328,11 @@ export default function App(){
       try{
         const f=ssPullFrom||'';const filters=f?{startDate:f,endDate:new Date().toISOString().slice(0,10)}:{};
         const orders=await ssGetOrders(filters);
-        const proposals=_ssCrossRefProposals(orders);
+        // Same style enrichment as the pull: fully-resolved bills are the seeder's ONLY
+        // source of proposals, so disambiguating more lines directly grows the plan.
+        let styleBySku={};
+        try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
+        const proposals=_ssCrossRefProposals(orders,styleBySku);
         if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0}}));nf('No confidently-matched S&S lines to map yet — nothing to seed','error');return}
         // What's already on the account for the styles we'd assign (idempotency).
         const styles=[...new Set(proposals.map(p=>p.yourSku))];
@@ -23242,11 +23403,15 @@ export default function App(){
     // that skipped push validation, the problems modal, write plans, and bill history, and once
     // enabled a double-apply. The tab is now read-and-route; the hardened review push is the
     // only writer, and pushing already marks the queue row approved + flips the doc Historical.)
-    const _siSendToReview=(rowsIn)=>{
+    const _siSendToReview=(rowsIn,freshList)=>{
       const rows=(rowsIn||[]).filter(Boolean);
       if(!rows.length)return;
       const cands=_siBuildCandidates();
-      const inReview=new Set(billImport.parsed.map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+      // freshList: pullAllBills just replaced the review session via pullFromSS in this same
+      // tick, so billImport.parsed here is the STALE pre-pull list — deduping against it would
+      // silently drop any Sports Inc bill that happened to sit in the old session. When given,
+      // dedup against what the list actually contains now.
+      const inReview=new Set((freshList||billImport.parsed).map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
       const results=[];const dups=[];let idx=0;
       rows.forEach(row=>{
         const t=row._t||_siTriage(row,cands);
@@ -23279,6 +23444,37 @@ export default function App(){
       setBillView('import');
       setBillFilter('all');
       _finishBillReview(results,{skippedDups:dups,sourceCount:rows.length,sourceNoun:'queued document(s)',verb:'loaded for review',extraNote:results.length?' — review below, then Push to Portal':'',append:true});
+    };
+    // ── ONE pull for everything ─────────────────────────────────────────────
+    // "Pull bills" = S&S Orders API + the Sports Inc queue in one flow (two processes,
+    // one button). Order matters: the S&S pull REPLACES the review list (fresh working
+    // session), then Sports Inc's workable docs APPEND through _siSendToReview's own
+    // dedup. The two halves can't collide: S&S reaches Sports Inc only as scanned docs,
+    // which triage to Grab/Outside and are never auto-routed here (see _siTriage).
+    const pullAllBills=async()=>{
+      const f=ssPullFrom||'',t=ssPullTo||'';
+      // ssList = the fresh review list when the S&S pull replaced it; undefined when the pull
+      // errored/found nothing (list untouched → the state read inside _siSendToReview is valid).
+      const ssList=await pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});
+      if(!supabase){nf('Database not connected — Sports Inc queue skipped','error');return}
+      setSiQueueLoading(true);
+      try{
+        // Refresh from SportsLink best-effort — an outage there shouldn't block reviewing
+        // what's already queued — then re-read + re-triage fresh rows (NOT stale state).
+        try{const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});await _siUpsertDocs(docs)}
+        catch(e){nf('SportsLink refresh failed ('+(e.message||e)+') — using the queue as of the last sync','error')}
+        const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
+        if(error)throw error;
+        const cands=_siBuildCandidates();
+        const rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+        setSiQueue(rows);
+        // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
+        // they can be tied to their order right here. Grab (PDF-only) and Outside are not
+        // pushable bills — they stay on the Sports Inc tab.
+        const work=rows.filter(r=>r._t&&(r._t.bucket==='approve'||r._t.bucket==='review'));
+        if(work.length)_siSendToReview(work,ssList||undefined);
+      }catch(e){nf('Sports Inc queue failed: '+(e.message||e)+' — S&S results are in the list below','error')}
+      setSiQueueLoading(false);
     };
     const markSiStatus=async(row,status,verb)=>{
       const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
@@ -24887,7 +25083,10 @@ export default function App(){
     // When some selected bills have problems, open the styled review dialog instead of a
     // browser confirm so the user can push the clean ones and park the rest for later.
     const pushBillsToPortal=(force)=>{
-      const selected=billImport.parsed.filter(_billIsReadyToPush);
+      // Only the full-go bills — matched AND clean. Flagged/matched bills are left for review or
+      // AI-match rather than bulk-pushed, so this mirrors the primary button's count exactly and a
+      // clean push needs no problem modal. (A flagged bill pushes once it's been reconciled clean.)
+      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       if(force!==true){
         const cleanBills=[],problemBills=[];
@@ -25957,38 +26156,31 @@ export default function App(){
           </div>}
         </div>;})()}
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          {/* ONE pull, both vendors. The button runs the S&S Orders pull + the Sports Inc queue
+              refresh/route back-to-back (see pullAllBills) — staff shouldn't have to know which
+              middleman a bill rides through. Per-vendor pulls remain as small escape hatches. */}
           <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
-              </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>pullFromSportsInc()}>
-                {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
-              </button>
-            </div>
-          </div>
-          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+RED,background:'#fff',borderRadius:6}}>
-            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders straight from S&amp;S by invoice date &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+              <div style={{flex:1,minWidth:280}}>
+                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail stay on the Sports Inc tab to grab.</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months."/>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>S&amp;S invoiced from</label>
+                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull S&S bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months. Sports Inc always refreshes from its 2026-04-01 cutover."/>
                   <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
                   <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
                   {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'last 3 months'}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'S&S from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'S&S: last 3 months'}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
+                  <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
                 </div>
               </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';
-                  // both blank → last 3 months (All=True); otherwise an invoice-date window, with a
-                  // blank "To" resolved to today so the live call sends a concrete end, not a sentinel.
-                  pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}}>
-                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
+              <button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:15,padding:'12px 22px'}} disabled={billImport.uploading||siQueueLoading}
+                onClick={()=>pullAllBills()}>
+                {(billImport.uploading||siQueueLoading)?'Pulling…':'⚡ Pull bills'}
               </button>
             </div>
           </div>
@@ -26118,23 +26310,28 @@ export default function App(){
           {/* Sticky action bar: stays pinned while scrolling a long pull, with a running $ total
               of what the push will apply and filter chips to work the list as a queue. */}
           {(()=>{
-            const ready=billImport.parsed.filter(_billIsReadyToPush);
+            // ONE vocabulary, ONE set: "Matched" = matched AND reconciles clean (no duplicate /
+            // over-billing / size mismatch) AND checked — exactly what the red button pushes.
+            // The tile, the value, the chip badge and the button all read from it, so no two
+            // numbers on this bar can disagree. Bills needing work are "Review" — matched-but-
+            // flagged bills sit there (wizard / AI-match), never bulk-pushed.
+            const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const qbSel=billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater);
             const counts={all:0,ready:0,attention:0,done:0};
             billImport.parsed.forEach(b=>{const t=_billTriage(b);counts.all++;if(!t)counts.done++;else if(t.issue)counts.attention++;else counts.ready++});
-            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Ready',counts.ready,'#166534'],['attention','⚠ Needs attention',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
+            const unchecked=counts.ready-ready.length;// matched+clean but checkbox off — excluded from the push
+            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Matched',counts.ready,'#166534'],['attention','⚠ Review',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
             return<div style={{marginBottom:16}}>
               <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',flexWrap:'wrap'}}>
                 <div style={{display:'flex',gap:30,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
-                  {statTile(billImport.parsed.length,'Bills parsed')}
-                  <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
-                  {statTile(counts.ready,'Ready to push','#6FD59A')}
-                  {statTile(counts.attention,'Need attention',RED_LT)}
-                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Ready value</div></div>
+                  {statTile(ready.length,'Matched — will push','#6FD59A')}
+                  {unchecked>0&&statTile(unchecked,'Matched, unchecked','#94a3b8')}
+                  {statTile(counts.attention,'To review',RED_LT)}
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Matched value</div></div>
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
-                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} ready → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',disabled:billImport.uploading||!qbSel.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+qbSel.length+' to QuickBooks'})}
                 </div>
               </div>
@@ -26443,8 +26640,11 @@ export default function App(){
                     </div>
                   </div>;
                 })()}
-                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
-                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                {/* Manual match wizard — goods bills whose lines need pinning. Shows for an
+                    unmatched bill (pick the order), AND for a bill matched by PO number only whose
+                    lines don't map to that order cleanly (would-apply-nothing) — so a "matched but
+                    won't push" bill has a real way to reconcile line-by-line instead of a dead end. */}
+                {bill.kind!=='decoration'&&bill.items.length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&!_billApplyPlan(bill)))&&(()=>{
                   const w=bill._wizard;
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
@@ -26468,11 +26668,11 @@ export default function App(){
                         ✨ AI couldn’t confidently match this to an open PO{fp.reason?' — '+fp.reason:'.'} Try matching manually.
                       </div>}
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                        <span style={{fontSize:12,color:'#3730a3'}}>{poMatch?'Matched to '+(poMatch.so_id||poMatch.so?.id||'the order')+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.':'No PO matched automatically — line items parsed and ready.'}</span>
                         <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                          onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?'🧵 Match lines to the order…':'Match manually…'}</button>
                         {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
-                          :!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
+                          :!poMatch&&!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
                             title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
                             onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiTried?'Re-run AI':'Find PO with AI'}</button>}
                       </div>
@@ -26584,7 +26784,7 @@ export default function App(){
             // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
-            [[GREEN,'Ready to push','Clean matches · safe to push','ready'],[RED,'Need attention','Reconcile before pushing','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
+            [[GREEN,'Matched — ready to push','Push in one click','ready'],[RED,'Review','Tie each bill to its order','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
               if(!_bk[k].length)return;
               _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
               _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
@@ -27905,7 +28105,7 @@ export default function App(){
       }
       setEditMember(null);
       try{
-        await _dbSave('team_members',{id:member.id,name:member.name,role:member.role,email:target,phone:member.phone||null,is_active:member.is_active!==false,access:member.access||null});
+        await _dbSave('team_members',{id:member.id,name:member.name,role:member.role,email:target,phone:member.phone||null,is_active:member.is_active!==false,access:member.access||null,commission_eligible:member.commission_eligible===true});
       }catch(e){nf('Save failed: '+e.message,'error');return}
       setTeamRowBusy(member.id);
       try{
@@ -28100,6 +28300,13 @@ export default function App(){
             <div><label className="form-label">Phone</label>
               <input className="form-input" value={editMember.phone||''} onChange={e=>setEditMember(x=>({...x,phone:e.target.value}))} placeholder="(619) 555-0000"/></div>
           </div>
+
+          {/* Commission eligibility — lets a non-rep (e.g. a CSR) be listed as the Rep on
+              accounts/jobs and appear in commission reports without changing their base role. */}
+          <label style={{display:'flex',alignItems:'flex-start',gap:8,marginBottom:16,padding:'10px 12px',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,cursor:'pointer'}}>
+            <input type="checkbox" style={{marginTop:2}} checked={editMember.commission_eligible===true} onChange={e=>setEditMember(x=>({...x,commission_eligible:e.target.checked}))}/>
+            <span style={{fontSize:12,color:'#166534'}}><strong>Commission-eligible rep</strong> — can be set as the Rep on customers/jobs and shows up in commission reports &amp; the leaderboard.{(editMember.role==='rep'||editMember.role==='admin')?' Sales Reps and Admins are always eligible; this only matters for other roles.':' Use for CSRs who also own accounts and earn commission.'}</span>
+          </label>
 
           {/* CSR Assignment — only for reps */}
           {editMember.role==='rep'&&<div style={{marginBottom:16}}>
@@ -28838,7 +29045,7 @@ export default function App(){
           for(;;){
             let q=supabase.from('products')
               .select('id,sku,name,color,color_category,category,image_front_url,is_featured,is_archived')
-              .eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('is_active',true).order('name').order('id',{ascending:true}).range(from,from+PAGE-1);
             q=isSanMar?q.in('brand',SANMAR_BRANDS):q.eq('brand',brand);
             const{data,error}=await q;
             if(error){nf('Error loading: '+error.message,'error');break;}
@@ -29044,7 +29251,7 @@ export default function App(){
           for(;;){
             const{data,error}=await supabase.from('products')
               .select('id,sku,name,vendor_id,color,image_front_url,nsa_cost,catalog_sell_price')
-              .eq('brand',brand).eq('is_active',true).order('name').range(from,from+PAGE-1);
+              .eq('brand',brand).eq('is_active',true).order('name').order('id',{ascending:true}).range(from,from+PAGE-1);
             if(error||!data?.length)break;all=all.concat(data);if(data.length<PAGE)break;from+=PAGE;
           }
           const sm={};
@@ -30651,7 +30858,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{id:'import',label:'Import / Upload',icon:'upload'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -30763,7 +30970,11 @@ export default function App(){
   // LOGIN GATE
   if(!cu)return<ComponentErrorBoundary name="LoginGate"><React.Suspense fallback={<LazyFallback/>}><LoginGate onLogin={handleLogin} reps={REPS} supabase={supabase} sbSignIn={_sbSignIn} sbSignUp={_sbSignUp} sbResendSignup={_sbResendSignup} sbResetPassword={_sbResetPassword} sbGetSession={_sbGetSession} sbLinkTeamAuth={_sbLinkTeamAuth} sbGetMyProfile={_sbGetMyProfile}/></React.Suspense></ComponentErrorBoundary>;
   // MOBILE PORTAL GATE
-  if(mobileMode)return<ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary>;
+  // Render the shared <Toast> here too: nf() sets `toast` state, but the desktop
+  // <Toast> in the return below is never reached in mobile mode (this early return),
+  // so without this every mobile toast — the green "🎽 Ready for decoration" and
+  // "✅ Received N units" confirmations included — was silently dropped.
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().

@@ -1,0 +1,47 @@
+[
+  {
+    "name": "Silver Screen 199852 — P.O. NUMBER cell carries a store tag + trailing desc (\"PO 3514 OLuST - tackle twill\"); the $3,432.00 line has a thousands-comma",
+    "pages": [
+      "Silver Screen Printing, Inc. dba\tInvoice 199852\nSilverScreen Decoration and\nFulfillment\n1135 S Rock Blvd #340\nReno, NV 89502\n+17758259079\nbilling@silverscreenprinting.com\nwww.silverscreenprinting.com\nBILL TO\nSteve Peterson\nNational Sports Apparel\tDATE\tPLEASE PAY\tDUE DATE\n2238 N Glassell St\t07/14/2026\t$4,213.44\t08/13/2026\nSuite E\nOrange, CA 92865\nP.O. NUMBER\tPMT METHOD\nPO 3514 OLuST - tackle twill\tCheck\nACTIVITY\tDESCRIPTION\tQTY\tRATE\tAMOUNT\nEmbroidery\tPO 3514 OLuST - tackle twill - OLU\t264\t13.00\t3,432.00T\nStore - OLU Store - Twill - Art #1\nLancers Orange Lutheran-**TACKLE\nTWILL**\nEmbroidery\tPO 3514 OLuST - tackle twill - OLU\t264\t2.96\t781.44T\nStore - OLU Store - Twill - Art #2\nCross-\nIf full payment of the invoiced amount is not received within your\tSUBTOTAL\t4,213.44\ncontractual terms, you will be charged a late charge of 1.5% of the\tTAX\t0.00\nunpaid amount, with a minimum charge of $5, or such late charge\tTOTAL\t4,213.44\nallowed under applicable law, regulation or contract.\nTOTAL DUE\t$4,213.44\nTHANK YOU.\n"
+    ],
+    "expect": {
+      "supplier": "Silver Screen Printing",
+      "po": "PO 3514 OLuST",
+      "docNumber": "199852",
+      "docTotal": 4213.44,
+      "itemCount": 2,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
+    }
+  },
+  {
+    "name": "Silver Screen 199832 — clean tagged PO (\"PO 3521 OLuST\"), five lines all under $1,000",
+    "pages": [
+      "Silver Screen Printing, Inc. dba\tInvoice 199832\nSilverScreen Decoration and\nFulfillment\n1135 S Rock Blvd #340\nReno, NV 89502\n+17758259079\nbilling@silverscreenprinting.com\nwww.silverscreenprinting.com\nBILL TO\nSteve Peterson\nNational Sports Apparel\tDATE\tPLEASE PAY\tDUE DATE\n2238 N Glassell St\t07/14/2026\t$2,608.52\t08/13/2026\nSuite E\nOrange, CA 92865\nP.O. NUMBER\tPMT METHOD\nPO 3521 OLuST\tCheck\nACTIVITY\tDESCRIPTION\tQTY\tRATE\tAMOUNT\nEmbroidery\tPO 3521 OLuST - OLU Store - emb -\t50\t5.55\t277.50T\nArt #1 W132029 - O Lu\nEmbroidery\tPO 3521 OLuST - OLU Store - emb -\t250\t2.96\t740.00T\nArt #2 W127964 - Cross ***NAPE**\nEmbroidery\tPO 3521 OLuST - OLU Store - emb -\t200\t2.96\t592.00T\nArt #3 W133602 - L Shield\nEmbroidery\tPO 3521 OLuST - OLU Store - emb -\t346\t2.87\t993.02T\nArt #4 W133603 - + l L\nReceiving Fee\tPO 3521 OLuST - OLU Store - emb -\t2\t3.00\t6.00\nReceiving Fee\nIf full payment of the invoiced amount is not received within your\tSUBTOTAL\t2,608.52\ncontractual terms, you will be charged a late charge of 1.5% of the\tTAX\t0.00\nunpaid amount, with a minimum charge of $5, or such late charge\tTOTAL\t2,608.52\nallowed under applicable law, regulation or contract.\nTOTAL DUE\t$2,608.52\nTHANK YOU.\n"
+    ],
+    "expect": {
+      "supplier": "Silver Screen Printing",
+      "po": "PO 3521 OLuST",
+      "docNumber": "199832",
+      "docTotal": 2608.52,
+      "itemCount": 5,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
+    }
+  },
+  {
+    "name": "Silver Screen 199852 (revised) — decoration PO uses the \"DPO\" prefix the app mints (\"DPO 3516 OLuST\", per OrderEditor); header and line items agree",
+    "pages": [
+      "Silver Screen Printing, Inc. dba\tInvoice 199852\nSilverScreen Decoration and\nFulfillment\n1135 S Rock Blvd #340\nReno, NV 89502\n+17758259079\nbilling@silverscreenprinting.com\nwww.silverscreenprinting.com\nBILL T O\nSteve Peterson\nNational Sports Apparel\tDATE\tPLEASE PAY\tDUE DATE\n2238 N Glassell St\t07/14/2026\t$4,213.44\t08/13/2026\nSuite E\nOrange, CA 92865\nP.O. NUMBER\tPMT METHOD\nDPO 3516 OLuST\tCheck\nACTIVITY\tDESCRIPTION\tQTY\tRATE\tAMOUNT\nEmbroidery\tDPO 3516 OLuST - tackle twill -\t264\t13.00\t3,432.00T\nOLU Store - OLU Store - Twill - Art\n#1 Lancers Orange Lutheran-\n**TACKLE TWILL**\nEmbroidery\tDPO 3516 OLuST - tackle twill -\t264\t2.96\t781.44T\nOLU Store - OLU Store - Twill - Art\n#2 Cross-\nIf full payment of the invoiced amount is not received within your\tSUBTOTAL\t4,213.44\ncontractual terms, you will be charged a late charge of 1.5% of the\tTAX\t0.00\nunpaid amount, with a minimum charge of $5, or such late charge\tTOTAL\t4,213.44\nallowed under applicable law, regulation or contract.\nTOTAL DUE\t$4,213.44\nTHANK YOU.\n"
+    ],
+    "expect": {
+      "supplier": "Silver Screen Printing",
+      "po": "DPO 3516 OLuST",
+      "docNumber": "199852",
+      "docTotal": 4213.44,
+      "itemCount": 2,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
+    }
+  }
+]

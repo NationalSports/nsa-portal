@@ -104,6 +104,13 @@
 [functions."roster-reminder-sweep"]
   schedule = "20 16 * * *"
 
+# Monthly commission review reminder — 1st of the month ~7 AM PT (14:00 UTC).
+# Emails steve@ a link straight to the PREVIOUS month's Commissions Admin
+# Dashboard to review payouts before they're paid. A thin reminder, not a
+# computed report (see netlify/functions/commission-report-reminder.js).
+[functions."commission-report-reminder"]
+  schedule = "0 14 1 * *"
+
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.

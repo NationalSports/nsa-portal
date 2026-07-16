@@ -65,7 +65,12 @@ export const buildSsOrdersQuery = (filter = {}) => {
 //   doc_number          = invoiceNumber || orderNumber   (human-facing key; what apply writes)
 //   supplier_doc_number = invoiceNumber                  (the S&S invoice #)
 //   si_doc_number       = orderNumber                    (stable key — never changes)
-export const mapSsOrderToBill = (order) => {
+export const mapSsOrderToBill = (order, opts = {}) => {
+  // Optional style enrichment: { SSKU (uppercased S&S part #) → { styleName, brandName } },
+  // fetched from GET /Products by the caller. Attached as _ss_style/_ss_brand so
+  // resolveSsBillLines can split two styles sharing a color+size (the case the
+  // color+size tiers alone can't) without CrossRef being configured yet.
+  const styleBySku = (opts && opts.styleBySku) || {};
   const rawLines = _pick(order, 'lines', 'Lines', 'OrderLines') || [];
   const lines = Array.isArray(rawLines) ? rawLines : [];
   const items = lines.map((ln) => {
@@ -77,7 +82,9 @@ export const mapSsOrderToBill = (order) => {
     const ext = +(unit * qty).toFixed(2);
     // yourSku echoes our own SKU back → exact match against so_items.sku, no normalization.
     // Fall back to the S&S Sku for orders placed directly on ssactivewear.com (no yourSku).
-    const sku = String(_pick(ln, 'yourSku', 'YourSku') || _pick(ln, 'sku', 'Sku') || '').trim();
+    const ssSku = String(_pick(ln, 'sku', 'Sku') || '').trim();
+    const sku = String(_pick(ln, 'yourSku', 'YourSku') || ssSku || '').trim();
+    const st = ssSku ? styleBySku[ssSku.toUpperCase()] : null;
     return {
       sku,
       upc: String(_pick(ln, 'gtin', 'Gtin') || '').trim(),
@@ -87,6 +94,7 @@ export const mapSsOrderToBill = (order) => {
       unit_price: unit,
       extension: ext,
       desc: String(_pick(ln, 'title', 'Title', 'styleName', 'StyleName') || '').trim(),
+      ...(st ? { _ss_style: String(st.styleName || '').trim(), _ss_brand: String(st.brandName || '').trim() } : {}),
     };
   }).filter((it) => it.qty > 0); // unshipped/backordered lines aren't billed — drop them
 
@@ -173,6 +181,17 @@ export const resolveSsBillLines = (billItems, candidates, opts = {}) => {
     // AND a $7.14 tee in "L Black"): the order's unit cost round-trips on API-ordered S&S
     // bills, so an exact-price hit (±$0.02) disambiguates — still unambiguous-only.
     const byPrice = (list) => price > 0 ? list.filter((c) => Math.abs((parseFloat(c.unit_cost) || 0) - price) <= 0.02) : [];
+    // Style tie-breaker: _ss_style (the mfr style from GET /Products, e.g. "1717") splits two
+    // styles sharing a color+size — the Youth-tee vs Unisex-tee case. Loose containment because
+    // our SO sku often wraps the style ("CC1717" ⊇ "1717"); both tokens ≥3 chars so a stub can't
+    // false-match. Only ever NARROWS an already size/color-filtered set; `only()` still demands
+    // exactly one distinct target line, so a bad containment can't pick a wrong line — it just
+    // stays ambiguous for the wizard.
+    const styleTok = nSku(li._ss_style);
+    const byStyle = (list) => styleTok.length >= 3 ? list.filter((c) => {
+      const cs = nSku(c.sku);
+      return cs.length >= 3 && (cs === styleTok || cs.includes(styleTok) || styleTok.includes(cs));
+    }) : [];
     const tiers = [
       sku ? { list: cands.filter((c) => nSku(c.sku) === sku && canon(c.size) === size), via: 'sku_size' } : null,
       color ? { list: cands.filter((c) => canon(c.size) === size && nColor(c.color) === color), via: 'color_size' } : null,
@@ -181,11 +200,32 @@ export const resolveSsBillLines = (billItems, candidates, opts = {}) => {
     for (const t of tiers) {
       let hit = only(t.list);
       if (hit) return { cand: hit, via: t.via };
+      hit = only(byStyle(t.list));
+      if (hit) return { cand: hit, via: t.via + '_style' };
       hit = only(byPrice(t.list));
       if (hit) return { cand: hit, via: t.via + '_price' };
     }
     return { cand: null, via: 'none' };
   });
+};
+
+// Collect the S&S part numbers worth a GET /Products style lookup from a batch of raw
+// orders: lines that shipped but have NO yourSku (CrossRef not configured for them) — those
+// are exactly the lines the resolver may need _ss_style to disambiguate. Lines that already
+// carry yourSku match by SKU directly, so looking them up would only burn rate limit.
+// Returns unique, uppercased S&S skus.
+export const collectSsLineSkus = (orders) => {
+  const out = new Set();
+  (orders || []).forEach((order) => {
+    const rawLines = _pick(order, 'lines', 'Lines', 'OrderLines') || [];
+    (Array.isArray(rawLines) ? rawLines : []).forEach((ln) => {
+      if (_siNum(_pick(ln, 'qtyShipped', 'QtyShipped')) <= 0) return;
+      if (String(_pick(ln, 'yourSku', 'YourSku') || '').trim()) return;
+      const sku = String(_pick(ln, 'sku', 'Sku') || '').trim().toUpperCase();
+      if (sku) out.add(sku);
+    });
+  });
+  return [...out];
 };
 
 // Plan a CrossRef seed: given (S&S sku → our style) proposals gathered from matched order

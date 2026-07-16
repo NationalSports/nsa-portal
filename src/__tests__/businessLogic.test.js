@@ -558,7 +558,9 @@ describe('Job Building — buildJobs()', () => {
     const o = {
       id: 'SO-100',
       items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
-      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'uploaded' }]
+      // mockup_files present — an 'uploaded' art file with no mockups must fall through to
+      // 'needs_art' instead (SO-1038 phantom-approval fix), so a real proof is required here.
+      art_files: [{ id: 'a1', name: 'Logo', deco_type: 'screen_print', status: 'uploaded', mockup_files: ['proof.jpg'] }]
     };
     const jobs = BL.buildJobs(o);
     expect(jobs[0].art_status).toBe('waiting_approval');
@@ -1415,5 +1417,28 @@ describe('Commission attribution — commissionRepId() must always credit the ac
   test('tolerates a missing customer or missing SO (open invoice with no linked order, etc.)', () => {
     expect(BL.commissionRepId(undefined, { created_by: STEVE })).toBe(STEVE);
     expect(BL.commissionRepId({ primary_rep_id: MIKE }, undefined)).toBe(MIKE);
+  });
+});
+
+describe('isCommissionRep() — who may be listed as a rep and earn commission', () => {
+  test('sales reps and admins always qualify, regardless of the flag', () => {
+    expect(BL.isCommissionRep({ role: 'rep' })).toBe(true);
+    expect(BL.isCommissionRep({ role: 'admin' })).toBe(true);
+    expect(BL.isCommissionRep({ role: 'rep', commission_eligible: false })).toBe(true);
+  });
+
+  test('a CSR (or other role) qualifies only when explicitly flagged commission_eligible', () => {
+    // Connor: a CSR opted in so he can own accounts and collect commission without losing CSR duties.
+    expect(BL.isCommissionRep({ role: 'csr', commission_eligible: true })).toBe(true);
+    // Plain CSR stays out of the rep pickers and commission reports.
+    expect(BL.isCommissionRep({ role: 'csr' })).toBe(false);
+    expect(BL.isCommissionRep({ role: 'csr', commission_eligible: false })).toBe(false);
+    // The flag is a strict boolean gate — a truthy non-true value must not leak someone in.
+    expect(BL.isCommissionRep({ role: 'warehouse', commission_eligible: 1 })).toBe(false);
+  });
+
+  test('tolerates null/undefined without throwing', () => {
+    expect(BL.isCommissionRep(null)).toBe(false);
+    expect(BL.isCommissionRep(undefined)).toBe(false);
   });
 });

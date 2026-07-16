@@ -230,7 +230,14 @@ export const PANTONE_MAP={
 // ('Black','white','REFLEX BLUE'). Normalize keys to upper-case so named colors resolve to a
 // swatch instead of falling through to a blank fallback. Numeric codes are unaffected by case.
 const PANTONE_MAP_UC=Object.fromEntries(Object.entries(PANTONE_MAP).map(([k,v])=>[k.toUpperCase(),v]));
-export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')]||null};
+export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();
+  const direct=PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')];if(direct)return direct;
+  // Colors are often saved as a combined "number + name" code (e.g. "1815 Cardinal",
+  // "1235 Gold") or a bare family name ("Maroon", "Vegas Gold"). Without this these
+  // fall through to a placeholder grey. Resolve the leading Pantone number first
+  // (exact ink), then a named team/garment color via threadHex.
+  const num=s.match(/^(\d{3,4})\b/);if(num&&PANTONE_MAP_UC[num[1]])return PANTONE_MAP_UC[num[1]];
+  return threadHex(s)||null;};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
 export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',

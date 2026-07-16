@@ -1012,7 +1012,9 @@ describe('Job Building', () => {
         sizes: { S: 10 },
         decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front' }],
       })],
-      art_files: [makeArtFile({ status: 'uploaded' })],
+      // mockup_files present — an 'uploaded' art file with no mockups must fall through to
+      // 'needs_art' instead (SO-1038 phantom-approval fix), so a real proof is required here.
+      art_files: [makeArtFile({ status: 'uploaded', mockup_files: ['proof.jpg'] })],
       jobs: [],
     });
     const jobs = buildJobs(so);

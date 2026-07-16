@@ -17,6 +17,11 @@ const safeDecos = (it) => safeArr(it?.decorations);
 const safeItems = (o) => safeArr(o?.items);
 const safeArt = (o) => safeArr(o?.art_files);
 const safeJobs = (o) => safeArr(o?.jobs);
+// Same "does this art file actually have anything to review" check the approval-card UI uses
+// (App.js totalMocks) — an art file can carry a stale 'needs_approval'/'uploaded' status with 0
+// files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as waiting_approval
+// or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
+const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).length, Object.values(af.item_mockups || {}).reduce((a, arr) => a + (arr || []).length, 0)) > 0;
 
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
@@ -65,7 +70,7 @@ function dP(d, q, artFiles, cq) {
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
-  if (d.kind === 'outside_deco') return { sell: d.sell_override || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
+  if (d.kind === 'outside_deco') return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each) };
   return { sell: 0, cost: 0 }
 }
 
@@ -349,7 +354,7 @@ const buildJobs = (o) => {
           // confirms on its own; staleness after a recall is gated by af.status, not this check.
           const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
-          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : (af.status === 'needs_approval' || af.status === 'uploaded') ? (_hasMockupContent(af) ? 'waiting_approval' : 'needs_art') : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
@@ -1012,11 +1017,22 @@ function commissionRepId(customer, so) {
   return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
+// Who may be listed as the rep on an account/job and earn commission. Sales reps and admins
+// always qualify; any other role (e.g. a CSR) can be opted in per-person via the
+// `commission_eligible` flag so they can own accounts and appear in commission reports WITHOUT
+// giving up their base role. This is the single source of truth for rep-eligibility — route
+// every "is this person a sellable rep" list/filter through it so the rule can't drift across
+// its ~20 call sites the way a copy-pasted `role==='rep'||role==='admin'` silently would.
+function isCommissionRep(r) {
+  return !!r && (r.role === 'rep' || r.role === 'admin' || r.commission_eligible === true);
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   // Attribution
   commissionRepId,
+  isCommissionRep,
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic
