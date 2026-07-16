@@ -8,14 +8,19 @@ import { commissionRepId, isDecoOutsourced, outsourcedDecoTypes } from './busine
 import { decoSplitQty, linkedArtCostQty } from './pricing';
 import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers';
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch } from './commissionSnapshots';
+
+// The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
+// team_members id — same single-user gate as the App.js to-do list).
+const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
 
 export default function CommissionsPage(){
   const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos}=useAppData();
 
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
+    const isSteve=cu?.id===ADMIN_DASH_USER_ID;
     const salesReps=REPS.filter(r=>r.role==='rep'||r.role==='admin');
     // Admin sees all reps or picks one; rep only sees themselves
     const viewRepId=isAdmin?commRep:cu.id;
@@ -26,6 +31,8 @@ export default function CommissionsPage(){
     // not loaded yet (lines render live and NOTHING is written — never freeze blind).
     const[snaps,setSnaps]=useState(null);
     const _snapWriting=useRef(false);
+    // Admin Dashboard: which rep rows are expanded to show their paid invoices
+    const[dashOpen,setDashOpen]=useState({});
     useEffect(()=>{let cancelled=false;
       if(!supabase)return;
       supabase.from('commission_snapshots').select('*').limit(20000).then(({data,error})=>{
@@ -332,7 +339,7 @@ export default function CommissionsPage(){
             {salesReps.map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
           </select></>}
         <div style={{display:'flex',gap:4,marginLeft:isAdmin?'auto':0}}>
-          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[])].map(([id,label])=>
+          {[['statement','Statement'],['pipeline','Pipeline'],['promo','Promo'],['ytd','YTD'],['byCustomer','By Customer'],...(isAdmin?[['monthly','📤 Monthly Reports']]:[]),...(isSteve?[['adminDash','👑 Admin Dashboard']]:[])].map(([id,label])=>
             <button key={id} className={`btn btn-sm ${commTab===id?'btn-primary':'btn-secondary'}`} onClick={()=>setCommTab(id)}>{label}</button>)}
         </div>
       </div>
@@ -695,6 +702,109 @@ export default function CommissionsPage(){
             </div>
           </div>
         </div>;
+      })()}
+
+      {/* ADMIN DASHBOARD TAB — Steve only. Every rep's commissions for the selected
+          paid-month on one page; a rep row expands to the paid invoices (and promo
+          deductions) behind it. All money comes from buildCommLines/buildPromoLines —
+          the same math, snapshot freezes, and overrides as the Statement tab; nothing
+          is recomputed here. */}
+      {commTab==='adminDash'&&isSteve&&(()=>{
+        const now=new Date();const nowYM=now.getFullYear()+'-'+String(now.getMonth()+1).padStart(2,'0');
+        const isMTD=commMonth===nowYM;
+        const monthLabel=(()=>{const[y,m]=commMonth.split('-').map(Number);return new Date(y,m-1,1).toLocaleString('en-US',{month:'long',year:'numeric'})})();
+        // Whole company regardless of the header rep selector: null filter = all reps.
+        const linesM=buildCommLines(null).filter(l=>{if(!l.paidDate)return false;const ym=l.paidDate.getFullYear()+'-'+String(l.paidDate.getMonth()+1).padStart(2,'0');return ym===commMonth});
+        const promoM=buildPromoLines(null).filter(l=>l.soMonth===commMonth);
+        const byRep={};
+        const bucket=id=>byRep[id]||(byRep[id]={repId:id,lines:[],promo:[],rev:0,cost:0,gp:0,comm:0,promoCost:0});
+        linesM.forEach(l=>{const b=bucket(l.repId||'_none');b.lines.push(l);b.rev+=l.gp.rev;b.cost+=l.gp.cost;b.gp+=l.gp.gp;b.comm+=l.commAmt});
+        promoM.forEach(l=>{const b=bucket(l.repId||'_none');b.promo.push(l);b.promoCost+=l.totalCost});
+        const rows=Object.values(byRep).map(b=>({...b,rep:REPS.find(r=>r.id===b.repId),net:Math.round((b.comm-b.promoCost)*100)/100})).sort((a,b)=>b.net-a.net);
+        const tot=rows.reduce((a,b)=>({rev:a.rev+b.rev,cost:a.cost+b.cost,gp:a.gp+b.gp,comm:a.comm+b.comm,promoCost:a.promoCost+b.promoCost,net:a.net+b.net,inv:a.inv+b.lines.length}),{rev:0,cost:0,gp:0,comm:0,promoCost:0,net:0,inv:0});
+        const totGpPct=tot.rev>0?Math.round(tot.gp/tot.rev*100):0;
+        const fmt=n=>'$'+n.toLocaleString(undefined,{maximumFractionDigits:2});
+        const fmt0=n=>'$'+Math.round(n).toLocaleString();
+        const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
+        const gpBadge=(gp,rev)=>{const ok=rev>0&&gp/rev>=0.3;return<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:ok?'#dcfce7':'#fef3c7',color:ok?'#166534':'#92400e'}}>{rev>0?Math.round(gp/rev*100):0}%</span>};
+        const openSO=l=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}};
+        return<>
+          <div className="card">
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <h2>👑 Admin Dashboard — {monthLabel}{isMTD?' (Month to Date)':''}</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m-2,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9664;</button>
+                <input type="month" className="form-input" style={{width:160}} value={commMonth} onChange={e=>setCommMonth(e.target.value)}/>
+                <button className="btn btn-sm btn-secondary" onClick={()=>{const[y,m]=commMonth.split('-').map(Number);const d=new Date(y,m,1);setCommMonth(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0'))}}>&#9654;</button>
+                <button className={`btn btn-sm ${isMTD?'btn-primary':'btn-secondary'}`} title="Jump to the current month (month to date)" onClick={()=>setCommMonth(nowYM)}>MTD</button>
+              </div>
+            </div>
+            <div className="card-body">
+              <div className="stats-row">
+                <div className="stat-card"><div className="stat-label">Commissions{tot.promoCost>0?' (Net)':''}</div><div className="stat-value" style={{color:'#166534'}}>{fmt(tot.net)}</div>{tot.promoCost>0&&<div style={{fontSize:10,color:'#dc2626',marginTop:2}}>{fmt(tot.comm)} earned − {fmt(tot.promoCost)} promo</div>}</div>
+                <div className="stat-card"><div className="stat-label">Overall GP%</div><div className="stat-value" style={{color:totGpPct>=30?'#166534':'#d97706'}}>{totGpPct}%</div></div>
+                <div className="stat-card"><div className="stat-label">Gross Profit</div><div className="stat-value" style={{color:'#166534'}}>{fmt0(tot.gp)}</div></div>
+                <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-value">{fmt0(tot.rev)}</div></div>
+                <div className="stat-card"><div className="stat-label">Invoices Paid</div><div className="stat-value">{tot.inv}</div></div>
+              </div>
+            </div>
+          </div>
+          <div className="card" style={{marginTop:16}}>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>Commissions by Rep</h2><span style={{fontSize:11,color:'#64748b'}}>Click a rep to see their paid invoices</span></div>
+            <div className="card-body" style={{padding:0}}>
+              {rows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
+              <table style={{fontSize:12}}><thead><tr>
+                <th>Rep</th><th style={{textAlign:'center'}}>Invoices</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>Gross Profit</th><th style={{textAlign:'center'}}>GP%</th><th style={{textAlign:'right'}}>Earned</th><th style={{textAlign:'right'}}>Promo</th><th style={{textAlign:'right'}}>Net Commission</th>
+              </tr></thead><tbody>
+                {rows.map(b=>{const open=!!dashOpen[b.repId];const name=b.rep?.name||(b.repId==='_none'?'⚠ Unassigned':b.repId);
+                  return<Fragment key={b.repId}>
+                    <tr style={{cursor:'pointer',background:open?'#f0f9ff':''}} onClick={()=>setDashOpen(p=>({...p,[b.repId]:!p[b.repId]}))}>
+                      <td style={{fontWeight:800,color:'#0f172a'}}><span style={{display:'inline-block',width:14,color:'#64748b'}}>{open?'▼':'▶'}</span>{name}</td>
+                      <td style={{textAlign:'center'}}>{b.lines.length}</td>
+                      <td style={{textAlign:'right'}}>{fmt0(b.rev)}</td>
+                      <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(b.cost)}</td>
+                      <td style={{textAlign:'right',fontWeight:700,color:b.gp>0?'#166534':'#dc2626'}}>{fmt0(b.gp)}</td>
+                      <td style={{textAlign:'center'}}>{gpBadge(b.gp,b.rev)}</td>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#1e40af'}}>{fmt(b.comm)}</td>
+                      <td style={{textAlign:'right',color:b.promoCost>0?'#dc2626':'#94a3b8'}}>{b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td>
+                      <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:b.net>=0?'#166534':'#dc2626'}}>{fmt(b.net)}</td>
+                    </tr>
+                    {open&&[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=><tr key={l.inv.id} style={{background:'#f8fafc'}}>
+                      <td style={{paddingLeft:28}}><span style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openSO(l)}>{l.inv.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span>{l.snapped&&<span title="Frozen at payment — later order edits no longer change this line" style={{marginLeft:4,fontSize:10}}>🔒</span>}</td>
+                      <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>paid {fmtD(l.paidDate)}</td>
+                      <td style={{textAlign:'right'}}>{fmt0(l.gp.rev)}</td>
+                      <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(l.gp.cost)}</td>
+                      <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>{fmt0(l.gp.gp)}</td>
+                      <td style={{textAlign:'center'}}>{gpBadge(l.gp.gp,l.gp.rev)}</td>
+                      <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>@{Math.round(l.commRate*100)}%</span></td>
+                      <td colSpan={2}/>
+                    </tr>)}
+                    {open&&b.promo.map(l=><tr key={'p_'+l.so.id} style={{background:'#fef2f2'}}>
+                      <td style={{paddingLeft:28}}><span style={{fontWeight:700,color:'#dc2626',cursor:'pointer'}} onClick={()=>openSO(l)}>{l.so.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span><span style={{marginLeft:8,fontSize:9,fontWeight:700,color:'#dc2626'}}>PROMO</span></td>
+                      <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>{l.soDate}</td>
+                      <td colSpan={4}/>
+                      <td colSpan={2} style={{textAlign:'right',fontSize:10,color:'#64748b'}}>promo cost deduction</td>
+                      <td style={{textAlign:'right',fontWeight:700,color:'#dc2626'}}>−{fmt(l.totalCost)}</td>
+                    </tr>)}
+                  </Fragment>})}
+                <tr style={{fontWeight:800,background:'#f0f9ff',borderTop:'2px solid #1e40af'}}>
+                  <td>TOTAL</td>
+                  <td style={{textAlign:'center'}}>{tot.inv}</td>
+                  <td style={{textAlign:'right'}}>{fmt0(tot.rev)}</td>
+                  <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(tot.cost)}</td>
+                  <td style={{textAlign:'right',color:'#166534'}}>{fmt0(tot.gp)}</td>
+                  <td style={{textAlign:'center',color:totGpPct>=30?'#166534':'#92400e'}}>{totGpPct}%</td>
+                  <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(tot.comm)}</td>
+                  <td style={{textAlign:'right',color:tot.promoCost>0?'#dc2626':'#94a3b8'}}>{tot.promoCost>0?'−'+fmt(tot.promoCost):'—'}</td>
+                  <td style={{textAlign:'right',fontSize:15,color:tot.net>=0?'#166534':'#dc2626'}}>{fmt(tot.net)}</td>
+                </tr>
+              </tbody></table>}
+            </div>
+            <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
+              Grouped by <strong>payment month</strong> — an invoice lands in the month its last payment came in, same as the Statement tab. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise). 🔒 lines are frozen at payment.
+            </div>
+          </div>
+        </>;
       })()}
 
       {/* Commission policy note */}
