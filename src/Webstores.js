@@ -1294,9 +1294,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const orderArt = [];
       (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => orderArt.push({ art: a, label: so.id, srcCustId: store.customer_id })));
       (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => orderArt.push({ art: a, label: e.id, srcCustId: store.customer_id })));
+      // The parent program's own order/estimate art also cascades to the child store — a logo the
+      // program set up on its own order should be reusable by its teams, just like the parent's
+      // curated library. buildTeamArtLibrary treats it as parent-level (gap-fill, never clobbers team).
+      const parentOrderArt = [];
+      if (cust?.parent_id) {
+        (allSos || []).filter((s) => s.customer_id === cust.parent_id).forEach((so) => (so.art_files || []).forEach((a) => parentOrderArt.push({ art: a, label: so.id, srcCustId: cust.parent_id })));
+        (allEsts || []).filter((e) => e.customer_id === cust.parent_id).forEach((e) => (e.art_files || []).forEach((a) => parentOrderArt.push({ art: a, label: e.id, srcCustId: cust.parent_id })));
+      }
       libraryArt = buildTeamArtLibrary({
         teamArt: cust?.art_files || [],
         parentArt: par?.art_files || [],
+        parentOrderArt,
         orderArt,
         teamId: cust?.id,
         parentId: par?.id,
