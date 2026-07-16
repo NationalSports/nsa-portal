@@ -1073,13 +1073,18 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
       +'</div></div>'
     :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
+  // Non-embroidery jobs (DTF / screen print / vinyl) have no DST/DG to scan, so the
+  // sheet carries a stable JOB:<so>:<job> identity barcode — job-scan resolves it
+  // straight to this job (advance its stage at a floor station or on a phone).
+  const _jobScanCode='JOB:'+so.id+':'+j.id;
+  const _jobBcHtml=isEmb?'':'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🏷️ JOB BARCODE — SCAN TO ADVANCE</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Scan at a floor station or on a phone to move this job through production.</div><div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(_jobScanCode)||'<div style="font-size:12px;font-weight:700;padding:8px">'+_jobScanCode+'</div>')+'</div></div></div>';
   return{title:c?.name||j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
     headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
     infoBoxes,tables:[],
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_bcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+(_bcHtml||'')+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // ── Production Work Order sheet options (National Team Shop layout) ──
@@ -1480,13 +1485,18 @@ function dP(d,q,artFiles,cq){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}}}
+    // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
+  // Team Shop conversion decos (00199): cost_each is the rate-card cost-of-record; sell
+  // stays 0 (already folded into unit_sell). Keep in sync with src/lib/decoPricing.js.
+  if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override||npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+  // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
@@ -5422,15 +5432,36 @@ export default function App(){
     nf('Box '+id+' didn\'t update ('+(lastErr?.message||lastErr)+') — it shows stale status/location for everyone','error');
     return false;
   };
-  // Mint a plate + persist a box for what a pull just physically boxed. Returns the row only
-  // when it persisted (the label should carry the plate) — null means print today's IF label.
-  const createBoxForPull=async({ifId,soId,contents})=>{
+  // Mint a plate + persist a box of `kind` for what a flow just physically boxed.
+  // Returns the row only when it persisted (the label should carry the plate) —
+  // null means the caller prints its legacy IF/PO-coded label. Generalized from
+  // the pull path so receiving boxes (kind='receiving', 00185) share ONE mint.
+  const createBoxFor=async({kind='fulfillment',ifId=null,soId=null,poId=null,contents})=>{
     if(!supabase||_boxesMissing.current||!(contents||[]).length)return null;
     let plate=null;
     try{const n=await _nextCounter('box_plate');if(n)plate=plateFromCounter(n)}catch(e){/* fall through */}
     if(!plate)plate='BX-'+Date.now().toString(36).toUpperCase().slice(-6);// counter RPC not deployed — unique (non-sequential) plate
-    const row=makeBoxRow({id:plate,contents,soId,ifId,createdBy:cu?.id||'warehouse'});
-    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between pull-click and label print
+    const row=makeBoxRow({id:plate,kind,contents,soId,ifId,poId,createdBy:cu?.id||'warehouse'});
+    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between the action and label print
+  };
+  // Pull path — behavior identical to before (kind='fulfillment', IF+SO refs).
+  const createBoxForPull=({ifId,soId,contents})=>createBoxFor({kind:'fulfillment',ifId,soId,contents});
+  // Receiving-box contents from a just-received line array ([{sku,name,color,sizes,soId}]);
+  // drops zero cells, carries per-line so_id so a multi-SO PO's box stays traceable.
+  const _recvBoxContents=(lines,poId)=>(lines||[]).map(l=>({sku:l.sku||'',name:l.name||'',color:l.color||'',so_id:l.soId||'',po_id:poId||'',sizes:Object.fromEntries(Object.entries(l.sizes||{}).filter(([,v])=>(+v||0)>0))})).filter(e=>Object.keys(e.sizes).length>0);
+  // Box the goods a PO receive just put away (kind='receiving', source_refs=[{PO}]) and
+  // print its SCANNABLE plate label (buildBoxLabel — resolves via ?scan= after the box-scan
+  // fix). When box tracking isn't deployed (createBoxFor → null), runs printFallback so
+  // receiving degrades to today's PO-scan label exactly like the pull path.
+  const receiveBoxAndPrint=async({poId,soId,lines,program,rep,printFallback})=>{
+    const contents=_recvBoxContents(lines,poId);
+    let box=null;
+    try{if(contents.length)box=await createBoxFor({kind:'receiving',soId:soId||null,poId,contents})}catch(e){/* best-effort */}
+    if(box){
+      const _lbl=buildBoxLabel(box,{program:program||'',scanBase:window.location.origin+window.location.pathname});
+      printQrLabel({..._lbl,rep:rep||'',note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534'});
+    } else if(typeof printFallback==='function'){printFallback()}
+    return box;
   };
   // Resolve a scanned BX code → freshest row, following merged_into redirects (max 5 hops).
   const lookupBox=async(code)=>{
@@ -6212,7 +6243,11 @@ export default function App(){
     try {
       const ssResponse = await pushSOToShipStation(so, customer);
       const updatedSO = { ...so, _shipstation_order_id: ssResponse.orderId, _shipping_status: 'submitted', updated_at: new Date().toLocaleString() };
-      setSOs(prev => prev.map(s => s.id === so.id ? updatedSO : s));
+      // savSO (not a bare setSOs) so this actually persists — same pattern the
+      // ship modal uses (App.js ~17870). A setSOs-only write updates local
+      // state but skips savSO's diff-snapshot bookkeeping and merge guards,
+      // so it's vulnerable to being silently clobbered by the next poll.
+      savSO(updatedSO);
       nf('Order ' + so.id + ' submitted to ShipStation (' + ssResponse.orderId + ')');
     } catch (error) {
       console.error('[ShipStation] Ship order failed:', error);
@@ -6228,7 +6263,8 @@ export default function App(){
         const updatedSO = sos.find(s => s.id === soId);
         if (updatedSO && !updatedSO._tracking_number) {
           const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
-          setSOs(prev => prev.map(s => s.id === soId ? updated : s));
+          // savSO, same reasoning as handleShipToShipStation above.
+          savSO(updated);
           nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
         }
       } else { nf('No shipment data yet for ' + soId, 'error'); }
@@ -6913,8 +6949,10 @@ export default function App(){
         // Check if any other invoices remain for this SO
         const remainingInvs=invs.filter(i=>i.so_id===inv.so_id&&i.id!==invId);
         if(remainingInvs.length===0){
-          // No more invoices — SO goes back to ready_to_invoice
-          setSOs(prev=>prev.map(s=>s.id===inv.so_id?{...s,status:'ready_to_invoice',updated_at:new Date().toLocaleString()}:s));
+          // No more invoices — SO goes back to ready_to_invoice. savSO (not a
+          // bare setSOs) so this persists — same reasoning as the ShipStation
+          // handlers above.
+          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -10353,6 +10391,18 @@ export default function App(){
     }
     applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
   };
+  // Hand an embroidery job's art off to the Top Star digitizing vendor. Annotation-only —
+  // goes through advance_job_stage (00192) rather than the local savSO writer, mirroring
+  // TeamShopQueue's RPC call shape, since digitizing_sent stamps digitizing_vendor/sent_at
+  // columns that are deliberately NOT in _jobCols (the RPC is their sole writer). On success,
+  // patches local state to match so the button hides immediately instead of waiting on a refetch.
+  const sendToDigitizingVendor=(j)=>{
+    supabase.rpc('advance_job_stage',{p_so_id:j.soId,p_job_id:j.id,p_event:'digitizing_sent',p_actor:cu?.name||cu?.id||'',p_payload:{vendor:'topstar'}}).then(({error})=>{
+      if(error){nf('Send to digitizing failed: '+(error.message||'unknown error'),'error');return}
+      setSOs(prev=>prev.map(s=>s.id===j.soId?{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,digitizing_vendor:'topstar',digitizing_sent_at:new Date().toISOString()}:jj)}:s));
+      nf('🧵 Sent to Top Star for digitizing');
+    });
+  };
   // ── Single source of truth for stopping a job's decorator clock (audit L10) ──
   // Logs the elapsed run and clears the active timer + idle accumulator. Used by
   // applyJobMove (production board) AND passed into OrderEditor as onStopJobClock —
@@ -10759,6 +10809,7 @@ export default function App(){
                     {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
                     {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'in_process'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 Reassign</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
                     {col.id==='completed'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button>}
+                    {j.deco_type==='embroidery'&&j.art_status==='upload_emb_files'&&!j.digitizing_sent_at&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();sendToDigitizingVendor(j)}}>🧵 Send to Digitizing Vendor</button>}
                   </div>
                 </div>}
               </div>})}
@@ -11689,6 +11740,7 @@ export default function App(){
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
+                  const _recvLines=[]; // actual received qtys per line — box contents (not ordered sizes)
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -11710,6 +11762,7 @@ export default function App(){
                         const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
+                        if(_rcvd>0)_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -11725,7 +11778,10 @@ export default function App(){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
                   } else {
                     const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes,customer:it2.customer,soId:it2.soId}));
-                    printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                    // Box the received goods (kind='receiving', scannable plate) from the ACTUAL received
+                    // qtys; fall back to the PO-scan label when box tracking isn't deployed.
+                    const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
+                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
@@ -17023,9 +17079,12 @@ export default function App(){
                       const n=batchMatch.source_pos.length;
                       printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
-                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
+                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered,soId:it.soId}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
+                      // Box tracking v1: the received goods get a kind='receiving' box (source_refs=[{PO}])
+                      // and a SCANNABLE plate label; falls back to the PO-scan label above when boxes aren't deployed.
+                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -30799,7 +30858,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -30955,8 +31014,8 @@ export default function App(){
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
         const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
-        return<a key={item.id} href={_newTabHref({pg:item.id})} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
-          onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
+        return<a key={item.id} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
+          onClick={ev=>{if(item.external)return;if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>

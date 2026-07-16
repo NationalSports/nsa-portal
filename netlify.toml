@@ -43,9 +43,12 @@
 
 [functions]
   directory = "netlify/functions"
-  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js);
-  # make sure the file ships inside the function bundle.
-  included_files = ["src/lib/opsRecap.js"]
+  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js),
+  # quickorder-quote shares the deco pricing tables (src/lib/decoPricing.js), and
+  # teamshop-assistant shares the FAQ facts (src/lib/teamshopFaq.js) + order status
+  # labels (src/lib/teamshopOrderStatus.js) with the storefront;
+  # make sure these files ship inside the function bundles.
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -207,3 +210,32 @@
 # per session (deadline_reminded_at).
 [functions."roster-deadline-reminders"]
   schedule = "0 17 * * *"
+
+# Team Shop / Club stuck-order sweep — hourly. Flags paid-but-unconverted, stuck
+# pending_payment, art stuck 5+ business days, and no-PO-but-need_to_order jobs;
+# emails ONE alert to STUCK_SWEEP_ALERT_EMAIL only when something is stuck (never
+# on a clean sweep). Also callable on demand — staff POST { action:'run' } with a
+# bearer session token from the Team Shop queue UI. See
+# netlify/functions/teamshop-stuck-sweep.js.
+[functions."teamshop-stuck-sweep"]
+  schedule = "50 * * * *"
+
+# Team Shop / Club auto-release — every 15 min. Releases hold jobs it can PROVE
+# ready by a server-side recompute (art done + garments fully in hand) through
+# advance_job_stage('release', …) — the same 00205 gate a staff scan uses, never a
+# direct prod_status write. Default-OFF via teamshop_settings.auto_release_enabled
+# (00208); scope 'auto_art_only' | 'all'. Also callable on demand — staff POST
+# { action:'run' } with a bearer session token. See
+# netlify/functions/teamshop-auto-release.js.
+[functions."teamshop-auto-release"]
+  schedule = "*/15 * * * *"
+
+# Team Shop DTF print lane (00211) — hourly. A scheduled (no-auth) invocation runs
+# the DTF batch sweep: records pending per-job DTF print needs and batches them into
+# ONE draft PO to the DTF vendor once SUM(pending prints) >= threshold_qty OR the
+# oldest pending need passes max_age_days (the time backstop the schedule exists
+# for). Default-INERT: the seeded DTF vendor has no gates/email and auto-submit off,
+# so this no-ops until staff configure it. Staff can also POST { action:'sweep_dtf' }.
+# See netlify/functions/teamshop-auto-po.js.
+[functions."teamshop-auto-po"]
+  schedule = "25 * * * *"

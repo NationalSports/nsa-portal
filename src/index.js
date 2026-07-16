@@ -7,6 +7,7 @@ import {
   sbGetSession, sbLinkTeamAuth, sbGetMyProfile, sbGetTeam,
 } from './lib/auth';
 import { DEFAULT_REPS } from './constants';
+import { isTeamShopHost, isFloorStationPath, isVendorDigitizingPath, isProductionHQPath } from './lib/hostRouting';
 
 // Error monitoring — active only when REACT_APP_SENTRY_DSN is set (Netlify env).
 // The DSN is a public client identifier (not a secret), so inlining it into the
@@ -65,7 +66,35 @@ const AdidasInventory = React.lazy(() => import('./storefront/AdidasInventory'))
 // open, publicly-listed club stores. Surfaced at nationalsportsapparel.com/team-stores
 // via the same marketing-site proxy rewrite used for /livelook.
 const TeamStores = React.lazy(() => import('./storefront/TeamStores'));
+// Public Team Shop retail storefront — nationalteamshop.com is a domain alias
+// on this app, and visitors arriving on it must land here, never the portal
+// login. Also reachable at /teamshop on any host (deploy previews, e2e). See
+// src/lib/hostRouting.js. NOTE: this hostname check is applied LAST in the
+// branch chain below, so existing path prefixes (/shop/*, /adidas,
+// /team-stores, auth flows, …) still win on the alias hostname.
+const TeamShopApp = React.lazy(() => import('./teamshop/TeamShopApp'));
+// Staff-only Team Shop production board — "Production HQ" — for order_source
+// 'teamshop' jobs (the Pipeline tab inside it also reads 'club') — separate
+// from both the consumer TeamShopApp above and the main warehouse jobs board
+// in App.js. Matched by path so it works on any host; checked (below) BEFORE
+// the isTeamShop hostname/path check so it wins over the consumer
+// storefront's own /teamshop path match. Canonical route is /teamshop-queue
+// (unchanged); /production is an additive alias (isProductionHQPath).
+const TeamShopQueue = React.lazy(() => import('./teamshopqueue/TeamShopQueue'));
+// Shop-floor scan station (scan a job ticket at the embroidery machine / DTF /
+// heat press → the job + its production file + one next-stage button). Staff
+// sign-in or ?token= station mode; see src/floorstation/FloorStation.js.
+// Matched by path like /teamshop-queue, predicate in src/lib/hostRouting.js.
+const FloorStation = React.lazy(() => import('./floorstation/FloorStation'));
+// Top Star digitizing vendor portal (queue of embroidery jobs sent out for
+// digitizing + DST upload + mark-complete) — a single outside vendor, static-token
+// auth (netlify/functions/vendor-digitizing.js), no staff sign-in involved. Matched
+// by path like /vendor-digitizing, predicate in src/lib/hostRouting.js.
+const VendorDigitizing = React.lazy(() => import('./vendorportal/VendorDigitizing'));
 const _path = typeof window !== 'undefined' ? window.location.pathname : '';
+const isTeamShopQueue = _path === '/teamshop-queue' || _path === '/teamshop-queue/' || isProductionHQPath(_path);
+const isFloorStation = isFloorStationPath(_path);
+const isVendorDigitizing = isVendorDigitizingPath(_path);
 const isOrderTrack = _path.startsWith('/shop/order/');
 const isStorefront = _path.startsWith('/shop/') && !isOrderTrack;
 // /adidas is the canonical path. /livelook is the same catalog, served at
@@ -93,6 +122,12 @@ const isOnboarding = _path === '/onboarding' || _path === '/onboarding/';
 // with no staff session) hits.
 const _portalParam = (() => { try { return new URLSearchParams(window.location.search).get('portal'); } catch { return null; } })();
 const isCoachPortal = (_path === '/' || _path === '') && !!_portalParam;
+// Team Shop retail storefront — matched by hostname (nationalteamshop.com) or
+// /teamshop path. Checked AFTER every path-prefix branch above (see the render
+// chain), so /shop/foo, /adidas, /team-stores, auth flows, and the coach portal
+// all still work on the alias hostname.
+const _host = typeof window !== 'undefined' ? window.location.hostname : '';
+const isTeamShop = isTeamShopHost(_host, _path);
 
 class ErrorBoundary extends React.Component {
   constructor(props) {
@@ -222,6 +257,14 @@ root.render(
         ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading store…</div>}><Storefront /></React.Suspense>
         : isAuthFlow || isCoachPortal || isOnboarding
         ? <React.Suspense fallback={<AppFallback />}><App /></React.Suspense>
+        : isTeamShopQueue
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopQueue /></React.Suspense>
+        : isFloorStation
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><FloorStation /></React.Suspense>
+        : isVendorDigitizing
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><VendorDigitizing /></React.Suspense>
+        : isTeamShop
+        ? <React.Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'system-ui,sans-serif', color: '#64748b' }}>Loading…</div>}><TeamShopApp /></React.Suspense>
         : <MainApp />}
     </ErrorBoundary>
   </React.StrictMode>

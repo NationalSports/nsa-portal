@@ -633,6 +633,20 @@ function transferUsage(lines, maps) {
   return used;
 }
 
+// Pure computation behind pullBatchTransfers: which transfer rows to decrement (each
+// exactly once, regardless of how many orders/SOs share the code) and which so_ids to
+// stamp transfers_pulled on. soId accepts a single so_id (team-store single-batch pull)
+// or an array (club stores' Group Pull — every converted-but-unpulled order at once,
+// each its own SO). Exported so this array-vs-single behavior is unit-testable without
+// a live Supabase client.
+export function computePullPlan(soId, neededByCode, transfers) {
+  const soIds = Array.isArray(soId) ? soId.filter(Boolean) : [soId].filter(Boolean);
+  const decrements = (transfers || [])
+    .filter((t) => t && neededByCode && neededByCode[t.code])
+    .map((t) => ({ id: t.id, on_hand: Math.max(0, (t.on_hand || 0) - neededByCode[t.code]) }));
+  return { soIds, decrements };
+}
+
 function isMissingTable(err) {
   if (!err) return false;
   const m = (err.message || err.details || '').toLowerCase();
@@ -1791,15 +1805,52 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
   // flag the batch's orders as pulled (they move from On order → In process).
+  // soId accepts a single so_id (team-store single-batch pull, unchanged) OR an
+  // array of so_ids (club stores' Group Pull — every converted-but-unpulled order
+  // pulled in one action, each order individually converted to its own SO).
+  //
+  // Primary path (00206, Team Shop backend hardening #5): pull_webstore_transfers
+  // does the decrement + stamp in ONE transaction, server-side, against the
+  // LIVE on_hand row — no client read-then-write race between two staff
+  // sessions (or a double-click) pulling overlapping batches. computePullPlan
+  // still runs for soIds (needed either way) and `decrements` — kept ONLY as
+  // the fallback write plan below, not sent to the RPC (the RPC re-derives the
+  // decrement from p_needs against the current row itself).
   const pullBatchTransfers = useCallback(async (soId, neededByCode) => {
-    const list = detail?.transfers || [];
-    for (const t of list) {
-      const need = neededByCode[t.code];
-      if (need) await supabase.from('webstore_transfers').update({ on_hand: Math.max(0, (t.on_hand || 0) - need) }).eq('id', t.id);
+    const { soIds, decrements } = computePullPlan(soId, neededByCode, detail?.transfers || []);
+    if (!soIds.length) return;
+    const needs = Object.entries(neededByCode || {})
+      .filter(([, qty]) => Number(qty) > 0)
+      .map(([code, qty]) => ({ code, qty: Math.round(Number(qty)) }));
+    const rpc = await supabase.rpc('pull_webstore_transfers', { p_store_id: sel.id, p_so_ids: soIds, p_needs: needs });
+    if (rpc.error) {
+      const msg = (rpc.error.message || '') + ' ' + (rpc.error.details || '') + ' ' + (rpc.error.hint || '');
+      const migrationNotApplied = rpc.error.code === '42883' || rpc.error.code === '42P01' || /does not exist|could not find|schema cache/i.test(msg);
+      if (!migrationNotApplied) { flash('Pull failed: ' + rpc.error.message); return; }
+      // Fallback ONLY for "migration not applied yet" — any other RPC error
+      // (bad input, forbidden, …) is a real failure and must surface, not
+      // silently degrade to the racy client loop this migration replaces.
+      console.warn('[pullBatchTransfers] pull_webstore_transfers RPC not found (00206 not applied yet) — falling back to the legacy client read-then-write loop:', rpc.error.message);
+      for (const d of decrements) {
+        await supabase.from('webstore_transfers').update({ on_hand: d.on_hand }).eq('id', d.id);
+      }
+      const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).in('so_id', soIds);
+      if (error) { flash('Pull failed: ' + error.message); return; }
     }
-    const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).eq('so_id', soId);
-    if (error) { flash('Pull failed: ' + error.message); return; }
-    flash('Transfers pulled — moved to In process'); loadDetail(sel);
+    // Surface the RPC's structured result (00215): an already-pulled no-op and,
+    // critically, any transfer SHORTFALL — an oversell used to be clamped to 0 and
+    // silently swallowed, so production hit the press short with no warning.
+    const res = rpc.data || {};
+    if (res.already_pulled) { flash('Already pulled — no changes made'); loadDetail(sel); return; }
+    const short = Array.isArray(res.shortfalls) ? res.shortfalls : [];
+    if (short.length) {
+      flash('⚠ Transfers pulled, but SHORT on: '
+        + short.map((s) => `${s.code} (need ${s.needed}, had ${s.on_hand})`).join(', ')
+        + ' — check transfer inventory before pressing');
+    } else {
+      flash('Transfers pulled — moved to In process');
+    }
+    loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations, category, kit_name, required, options }) => {
@@ -2926,7 +2977,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // we can emit a logo deco for it on the SO (numbers/names already carry via
     // `personalize`). Keyed by product_id to match byProduct.
     const xferLabel = {};
-    (detail.transfers || []).forEach((t) => { if (t && t.code) xferLabel[t.code] = t.label || t.code; });
+    // Transfer cost-of-record (webstore_transfers.unit_cost, 00204): staff set it from
+    // their bulk transfer buys; each batched application carries it as cost_each so GP/
+    // commissions see real transfer cost (dP's art branch prefers cost_each on
+    // transfer_code decos — previously these rows hit the generic DTF matrix cost).
+    const xferCost = {};
+    (detail.transfers || []).forEach((t) => { if (t && t.code) { xferLabel[t.code] = t.label || t.code; if (t.unit_cost != null && Number.isFinite(Number(t.unit_cost))) xferCost[t.code] = Number(t.unit_cost); } });
     const bundleXfersByPid = {};
     (detail.bundleItems || []).forEach((b) => {
       if (!b.product_id || !b.transfer_code) return;
@@ -3029,7 +3085,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
-        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0 });
       });
       // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
       // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
@@ -10998,6 +11054,10 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   const InProc = ({ t }) => { const v = inProcUse[t.code] || 0; return <span style={{ color: v ? '#6d28d9' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const OnOrder = ({ t }) => { const v = onOrderUse[t.code] || 0; return <span style={{ color: v ? '#92400e' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const NumCell = ({ t, field }) => <input defaultValue={t[field] || 0} type="number" key={t[field]} onBlur={(e) => { const v = Number(e.target.value) || 0; if (v !== (t[field] || 0)) onUpdateTransfer(t.id, { [field]: v }); }} style={{ width: 64, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
+  // Cost per unit — what staff paid per transfer (total spend ÷ qty bought). Feeds
+  // create_club_sales_order's so_item_decorations.cost_each for GP (migration 00204).
+  // Blank = unset (not the same as $0); only writes when the value actually changed.
+  const CostCell = ({ t }) => <input defaultValue={t.unit_cost != null ? t.unit_cost : ''} type="number" step="0.01" min="0" placeholder="—" key={t.unit_cost} onBlur={(e) => { const raw = e.target.value; const v = raw === '' ? null : Number(raw) || 0; if (v !== (t.unit_cost != null ? t.unit_cost : null)) onUpdateTransfer(t.id, { unit_cost: v }); }} style={{ width: 72, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
   const receiveRow = (t) => { if (!(t.incoming > 0)) return; onUpdateTransfer(t.id, { on_hand: (t.on_hand || 0) + (t.incoming || 0), incoming: 0, incoming_eta: null }); };
   const Recv = ({ t }) => t.incoming > 0 ? <button onClick={() => receiveRow(t)} title="Mark incoming as received into On hand" style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#047857', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>Receive</button> : <span style={{ color: '#cbd5e1' }}>—</span>;
   const EtaCell = ({ t }) => <input type="date" defaultValue={t.incoming_eta || ''} key={t.incoming_eta || ''} onBlur={(e) => { const v = e.target.value || null; if (v !== (t.incoming_eta || null)) onUpdateTransfer(t.id, { incoming_eta: v }); }} style={{ padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} />;
@@ -11052,13 +11112,14 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
 
         {designs.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th}></th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th} title="Cost per unit (what you paid, total spend ÷ qty) — feeds club-store GP">Cost/unit</th><th style={th}></th></tr></thead>
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div></td>
                   <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
                   <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
+                  <td style={td}><CostCell t={t} /></td>
                   <td style={{ ...td, textAlign: 'right' }}><button onClick={() => onRemoveTransfer(t.id)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>remove</button></td>
                 </tr>
               ))}
@@ -11206,6 +11267,29 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     (orderItems || []).forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
     return mergeStoreTracking(sos, orders, itemsByOrder, invProducts);
   }, [sos, orders, orderItems, invProducts]);
+  // Club stores: every order converts to its OWN Sales Order automatically (no
+  // staff batch step), so there is no single so_id to pull transfers against.
+  // Group every converted-but-unpulled order instead — combined garment size
+  // counts (this memo) + combined transfer needs (batchTransfers below, now
+  // array-capable), pulled in one action. Computed unconditionally (before the
+  // loading/error early-returns) to keep this hook's call order stable.
+  const clubUnpulled = store.org_type === 'club'
+    ? (orders || []).filter((o) => isLiveWebstoreOrder(o) && o.so_id && !o.transfers_pulled)
+    : [];
+  const clubSoIds = clubUnpulled.map((o) => o.so_id);
+  const clubGarmentSizes = useMemo(() => {
+    if (!clubUnpulled.length) return [];
+    const ids = new Set(clubUnpulled.map((o) => o.id));
+    const by = {};
+    (orderItems || []).forEach((i) => {
+      if (i.is_bundle_parent || !ids.has(i.order_id)) return;
+      const key = (i.sku || i.product_id || i.name || 'item') + '|' + (i.size || 'OS');
+      if (!by[key]) by[key] = { label: i.name || i.sku || 'Item', size: i.size || 'OS', qty: 0 };
+      by[key].qty += i.qty || 1;
+    });
+    return Object.values(by).sort((a, b) => a.label.localeCompare(b.label) || a.size.localeCompare(b.size));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clubSoIds.join(','), orderItems]);
   const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
   // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
   // Need · Status) for a set of webstore orders.
@@ -11310,10 +11394,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
-  // Transfers needed for one SO. By default counts only the orders whose
+  // Transfers needed for one SO — or several (club stores' Group Pull passes every
+  // converted-but-unpulled order's so_id as an array; each club order is its own SO,
+  // so there is no single soId to key off). By default counts only the orders whose
   // transfers haven't been pulled yet (so re-pulling won't double-deduct).
   const batchTransfers = (soId, onlyUnpulled = true) => {
-    const linked = orders.filter((o) => o.so_id === soId && (!onlyUnpulled || !o.transfers_pulled));
+    const soIds = Array.isArray(soId) ? new Set(soId) : new Set([soId]);
+    const linked = orders.filter((o) => soIds.has(o.so_id) && (!onlyUnpulled || !o.transfers_pulled));
     const ids = new Set(linked.map((o) => o.id));
     const used = transferUsage(orderItems.filter((i) => ids.has(i.order_id)), maps);
     const designs = []; const numbers = []; const byCode = {};
@@ -11351,8 +11438,41 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // tracking entry, so rendering it would show a misleading all-defaults row.
   const allWOrders = (orders || []).filter((w) => isLiveWebstoreOrder(w) && sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
+  const clubTransfers = store.org_type === 'club' ? batchTransfers(clubSoIds, true) : { designs: [], numbers: [], byCode: {} };
+  const clubDoPull = () => {
+    const totalXfer = Object.values(clubTransfers.byCode).reduce((a, n) => a + n, 0);
+    if (!window.confirm(`Pull transfers for ${clubUnpulled.length} converted order${clubUnpulled.length === 1 ? '' : 's'}? This deducts ${totalXfer} transfer unit${totalXfer === 1 ? '' : 's'} from On hand and moves them to In process.`)) return;
+    onPullTransfers && onPullTransfers(clubSoIds, clubTransfers.byCode);
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {store.org_type === 'club' && clubUnpulled.length > 0 && (
+        <div className="card"><div style={{ padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>Group pull — {clubUnpulled.length} converted order{clubUnpulled.length === 1 ? '' : 's'} awaiting pull</div>
+            {onPullTransfers && <button onClick={clubDoPull} style={{ marginLeft: 'auto', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>Pull all transfers</button>}
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every order converted to its own Sales Order that hasn't had transfers pulled yet, combined into one group — same as a batch, but automatic.</div>
+          {clubGarmentSizes.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Garments</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {clubGarmentSizes.map((g) => <span key={g.label + g.size} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#eff6ff', color: '#1e40af' }}>{g.label} · {g.size}: {g.qty}</span>)}
+              </div>
+            </div>
+          )}
+          {(clubTransfers.designs.length > 0 || clubTransfers.numbers.length > 0) && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Transfers to pull</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {clubTransfers.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
+                {clubTransfers.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
+              </div>
+            </div>
+          )}
+        </div></div>
+      )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
         {tBtn('batch', '📦 By batch')}
@@ -11776,9 +11896,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             <option value="orders">Orders CSV</option>
           </select>
         )}
-        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
-          Create Batch ({unbatchedCount})
-        </button>
+        {store.org_type === 'club'
+          ? <span style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic', alignSelf: 'center' }} title="Club orders convert to their own Sales Order automatically the moment they're paid — no staff batching step.">Club orders convert automatically — see the Batches tab to pull transfers.</span>
+          : <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+              Create Batch ({unbatchedCount})
+            </button>}
       </div>
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>
