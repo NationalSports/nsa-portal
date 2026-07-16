@@ -24961,7 +24961,10 @@ export default function App(){
     // When some selected bills have problems, open the styled review dialog instead of a
     // browser confirm so the user can push the clean ones and park the rest for later.
     const pushBillsToPortal=(force)=>{
-      const selected=billImport.parsed.filter(_billIsReadyToPush);
+      // Only the full-go bills — matched AND clean. Flagged/matched bills are left for review or
+      // AI-match rather than bulk-pushed, so this mirrors the primary button's count exactly and a
+      // clean push needs no problem modal. (A flagged bill pushes once it's been reconciled clean.)
+      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       if(force!==true){
         const cleanBills=[],problemBills=[];
@@ -26192,7 +26195,11 @@ export default function App(){
           {/* Sticky action bar: stays pinned while scrolling a long pull, with a running $ total
               of what the push will apply and filter chips to work the list as a queue. */}
           {(()=>{
-            const ready=billImport.parsed.filter(_billIsReadyToPush);
+            // "Ready" = matched AND reconciles clean (no duplicate / over-billing / size mismatch).
+            // This is exactly the set the primary push applies, so the button's count now matches the
+            // "Ready to push" stat and the ✓ Ready tab. Matched-but-flagged bills are left for review
+            // or AI-match — never bulk-pushed (they only push once they've been made clean).
+            const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const qbSel=billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater);
             const counts={all:0,ready:0,attention:0,done:0};
