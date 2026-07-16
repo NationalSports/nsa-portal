@@ -11513,9 +11513,24 @@ export default function App(){
         const vendor=batchMatch?batchMatch.vendor_name:'';
         const isBatch=!!batchMatch;
         // Flat items: every line item on this PO
+        // A source PO frozen into this batch's snapshot may since have been re-batched or renumbered
+        // onto a different batch — its live po_line now carries a different batch_po_number/po_id. Detect
+        // those "moved" entries so the batch view can flag them (pointing the warehouse to where the units
+        // are actually tracked now) instead of listing them as live, receivable members. Display-only: the
+        // frozen source_pos snapshot (relied on by AP bill reconciliation) is never mutated here.
+        const _batchLc=(batchMatch?.po_number||'').toLowerCase();
+        const _livePoIdsLc=new Set(allPOLines.map(pl=>(pl.poId||'').toLowerCase()).filter(Boolean));
+        const _loadedSoIds=new Set(sos.map(s=>s.id));
+        const _srcMovedTo=(sp)=>{const ln=allPOLines.find(pl=>pl.soId===sp.so_id&&(pl.poLine?.batch_po_number||''));return (ln&&ln.poLine.batch_po_number)||(ln&&ln.poId)||''};
+        const _srcMoved=(sp)=>{
+          if(sp.so_id&&!_loadedSoIds.has(sp.so_id))return false;// SO not loaded — can't tell, don't flag as moved
+          const pid=sp.po_id||'';
+          if(pid)return !_livePoIdsLc.has(pid.toLowerCase());// a live PO line with this exact PO# still exists → current
+          return sp.so_id?!allPOLines.some(pl=>pl.soId===sp.so_id&&(pl.poLine?.batch_po_number||'').toLowerCase()===_batchLc):false;
+        };
         const poItems=[];
         if(isBatch){
-          batchMatch.source_pos.forEach(sp=>{sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty})})});
+          batchMatch.source_pos.forEach(sp=>{const _moved=_srcMoved(sp);const _movedTo=_moved?_srcMovedTo(sp):'';sp.items.forEach(it=>{const unit=typeof it.unit_cost==='number'?it.unit_cost:0;poItems.push({sku:it.sku,name:it.name,color:it.color||'',sizes:it.sizes,qty:it.qty,soId:sp.so_id,customer:sp.customer,soMemo:sp.so_memo,srcPoId:sp.po_id||'',itemIdx:it.item_idx,unitCost:unit,lineCost:unit*it.qty,_moved,_movedTo})})});
         } else {
           matchedPO.lines.forEach(pl=>{
             const szs={};Object.entries(pl.poLine).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!['po_id','status'].includes(k))szs[k]=v});
@@ -11523,7 +11538,7 @@ export default function App(){
             poItems.push({sku:pl.item.sku,name:safeStr(pl.item.name),color:pl.item.color||'',sizes:szs,qty,soId:pl.soId,customer:pl.customer,soMemo:pl.soMemo,_pl:pl,srcPoId:pl.poId||'',unitCost:unit,lineCost:unit*qty});
           });
         }
-        const totalUnits=poItems.reduce((a,it)=>a+it.qty,0);
+        const totalUnits=poItems.reduce((a,it)=>a+(it._moved?0:it.qty),0);
         // Bulk-set every receive input: full=true fills to ordered qty, false clears to 0.
         const _setAll=(full)=>{poItems.forEach((it,i)=>{Object.entries(it.sizes||{}).filter(([,v])=>v>0).forEach(([sz,v])=>{const el=document.getElementById('rcv-'+i+'-'+sz);if(el)el.value=full?v:0})});_syncRecvBtn()};
         // Live tally of entered receive qtys → drives the Confirm button's label + disabled state.
@@ -11595,16 +11610,16 @@ export default function App(){
                   <span style={{marginLeft:10,fontWeight:500,color:'#94a3b8'}}>{g.items.length} item{g.items.length!==1?'s':''} · {g.items.reduce((a,it)=>a+it.qty,0)} units</span>
                 </td></tr>}
                 {g.items.map((it)=>{const i=it._oi;const szEntries=Object.entries(it.sizes).filter(([,v])=>v>0);
-                  return<tr key={i} id={'po-recv-row-'+i} style={_multi?{background:'#f8fbff'}:undefined}>
+                  return<tr key={i} id={'po-recv-row-'+i} style={{...(_multi?{background:'#f8fbff'}:{}),...(it._moved?{opacity:0.65,background:'#fafaf9'}:{})}}>
                     <td style={{fontWeight:700,color:'#94a3b8',fontSize:11}}>{i+1}</td>
-                    <td style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:11}}>{it.srcPoId?<span style={{cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===it.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(it.srcPoId);setPg('orders')}}}>{it.srcPoId}</span>:'—'}</td>
+                    <td style={{fontFamily:'monospace',fontWeight:700,color:it._moved?'#94a3b8':'#7c3aed',fontSize:11}}>{it.srcPoId?<span style={{cursor:'pointer',textDecoration:it._moved?'line-through':'underline',textDecorationStyle:it._moved?'solid':'dotted',textUnderlineOffset:2}} onClick={()=>{const so=sos.find(s=>s.id===it.soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(it.srcPoId);setPg('orders')}}}>{it.srcPoId}</span>:'—'}{it._moved&&<div style={{fontSize:9,fontWeight:700,color:'#b45309',marginTop:2,whiteSpace:'nowrap',textDecoration:'none'}}>→ moved to {it._movedTo||'another batch'}</div>}</td>
                     <td style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{it.sku}</td>
                     <td style={{fontSize:12}}>{it.name}</td>
                     <td style={{fontSize:12,color:'#64748b'}}>{it.color||'—'}</td>
                     <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><span key={sz} style={{padding:'2px 6px',background:'#f1f5f9',borderRadius:4,fontSize:10,fontWeight:700}}>{sz}: {v}</span>)}</div></td>
                     <td style={{fontWeight:800,fontSize:14}}>{it.qty}</td>
                     <td style={{fontSize:12,color:'#166534',fontWeight:700,whiteSpace:'nowrap'}}>{it.lineCost>0?('$'+it.lineCost.toFixed(2)):'—'}{it.unitCost>0&&<div style={{fontSize:10,color:'#94a3b8',fontWeight:500}}>${it.unitCost.toFixed(2)}/ea</div>}</td>
-                    <td><div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:3}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:58,padding:'10px 6px',textAlign:'center',fontSize:18,fontWeight:800,color:'#0f172a',border:'2px solid #93c5fd',borderRadius:8,background:'#fff'}} defaultValue={0} onInput={_syncRecvBtn} min={0} max={v} title={'Ordered '+v}/></div>)}</div></td>
+                    <td>{it._moved?<div style={{fontSize:10,color:'#b45309',fontWeight:600,fontStyle:'italic',whiteSpace:'nowrap'}}>receive on {it._movedTo||'its current batch'}</div>:<div style={{display:'flex',gap:3,flexWrap:'wrap'}}>{szEntries.map(([sz,v])=><div key={sz} style={{textAlign:'center'}}><div style={{fontSize:11,fontWeight:800,color:'#475569',marginBottom:3}}>{sz}</div><input id={'rcv-'+i+'-'+sz} type="number" className="form-input" style={{width:58,padding:'10px 6px',textAlign:'center',fontSize:18,fontWeight:800,color:'#0f172a',border:'2px solid #93c5fd',borderRadius:8,background:'#fff'}} defaultValue={0} onInput={_syncRecvBtn} min={0} max={v} title={'Ordered '+v}/></div>)}</div>}</td>
                     <td style={{textAlign:'center'}}><button className="btn btn-sm btn-secondary" style={{padding:'3px 8px',fontSize:12}} title={'Print 4×6 box label for '+(it.srcPoId||poId)} onClick={()=>_printOnePO(it.srcPoId||'')}>🖨️</button></td>
                   </tr>})}
               </React.Fragment>)
@@ -11619,8 +11634,8 @@ export default function App(){
               </div>
               {isBatch&&batchMatch.source_pos?.some(sp=>sp.po_id)&&<><div style={{fontSize:10,fontWeight:600,color:'#94a3b8',marginTop:8,marginBottom:4}}>SOURCE PO NUMBERS</div>
               <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>
-                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:'#f5f3ff',borderRadius:6,color:'#7c3aed',fontWeight:700,fontFamily:'monospace',cursor:'pointer'}} onClick={()=>{const so=sos.find(s=>s.id===sp.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(sp.po_id);setPg('orders')}}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400}}>${sp.total_cost?.toFixed(2)||'0.00'}</span></span>)}
+                {batchMatch.source_pos.filter(sp=>sp.po_id).map(sp=>{const _mv=_srcMoved(sp);const _mvTo=_mv?_srcMovedTo(sp):'';return(
+                  <span key={sp.po_id} style={{fontSize:10,padding:'2px 8px',background:_mv?'#f5f5f4':'#f5f3ff',borderRadius:6,color:_mv?'#94a3b8':'#7c3aed',fontWeight:700,fontFamily:'monospace',cursor:'pointer',textDecoration:_mv?'line-through':'none'}} onClick={()=>{const so=sos.find(s=>s.id===sp.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setESOOpenPO(sp.po_id);setPg('orders')}}}>{sp.po_id} <span style={{color:'#94a3b8',fontWeight:400,textDecoration:'none'}}>${sp.total_cost?.toFixed(2)||'0.00'}</span>{_mv&&<span style={{color:'#b45309',fontWeight:700,textDecoration:'none'}}> → {_mvTo||'moved'}</span>}</span>)})}
               </div></>}
             </div>
           </div>
@@ -22360,19 +22375,24 @@ export default function App(){
     // PDF.js outputs tab-separated columns so the label can share a row with another header
     // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
     const _findLabeledPO=(lines,labelRe)=>{
+      // A PO cell value: "PO1234", "PO 3514 OLuST" (optional store tag), or a bare "1234".
+      // Anchored at the cell START only (not both ends) so a trailing description — Silver Screen
+      // prints "PO 3514 OLuST - tackle twill" in the P.O. NUMBER cell — is trimmed down to the PO,
+      // while a store-tag suffix (like Frontier's "PO4133 OLUF") is kept as part of the number.
+      const PO_CELL=/^(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})\b/i;
       for(let i=0;i<lines.length;i++){
         if(!labelRe.test(lines[i]))continue;
         // Same line (after label and/or in a later tab column)
         const parts=lines[i].split('\t').map(p=>p.trim());
-        for(const p of parts){const m=p.match(/^(PO\s*\d{3,}|\d{3,})$/i);if(m)return m[1]}
-        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}|\d{3,})/i);
-        if(sameM)return sameM[1];
+        for(const p of parts){const m=p.match(PO_CELL);if(m)return m[1].trim()}
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})/i);
+        if(sameM)return sameM[1].trim();
         // Next 1-4 lines: check first column (i.e. below the label cell)
         for(let j=i+1;j<Math.min(i+5,lines.length);j++){
           const nParts=lines[j].split('\t').map(p=>p.trim());
           const first=nParts[0]||'';
-          const m=first.match(/^(PO\s*\d{3,}|\d{3,})$/i);
-          if(m)return m[1];
+          const m=first.match(PO_CELL);
+          if(m)return m[1].trim();
         }
       }
       return '';
@@ -22384,9 +22404,13 @@ export default function App(){
       const parts=line.split('\t').map(p=>p.trim());
       if(parts.length<(cfg.minCols||3))return null;
       const at=i=>parts[i<0?parts.length+i:i];
-      const qtyStr=at(cfg.qty)||'';
-      const rateStr=at(cfg.rate)||'';
-      const amtStr=(at(cfg.amount)||'').replace(/T$/,'');// strip SilverScreen taxable marker
+      // Strip thousands separators so a line like "…\t264\t13.00\t3,432.00T" parses. Once a line
+      // hits $1,000 the amount column carries a comma; without this the row fails the numeric
+      // check, gets dropped, and the bill's line items no longer sum to its printed total.
+      const _n=s=>String(s==null?'':s).replace(/,/g,'');
+      const qtyStr=_n(at(cfg.qty));
+      const rateStr=_n(at(cfg.rate));
+      const amtStr=_n(at(cfg.amount)).replace(/T$/,'');// strip SilverScreen taxable marker
       if(!/^\d{1,4}$/.test(qtyStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(rateStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(amtStr))return null;
@@ -30794,7 +30818,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveInvPO={receiveInvPO} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().

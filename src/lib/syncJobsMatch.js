@@ -123,6 +123,59 @@ export function dropMismatchedFrozenClaims(job, resolveLiveDecoType) {
 }
 
 /**
+ * Re-point a frozen job's art identity at the artwork its LIVE decorations now carry.
+ *
+ * Released/merged jobs freeze art_file_id/_art_ids/positions as a snapshot stamped at
+ * release/merge time. When a rep swaps the artwork on a claimed decoration afterward
+ * (same method — cross-method drift is dropMismatchedFrozenClaims' job), the snapshot
+ * keeps describing art that is no longer on the garment: the job header shows the old
+ * design, run-together suggestions match on the old art name (SO-1348: a shorts job kept
+ * advertising "5in Wide S Crest Football" after its line was re-pointed at the 2.5in
+ * crest, and suggested linking to the real football job on another order), and the art
+ * gate tracks the wrong file's approval.
+ *
+ * Claims resolve via `resolveLiveArtClaim(itemIdx, decoIdx)`:
+ *   - {artFileId, position} — live art decoration whose art file is loaded
+ *   - null                  — nothing to learn from here (deleted line, non-art deco,
+ *                             unassigned/TBD art, outsourced): the claim is skipped,
+ *                             preserving the deleted-line snapshot semantics
+ *   - 'unresolved'          — an art decoration whose file isn't hydrated yet: ABORTS
+ *                             the heal (never re-stamp identity off a half-loaded order)
+ *
+ * Art ids re-stamp only when the resolved id SET differs from the declared one; positions
+ * ride along. art_name is intentionally untouched here — released jobs refresh it from
+ * the live files via the existing name heal (which honors _name_locked), and merged jobs
+ * keep their hand-picked label. `artChanged` tells the caller to recompute art_status
+ * against the new files.
+ */
+export function healFrozenJobArtDrift(job, resolveLiveArtClaim) {
+  const declared = ((job?._art_ids && job._art_ids.length ? job._art_ids : [job?.art_file_id]) || [])
+    .filter((id) => id && id !== '__tbd');
+  if (!declared.length) return { job, changed: false, artChanged: false };
+  const ids = []; const seen = new Set();
+  const positions = []; const posSeen = new Set();
+  for (const gi of (job.items || [])) {
+    const dis = Array.isArray(gi.deco_idxs) && gi.deco_idxs.length
+      ? gi.deco_idxs
+      : (gi.deco_idx != null ? [gi.deco_idx] : []);
+    for (const di of dis) {
+      const r = resolveLiveArtClaim(gi.item_idx, di);
+      if (r === 'unresolved') return { job, changed: false, artChanged: false };
+      if (!r || !r.artFileId) continue;
+      if (!seen.has(r.artFileId)) { seen.add(r.artFileId); ids.push(r.artFileId); }
+      const p = String(r.position || '').trim();
+      if (p && !posSeen.has(p)) { posSeen.add(p); positions.push(p); }
+    }
+  }
+  if (!ids.length) return { job, changed: false, artChanged: false };
+  const same = ids.length === declared.length && declared.every((id) => seen.has(id));
+  if (same) return { job, changed: false, artChanged: false };
+  const healed = { ...job, art_file_id: ids[0], _art_ids: ids };
+  if (positions.length) healed.positions = positions.join(', ');
+  return { job: healed, changed: true, artChanged: true };
+}
+
+/**
  * Workflow fields that must not cross-contaminate across distinct jobs.
  * Copied only when matchExistingJob found a real match (key or unique art id).
  */

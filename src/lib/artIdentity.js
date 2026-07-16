@@ -20,6 +20,24 @@ export function artNameKey(a) {
 }
 
 /**
+ * Dedup key for the Previous Artwork picker (OrderEditor).
+ *
+ * Keys on the stable logo identity — name + deco_type — plus art_size and
+ * color-way count as picker-level discriminators between real variants. It must
+ * NOT include the id: promoteArtToLibrary mints a fresh `caf…` id for the library
+ * copy, so a design's library record and its source-order record carry different
+ * ids. Keying on id split one design into two cards ("Library — …" and "SO-… — …")
+ * and the picker's own cross-source file merge could never fire. Blank-named rows
+ * fall back to id so distinct untitled art doesn't collapse (mirrors artLogoKey).
+ */
+export function prevArtDedupKey(a) {
+  if (!a) return '';
+  const nm = String(a.name || '').trim().toLowerCase();
+  const base = (a.deco_type || '') + '|' + (a.art_size || '') + '|' + ((a.color_ways || []).length);
+  return (nm ? nm : '__id__' + (a.id || '')) + '|' + base;
+}
+
+/**
  * Build a team's usable art library from team + parent + order/estimate sources.
  *
  * Invariant: a parent-library record must NEVER replace a team-owned record that
@@ -27,9 +45,13 @@ export function artNameKey(a) {
  * only added when the team has no entry under that name (and still only when the
  * ids differ — two distinct designs with the same label stay separate by id).
  *
+ * `parentOrderArt` (art off the PARENT program's own orders/estimates, shaped like
+ * `orderArt`) cascades down to the child the same way `parentArt` does — parent-level,
+ * gap-fill only — so a logo the program set up on its own order is reusable by its teams.
+ *
  * Returns records tagged with `_srcLabel` / `_srcCustId`.
  */
-export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [], teamId, parentId, parentLabel } = {}) {
+export function buildTeamArtLibrary({ teamArt = [], parentArt = [], parentOrderArt = [], orderArt = [], teamId, parentId, parentLabel } = {}) {
   const byId = new Map();
   const byName = new Map(); // nameKey -> id of preferred record
   const acc = [];
@@ -60,7 +82,26 @@ export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [
         byName.set(nk, a.id);
         return;
       }
-      // Distinct id, same name, both team/order — keep both (id-keyed).
+      // Same name AND same method under a different id is the SAME design reached
+      // twice: a library copy promoted via promoteArtToLibrary gets a fresh `caf…`
+      // id, so its source-order copy would otherwise list twice (the reported
+      // duplication). Collapse it into the existing card, preferring whichever copy
+      // has a real image. Scan acc directly (not just the name-keyed record) so a
+      // same-name / different-method design already kept apart can't hide the match.
+      // A record with a DIFFERENT deco_type is a distinct design and still kept.
+      if (!isParent) {
+        const lk = artLogoKey(a);
+        const twinIdx = acc.findIndex((r) => artLogoKey(r) === lk);
+        if (twinIdx !== -1) {
+          if (_hasImg(a) && !_hasImg(acc[twinIdx])) {
+            byId.delete(acc[twinIdx].id);
+            acc[twinIdx] = rec;
+            byId.set(a.id, twinIdx);
+          }
+          return;
+        }
+      }
+      // Distinct design (same name, different method) — keep both (id-keyed).
     }
     byId.set(a.id, acc.length);
     if (nk && !byName.has(nk)) byName.set(nk, a.id);
@@ -69,8 +110,11 @@ export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [
 
   (teamArt || []).forEach((a) => add(a, 'Team library', teamId));
   (orderArt || []).forEach(({ art, label, srcCustId }) => add(art, label, srcCustId || teamId));
-  // Parent last so name collisions cannot overwrite team rows.
+  // Parent sources last so name collisions cannot overwrite team rows. Curated parent
+  // library entries before the parent's own order art, so a promoted parent copy wins
+  // over its raw order copy of the same logo. Both fill gaps only (isParent).
   (parentArt || []).forEach((a) => add(a, parentLabel || 'Parent library', parentId, { isParent: true }));
+  (parentOrderArt || []).forEach(({ art, label, srcCustId }) => add(art, label || parentLabel || 'Parent library', srcCustId || parentId, { isParent: true }));
 
   return acc;
 }

@@ -1108,6 +1108,10 @@ function attachBundleImages(items, bundleItems) {
   return items;
 }
 
+// Tabs a deep link may open the store on (matches StoreDetail's PRIMARY_TABS + MORE_TABS).
+// An unknown/absent ?tab= falls back to the default catalog tab.
+const DEEP_LINK_TABS = new Set(['catalog', 'orders', 'art', 'analytics', 'batches', 'inventory', 'roster', 'coupons']);
+
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
   // Live snapshot of in-memory orders/estimates so the detail loader can aggregate the
@@ -1121,6 +1125,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   const [sel, setSel] = useState(null);
   const [tab, setTab] = useState('catalog');
+  const [focusOrderId, setFocusOrderId] = useState(null); // deep-linked order to auto-open in the Orders tab
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [editing, setEditing] = useState(null);   // null | 'new' | storeObj (settings edit)
@@ -1289,9 +1294,18 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       const orderArt = [];
       (allSos || []).filter((s) => s.customer_id === store.customer_id).forEach((so) => (so.art_files || []).forEach((a) => orderArt.push({ art: a, label: so.id, srcCustId: store.customer_id })));
       (allEsts || []).filter((e) => e.customer_id === store.customer_id).forEach((e) => (e.art_files || []).forEach((a) => orderArt.push({ art: a, label: e.id, srcCustId: store.customer_id })));
+      // The parent program's own order/estimate art also cascades to the child store — a logo the
+      // program set up on its own order should be reusable by its teams, just like the parent's
+      // curated library. buildTeamArtLibrary treats it as parent-level (gap-fill, never clobbers team).
+      const parentOrderArt = [];
+      if (cust?.parent_id) {
+        (allSos || []).filter((s) => s.customer_id === cust.parent_id).forEach((so) => (so.art_files || []).forEach((a) => parentOrderArt.push({ art: a, label: so.id, srcCustId: cust.parent_id })));
+        (allEsts || []).filter((e) => e.customer_id === cust.parent_id).forEach((e) => (e.art_files || []).forEach((a) => parentOrderArt.push({ art: a, label: e.id, srcCustId: cust.parent_id })));
+      }
       libraryArt = buildTeamArtLibrary({
         teamArt: cust?.art_files || [],
         parentArt: par?.art_files || [],
+        parentOrderArt,
         orderArt,
         teamId: cust?.id,
         parentId: par?.id,
@@ -1327,24 +1341,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     } catch (e) { /* background best-effort */ }
   }, []);
 
-  const openStore = useCallback(async (store) => {
-    setSel(store); setTab('catalog'); setDetail(null);
+  const openStore = useCallback(async (store, opts = {}) => {
+    setSel(store); setTab(opts.tab || 'catalog'); setFocusOrderId(opts.focusOrder || null); setDetail(null);
     await loadDetail(store);
   }, [loadDetail]);
 
-  // Deep-link: the store-closed email's "Process the store" button (and any
-  // ?pg=webstores&store=<id> link) lands here. Once the store list is loaded, open that
-  // store's page, then strip the param so a refresh / back-nav doesn't re-trigger it.
+  // Deep-link: the store-closed email's "Process the store" button and the rep daily
+  // digest's store/order links land here — ?pg=webstores&store=<id>[&tab=<tab>][&order=<id>].
+  // Once the store list is loaded, open that store on the requested tab (defaulting to
+  // catalog), remember any order to auto-open in the Orders tab, then strip the params so
+  // a refresh / back-nav doesn't re-trigger it.
   const _deepLinked = useRef(false);
   useEffect(() => {
     if (_deepLinked.current || loading || !stores.length) return;
-    let id = null;
-    try { id = new URLSearchParams(window.location.search).get('store'); } catch { /* */ }
+    let id = null, tabParam = null, orderParam = null;
+    try { const p = new URLSearchParams(window.location.search); id = p.get('store'); tabParam = p.get('tab'); orderParam = p.get('order'); } catch { /* */ }
     if (!id) return;
     _deepLinked.current = true;
     const store = stores.find((s) => s.id === id);
-    if (store) openStore(store);
-    try { const u = new URL(window.location); u.searchParams.delete('store'); window.history.replaceState({}, '', u); } catch { /* */ }
+    if (store) openStore(store, { tab: DEEP_LINK_TABS.has(tabParam) ? tabParam : undefined, focusOrder: orderParam || undefined });
+    try { const u = new URL(window.location); ['store', 'tab', 'order'].forEach((k) => u.searchParams.delete(k)); window.history.replaceState({}, '', u); } catch { /* */ }
   }, [stores, loading, openStore]);
 
   // ── writes ──────────────────────────────────────────────────────────
@@ -3149,7 +3165,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
       ) : sel ? (
-        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} cu={cu}
+        <StoreDetail store={sel} detail={detail} loading={detailLoading} tab={tab} setTab={setTab} focusOrderId={focusOrderId} cu={cu}
           custName={custName} repName={repName} standardCategories={wsSettings?.standard_categories || []}
           onBack={() => { setSel(null); setDetail(null); }}
           onEdit={() => setEditing(sel)} onOpenSO={onOpenSO} onSetStatus={setStoreStatus}
@@ -4875,7 +4891,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -5082,7 +5098,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, cu, custName, rep
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
-          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
+          {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
           {tab === 'coupons' && <CouponsTab store={s} coupons={detail?.coupons || []} orders={orders} onCreate={onCreateCoupons} onUpdate={onUpdateCoupon} onRemove={onRemoveCoupon} />}
@@ -11347,7 +11363,7 @@ function DecoStat({ label, value }) {
   return <span style={{ fontSize: 11, fontWeight: 600, padding: '1px 7px', borderRadius: 5, background: done ? '#dcfce7' : '#f1f5f9', color: done ? '#166534' : '#475569' }}>{label}: {v}</span>;
 }
 
-function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, msgTagIds = [] }) {
+function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, availSizes = {}, onSaveOrderEdits, onRefundOrder, cu, store, soBatch = {}, onOpenSO, focusOrderId = null, msgTagIds = [] }) {
   const [q, setQ] = useState('');
   // Per-order customer message threads (same shared `messages` table the OMG
   // portal and the public order page use).
@@ -11382,8 +11398,16 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
   const [fBatch, setFBatch] = useState('all');     // all | unbatched | batched
   const [sortBy, setSortBy] = useState('default'); // default | batch_new | batch_old
   const [editId, setEditId] = useState(null);
-  const [expanded, setExpanded] = useState(null);
+  const [expanded, setExpanded] = useState(focusOrderId || null);
   const [, setTick] = useState(0);
+  // Arriving from a digest "View" link: auto-open that order (via the initial `expanded`
+  // above) and scroll it into view once its row has rendered — orders may still be loading
+  // when this tab first mounts, so wait for the row ref, then focus exactly once.
+  const focusRef = useRef(null);
+  const _didFocus = useRef(false);
+  useEffect(() => {
+    if (focusOrderId && !_didFocus.current && focusRef.current) { _didFocus.current = true; focusRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+  }, [focusOrderId, orders.length]);
   const colCount = 9 + (numbersEnabled ? 1 : 0);
   // Flag a line short. Mutate the shared item object so the Batches tab's ship
   // flow (which reads the same orderItems references) holds it back without a
@@ -11519,7 +11543,7 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
               const shippedLines = lineItems.filter((i) => i.line_status === 'shipped').length;
               return (
               <React.Fragment key={o.id}>
-              <tr style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
+              <tr ref={o.id === focusOrderId ? focusRef : undefined} style={{ borderTop: '1px solid #e2e8f0', cursor: 'pointer', background: isOpen ? '#eff6ff' : '#fff' }} onClick={() => setExpanded(isOpen ? null : o.id)}>
                 <td style={{ ...td, width: 22, color: '#94a3b8' }}>{isOpen ? '▾' : '▸'}</td>
                 <td style={td}><div style={{ fontWeight: 600 }}>{o.buyer_name || '—'}</div><div style={{ fontSize: 11, color: '#94a3b8' }}>{players.join(', ') || o.buyer_email}</div>{o.order_number && <div style={{ fontSize: 10.5, color: '#94a3b8', fontFamily: 'monospace' }}>#{o.order_number}</div>}</td>
                 {numbersEnabled && <td style={td}>{numbers.join(', ') || '—'}</td>}
