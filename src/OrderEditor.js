@@ -3386,12 +3386,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {o.memo&&<span className="oe2-tb-chip">{o.memo}</span>}
       <span style={{flex:1}}/>
       {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
+      <button ref={actionsRef} className="btn btn-secondary" style={{fontSize:13,padding:'8px 13px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
       <button className="oe2-cta" onClick={()=>{
         if(!cust){nf('Select a customer first','error');return}
-        if(!o.memo?.trim()){nf('Memo is required','error');return}
-        const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
+        const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
+        if(!curMemo){nf('Memo is required','error');return}
+        const curPO=isSO?(poInputRef.current?.value??o.po_number??''):o.po_number;
+        const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
+        const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
+        if(saveO!==o)setO(saveO);
+        onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -3493,17 +3498,32 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             Submitted to ShipStation (ID: {o._shipstation_order_id})
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
-          {/* Order fields — reflowed into the left column beside the ledger (DESIGN 2A) */}
-          <div style={{display:'flex',gap:12,marginTop:14,alignItems:'end',flexWrap:'wrap'}}>
-            <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
-            {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
-            {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
-            {isSO&&<div style={{width:120}}>
+          {/* Order fields — DESIGN 2A grid: row 1 Memo · School PO# · Order Type; row 2 Ship To · Shipping · Expected */}
+          <div style={{display:'flex',gap:14,marginTop:14,alignItems:'end',flexWrap:'wrap'}}>
+            <div style={{flex:1.4,minWidth:200}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
+            {isSO&&<div style={{flex:1,minWidth:130}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
+            {isE&&<div style={{width:90}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
+            {isSO&&<div style={{flex:1,minWidth:120}}>
               <label className="form-label">Order Type</label>
               <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
                 <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
             </div>}
-            {isSO&&<div style={{width:140}}>
+          </div>
+          <div style={{display:'flex',gap:14,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
+            <div style={{flex:1.4,minWidth:200}}><label className="form-label">Ship To</label>
+              <div style={{display:'flex',gap:4,alignItems:'center'}}>
+                <select className="form-select" style={{flex:1}} value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowCustEdit(true);else sv('ship_to_id',e.target.value)}}>
+                  {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}<option value="new">+ New Address</option></select>
+                {(()=>{const sel=addrs.find(a=>a.id===o.ship_to_id)||addrs[0];return sel&&sel.addr?<button type="button" className="btn btn-sm btn-secondary" title="Copy address" style={{flexShrink:0,padding:'6px 10px',fontSize:13}} onClick={()=>{navigator.clipboard.writeText(sel.addr).then(()=>nf('📋 Address copied'),()=>nf('Could not copy address','error'))}}>📋</button>:null})()}
+              </div>
+            </div>
+            <div style={{flex:1,minWidth:170}}><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
+              <Bg options={[{value:'pct',label:'% Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
+              {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #D1D5DE',borderRadius:6,padding:'4px 8px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:36,border:'none',outline:'none',fontSize:14,fontWeight:700,textAlign:'center',background:'transparent',color:'#192853'}}/><span style={{fontWeight:700,color:'#5A6075'}}>%</span></span>
+              :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
+              <span className="oe-num" style={{fontSize:11,color:'#9aa0ad',whiteSpace:'nowrap'}}>= ${totals.ship.toFixed(2)} · Tax ${totals.tax.toFixed(2)}</span>
+            </div></div>
+            {isSO&&<div style={{flex:1,minWidth:130}}>
               <label className="form-label">Expected</label>
               <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
             </div>}
@@ -3518,21 +3538,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             </div>}
           </div>
           {/* ── ledger + firm-date relocated to the flush right column (see below, after the controls) ── */}
-      <div style={{display:'flex',gap:8,margin:'12px 0 4px',alignItems:'end',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" onClick={()=>{
-          if(!cust){nf('Select a customer first','error');return}
-          const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
-          if(!curMemo){nf('Memo is required','error');return}
-          const curPO=isSO?(poInputRef.current?.value??o.po_number??''):o.po_number;
-          const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
-          const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
-          if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
-          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
-          const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
-          if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
-          if(saveO!==o)setO(saveO);
-          onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
+      <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
         {isE&&o.status==='approved'&&!linkedSO&&<button className="btn btn-primary" style={{background:'#7c3aed'}} onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
@@ -3545,9 +3551,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
-        {/* Actions dropdown */}
+        {/* Actions dropdown — button lives in the toolbar (actionsRef); this fixed-position menu can render from here */}
         <div style={{position:'relative'}}>
-          <button ref={actionsRef} className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
           {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
@@ -3821,7 +3826,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <button className="btn btn-secondary" onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}} title="Plan a digitizing or vector file now — cost and the customer charge carry forward to the sales order">🧵 Plan Digitizing / Vector</button>
         {(o.deco_pos||[]).map(dp=>{const _amt=safeNum(dp.expected_cost||dp.unit_cost);const _planned=dp.status==='planned';return<span key={dp.id||dp.po_id} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})} title={(_planned?'Planned (not ordered yet) — ':'')+'open digitizing PO'} style={{cursor:'pointer',fontSize:11,padding:'3px 8px',borderRadius:6,background:_planned?'#fef9c3':'#ecfeff',border:'1px solid '+(_planned?'#fde047':'#a5f3fc'),color:_planned?'#854d0e':'#0e7490',fontWeight:700}}>{dp.po_id} · ${_amt.toFixed(2)} · {_planned?'Planned':(dp.status||'waiting')}</span>})}
       </div>}
-      {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
+      {isSO&&<div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {(()=>{
           // Decide which invoicing actions to show. If any SO line still has un-invoiced qty,
@@ -3878,28 +3883,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}><Icon name="check" size={14}/> Close Promo Order</button>)}
         {o.order_type==='booking'&&!o.booking_confirmed&&<button style={{fontSize:13,padding:'7px 14px',borderRadius:6,background:'#059669',border:'none',color:'white',cursor:'pointer',fontWeight:700}} onClick={()=>{if(!window.confirm('Confirm this booking order with coach? It will enter the active pipeline.'))return;sv('booking_confirmed',true);sv('booking_confirmed_at',new Date().toISOString());sv('booking_confirmed_by',cu?.id||'');nf('Booking order confirmed — entering pipeline')}}><Icon name="check" size={14}/> Confirm with Coach</button>}
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
+        <div style={{flex:1}}/>
+        {allShipDirect
+          ?<div style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px'}} title="How is this order getting to the customer? Not needed — all items ship direct to the customer">✅ Ships direct to customer</div>
+          :<div>
+            <label className="form-label">Fulfillment{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:4}} title="Required — select how this order reaches the customer">*</span>}</label>
+            {/* No silent default — the rep must explicitly pick how the order reaches the customer
+                (accounts 100+ mi away are pre-filled to "Ship as Ready" by the effect above). */}
+            <select className="form-select" style={{minWidth:190,fontWeight:600,color:'#192853',...(!o.ship_preference?{borderColor:'#fca5a5',background:'#fef2f2'}:{})}} value={o.ship_preference||''} onChange={e=>{if(e.target.value)sv('ship_preference',e.target.value)}} title="How is this order getting to the customer?">
+              <option value="" disabled>Select…</option>
+              <option value="ship_as_ready" title="Each IF/job ships as completed">📦 Ship as Ready</option>
+              <option value="wait_complete" title="Wait for entire order to complete">⏳ Wait to Ship Complete</option>
+              <option value="rep_delivery" title="Rep delivers when jobs complete">🚗 Rep Delivery</option>
+              <option value="warehouse_delivery" title="Warehouse delivers when jobs complete">🚚 Deliver</option>
+              <option value="deliver_on_date" title="Warehouse delivers on a specific date — appears on Delivery tab when due">🗓️ Deliver on Date</option>
+              <option value="ship_on_date" title="Hold until specific date">📅 Ship on Date</option>
+            </select>
+          </div>}
+        {!allShipDirect&&o.ship_preference==='ship_on_date'&&<div>
+          <label className="form-label">Ship Date</label>
+          <input type="date" className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={o.ship_on_date||''} onChange={e=>sv('ship_on_date',e.target.value)}/>
+        </div>}
+        {!allShipDirect&&o.ship_preference==='deliver_on_date'&&<div>
+          <label className="form-label">Deliver Date</label>
+          <input type="date" className="form-input" style={{fontSize:12,padding:'6px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
+        </div>}
       </div>}
-      {/* SHIPPING */}
-      <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
-        <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
-          <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
-          {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
-          :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
-          <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
-        </div></div>
-        <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
-          <div style={{display:'flex',gap:4,alignItems:'center'}}>
-            <select className="form-select" style={{flex:1}} value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowCustEdit(true);else sv('ship_to_id',e.target.value)}}>
-              {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}<option value="new">+ New Address</option></select>
-            {(()=>{const sel=addrs.find(a=>a.id===o.ship_to_id)||addrs[0];return sel&&sel.addr?<button type="button" className="btn btn-sm btn-secondary" title="Copy address" style={{flexShrink:0,padding:'6px 10px',fontSize:13}} onClick={()=>{navigator.clipboard.writeText(sel.addr).then(()=>nf('📋 Address copied'),()=>nf('Could not copy address','error'))}}>📋</button>:null})()}
-          </div>
-        </div>
-        <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
-        {/* Promo Active Badge (toggle moved to Actions dropdown) */}
+      {/* Promo / credit / prior-ship badges (Shipping + Ship To moved up into the field grid) */}
+      {(o.promo_applied||o.credit_applied||(o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0))&&<div style={{display:'flex',gap:8,marginTop:10,alignItems:'center',flexWrap:'wrap'}}>
         {o.promo_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>}
         {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
         {o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#eff6ff',color:'#1e40af'}}>📦 PRIOR SHIP ${safeNum(o.pending_ship_amount).toFixed(2)}</span>}
-      </div>
+      </div>}
       {/* ── left column ends here; navy financial ledger as the flush right column ── */}
         </div>
         <div className="oe2-ledger">
@@ -3979,33 +3994,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
-      {isSO&&(allShipDirect?(
-        <div style={{marginTop:10}}>
-          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?</label>
-          <div style={{marginTop:2,display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px'}}>✅ Not needed — all items ship direct to the customer</div>
-        </div>
-      ):(<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
-        <div>
-          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>* required — select one</span>}</label>
-          <div style={{display:'flex',gap:3,flexWrap:'wrap',padding:!o.ship_preference?4:0,borderRadius:6,border:!o.ship_preference?'1px solid #fca5a5':'none',background:!o.ship_preference?'#fef2f2':'transparent'}}>
-            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'deliver_on_date',l:'Deliver on Date',icon:'🗓️',desc:'Warehouse delivers on a specific date — appears on Delivery tab when due'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
-              // No silent default — the rep must explicitly pick how the order reaches the customer
-              // (accounts 100+ mi away are pre-filled to "Ship as Ready" by the effect above).
-              const cur=o.ship_preference===sp.v;
-              return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
-                style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
-                onClick={()=>sv('ship_preference',sp.v)}>{sp.icon} {sp.l}</button>})}
-          </div>
-        </div>
-        {o.ship_preference==='ship_on_date'&&<div>
-          <label className="form-label" style={{fontSize:11}}>Ship Date</label>
-          <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.ship_on_date||''} onChange={e=>sv('ship_on_date',e.target.value)}/>
-        </div>}
-        {o.ship_preference==='deliver_on_date'&&<div>
-          <label className="form-label" style={{fontSize:11}}>Deliver Date</label>
-          <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
-        </div>}
-      </div>))}
+      {/* Fulfillment (ship preference) moved up into the Create PO / Create Invoice row as a select */}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
@@ -4018,6 +4007,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isSO&&<button className={`tab ${tab==='tracking'?'active':''}`} onClick={()=>setTab('tracking')}>Tracking {(()=>{const sc=(o._shipments||[]).length||(o._tracking_number?1:0);return sc>0?<span style={{background:'#166534',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{sc}</span>:''})()}</button>}
       {isSO&&<button className={`tab ${tab==='costs'?'active':''}`} onClick={()=>setTab('costs')} style={tab==='costs'?{background:'#166534',color:'white'}:{}}>💰 Costs</button>}
       <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
+      {/* Items-list tools live in the tab row to keep one uniform strip */}
+      {tab==='items'&&safeItems(o).length>0&&<div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center',alignSelf:'center',paddingBottom:4}}>
+        <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={sortByDeco} title="Group line items together by their decoration">↕ Sort by Decoration</button>
+        {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,background:'#FEF3C7',color:'#92400E',border:'1px solid #FDE68A'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
+        {safeItems(o).some((_,i)=>collapsedItems[i])
+          ?<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
+          :<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
+      </div>}
     </div>
 
     {/* LINE ITEMS */}
@@ -4026,15 +4023,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _itemInvoicedMap=isSO?buildInvoicedQtyMap(o,_invsForSO):new Map();
       const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
       return<>
-      {safeItems(o).length>0&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
-        <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
-        <div style={{flex:1}}/>
-        <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
-        {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
-        {_anyCollapsed
-          ?<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={expandAllItems} title="Expand all line items">▾ Expand All</button>
-          :<button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={collapseAllItems} title="Collapse all line items to a compact summary">▸ Collapse All</button>}
-      </div>}
+      {/* Items toolbar moved into the tabs row (Sort by Decoration / Short Pulls / Collapse All) */}
       {safeItems(o).map((item,idx)=>{const szQty=Object.values(safeSizes(item)).reduce((a,v)=>a+safeNum(v),0);const qty=szQty>0?szQty:safeNum(item.est_qty);
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
       const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
