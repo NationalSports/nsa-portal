@@ -429,7 +429,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
         return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
-        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
+        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'zoom-in'}} onClick={()=>setMockupLightbox(pm.url)}/>:<div key={pi} title="Click to enlarge" onClick={()=>setMockupLightbox(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'zoom-in'}}>📄</div>)}
         <div style={{minWidth:92}}>
           <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
           {/* H4: the ✓ only appears on a shade-confirmed match. Anything else is honest amber. */}
@@ -9182,7 +9182,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+              // Send the job's art back to the artist for a redo. Shared by the "Request Update"
+              // box below and the per-garment "send to artist" button in the Reuse-a-mock panel,
+              // so the pullback semantics can't drift apart (audit M1/A5): the redo covers EVERY
+              // design on the job (_art_ids, not just the primary), stale coach state is cleared
+              // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
+              // nag), and the seps confirmation is invalidated so the redone art can't skip the
+              // production-files re-check on the next approve. Stays art_in_progress — the
+              // assigned artist keeps the job on their board.
+              const _sendBackToArtist=(reason)=>{
+                const _revAt=new Date().toISOString();
+                const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
+                const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
+                saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
+              };
+              return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
@@ -9236,8 +9253,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(!pm)return null;
                   return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
                     <div style={{fontSize:10,fontWeight:800,color:'#854d0e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.4}}>🔍 Reuse an approved mock</div>
-                    <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved before, but not on this garment — pick a prior mock to use here (color-way matched), or send it to the artist for a new one.</div>
+                    <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved before, but not on this garment — click a thumbnail to enlarge, pick a prior mock to use here (color-way matched), or send it to the artist for a new one.</div>
                     {priorMockCards(pm,j.id)}
+                    <div style={{marginTop:8}} onClick={e=>e.stopPropagation()}>
+                      <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
+                        title="None of these mocks work — pull the art back and have the artist make a new mockup for this garment"
+                        onClick={()=>{
+                          const _garment=(pm.color?pm.color+' ':'')+pm.sku;
+                          const _who=REPS.find(r=>r.id===j.assigned_artist)?.name||'the artist';
+                          if(!window.confirm('Send "'+(j.art_name||'this art')+'" to '+_who+' for a NEW mockup on '+_garment+'?\n\nThe art goes back to Waiting for Art and any coach-approval state on this job is cleared.'))return;
+                          _sendBackToArtist('Need a NEW mockup for '+_garment+' — reused art, none of the prior mocks fit this garment.');
+                        }}>🎨 None fit — send to artist for a new mock</button>
+                    </div>
                   </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
@@ -9435,20 +9462,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
                 <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
                 <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
-                  const _revAt=new Date().toISOString();
-                  const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason:artRevisionNote.trim()};
-                  // Same pullback semantics as Update/Recall (audit M1/A5): the redo covers EVERY
-                  // design on the job (_art_ids, not just the primary), stale coach state is cleared
-                  // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
-                  // nag), and the seps confirmation is invalidated so the redone art can't skip the
-                  // production-files re-check on the next approve. Stays art_in_progress — the
-                  // assigned artist keeps the job on their board.
-                  const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-                  const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
-                  const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};
+                  const reason=artRevisionNote.trim();
                   setArtRevisionNote('');
-                  saveSONow(updated,'Revision request','Art sent back to artist for revision');
+                  _sendBackToArtist(reason);
                 }}>🔄 Request Update</button>
               </div>
             </div>})()}
