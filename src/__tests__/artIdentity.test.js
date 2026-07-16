@@ -101,6 +101,32 @@ describe('buildTeamArtLibrary — parent must not clobber team art', () => {
     expect(lib.find((a) => a.id === 'caf-school')._srcCustId).toBe(parentId);
   });
 
+  test('parent ORDER art with a unique name cascades to the child store', () => {
+    const parentOrderLogo = { id: 'af-parent-crest', name: 'Program Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [vbArt],
+      parentOrderArt: [{ art: parentOrderLogo, label: 'SO-9001', srcCustId: parentId }],
+      teamId,
+      parentId,
+    });
+    // Team keeps its own logo AND now also sees the parent's order logo.
+    expect(lib.map((a) => a.id).sort()).toEqual(['af-parent-crest', 'caf-vb']);
+    expect(lib.find((a) => a.id === 'af-parent-crest')._srcCustId).toBe(parentId);
+  });
+
+  test('parent ORDER art with the same name does NOT clobber the team record', () => {
+    const parentOrderCopy = { ...fbArt, id: 'af-parent-fb' }; // parent's order copy of a same-name logo
+    const lib = buildTeamArtLibrary({
+      teamArt: [vbArt],
+      parentOrderArt: [{ art: parentOrderCopy, label: 'SO-9002', srcCustId: parentId }],
+      teamId,
+      parentId,
+    });
+    expect(lib.find((a) => a.id === 'caf-vb')).toBeTruthy();
+    expect(lib.find((a) => artNameKey(a) === 'front logo').id).toBe('caf-vb');
+    expect(lib.find((a) => a.id === 'af-parent-fb')).toBeUndefined();
+  });
+
   test('order art for the team is kept even when parent has a same-name preview', () => {
     const orderCopy = { ...vbArt, id: 'af-so-vb', preview_url: '' };
     const lib = buildTeamArtLibrary({

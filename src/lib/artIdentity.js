@@ -45,9 +45,13 @@ export function prevArtDedupKey(a) {
  * only added when the team has no entry under that name (and still only when the
  * ids differ — two distinct designs with the same label stay separate by id).
  *
+ * `parentOrderArt` (art off the PARENT program's own orders/estimates, shaped like
+ * `orderArt`) cascades down to the child the same way `parentArt` does — parent-level,
+ * gap-fill only — so a logo the program set up on its own order is reusable by its teams.
+ *
  * Returns records tagged with `_srcLabel` / `_srcCustId`.
  */
-export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [], teamId, parentId, parentLabel } = {}) {
+export function buildTeamArtLibrary({ teamArt = [], parentArt = [], parentOrderArt = [], orderArt = [], teamId, parentId, parentLabel } = {}) {
   const byId = new Map();
   const byName = new Map(); // nameKey -> id of preferred record
   const acc = [];
@@ -106,8 +110,11 @@ export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [
 
   (teamArt || []).forEach((a) => add(a, 'Team library', teamId));
   (orderArt || []).forEach(({ art, label, srcCustId }) => add(art, label, srcCustId || teamId));
-  // Parent last so name collisions cannot overwrite team rows.
+  // Parent sources last so name collisions cannot overwrite team rows. Curated parent
+  // library entries before the parent's own order art, so a promoted parent copy wins
+  // over its raw order copy of the same logo. Both fill gaps only (isParent).
   (parentArt || []).forEach((a) => add(a, parentLabel || 'Parent library', parentId, { isParent: true }));
+  (parentOrderArt || []).forEach(({ art, label, srcCustId }) => add(art, label || parentLabel || 'Parent library', srcCustId || parentId, { isParent: true }));
 
   return acc;
 }
