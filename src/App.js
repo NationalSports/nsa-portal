@@ -23747,7 +23747,10 @@ export default function App(){
       if(!target||!Array.isArray(target.items))return mappings;
       (bill.items||[]).forEach((bl,bi)=>{
         const hit=_matchLineToItems(bl,target.items);
-        if(!hit){mappings[bi]={skipped:true,reason:'no-match'};return}
+        // No hit → leave the line UNTIED (empty), never auto-"skipped": skipped means "don't
+        // bill this line", and silently defaulting money to that hid real lines (the 5162436D
+        // suffix-variant case). Untied lines read "still to tie" and show suggestions instead.
+        if(!hit)return;
         mappings[bi]={target_idx:hit.idx,allocated_qty:bl.qty,ambiguous:hit.ambiguous};
       });
       return mappings;
@@ -26651,7 +26654,7 @@ export default function App(){
                   const filtered=_filterMatchCandidates(candidates,w.query);
                   return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Match manually {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Reconcile {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
                     </div>
                     {!w.target&&<>
@@ -26675,6 +26678,31 @@ export default function App(){
                       const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
                       const _ns=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
                       const _cz=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase().trim();
+                      // Best guesses for an untied line, scored on signals a human would use:
+                      // SKU variant (5162436D ⊇ 5162436 — vendors love suffix letters), exact
+                      // price, size, description tokens. Rendered as one-click picks with the
+                      // reason on them — suggestions, never auto-applied.
+                      const suggestFor=(bl)=>{
+                        const bsku=_ns(bl.sku);const price=safeNum(bl.unit_price);const bdesc=String(bl.desc||'').toUpperCase();
+                        const scored=target.items.map((it,ti)=>{
+                          const tsku=_ns(it.sku);let sc=0;const why=[];
+                          if(bsku&&tsku&&bsku.length>=5&&tsku.length>=5){
+                            if(bsku===tsku){sc+=100;why.push('exact SKU')}
+                            else if(bsku.startsWith(tsku)||tsku.startsWith(bsku)){sc+=60;why.push('SKU variant')}
+                            else if(bsku.includes(tsku)||tsku.includes(bsku)){sc+=40;why.push('SKU inside')}
+                          }
+                          if(price>0&&Math.abs(price-safeNum(it.unit_cost))<=0.02){sc+=25;why.push('$ match')}
+                          if(bl.size&&_cz(bl.size)===_cz(it.size)){sc+=15;why.push('size')}
+                          if(bdesc){const name=String(it.name||'').toUpperCase();const hits=bdesc.split(/[^A-Z0-9]+/).filter(t=>t.length>=4&&name.includes(t)).length;if(hits){sc+=Math.min(15,hits*5);why.push('name')}}
+                          return{ti,it,sc,why};
+                        }).filter(x=>x.sc>=25).sort((a,b)=>b.sc-a.sc);
+                        const out=[];const seen=new Set();
+                        for(const s of scored){const k=(s.it.item_id||s.it.sku)+'|'+(s.it.po_id||'')+'|'+_cz(s.it.size);if(seen.has(k))continue;seen.add(k);out.push(s);if(out.length>=3)break}
+                        return out;
+                      };
+                      // Dropdown grouped one <optgroup> per style+color so 50 size-buckets read
+                      // as 8 styles, not a wall.
+                      const optGroups=(()=>{const g={};target.items.forEach((it,ti)=>{const k=(it.sku||'?')+(it.color?' · '+it.color:'');(g[k]=g[k]||[]).push([it,ti])});return Object.entries(g);})();
                       const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped&&mappings[i].target_idx!=null).length;
                       const skipped=bill.items.filter((_,i)=>mappings[i]&&mappings[i].skipped).length;
                       const total=bill.items.length;
@@ -26687,14 +26715,9 @@ export default function App(){
                       const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
                         <div style={{fontSize:10,color:'#475569',marginBottom:6}}>Tie each bill line to the item on <b>{target.label}</b> it pays for. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null}. The badge shows why each matched — <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
-                        {/* What the order is still open for — visible up front, not buried in dropdowns */}
-                        <div style={{marginBottom:6,padding:'6px 10px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6}}>
-                          <div style={{fontSize:9,fontWeight:800,letterSpacing:.4,color:'#64748b',marginBottom:3}}>OPEN ON {String(target.label||'').toUpperCase()} — items still waiting to be billed</div>
-                          <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-                            {target.items.slice(0,40).map((it,ti)=><span key={ti} style={{fontSize:10,fontFamily:'monospace',background:'#fff',border:'1px solid #e2e8f0',borderRadius:4,padding:'2px 7px',color:'#334155'}}><b>{it.sku}</b> {[it.color,it.size].filter(Boolean).join(' ')} · {safeNum(it.qty)} @ ${safeNum(it.unit_cost).toFixed(2)}</span>)}
-                            {target.items.length>40&&<span style={{fontSize:10,color:'#94a3b8'}}>+{target.items.length-40} more</span>}
-                          </div>
-                        </div>
+                        {/* One quiet line of context; the per-line SUGGESTIONS below do the real work */}
+                        {(()=>{const st=new Set(target.items.map(it=>_ns(it.sku)));const units=target.items.reduce((a,it)=>a+safeNum(it.qty),0);const val=target.items.reduce((a,it)=>a+safeNum(it.qty)*safeNum(it.unit_cost),0);
+                          return<div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{target.label}: <b>{st.size}</b> style(s) · <b>{units}</b> unit(s) open · <b>${val.toFixed(2)}</b> still to bill</div>;})()}
                         <div style={{maxHeight:320,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:6,background:'#fff'}}>
                           <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
                             <thead style={{background:'#f1f5f9',position:'sticky',top:0,zIndex:1}}><tr>
@@ -26730,9 +26753,17 @@ export default function App(){
                                     onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
                                     <option value="">— pick an order item —</option>
                                     <option value="__skip">Skip this line (don’t bill it)</option>
-                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} · {[it.color,it.size].filter(Boolean).join(' ')||'—'} — {safeNum(it.qty)} open @ ${safeNum(it.unit_cost).toFixed(2)}</option>)}
+                                    {optGroups.map(([g,arr])=><optgroup key={g} label={g+' — $'+safeNum(arr[0][0].unit_cost).toFixed(2)}>
+                                      {arr.map(([it,ti])=><option key={ti} value={ti}>{(it.size||'one size')+' · '+safeNum(it.qty)+' open'+(Math.abs(safeNum(it.unit_cost)-safeNum(arr[0][0].unit_cost))>0.005?' @ $'+safeNum(it.unit_cost).toFixed(2):'')}</option>)}
+                                    </optgroup>)}
                                   </select>
                                   {tgt&&<div style={{color:costGap?'#b45309':'#94a3b8',fontSize:9,marginTop:2}}>order cost ${safeNum(tgt.unit_cost).toFixed(2)} · {openQty} open{costGap?' · bill ≠ order by $'+Math.abs(billExt-applyCost).toFixed(2):''}</div>}
+                                  {!tgt&&!m.skipped&&(()=>{const sug=suggestFor(bl);return sug.length?<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,alignItems:'center'}}>
+                                    <span style={{fontSize:9,color:'#64748b',fontWeight:700}}>Best guess:</span>
+                                    {sug.map(s=><button key={s.ti} onClick={()=>setMap(bli,{target_idx:s.ti,allocated_qty:bl.qty,ambiguous:false})} title={'Why: '+s.why.join(' + ')+' — click to tie'}
+                                      style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
+                                      {s.it.sku} {[s.it.color,s.it.size].filter(Boolean).join(' ')} @ ${safeNum(s.it.unit_cost).toFixed(2)} · {s.why[0]} →</button>)}
+                                  </div>:<div style={{fontSize:9,color:'#94a3b8',marginTop:3}}>No obvious counterpart on this order — pick from the list or skip.</div>})()}
                                 </td>
                                 <td style={{padding:'6px 8px',textAlign:'right'}}>
                                   {!m.skipped&&tgt&&<input className="form-input" type="number" min="0" style={{width:56,fontSize:10,padding:'3px 4px',textAlign:'right'}} value={m.allocated_qty||0}
