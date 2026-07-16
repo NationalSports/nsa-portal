@@ -1342,7 +1342,20 @@ const _dbSaveSOInner = async (so) => {
         // these is an intentional deletion; a DB po_id in neither set is one this client never saw.
         const _knownPoIds=new Set([..._clientPoIds,...(Array.isArray(so._hydratedPoIds)?so._hydratedPoIds:[])]);
         const _posHydrated=so._posHydrated!==false;
-        let _restored=0,_unrestorable=0;
+        // Money/goods already moved on this line: billed or received units, shipments, tracking, or bill
+        // docs inside sizes. Such a line must never vanish just because its ITEM disappeared from the
+        // payload — the UI blocks deleting items with PO lines (rmI), so an item-with-billed-PO vanishing
+        // can only be lost client state (IM9854 / "PO 3430 SERF": a save dropped one item and silently
+        // took its $37.50-billed Adidas line with it, 2026-07-14).
+        const _poRowHasHistory=r=>{
+          const anyPos=o=>o&&Object.values(o).some(v=>typeof v==='number'&&v>0);
+          if(anyPos(r.received)||anyPos(r.billed))return true;
+          if(Array.isArray(r.shipments)&&r.shipments.length>0)return true;
+          if(Array.isArray(r.tracking_numbers)&&r.tracking_numbers.length>0)return true;
+          const sz=r.sizes||{};
+          return(typeof sz._bill_cost==='number'&&sz._bill_cost>0)||(Array.isArray(sz._bill_details)&&sz._bill_details.length>0);
+        };
+        let _restored=0,_unrestorable=0,_histBlocked=0;
         _dbPoRows.forEach(row=>{
           const poId=row.po_id;
           // A placed vendor/API order writes ONE row per item, all sharing this po_id and carrying
@@ -1365,11 +1378,15 @@ const _dbSaveSOInner = async (so) => {
             if(!ci){_unrestorable++;return;}
           }else{
             // Client still holds this PO somewhere — it will re-save its own (possibly edited) copy. Skip to avoid dupes.
-            if(_clientPoIds.has(poId))return;
+            // EXCEPTION: when this row's ITEM is gone from the payload (ci null) and the line has billed/received/
+            // shipment history, do NOT honor the drop — the item's disappearance would silently destroy money records.
+            // Deliberate line-level removals on a surviving item (PO edit modal) still pass: ci exists there.
+            if(_clientPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
             // Deliberately deleted: the client loaded this PO cleanly and chose to drop it. Honor the deletion.
             // (For an API order this branch is reached only when the client holds NONE of its lines — a genuine
-            // whole-PO removal — so an intentional full deletion is still honored.)
-            if(_posHydrated&&_knownPoIds.has(poId))return;
+            // whole-PO removal — so an intentional full deletion is still honored.) Same exception as above: a
+            // vanished item may not take billed/received history down with it.
+            if(_posHydrated&&_knownPoIds.has(poId)){if(ci||!_poRowHasHistory(row))return;_histBlocked++;_unrestorable++;return;}
             // Otherwise the client never knew about this PO — re-inject it onto its original item so the save preserves it.
             if(!ci){_unrestorable++;return;}
           }
@@ -1382,9 +1399,9 @@ const _dbSaveSOInner = async (so) => {
         if(_restored){console.warn('[DB] Restored',_restored,'undeleted PO line(s) for',so.id,'(stale/foreign client state)');if(_dataLossAlert)_dataLossAlert({kind:'po_restored',soId:so.id,restored:_restored});}
         if(_unrestorable){
           // An undeleted PO couldn't be matched to a current item — block rather than silently lose it.
-          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items');
-          if(_dbNotify)_dbNotify('Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
-          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'});
+          console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted PO line(s) for',so.id,'could not be matched to current items'+(_histBlocked?' ('+_histBlocked+' with billed/received history on removed item(s))':''));
+          if(_dbNotify)_dbNotify(_histBlocked?'Save blocked — an item with billed/received PO history is missing from this order. Please reload the page; to remove it, clear its billing/receiving first.':'Save blocked — purchase order data could not be safely preserved. Please reload the page.','error');
+          if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'PO restore: '+_unrestorable+' undeleted PO line(s) unmatched'+(_histBlocked?' ('+_histBlocked+' billed/received on removed item(s))':'')});
           // TERMINAL for auto-retry: the unmatched PO line lives on an item this tab's copy doesn't
           // have, so retrying the identical payload re-fails deterministically. Route to the conflict
           // card and stop the background retry loop instead of erroring forever on every page.
