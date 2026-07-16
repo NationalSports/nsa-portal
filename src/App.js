@@ -23185,6 +23185,11 @@ export default function App(){
       const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
       _markSsReviewed(pulledOrderNos);// staff have now seen these → clear the "new" badge from the daily cron
+      // The list this pull just REPLACED the review session with — pullAllBills passes it to
+      // _siSendToReview so its in-review dedup sees the fresh list, not the stale pre-pull state
+      // (same-tick setState hasn't re-rendered yet). null on the early-outs above = "no replace
+      // happened", so callers know the state read is still valid.
+      return results;
     };
     // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
     // review, so the Import & Review badge clears. Scoped to the order #s THIS pull actually
@@ -23326,11 +23331,15 @@ export default function App(){
     // that skipped push validation, the problems modal, write plans, and bill history, and once
     // enabled a double-apply. The tab is now read-and-route; the hardened review push is the
     // only writer, and pushing already marks the queue row approved + flips the doc Historical.)
-    const _siSendToReview=(rowsIn)=>{
+    const _siSendToReview=(rowsIn,freshList)=>{
       const rows=(rowsIn||[]).filter(Boolean);
       if(!rows.length)return;
       const cands=_siBuildCandidates();
-      const inReview=new Set(billImport.parsed.map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+      // freshList: pullAllBills just replaced the review session via pullFromSS in this same
+      // tick, so billImport.parsed here is the STALE pre-pull list — deduping against it would
+      // silently drop any Sports Inc bill that happened to sit in the old session. When given,
+      // dedup against what the list actually contains now.
+      const inReview=new Set((freshList||billImport.parsed).map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
       const results=[];const dups=[];let idx=0;
       rows.forEach(row=>{
         const t=row._t||_siTriage(row,cands);
@@ -23363,6 +23372,37 @@ export default function App(){
       setBillView('import');
       setBillFilter('all');
       _finishBillReview(results,{skippedDups:dups,sourceCount:rows.length,sourceNoun:'queued document(s)',verb:'loaded for review',extraNote:results.length?' — review below, then Push to Portal':'',append:true});
+    };
+    // ── ONE pull for everything ─────────────────────────────────────────────
+    // "Pull bills" = S&S Orders API + the Sports Inc queue in one flow (two processes,
+    // one button). Order matters: the S&S pull REPLACES the review list (fresh working
+    // session), then Sports Inc's workable docs APPEND through _siSendToReview's own
+    // dedup. The two halves can't collide: S&S reaches Sports Inc only as scanned docs,
+    // which triage to Grab/Outside and are never auto-routed here (see _siTriage).
+    const pullAllBills=async()=>{
+      const f=ssPullFrom||'',t=ssPullTo||'';
+      // ssList = the fresh review list when the S&S pull replaced it; undefined when the pull
+      // errored/found nothing (list untouched → the state read inside _siSendToReview is valid).
+      const ssList=await pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});
+      if(!supabase){nf('Database not connected — Sports Inc queue skipped','error');return}
+      setSiQueueLoading(true);
+      try{
+        // Refresh from SportsLink best-effort — an outage there shouldn't block reviewing
+        // what's already queued — then re-read + re-triage fresh rows (NOT stale state).
+        try{const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});await _siUpsertDocs(docs)}
+        catch(e){nf('SportsLink refresh failed ('+(e.message||e)+') — using the queue as of the last sync','error')}
+        const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
+        if(error)throw error;
+        const cands=_siBuildCandidates();
+        const rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+        setSiQueue(rows);
+        // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
+        // they can be tied to their order right here. Grab (PDF-only) and Outside are not
+        // pushable bills — they stay on the Sports Inc tab.
+        const work=rows.filter(r=>r._t&&(r._t.bucket==='approve'||r._t.bucket==='review'));
+        if(work.length)_siSendToReview(work,ssList||undefined);
+      }catch(e){nf('Sports Inc queue failed: '+(e.message||e)+' — S&S results are in the list below','error')}
+      setSiQueueLoading(false);
     };
     const markSiStatus=async(row,status,verb)=>{
       const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
@@ -26044,38 +26084,31 @@ export default function App(){
           </div>}
         </div>;})()}
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          {/* ONE pull, both vendors. The button runs the S&S Orders pull + the Sports Inc queue
+              refresh/route back-to-back (see pullAllBills) — staff shouldn't have to know which
+              middleman a bill rides through. Per-vendor pulls remain as small escape hatches. */}
           <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
-              </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>pullFromSportsInc()}>
-                {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
-              </button>
-            </div>
-          </div>
-          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+RED,background:'#fff',borderRadius:6}}>
-            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders straight from S&amp;S by invoice date &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+              <div style={{flex:1,minWidth:280}}>
+                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail stay on the Sports Inc tab to grab.</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months."/>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>S&amp;S invoiced from</label>
+                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull S&S bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months. Sports Inc always refreshes from its 2026-04-01 cutover."/>
                   <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
                   <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
                   {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'last 3 months'}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'S&S from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'S&S: last 3 months'}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
+                  <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
                 </div>
               </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';
-                  // both blank → last 3 months (All=True); otherwise an invoice-date window, with a
-                  // blank "To" resolved to today so the live call sends a concrete end, not a sentinel.
-                  pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}}>
-                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
+              <button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:15,padding:'12px 22px'}} disabled={billImport.uploading||siQueueLoading}
+                onClick={()=>pullAllBills()}>
+                {(billImport.uploading||siQueueLoading)?'Pulling…':'⚡ Pull bills'}
               </button>
             </div>
           </div>
@@ -26205,27 +26238,28 @@ export default function App(){
           {/* Sticky action bar: stays pinned while scrolling a long pull, with a running $ total
               of what the push will apply and filter chips to work the list as a queue. */}
           {(()=>{
-            // "Ready" = matched AND reconciles clean (no duplicate / over-billing / size mismatch).
-            // This is exactly the set the primary push applies, so the button's count now matches the
-            // "Ready to push" stat and the ✓ Ready tab. Matched-but-flagged bills are left for review
-            // or AI-match — never bulk-pushed (they only push once they've been made clean).
+            // ONE vocabulary, ONE set: "Matched" = matched AND reconciles clean (no duplicate /
+            // over-billing / size mismatch) AND checked — exactly what the red button pushes.
+            // The tile, the value, the chip badge and the button all read from it, so no two
+            // numbers on this bar can disagree. Bills needing work are "Review" — matched-but-
+            // flagged bills sit there (wizard / AI-match), never bulk-pushed.
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const qbSel=billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater);
             const counts={all:0,ready:0,attention:0,done:0};
             billImport.parsed.forEach(b=>{const t=_billTriage(b);counts.all++;if(!t)counts.done++;else if(t.issue)counts.attention++;else counts.ready++});
-            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Ready',counts.ready,'#166534'],['attention','⚠ Needs attention',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
+            const unchecked=counts.ready-ready.length;// matched+clean but checkbox off — excluded from the push
+            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Matched',counts.ready,'#166534'],['attention','⚠ Review',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
             return<div style={{marginBottom:16}}>
               <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',flexWrap:'wrap'}}>
                 <div style={{display:'flex',gap:30,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
-                  {statTile(billImport.parsed.length,'Bills parsed')}
-                  <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
-                  {statTile(counts.ready,'Ready to push','#6FD59A')}
-                  {statTile(counts.attention,'Need attention',RED_LT)}
-                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Ready value</div></div>
+                  {statTile(ready.length,'Matched — will push','#6FD59A')}
+                  {unchecked>0&&statTile(unchecked,'Matched, unchecked','#94a3b8')}
+                  {statTile(counts.attention,'To review',RED_LT)}
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Matched value</div></div>
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
-                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} ready → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',disabled:billImport.uploading||!qbSel.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+qbSel.length+' to QuickBooks'})}
                 </div>
               </div>
@@ -26534,8 +26568,11 @@ export default function App(){
                     </div>
                   </div>;
                 })()}
-                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
-                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                {/* Manual match wizard — goods bills whose lines need pinning. Shows for an
+                    unmatched bill (pick the order), AND for a bill matched by PO number only whose
+                    lines don't map to that order cleanly (would-apply-nothing) — so a "matched but
+                    won't push" bill has a real way to reconcile line-by-line instead of a dead end. */}
+                {bill.kind!=='decoration'&&bill.items.length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&!_billApplyPlan(bill)))&&(()=>{
                   const w=bill._wizard;
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
@@ -26559,11 +26596,11 @@ export default function App(){
                         ✨ AI couldn’t confidently match this to an open PO{fp.reason?' — '+fp.reason:'.'} Try matching manually.
                       </div>}
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                        <span style={{fontSize:12,color:'#3730a3'}}>{poMatch?'Matched to '+(poMatch.so_id||poMatch.so?.id||'the order')+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.':'No PO matched automatically — line items parsed and ready.'}</span>
                         <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                          onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?'🧵 Match lines to the order…':'Match manually…'}</button>
                         {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
-                          :!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
+                          :!poMatch&&!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
                             title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
                             onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiTried?'Re-run AI':'Find PO with AI'}</button>}
                       </div>
@@ -26675,7 +26712,7 @@ export default function App(){
             // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
-            [[GREEN,'Ready to push','Clean matches · safe to push','ready'],[RED,'Need attention','Reconcile before pushing','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
+            [[GREEN,'Matched — ready to push','Push in one click','ready'],[RED,'Review','Tie each bill to its order','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
               if(!_bk[k].length)return;
               _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
               _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
