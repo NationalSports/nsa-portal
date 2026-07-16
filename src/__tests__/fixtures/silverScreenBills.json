@@ -9,7 +9,9 @@
       "po": "PO 3514 OLuST",
       "docNumber": "199852",
       "docTotal": 4213.44,
-      "itemCount": 2
+      "itemCount": 2,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
     }
   },
   {
@@ -22,7 +24,9 @@
       "po": "PO 3521 OLuST",
       "docNumber": "199832",
       "docTotal": 2608.52,
-      "itemCount": 5
+      "itemCount": 5,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
     }
   },
   {
@@ -35,7 +39,9 @@
       "po": "DPO 3516 OLuST",
       "docNumber": "199852",
       "docTotal": 4213.44,
-      "itemCount": 2
+      "itemCount": 2,
+      "docDate": "07/14/2026",
+      "dueDate": "08/13/2026"
     }
   }
 ]

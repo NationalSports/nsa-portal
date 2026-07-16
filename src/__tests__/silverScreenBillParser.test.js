@@ -51,6 +51,11 @@ describe('Silver Screen supplier-bill parser — real-invoice regressions', () =
         expect(bill.doc_number).toBe(fx.expect.docNumber);
       });
 
+      test('reads the doc date and due date from the columnar header table', () => {
+        expect(bill.doc_date).toBe(fx.expect.docDate);
+        expect(bill.due_date).toBe(fx.expect.dueDate);
+      });
+
       test('picks up the PO number verbatim (store tag kept, trailing description trimmed)', () => {
         expect(bill.po_number).toBe(fx.expect.po);
         expect(bill.warnings).not.toContain('PO number not found');

@@ -22506,6 +22506,24 @@ export default function App(){
       if(dateM)bill.doc_date=dateM[1];
       const dueM=text.match(/DUE\s+DATE\s*[\r\n]+\s*(\d{1,2}\/\d{1,2}\/\d{2,4})/i)||text.match(/DUE\s+DATE\s+(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
       if(dueM)bill.due_date=dueM[1];
+      // DATE / DUE DATE print as a header table — the label sits one row above its value in the
+      // same tab column (exactly like the P.O. NUMBER cell), so the adjacency regexes above miss
+      // this columnar layout. Fall back to the date in the column beneath an exact DATE / DUE DATE
+      // header cell (^DATE$ so the DATE inside "DUE DATE" doesn't capture the wrong column).
+      const _colDate=(cellRe)=>{
+        for(let i=0;i<lines.length;i++){
+          const cells=lines[i].split('\t').map(c=>c.trim());
+          const ci=cells.findIndex(c=>cellRe.test(c));
+          if(ci<0)continue;
+          for(let j=i+1;j<Math.min(i+4,lines.length);j++){
+            const m=((lines[j].split('\t')[ci]||'').trim()).match(/\d{1,2}\/\d{1,2}\/\d{2,4}/);
+            if(m)return m[0];
+          }
+        }
+        return '';
+      };
+      if(!bill.doc_date)bill.doc_date=_colDate(/^DATE$/i);
+      if(!bill.due_date)bill.due_date=_colDate(/^DUE\s+DATE$/i);
       const po=_findLabeledPO(lines,/P\.?\s*O\.?\s*NUMBER\b/i);
       if(po)bill.po_number=_normalizeDecoPO(po);
       const dueTotM=text.match(/TOTAL\s+DUE\s*\$?\s*([\d,]+\.\d{2})/i);
