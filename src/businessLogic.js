@@ -1012,11 +1012,22 @@ function commissionRepId(customer, so) {
   return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
+// Who may be listed as the rep on an account/job and earn commission. Sales reps and admins
+// always qualify; any other role (e.g. a CSR) can be opted in per-person via the
+// `commission_eligible` flag so they can own accounts and appear in commission reports WITHOUT
+// giving up their base role. This is the single source of truth for rep-eligibility — route
+// every "is this person a sellable rep" list/filter through it so the rule can't drift across
+// its ~20 call sites the way a copy-pasted `role==='rep'||role==='admin'` silently would.
+function isCommissionRep(r) {
+  return !!r && (r.role === 'rep' || r.role === 'admin' || r.commission_eligible === true);
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   // Attribution
   commissionRepId,
+  isCommissionRep,
   // Pricing
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
   // Business logic

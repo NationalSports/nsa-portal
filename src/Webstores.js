@@ -9,7 +9,7 @@ import { NSA, pantoneHex, SZ_NORM } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
-import { normalizeWebLogos, pickCwAsset } from './businessLogic';
+import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
 import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydrateStoreArt } from './lib/artGrid';
 import { buildTeamArtLibrary } from './lib/artIdentity';
@@ -4413,7 +4413,7 @@ function StoreForm({ store, cust, REPS, repCsr = [], onCancel, onSave, onImportF
   // on hundreds of customers, so include them too — filtering to role==='rep' alone
   // hid the auto-set rep for ~25% of customers (it was set in state but had no option
   // to render, so the dropdown showed "—").
-  const salesReps = (REPS || []).filter((r) => (r.role === 'rep' || r.role === 'admin') && r.is_active !== false);
+  const salesReps = (REPS || []).filter((r) => isCommissionRep(r) && r.is_active !== false);
   // Whatever rep is actually assigned must always be selectable, even if their role
   // (accounting/csr) or active flag would otherwise drop them from the list.
   const repOptions = (() => {
