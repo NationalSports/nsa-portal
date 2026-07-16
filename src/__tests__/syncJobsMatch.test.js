@@ -7,6 +7,7 @@ import {
   buildExistingJobLookups,
   countJobsByArtId,
   dropMismatchedFrozenClaims,
+  healFrozenJobArtDrift,
   inheritJobWorkflowFields,
   matchExistingJob,
 } from '../lib/syncJobsMatch';
@@ -251,5 +252,112 @@ describe('dropMismatchedFrozenClaims', () => {
     const { job: out, changed } = dropMismatchedFrozenClaims(job, resolveUnloaded);
     expect(changed).toBe(false);
     expect(out.items).toHaveLength(2);
+  });
+});
+
+/**
+ * Regression: SO-1348 / JOB-1348-02. A released job froze art_file_id/art_name/positions
+ * ("5in Wide S Crest Football", Front Center) while the rep re-pointed the claimed line's
+ * decoration at different artwork ("2.5in tall S Crest Shorts", Left Leg). The job header
+ * showed the old design and the run-together suggestion matched the OLD art name against
+ * the real football job on SO-1101. healFrozenJobArtDrift re-stamps the frozen art
+ * identity from the live decorations.
+ */
+describe('healFrozenJobArtDrift', () => {
+  // live layout mirroring SO-1348: item 2's deco 0 now carries the 2.5in crest on Left Leg
+  const live = {
+    '2:0': { artFileId: 'af_crest25', position: 'Left Leg' },
+    '3:0': { artFileId: 'af_helmet6', position: 'Front Center' },
+  };
+  const resolve = (ii, di) => live[ii + ':' + di] ?? null;
+
+  const so1348Job = {
+    id: 'JOB-1348-02', _released: true, deco_type: 'screen_print',
+    art_file_id: 'af_football5', _art_ids: ['af_football5'],
+    art_name: '5in Wide S Crest Football', positions: 'Front Center',
+    items: [{ sku: 'IS1111', item_idx: 2, deco_idx: 0, deco_idxs: [0], units: 68 }],
+  };
+
+  test('re-points a released job at the art its live decoration now carries (SO-1348)', () => {
+    const { job, changed, artChanged } = healFrozenJobArtDrift(so1348Job, resolve);
+    expect(changed).toBe(true);
+    expect(artChanged).toBe(true);
+    expect(job.art_file_id).toBe('af_crest25');
+    expect(job._art_ids).toEqual(['af_crest25']);
+    expect(job.positions).toBe('Left Leg');
+    // art_name is deliberately untouched here — the released-name heal owns it
+    expect(job.art_name).toBe('5in Wide S Crest Football');
+  });
+
+  test('returns the original reference when the live art matches the declared set', () => {
+    const clean = { ...so1348Job, art_file_id: 'af_crest25', _art_ids: ['af_crest25'] };
+    const { job, changed, artChanged } = healFrozenJobArtDrift(clean, resolve);
+    expect(changed).toBe(false);
+    expect(artChanged).toBe(false);
+    expect(job).toBe(clean);
+  });
+
+  test('aborts on an unresolved claim (art file not hydrated yet)', () => {
+    const resolveUnloaded = () => 'unresolved';
+    const { job, changed } = healFrozenJobArtDrift(so1348Job, resolveUnloaded);
+    expect(changed).toBe(false);
+    expect(job).toBe(so1348Job);
+  });
+
+  test('an unresolved claim anywhere aborts even when another claim differs', () => {
+    const twoClaims = {
+      ...so1348Job,
+      items: [
+        { item_idx: 2, deco_idx: 0, deco_idxs: [0], units: 34 },
+        { item_idx: 9, deco_idx: 0, deco_idxs: [0], units: 34 },
+      ],
+    };
+    const resolveMixed = (ii, di) => (ii === 9 ? 'unresolved' : resolve(ii, di));
+    const { job, changed } = healFrozenJobArtDrift(twoClaims, resolveMixed);
+    expect(changed).toBe(false);
+    expect(job).toBe(twoClaims);
+  });
+
+  test('null claims are skipped; a job with only null claims stays frozen (deleted-line snapshot)', () => {
+    const deletedLine = { ...so1348Job, items: [{ item_idx: 7, deco_idx: 0, deco_idxs: [0], units: 68 }] };
+    const { job, changed } = healFrozenJobArtDrift(deletedLine, resolve);
+    expect(changed).toBe(false);
+    expect(job).toBe(deletedLine);
+  });
+
+  test('a job declaring no real art (numbers-only, or ART TBD) is left alone', () => {
+    const numbersJob = { id: 'J1', art_file_id: null, items: [{ item_idx: 2, deco_idx: 0, deco_idxs: [0] }] };
+    expect(healFrozenJobArtDrift(numbersJob, resolve).changed).toBe(false);
+    const tbdJob = { id: 'J2', art_file_id: '__tbd', items: [{ item_idx: 2, deco_idx: 0, deco_idxs: [0] }] };
+    expect(healFrozenJobArtDrift(tbdJob, resolve).changed).toBe(false);
+  });
+
+  test('multi-art consolidated claims re-stamp ids in claim order with every position', () => {
+    const consolidated = {
+      ...so1348Job,
+      items: [
+        { item_idx: 2, deco_idx: 0, deco_idxs: [0], units: 34 },
+        { item_idx: 3, deco_idx: 0, deco_idxs: [0], units: 34 },
+      ],
+    };
+    const { job, changed } = healFrozenJobArtDrift(consolidated, resolve);
+    expect(changed).toBe(true);
+    expect(job._art_ids).toEqual(['af_crest25', 'af_helmet6']);
+    expect(job.art_file_id).toBe('af_crest25');
+    expect(job.positions).toBe('Left Leg, Front Center');
+  });
+
+  test('same set in a different claim order is NOT drift (no churn)', () => {
+    const twoArt = {
+      ...so1348Job,
+      art_file_id: 'af_helmet6', _art_ids: ['af_helmet6', 'af_crest25'],
+      items: [
+        { item_idx: 2, deco_idx: 0, deco_idxs: [0], units: 34 },
+        { item_idx: 3, deco_idx: 0, deco_idxs: [0], units: 34 },
+      ],
+    };
+    const { job, changed } = healFrozenJobArtDrift(twoArt, resolve);
+    expect(changed).toBe(false);
+    expect(job).toBe(twoArt);
   });
 });

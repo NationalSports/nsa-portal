@@ -21,7 +21,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -290,10 +290,29 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const keyByNameDeco={},keyByDesign={};
     myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByNameDeco[k]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
     const pc=allCustomers.find(c=>c.id===o.customer_id);
-    // Sibling sub-accounts stay segmented (volleyball must not pull football mocks via parent).
-    const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
-    const soIds=(allOrders||[]).filter(s=>custIds.includes(s.customer_id)&&s.id!==o.id).map(s=>s.id);
+    const _parentId=pc?.parent_id||null;
+    // Segmented set = this sub-account + the parent account itself. NAME-only matches stay
+    // confined here so a sibling sport's same-named-but-different design can't bleed in
+    // (the volleyball-must-not-pull-football-mocks rule).
+    const _segIds=_parentId?new Set([_parentId,o.customer_id]):new Set([o.customer_id]);
+    // Wider family = every sub-account under the same parent (+ the parent). We FETCH from the
+    // whole family, because an EXACT design_id match is a hard identity — the same approved logo
+    // legitimately runs across sibling teams of one school (e.g. a school mascot on Athletics,
+    // Water Polo and Basketball orders). Sibling rows that only match by NAME are dropped below;
+    // design_id matches are kept.
+    const _famIds=_parentId?new Set((allCustomers||[]).filter(c=>c.id===_parentId||c.parent_id===_parentId).map(c=>c.id)):new Set([o.customer_id]);
+    const _famOrders=(allOrders||[]).filter(s=>_famIds.has(s.customer_id)&&s.id!==o.id);
+    const soIds=_famOrders.map(s=>s.id);
     if(!soIds.length){setPriorMocks({});return}
+    // so_id -> is this order in the trusted (segmented) set? Drives the name-only guard below.
+    const _soSegmented={};_famOrders.forEach(s=>{_soSegmented[s.id]=_segIds.has(s.customer_id)});
+    // Keys whose CURRENT art carries no design_id (legacy art predating design ids, or a clone
+    // path that dropped it — SO-1523's "2.25in Sunbird Hat"). With no identity to assert, the
+    // sibling design_id rule can never match and the approval panel dead-ends ("no mockup" and
+    // nothing to reuse). For exactly these keys, accept a sibling name+deco match: the reuse
+    // cards stay behind the rep's explicit confirm click, so a same-named-different-design
+    // false positive is an ignorable card, not an applied mock.
+    const _noDesignKeys=new Set();myArts.forEach(a=>{const nm=(a.name||'').trim().toLowerCase();if(nm&&!a.design_id)_noDesignKeys.add(nm+'||'+(a.deco_type||''))});
     let cancelled=false;
     (async()=>{
       try{
@@ -302,8 +321,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _u=f=>typeof f==='string'?f:(f?.url||'');
         const map={};const seen={};
         data.forEach(row=>{
+          const _isDesignMatch=!!(row.design_id&&keyByDesign[row.design_id]);
           const key=resolvePriorMockKey(row,{keyByDesign,keyByNameDeco});
           if(!key)return;
+          // Cross-sibling reuse is allowed on an exact design_id match, or — only when the
+          // current art has no design_id to match on (_noDesignKeys) — a name+deco match.
+          // Any other name-only match from a sibling sub-account (not in the segmented set)
+          // is the football/volleyball false-positive we must not surface.
+          if(!_isDesignMatch&&!_soSegmented[row.so_id]&&!_noDesignKeys.has(key))return;
           const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
           if(!map[key]){map[key]=[];seen[key]=new Set()}
           const sset=seen[key];
@@ -404,7 +429,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     return<div key={ai} style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       {_grps.map((grp,gpi)=>{const _m=!!_tgtCw&&grp._cw===_tgtCw;const _apply=()=>setMockApplyModal({sku:cg.sku,color:cg.color,artId:af2.art_file_id,files:grp.files,mockUrl:grp.files[0]&&grp.files[0].url,jobId:jobIdForApply});
         return<div key={gpi} style={{display:'flex',gap:6,alignItems:'center',padding:'5px 7px',background:_m?'#f0fdf4':'white',border:'1px solid '+(_m?'#86efac':'#fde68a'),borderRadius:6}}>
-        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'pointer'}} onClick={()=>openFile(pm.url)}/>:<div key={pi} onClick={()=>openFile(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'pointer'}}>📄</div>)}
+        {grp.files.slice(0,2).map((pm,pi)=>_isImgUrl(pm.url)?<img key={pi} src={pm.url} alt="" title="Click to enlarge" style={{width:52,height:64,objectFit:'contain',borderRadius:4,border:'1px solid #e2e8f0',background:'white',cursor:'zoom-in'}} onClick={()=>setMockupLightbox(pm.url)}/>:<div key={pi} title="Click to enlarge" onClick={()=>setMockupLightbox(pm.url)} style={{width:52,height:64,borderRadius:4,border:'1px solid #e2e8f0',background:'white',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,cursor:'zoom-in'}}>📄</div>)}
         <div style={{minWidth:92}}>
           <div style={{fontSize:9,color:'#92400e'}}><b>{(grp.from||'').replace('|',' · ')}</b></div>
           {/* H4: the ✓ only appears on a shade-confirmed match. Anything else is honest amber. */}
@@ -2773,14 +2798,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // merge-time stamp of the intended deco types — a follow-up, since that field must be persisted.)
     const _methodSetKnown=j=>!j._merged&&!j.split_from;
     const _dropStaleClaims=j=>(_methodSetKnown(j)||_frozenIdxDrift)?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    // Per-art job art_status, shared by the Step-3 builder and the frozen-job art heal below so
+    // the two derivations can't drift apart.
+    const _artStForFile=(artF,fallbackDt)=>artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||fallbackDt)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
+    // Live-art resolver for healFrozenJobArtDrift. Mirrors _liveDecoType's hydration-safety
+    // convention: 'unresolved' (art deco whose file isn't loaded) aborts the heal, while null
+    // (deleted line, non-art deco, TBD/unassigned, outsourced) just contributes nothing.
+    const _liveArtClaim=(ii,di)=>{const it=safeItems(o)[ii];if(!it)return null;const d=safeDecos(it)[di];
+      if(!d||d.kind!=='art')return null;
+      if(d.fulfillment==='outside'||d.deco_po_id)return null;
+      if(!d.art_file_id||d.art_file_id==='__tbd')return null;
+      const artF=af.find(a=>a.id===d.art_file_id);
+      if(!artF)return'unresolved';
+      return{artFileId:d.art_file_id,position:safeStr(d.position)}};
+    // A frozen job whose art pointer was healed is now gated on DIFFERENT artwork, so its frozen
+    // art_status describes the wrong file — recompute it from the healed ids with the same
+    // derivation the builder uses. Queue states are irrelevant here: they belonged to the old art.
+    const _healArtPointers=j=>{
+      const r=healFrozenJobArtDrift(j,_liveArtClaim);
+      if(!r.artChanged)return r.job;
+      const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      let worst='art_complete';
+      for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
+      return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;
+    };
     const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
-      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
+      .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
     const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
-      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
+      .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2855,7 +2904,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
-            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
+            const st=_artStForFile(artF,d.deco_type);
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');
@@ -3173,7 +3222,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Garment identity (sku|color) is included so a _refreshGarmentIdentity heal (line product
     // swapped after release — SO-1480's phantom KD5416) also lands; the refresh converges on
     // the live line, so this can't ping-pong either.
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
+    // Art identity (art_file_id/_art_ids/positions/art_name) is included so the frozen-job art
+    // heals land too — healFrozenJobArtDrift re-pointing a released job at the artwork its line
+    // now carries (SO-1348's "5in Wide S Crest Football" header on the 2.5in-crest shorts job),
+    // and _healReleasedArtName's rename-only refresh, which previously only landed when a unit
+    // or status change happened to ride along. Both converge on live data — no ping-pong.
+    const _artSig=j=>(j.art_file_id||'')+'.'+((j._art_ids||[]).join('~'))+'.'+(j.positions||'')+'.'+(j.art_name||'');
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>{
         const next={...e,jobs:synced};
@@ -8917,7 +8972,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   // sub-customer ("team"), so we can float same-art / same-team jobs to the top.
                   const _selfSk=jobScreenKey(j);
                   const _selfCust=o.customer_id;
-                  const _CLOSED=new Set(['completed','shipped']); // anything else is still "open" (in art/production)
+                  // Status-aware linking: once a job is "lined up" (staging / In Line) or later
+                  // (in process / completed / shipped), its screen/digitized setup is already
+                  // committed to the production line — too late to (re)group it to reuse a screen.
+                  // New links are only offered while a job is still pre-production (draft / on hold).
+                  // Applies both ways: a locked THIS job stops offering links, and a locked sibling is
+                  // never offered as a target. Already-established manual links stay visible as history
+                  // (see `confirmed`), even after they ship.
+                  const _LOCKED_PROD=new Set(['staging','in_process','completed','shipped']);
+                  const _lockedProd=st=>_LOCKED_PROD.has(st);
+                  const _selfLocked=_lockedProd(j.prod_status);
                   const linked=[];const candidates=[];
                   (allOrders||[]).forEach(s=>{
                     if(!_familyIds.has(s.customer_id))return;
@@ -8926,16 +8990,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(s.id===o.id&&jj.id===j.id)return;
                       const gk=jobGroupKey(jj,_pidOf(s));
                       if(_grp&&gk===_grp){linked.push({soId:s.id,custId:s.customer_id,job:jj,auto:!jj.link_group});return}
+                      if(_lockedProd(jj.prod_status))return; // already lined up / shipped — its screen is committed; don't offer it as a new link
                       const _sameArt=!!_selfSk&&jobScreenKey(jj)===_selfSk; // identical artwork — almost certainly the same screen
                       const _sameTeam=s.customer_id===_selfCust;            // same sub-customer / team
-                      const _open=!_CLOSED.has(jj.prod_status);             // still in art/production, not finished
                       const _hint=_sameArt?'✨ same art · ':(_sameTeam?'★ same team · ':'');
-                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_open,_ts:Date.parse(jj.created_at||'')||0});
+                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_ts:Date.parse(jj.created_at||'')||0});
                     });
                   });
-                  // Most relevant first: identical artwork, then same team, then still-open jobs, then most recent.
-                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(Number(b._open)-Number(a._open))||(b._ts-a._ts));
-                  if(!linked.length&&!candidates.length)return null;
+                  // Most relevant first: identical artwork, then same team, then most recent.
+                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(b._ts-a._ts));
+                  // Auto art-matches surface as suggestions to confirm; only manual links count as an
+                  // established "runs together" group. Withhold suggestions and new-link candidates once
+                  // THIS job is locked (a locked sibling is already filtered above); established manual
+                  // links (`confirmed`) stay regardless so their combined costing is still shown.
+                  const confirmed=_isAuto?[]:linked;
+                  const suggested=(_isAuto&&!_selfLocked)?linked.filter(m=>!_lockedProd(m.job.prod_status)):[];
+                  const linkCandidates=_selfLocked?[]:candidates;
+                  if(!confirmed.length&&!suggested.length&&!linkCandidates.length)return null;
                   const doLink=value=>{
                     const[tSoId,tJobId]=value.split('||');
                     const tSo=(allOrders||[]).find(s=>s.id===tSoId);const tSrc=tSoId===o.id?o:tSo;const tJob=tSrc&&safeJobs(tSrc).find(jj=>jj.id===tJobId);if(!tJob)return;
@@ -8967,10 +9038,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>localIds.has(jj.id)?{...jj,link_group:newGid,auto_group_off:false}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
                     nf('Linked — these jobs will run together');
                   };
-                  // Auto art-matches are surfaced as suggestions to confirm; only manual links count
-                  // as an established "runs together" group.
-                  const confirmed=_isAuto?[]:linked;
-                  const suggested=_isAuto?linked:[];
                   const memberRow=(m,actions)=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                     <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
                     <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
@@ -8998,7 +9065,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </div>}
                     <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                       {!confirmed.length&&!suggested.length&&<span style={{fontSize:11,color:'#94a3b8'}}>🔗 not linked — pick a job below if it shares this screen</span>}
-                      {candidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={candidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
+                      {linkCandidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={linkCandidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
                       {confirmed.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="Remove this job from the linked group">Leave group</button>}
                     </div>
                   </div>;
@@ -9115,7 +9182,27 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+              // Send the job's art back to the artist for a redo. Shared by the "Request Update"
+              // box below and the per-garment "send to artist" button in the Reuse-a-mock panel,
+              // so the pullback semantics can't drift apart (audit M1/A5): the redo covers EVERY
+              // design on the job (_art_ids, not just the primary), stale coach state is cleared
+              // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
+              // nag), and the seps confirmation is invalidated so the redone art can't skip the
+              // production-files re-check on the next approve. Goes to art_requested — same as the
+              // coach-reject and CustDetail redo flows — so the status pill reads "Art Requested"
+              // rather than "In Progress" (nobody has started the redo yet). The artist board's
+              // Waiting-for-Art column includes art_requested, so the job stays visible there,
+              // with its Start Working button moving it to In Progress when the artist picks it up.
+              const _sendBackToArtist=(reason)=>{
+                const _revAt=new Date().toISOString();
+                const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
+                const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
+                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
+                saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
+              };
+              return<div style={{margin:'0 20px',padding:'16px',background:_stca?'linear-gradient(135deg,#dbeafe,#eff6ff)':'linear-gradient(135deg,#fef3c7,#fffbeb)',border:'2px solid '+(_stca?'#93c5fd':'#fbbf24'),borderRadius:10}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
@@ -9169,8 +9256,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   if(!pm)return null;
                   return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
                     <div style={{fontSize:10,fontWeight:800,color:'#854d0e',marginBottom:4,textTransform:'uppercase',letterSpacing:0.4}}>🔍 Reuse an approved mock</div>
-                    <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved before, but not on this garment — pick a prior mock to use here (color-way matched), or send it to the artist for a new one.</div>
+                    <div style={{fontSize:10,color:'#92400e',marginBottom:8}}>This art was approved before, but not on this garment — click a thumbnail to enlarge, pick a prior mock to use here (color-way matched), or send it to the artist for a new one.</div>
                     {priorMockCards(pm,j.id)}
+                    <div style={{marginTop:8}} onClick={e=>e.stopPropagation()}>
+                      <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
+                        title="None of these mocks work — pull the art back and have the artist make a new mockup for this garment"
+                        onClick={()=>{
+                          const _garment=(pm.color?pm.color+' ':'')+pm.sku;
+                          const _who=REPS.find(r=>r.id===j.assigned_artist)?.name||'the artist';
+                          if(!window.confirm('Send "'+(j.art_name||'this art')+'" to '+_who+' for a NEW mockup on '+_garment+'?\n\nThe art goes back to Waiting for Art and any coach-approval state on this job is cleared.'))return;
+                          _sendBackToArtist('Need a NEW mockup for '+_garment+' — reused art, none of the prior mocks fit this garment.');
+                        }}>🎨 None fit — send to artist for a new mock</button>
+                    </div>
                   </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
@@ -9368,20 +9465,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{fontSize:11,fontWeight:700,color:'#92400e',marginBottom:4}}>Something wrong? Send it back to the artist:</div>
                 <textarea className="form-input" rows={2} placeholder="Describe what needs to change — colors, sizing, placement, etc." value={artRevisionNote} onChange={e=>setArtRevisionNote(e.target.value)} style={{fontSize:12,resize:'vertical',marginBottom:6,borderColor:'#fbbf24'}}/>
                 <button className="btn btn-sm" style={{fontSize:12,padding:'5px 14px',background:artRevisionNote.trim()?'linear-gradient(135deg,#dc2626,#b91c1c)':'#e5e7eb',color:artRevisionNote.trim()?'white':'#9ca3af',border:'none',borderRadius:6,fontWeight:700,cursor:artRevisionNote.trim()?'pointer':'not-allowed'}} disabled={!artRevisionNote.trim()} onClick={()=>{
-                  const _revAt=new Date().toISOString();
-                  const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason:artRevisionNote.trim()};
-                  // Same pullback semantics as Update/Recall (audit M1/A5): the redo covers EVERY
-                  // design on the job (_art_ids, not just the primary), stale coach state is cleared
-                  // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
-                  // nag), and the seps confirmation is invalidated so the redone art can't skip the
-                  // production-files re-check on the next approve. Stays art_in_progress — the
-                  // assigned artist keeps the job on their board.
-                  const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                  const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
-                  const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
-                  const updated={...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()};
+                  const reason=artRevisionNote.trim();
                   setArtRevisionNote('');
-                  saveSONow(updated,'Revision request','Art sent back to artist for revision');
+                  _sendBackToArtist(reason);
                 }}>🔄 Request Update</button>
               </div>
             </div>})()}
