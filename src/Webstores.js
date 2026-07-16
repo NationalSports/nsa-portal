@@ -2350,11 +2350,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
     const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
     const ts = Date.now();
-    // First web file = the "all garments" default cutout; each extra one is a color way.
-    const color_ways = webFiles.slice(1).map((f, i) => ({ id: 'cw' + ts + '_' + i, garment_color: f.cwLabel || 'CW ' + (i + 2), inks: [] }));
+    // EVERY labeled web cutout is attached to a real color way (the artist keeps working
+    // from these on the customer's art page), and the first one doubles as the "all
+    // garments" default entry. A single unlabeled PNG stays default-only — no noise CW.
+    const cwFor = webFiles.map((f, i) => (f.cwLabel ? { id: 'cw' + ts + '_' + i, garment_color: f.cwLabel, inks: [] } : null));
+    const color_ways = cwFor.filter(Boolean);
     const web_logos = webFiles.length ? normalizeWebLogos([
       { url: webFiles[0].url, color_way: '', is_default: true },
-      ...webFiles.slice(1).map((f, i) => ({ url: f.url, color_way: color_ways[i].garment_color, color_way_id: color_ways[i].id })),
+      ...webFiles.map((f, i) => (cwFor[i] ? { url: f.url, color_way: cwFor[i].garment_color, color_way_id: cwFor[i].id } : null)).filter(Boolean),
     ], color_ways) : [];
     const base = {
       id: 'logo' + ts + Math.random().toString(36).slice(2, 6), name: name || 'Store logo',
@@ -7706,7 +7709,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                   </div>
                 ) : (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-                    {shown.map((t) => (
+                    {shown.map((t) => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return (
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
@@ -7715,14 +7718,20 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
-                        <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
-                          {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
-                          {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''}</div>
+                        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6 }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>{secs.length >= 2 ? 'Add whole store →' : 'Add to store →'}</button>
+                            {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
+                            {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                          </div>
+                          {/* Multi-section templates can also be applied one SECTION at a time
+                              (e.g. just the template's Hoods) — same color-picker flow, items
+                              pre-filtered to that section. */}
+                          {secs.length >= 2 && <MenuButton label="Add just a section" items={secs.map((sec) => { const n = itemsOf(t).filter((i) => (i.category || '').trim() === sec).length; return { label: `${sec} (${n})`, onClick: () => setPicking({ ...t, name: `${t.name} — ${sec}`, items: itemsOf(t).filter((i) => (i.category || '').trim() === sec) }) }; })} />}
                         </div>
                       </div>
-                    ))}
+                    ); })}
                   </div>
                 )}
               <div style={{ fontSize: 11.5, color: '#9AA1AC', marginTop: 14 }}>Using a template adds its products to this store (skipping any already added). Prices, colors &amp; art stay fully editable after.</div>
@@ -9838,6 +9847,106 @@ function DecoBadge({ deco }) {
   );
 }
 
+// ── New art folder modal ── the webstore twin of the customer page's "New Art" flow: one
+// folder = the logo's web cutouts (each color way, labels editable) + its production files
+// (.ai/.eps/.dst/.pdf), created in one action. Files picked in either section are sorted by
+// TYPE (a raw .ai is never usable as a web logo), and drag-dropped files land presorted.
+const _isWebArtFile = (f) => (((f && f.type) || '').startsWith('image/')) && !/\.(ai|eps|pdf|dst)$/i.test((f && f.name) || '');
+const _cleanFileName = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
+  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '' });
+  const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
+  const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
+  const [name, setName] = useState('');
+  const webRef = useRef(); const prodRef = useRef();
+  // Revoke every thumbnail object-URL on close (ref mirror so late-added files are included).
+  const allRef = useRef([]); allRef.current = [...webs, ...prods];
+  useEffect(() => () => { allRef.current.forEach((x) => x.preview && URL.revokeObjectURL(x.preview)); }, []);
+  // Folder name + color-way labels suggest themselves from the filenames' common prefix
+  // ("eagles logo white/black" → folder "eagles logo", CWs "white"/"black") — all editable.
+  const names = [...webs, ...prods].map((x) => _cleanFileName(x.file.name));
+  let _pre = names[0] || '';
+  for (const n of names.slice(1)) { let i = 0; while (i < _pre.length && n[i] === _pre[i]) i++; _pre = _pre.slice(0, i); }
+  _pre = _pre.replace(/[\s_-]+$/, '');
+  const suggested = (_pre.length >= 3 ? _pre : names[0]) || 'Store logo';
+  const cwSuggestion = (i) => (_cleanFileName(webs[i].file.name).slice(_pre.length).trim() || 'CW ' + (i + 1));
+  const addFiles = (list) => {
+    const fs = Array.from(list || []).filter(Boolean);
+    if (!fs.length) return;
+    setWebs((w) => [...w, ...fs.filter(_isWebArtFile).map(mk)]);
+    setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
+  };
+  const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  const create = () => {
+    if (busy || (!webs.length && !prods.length)) return;
+    onCreate({
+      name: name.trim() || suggested,
+      webs: webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') })),
+      prods: prods.map((p) => ({ file: p.file })),
+    });
+  };
+  const zone = { border: '1.5px dashed #d7dbe2', borderRadius: 10, padding: 10, background: '#fafbfc' };
+  const rowSt = { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 8, background: '#fff', border: '1px solid #eef0f3' };
+  const secTitle = { fontSize: 11.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#475569', marginBottom: 6 };
+  return (
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}
+        onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}>
+        <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>🎨 New art folder</h2>
+          <button onClick={() => !busy && onClose()} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>One folder holds everything production needs for this logo: the web cutouts (one per color way) and the production files. Saved to the customer's art library <i>and</i> this store. PNG‑only is fine — the artist adds production files to the folder later.</div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={secTitle}>Folder name</div>
+            <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={suggested} style={{ width: '100%' }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={secTitle}>Web logos — one per color way <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(PNG, SVG · placeable on garments)</span></div>
+            <div style={zone}>
+              {webs.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                {webs.map((w, i) => (
+                  <div key={i} style={rowSt}>
+                    <div style={{ width: 34, height: 34, borderRadius: 6, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
+                    <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
+                    {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
+                    <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 170, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
+                    <button onClick={() => !busy && drop(setWebs)(webs, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>}
+              <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => webRef.current && webRef.current.click()}>+ Add web logos</button>
+              <input ref={webRef} type="file" multiple accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={secTitle}>Production files <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(.ai, .eps, .dst, .pdf — for the artist / production)</span></div>
+            <div style={zone}>
+              {prods.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                {prods.map((p, i) => (
+                  <div key={i} style={rowSt}>
+                    <span style={{ fontSize: 15 }}>📄</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{p.file.name}</span>
+                    <button onClick={() => !busy && drop(setProds)(prods, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>}
+              <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => prodRef.current && prodRef.current.click()}>+ Add production files</button>
+              <input ref={prodRef} type="file" multiple accept=".ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC', marginRight: 'auto' }}>Drop files anywhere in this window — they sort by type.</span>
+            <button className="btn btn-secondary" disabled={busy} onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy || (!webs.length && !prods.length)} onClick={create}>{busy ? 'Uploading…' : '⬆ Create art folder'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
@@ -9867,42 +9976,33 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [pickOpen, setPickOpen] = useState(true); // collapse the logo-picker section
   const [upBusy, setUpBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const fileRef = useRef();
-  const emptyRef = useRef();
   const boxRefs = useRef({}); // styleKey -> the card's stage element (for drag math)
   const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item'|'backStyle', box, grab }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
   useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
-  // Upload NEW artwork here as ONE art folder: several files in one go become a single
-  // record — web PNG/SVGs are the logo's color-way cutouts (first = default), .ai/.eps/
-  // .dst/.pdf are production files — saved to the customer's art library AND this store's
-  // set. That folder is what production works from later; no more loose single PNGs.
-  const uploadArtFolder = async (fileList) => {
-    const all = Array.from(fileList || []).filter(Boolean);
-    if (!all.length || !onSaveArtFolder) return;
+  // Upload NEW artwork here via the "New art folder" modal: web PNG/SVGs are the logo's
+  // color-way cutouts (first = default), .ai/.eps/.dst/.pdf are production files — one
+  // record saved to the customer's art library AND this store's set. That folder is what
+  // production works from later; no more loose single PNGs.
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderSeed, setFolderSeed] = useState(null); // File[] dropped before the modal opened
+  const openFolderWith = (fileList) => { setFolderSeed(Array.from(fileList || []).filter(Boolean)); setFolderOpen(true); };
+  const createArtFolder = async ({ name, webs, prods }) => {
+    if (!onSaveArtFolder || (!webs.length && !prods.length)) return;
     setUpBusy(true);
     try {
-      const isWeb = (f) => (f.type || '').startsWith('image/') && !/\.(ai|eps|pdf|dst)$/i.test(f.name || '');
       const clean = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
-      const webs = [], prods = [];
-      for (const f of all) {
-        const url = await cloudUpload(f, isWeb(f) ? 'nsa-store-art' : 'nsa-production');
-        (isWeb(f) ? webs : prods).push({ url, name: clean(f.name) || (isWeb(f) ? 'Logo' : 'Production file') });
-      }
-      // Folder name = the filenames' common prefix ("eagles logo white/black" → "eagles
-      // logo"); each extra web file's leftover ("white", "black") labels its color way.
-      const names = [...webs, ...prods].map((x) => x.name);
-      let prefix = names[0] || 'Store logo';
-      for (const n of names.slice(1)) { let i = 0; while (i < prefix.length && n[i] === prefix[i]) i++; prefix = prefix.slice(0, i); }
-      prefix = prefix.replace(/[\s_-]+$/, '');
-      const folderName = (prefix.length >= 3 ? prefix : names[0]) || 'Store logo';
-      webs.forEach((w, i) => { if (i > 0) w.cwLabel = w.name.slice(prefix.length).trim() || 'CW ' + (i + 1); });
-      const rec = await onSaveArtFolder({ name: folderName, webFiles: webs, prodFiles: prods });
+      const webFiles = [], prodFiles = [];
+      for (const w of webs) webFiles.push({ url: await cloudUpload(w.file, 'nsa-store-art'), name: clean(w.file.name) || 'Logo', cwLabel: w.label });
+      for (const p of prods) prodFiles.push({ url: await cloudUpload(p.file, 'nsa-production'), name: p.file.name || 'Production file' });
+      const rec = await onSaveArtFolder({ name, webFiles, prodFiles });
       if (rec) setActiveId(rec.id);
+      setFolderOpen(false); setFolderSeed(null);
     } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
+  const folderModal = folderOpen && <NewArtFolderModal seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
@@ -10173,19 +10273,19 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   if (!libraryArt.length && !(storeArt || []).length) {
     return (
       <div className="card">
+        {folderModal}
         <div
-          onClick={() => !upBusy && emptyRef.current && emptyRef.current.click()}
+          onClick={() => !upBusy && setFolderOpen(true)}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files && e.dataTransfer.files.length) uploadArtFolder(e.dataTransfer.files); }}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files && e.dataTransfer.files.length) openFolderWith(e.dataTransfer.files); }}
           style={{ margin: 16, padding: '40px 24px', textAlign: 'center', border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), borderRadius: 14, background: dragOver ? '#eff6ff' : '#fafbfc', cursor: upBusy ? 'wait' : 'pointer' }}>
-          <input ref={emptyRef} type="file" multiple accept="image/*,.svg,.png,.ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { if (e.target.files && e.target.files.length) uploadArtFolder(e.target.files); e.target.value = ''; }} />
           <div style={{ fontSize: 34, marginBottom: 8 }}>🎨</div>
           <div style={{ fontWeight: 800, fontSize: 17, color: '#191919', marginBottom: 6 }}>Add artwork to this store</div>
           <div style={{ fontSize: 13, color: '#64748b', maxWidth: 460, margin: '0 auto 16px', lineHeight: 1.55 }}>
             Drag your art files here — several at once become <b>one art folder</b>: web PNG/SVGs (each color way of the logo) plus production files (.ai, .eps, .dst, .pdf). Saved to this team's art library <i>and</i> this store — then place, recolor, and apply to your items right here. PNG‑only is fine too; the artist adds production files to the folder later.
           </div>
-          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload art folder'}</button>
+          <button onClick={(e) => { e.stopPropagation(); setFolderOpen(true); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ New art folder'}</button>
         </div>
       </div>
     );
@@ -10193,6 +10293,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   return (
     <div>
+      {folderModal}
       {/* Store decoration mode — drives how strict the art needs to be */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10, marginBottom: 12, fontSize: 12.5, fontWeight: 600, border: '1px solid', ...(decorationMode === 'outsourced' ? { background: '#fff7ed', borderColor: '#fed7aa', color: '#9a3412' } : { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }) }}>
         {decorationMode === 'outsourced'
@@ -10209,9 +10310,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Pick a logo <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· this store's art set</span></div>
           <div style={{ display: 'flex', gap: 8 }}>
             {pickOpen && <>
-              <button onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} className="btn btn-sm btn-secondary" title="Upload new art — pick several files at once to create ONE art folder (web PNGs per color way + .ai/.eps/.dst production files), saved to the customer's art library">{upBusy ? 'Uploading…' : '⬆ Upload art'}</button>
+              <button onClick={() => setFolderOpen(true)} disabled={upBusy} className="btn btn-sm btn-secondary" title="Create ONE art folder for this logo — web PNGs per color way + .ai/.eps/.dst production files — saved to the customer's art library">{upBusy ? 'Uploading…' : '⬆ New art folder'}</button>
               <button onClick={() => setAddOpen((v) => !v)} className="btn btn-sm btn-secondary">{addOpen ? 'Done' : '+ Add from library'}</button>
-              <input ref={fileRef} type="file" multiple accept="image/*,.svg,.png,.ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { if (e.target.files && e.target.files.length) uploadArtFolder(e.target.files); e.target.value = ''; }} />
             </>}
             <button onClick={() => setPickOpen((v) => !v)} className="btn btn-sm btn-secondary" title={pickOpen ? 'Collapse this section' : 'Expand'}>{pickOpen ? '▲ Collapse' : `▼ Logos (${storeArt.length})`}</button>
           </div>
