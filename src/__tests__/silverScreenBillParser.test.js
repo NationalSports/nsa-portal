@@ -10,6 +10,9 @@
 //   • the amount column carries a thousands-comma once a line hits $1,000 ("3,432.00T"), which the
 //     numeric guard in _parseDecoRow rejected — so that $3,432 line vanished and the remaining
 //     items no longer summed to the invoice total.
+//   • the P.O. NUMBER cell can carry the "DPO" (decoration PO) prefix the app itself mints
+//     ("DPO 3516 OLuST", see OrderEditor) — the PO regex only recognized a "PO"/bare-number prefix,
+//     so the leading "D" made it match nothing and the PO was dropped again.
 // After the fix the PO is read verbatim (so it matches the deco PO the rep created on the SO) and
 // every line item is kept, so the items reconcile to the printed total.
 const fs = require('fs');
@@ -27,6 +30,7 @@ function loadParser() {
   const sos = [
     { id: 'SO-1600', customer_id: 'c1', deco_pos: [{ po_id: 'PO 3514 OLuST', vendor: 'Silver Screen', deco_type: 'embroidery', expected_cost: 4213.44 }], items: [] },
     { id: 'SO-1601', customer_id: 'c2', deco_pos: [{ po_id: 'PO 3521 OLuST', vendor: 'Silver Screen', deco_type: 'embroidery', expected_cost: 2608.52 }], items: [] },
+    { id: 'SO-1602', customer_id: 'c3', deco_pos: [{ po_id: 'DPO 3516 OLuST', vendor: 'Silver Screen', deco_type: 'embroidery', expected_cost: 4213.44 }], items: [] },
   ];
   const factory = new Function('prod', 'vend', 'sos', 'submittedBatches', 'invPOs', 'safeNum',
     block + '\n; return { parseSupplierBill };');
