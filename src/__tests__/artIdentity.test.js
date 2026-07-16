@@ -113,6 +113,43 @@ describe('buildTeamArtLibrary — parent must not clobber team art', () => {
     expect(lib.find((a) => a.id === 'af-so-vb')).toBeTruthy();
     expect(lib.find((a) => a.id === 'caf-fb')).toBeUndefined();
   });
+
+  // A design saved to the library (fresh `caf…` id) plus its source-order copy
+  // (`af…` id) is ONE design — it must not list twice in the store art picker.
+  test('a promoted library copy and its source-order copy collapse to one card', () => {
+    const libraryCopy = { id: 'caf-crest', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const orderCopy = { id: 'af-crest', name: 'crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [libraryCopy],
+      orderArt: [{ art: orderCopy, label: 'SO-2001', srcCustId: teamId }],
+      teamId,
+    });
+    expect(lib.filter((a) => artNameKey(a) === 'crest')).toHaveLength(1);
+  });
+
+  test('collapsing prefers the copy that actually has a renderable image', () => {
+    const libraryCopy = { id: 'caf-crest', name: 'Crest', deco_type: 'screen_print', preview_url: '' };
+    const orderCopy = { id: 'af-crest', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [libraryCopy],
+      orderArt: [{ art: orderCopy, label: 'SO-2001', srcCustId: teamId }],
+      teamId,
+    });
+    const kept = lib.filter((a) => artNameKey(a) === 'crest');
+    expect(kept).toHaveLength(1);
+    expect(kept[0].preview_url).toBe('https://cdn.example/crest.png');
+  });
+
+  test('same name but a DIFFERENT method stays as two distinct designs', () => {
+    const sp = { id: 'caf-sp', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/sp.png' };
+    const emb = { id: 'af-emb', name: 'Crest', deco_type: 'embroidery', preview_url: 'https://cdn.example/emb.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [sp],
+      orderArt: [{ art: emb, label: 'SO-2002', srcCustId: teamId }],
+      teamId,
+    });
+    expect(lib.map((a) => a.id).sort()).toEqual(['af-emb', 'caf-sp']);
+  });
 });
 
 describe('resolvePriorMockKey — M10 deco_type required', () => {

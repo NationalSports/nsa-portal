@@ -78,7 +78,26 @@ export function buildTeamArtLibrary({ teamArt = [], parentArt = [], orderArt = [
         byName.set(nk, a.id);
         return;
       }
-      // Distinct id, same name, both team/order — keep both (id-keyed).
+      // Same name AND same method under a different id is the SAME design reached
+      // twice: a library copy promoted via promoteArtToLibrary gets a fresh `caf…`
+      // id, so its source-order copy would otherwise list twice (the reported
+      // duplication). Collapse it into the existing card, preferring whichever copy
+      // has a real image. Scan acc directly (not just the name-keyed record) so a
+      // same-name / different-method design already kept apart can't hide the match.
+      // A record with a DIFFERENT deco_type is a distinct design and still kept.
+      if (!isParent) {
+        const lk = artLogoKey(a);
+        const twinIdx = acc.findIndex((r) => artLogoKey(r) === lk);
+        if (twinIdx !== -1) {
+          if (_hasImg(a) && !_hasImg(acc[twinIdx])) {
+            byId.delete(acc[twinIdx].id);
+            acc[twinIdx] = rec;
+            byId.set(a.id, twinIdx);
+          }
+          return;
+        }
+      }
+      // Distinct design (same name, different method) — keep both (id-keyed).
     }
     byId.set(a.id, acc.length);
     if (nk && !byName.has(nk)) byName.set(nk, a.id);
