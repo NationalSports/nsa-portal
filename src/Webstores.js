@@ -1854,8 +1854,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null;
     const opts = (Array.isArray(cfg.options) && cfg.options.length) ? cfg.options : (Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : []);
     let base = (detail?.catalog?.length || 0);
+    // No explicit price from the rep → each product defaults to its ~45%-margin price
+    // (deco $5 when artwork is attached or this is a team store — same rule as the editor),
+    // falling back to the vendor list price when its cost is unknown.
+    const _hasRealDeco = (decorations || []).some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name');
+    const _decoEst = (_hasRealDeco || (sel?.org_type || 'team') !== 'club') ? 5 : 0;
     const mk = (p, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
-      retail_price: hasPrice ? (Number(cfg.price) || 0) : (Number(p.retail_price) || 0),
+      retail_price: hasPrice ? (Number(cfg.price) || 0) : (price45(p.nsa_cost, _decoEst) ?? (Number(p.retail_price) || 0)),
       fundraise_amount: Number(cfg.fundraise) || 0, image_url: null,
       takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: Number(cfg.name_upcharge) || 0,
       transfer_codes: [], num_transfer_sets: [], decorations: decorations || [],
@@ -2331,6 +2336,44 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: st } = await supabase.from('webstores').update({ store_art: [...curArt, { ...rec, _srcLabel: 'Uploaded' }] }).eq('id', sel.id).select().single();
     if (st) { setStores((prev) => prev.map((s) => (s.id === sel.id ? st : s))); setSel(st); }
     flash('Logo added to the store'); loadDetail(sel);
+    return rec;
+  }, [sel, flash, loadDetail]);
+
+  // Create ONE multi-file art FOLDER on the customer (and this store's set): several web
+  // PNG/SVG cutouts — the logo's color ways — plus production files (.ai/.eps/.dst/.pdf).
+  // Same record shape as the customer art library (files / prod_files / color_ways /
+  // web_logos), so production later works from this folder instead of a loose single PNG.
+  // webFiles/prodFiles are already-uploaded { url, name } lists; webFiles[1..] may carry
+  // cwLabel (from the filenames) to name each color way — renameable on the art page later.
+  const addStoreArtFolder = useCallback(async ({ name, webFiles = [], prodFiles = [] }) => {
+    if (!sel?.customer_id || (!webFiles.length && !prodFiles.length)) return null;
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
+    const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const ts = Date.now();
+    // First web file = the "all garments" default cutout; each extra one is a color way.
+    const color_ways = webFiles.slice(1).map((f, i) => ({ id: 'cw' + ts + '_' + i, garment_color: f.cwLabel || 'CW ' + (i + 2), inks: [] }));
+    const web_logos = webFiles.length ? normalizeWebLogos([
+      { url: webFiles[0].url, color_way: '', is_default: true },
+      ...webFiles.slice(1).map((f, i) => ({ url: f.url, color_way: color_ways[i].garment_color, color_way_id: color_ways[i].id })),
+    ], color_ways) : [];
+    const base = {
+      id: 'logo' + ts + Math.random().toString(36).slice(2, 6), name: name || 'Store logo',
+      files: (webFiles.length ? webFiles : prodFiles).map((f) => ({ url: f.url, name: f.name })),
+      prod_files: prodFiles.map((f) => ({ url: f.url, name: f.name })),
+      status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways,
+    };
+    // No web cutout at all (production files only) → source-only record, so the Art tab
+    // asks for a placeable PNG/SVG instead of stamping a raw .ai url onto a garment.
+    const rec = webFiles.length
+      ? { ...base, preview_url: webFiles[0].url, web_logo_url: webFiles[0].url, web_logos, kind: 'logo' }
+      : { ...base, kind: 'art' };
+    const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
+    if (error) { flash('Could not save art folder: ' + error.message); return null; }
+    const curArt = Array.isArray(sel.store_art) ? sel.store_art : [];
+    const { data: st } = await supabase.from('webstores').update({ store_art: [...curArt, { ...rec, _srcLabel: 'Uploaded' }] }).eq('id', sel.id).select().single();
+    if (st) { setStores((prev) => prev.map((s) => (s.id === sel.id ? st : s))); setSel(st); }
+    const parts = [webFiles.length ? `${webFiles.length} web logo${webFiles.length === 1 ? '' : 's'}` : null, prodFiles.length ? `${prodFiles.length} production file${prodFiles.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' + ');
+    flash('Art folder added (' + parts + ')'); loadDetail(sel);
     return rec;
   }, [sel, flash, loadDetail]);
 
@@ -3158,9 +3201,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // team's name/customer/colors — open the color picker with THAT palette.
             if (!isNew && tplAfterEdit && r.data && r.data.id === tplAfterEdit.storeId) { const q = tplAfterEdit; setTplAfterEdit(null); beginTplColorFlow(q.tpl, r.data); return r; }
             // A brand-new team store (not from OMG or a template): open it straight to the
-            // Art & Logos page so the rep keeps building — add artwork next — instead of
-            // bouncing back to the store list. Club stores stay on the list (product-first).
-            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('art'); setDetail(null); await loadDetail(r.data); return r; }
+            // Catalog tab so the rep starts by adding products (art/logos come after there
+            // are items to decorate) — instead of bouncing back to the store list. Club
+            // stores stay on the list (product-first).
+            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('catalog'); setDetail(null); await loadDetail(r.data); return r; }
             return r;
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
@@ -3174,7 +3218,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
@@ -4891,7 +4935,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -5097,7 +5141,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -5197,6 +5241,13 @@ const storeFundAmount = (price, sf) => {
   return Math.max(0, amt);
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
+// Default sale price for a NEWLY added item: the ~45%-margin price — the same math as the
+// item editor's "→ $X for 45%" link (ceil((cost + est. deco) / 0.55)), so items land at
+// 45% instead of the vendor list price and the rep doesn't have to click the link on each
+// one. Deco estimate mirrors the editor: $5 when the item has artwork or the store is a
+// team store (decorated by default). Returns null when the cost is unknown (caller falls
+// back to list price). Never applied to items already in a store.
+const price45 = (cost, decoCost = 0) => { const c = Number(cost) || 0; return c > 0 ? Math.ceil((c + decoCost) / 0.55) : null; };
 
 function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
@@ -5458,7 +5509,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         );
       })()}
 
-      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} isTeam={isTeam} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
@@ -7089,8 +7140,10 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
 // Color-selector modal — clicking a product card opens this over the picker so the rep can
 // see every colorway of the style and tick only the ones they want. Adds them at a shared
 // price (tweak fundraising / art per item after, in the catalog editor).
-function SinglePriceEditor({ product, storeFund = {}, onAdd, onCancel }) {
-  const [price, setPrice] = useState(product.retail_price || 0);
+function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onCancel }) {
+  // Default to the ~45%-margin price (team stores assume $5 deco), not the vendor list
+  // price — matches what the item editor's "→ $X for 45%" link would set.
+  const [price, setPrice] = useState(() => price45(product.nsa_cost, isTeam ? 5 : 0) ?? (product.retail_price || 0));
   const [rows, setRows] = useState([]);       // one row per colorway (incl. base), with _stock
   const [loading, setLoading] = useState(true);
   const [inStockOnly, setInStockOnly] = useState(false);
@@ -8735,7 +8788,7 @@ function VendorStyleCards({ styles, selected, onToggle }) {
   ));
 }
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true, isTeam = false }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -8829,20 +8882,33 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     const t = setTimeout(async () => {
       const typed = q.trim();
       let rows = null;
-      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
-      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
-      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
-      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      // Typed search → token-aware scan of the whole `products` catalog. Unlike the
+      // search_products RPC (which deliberately drops the API-backed vendors so the order
+      // editor sees them only via live API search), the webstore builder DOES want the
+      // synced SanMar / S&S / Momentec / Richardson rows: those vendors' live APIs are
+      // style-number-only, so their synced catalog rows are the ONLY way to find a style by
+      // name (e.g. "repeat short" → Sport-Tek Repeat 7" Short ST485). Any live-API duplicate
+      // is hidden later by vendorDeduped. We anchor the server query on the most selective
+      // (longest) token via the products name trigram index, then AND the rest client-side —
+      // so multi-word text searches match names like '…Repeat 7" Short…' that a single
+      // whole-phrase ilike never would.
       if (!favOnly && typed.length >= 2) {
         try {
-          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          const ql = typed.toLowerCase();
+          const toks = ql.split(/\s+/).filter(Boolean);
+          // Strip PostgREST filter metacharacters so a token can't break the or()/ilike syntax.
+          const esc = (s) => String(s).replace(/[,()*%]/g, ' ').trim();
+          const anchor = esc([...toks].sort((a, b) => b.length - a.length)[0] || ql) || ql;
+          let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+            .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false')
+            .or(`sku.ilike.${esc(ql)}*,name.ilike.*${anchor}*`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          const { data, error } = await query.order('name').order('color').limit(limit);
           if (error) throw error;
-          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
           // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
           // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
-          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
-          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
-          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+          rows = (data || []).filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); });
         } catch (e) { rows = null; /* fall through to the table query */ }
       }
       if (rows == null) {
@@ -8933,8 +8999,19 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   })();
   // Hide vendor styles the local search already surfaced (imported vendor rows carry SKU
   // "<style>-<color>", native rows the bare style) so the same garment isn't listed twice.
-  const localSkusU = useMemo(() => results.map((r) => String(r.sku || '').toUpperCase()), [results]);
-  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
+  // A live style is hidden as a duplicate ONLY when its local copy is actually visible:
+  // synced stock rows can be missing or stale (e.g. an imported SanMar colorway whose
+  // upper-cased sku never matches sanmar_inventory), and with "In stock only" on, hiding
+  // the live card behind an invisible zero-stock local row would show a style as
+  // unavailable that the vendor has by the thousands. Live stock is real-time — it wins.
+  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => {
+    const sk = String(s.sku || '').toUpperCase();
+    if (!sk) return false;
+    const twins = results.filter((r) => { const x = String(r.sku || '').toUpperCase(); return x === sk || x.startsWith(sk + '-'); });
+    if (!twins.length) return true;            // no local copy — show the live card
+    if (!inStockOnly) return false;            // local copy is in the grid — hide the dupe
+    return !twins.some(wellStocked);           // filter hides every local copy → keep the live card
+  }), [vendorStyles, results, inStockOnly]); // eslint-disable-line react-hooks/exhaustive-deps
   // Apply the "School colors" toggle to the live vendor styles too — drop colorways whose
   // color isn't in the school's palette (same primary-segment match as the local catalog),
   // and hide any style left with no matching colorway.
@@ -8970,7 +9047,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     if (!ids.length) return;
     const first = ids.length === 1 ? (rowById.get(ids[0]) || selCacheRef.current.get(ids[0])) : null;
     setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0);
-    setBPrice((p) => p || (first ? String(first.retail_price ?? '') : ''));
+    // Seed the price box with the ~45%-margin number (store adds), so the default the rep
+    // sees IS the price that lands; templates keep seeding from the vendor list price.
+    setBPrice((p) => p || (first ? String((destLabel === 'template' ? null : price45(first.nsa_cost, isTeam ? 5 : 0)) ?? first.retail_price ?? '') : ''));
     setBulkOpen(true);
   };
 
@@ -9107,7 +9186,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
             <span style={{ fontWeight: 800, fontSize: 14 }}>{selTotal} selected</span>
             <button className="btn btn-primary" disabled={vendorImporting} onClick={openBulkAdd}>{vendorImporting ? 'Importing…' : `Add ${selTotal} to ${destLabel} →`}</button>
             <button className="btn btn-secondary" onClick={() => { setSelected(new Set()); setVendorSel(new Map()); }}>Clear</button>
-            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at list price{vendorSel.size ? '; vendor picks import at ~50% margin' : ''}.</span>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at {destLabel === 'template' ? 'list price' : 'a ~45% margin price'}{vendorSel.size ? ' (vendor picks are imported first)' : ''}.</span>
           </div>
         </div>
       )}
@@ -9129,7 +9208,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                 <div>
                   <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>Applied to all <b>{selProducts.length}</b> items. Fine-tune sizes &amp; transfers per item afterward.</div>
                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
-                    <Row label="Price each (blank = list price)"><input className="form-input" type="number" step="0.01" value={bPrice} onChange={(e) => setBPrice(e.target.value)} placeholder="list" style={{ width: 160 }} /></Row>
+                    <Row label={destLabel === 'template' ? 'Price each (blank = list price)' : 'Price each (blank = ~45% margin)'}><input className="form-input" type="number" step="0.01" value={bPrice} onChange={(e) => setBPrice(e.target.value)} placeholder={destLabel === 'template' ? 'list' : '~45%'} style={{ width: 160 }} /></Row>
                     <Row label="Fundraising on top"><input className="form-input" type="number" step="0.01" value={bFund} onChange={(e) => setBFund(e.target.value)} placeholder="0.00" style={{ width: 150 }} /></Row>
                   </div>
                   {storeFund?.enabled && Number(bFund) <= 0 && (
@@ -9140,9 +9219,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                     const sp = selProducts[0];
                     const list = Number(sp.retail_price) || 0;
                     const cost = Number(sp.nsa_cost) || 0;
-                    const price = (bPrice !== '' && bPrice != null) ? Number(bPrice) : list;
+                    const decoCost = (bulkDecos.length || (destLabel !== 'template' && isTeam)) ? 5 : 0;
+                    const price = (bPrice !== '' && bPrice != null) ? Number(bPrice) : ((destLabel === 'template' ? null : price45(cost, decoCost)) ?? list);
                     const fund = (bFund !== '' && bFund != null && Number(bFund) > 0) ? Number(bFund) : storeFundAmount(price, storeFund);
-                    const decoCost = bulkDecos.length ? 5 : 0;
                     const margin = price > 0 && cost > 0 ? Math.round((1 - (cost + decoCost) / price) * 100) : null;
                     return (
                       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
@@ -9759,7 +9838,7 @@ function DecoBadge({ deco }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -9795,13 +9874,33 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
   useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
-  // Upload a NEW artwork file here: saves it to the customer's art folder AND this
-  // store's set, so it's reusable on orders later and pickable on items now.
-  const uploadArt = async (file) => {
-    if (!file || !file.type.startsWith('image/')) return;
+  // Upload NEW artwork here as ONE art folder: several files in one go become a single
+  // record — web PNG/SVGs are the logo's color-way cutouts (first = default), .ai/.eps/
+  // .dst/.pdf are production files — saved to the customer's art library AND this store's
+  // set. That folder is what production works from later; no more loose single PNGs.
+  const uploadArtFolder = async (fileList) => {
+    const all = Array.from(fileList || []).filter(Boolean);
+    if (!all.length || !onSaveArtFolder) return;
     setUpBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); if (rec) setActiveId(rec.id); } }
-    catch (x) { /* cloudUpload surfaces error via toast */ }
+    try {
+      const isWeb = (f) => (f.type || '').startsWith('image/') && !/\.(ai|eps|pdf|dst)$/i.test(f.name || '');
+      const clean = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      const webs = [], prods = [];
+      for (const f of all) {
+        const url = await cloudUpload(f, isWeb(f) ? 'nsa-store-art' : 'nsa-production');
+        (isWeb(f) ? webs : prods).push({ url, name: clean(f.name) || (isWeb(f) ? 'Logo' : 'Production file') });
+      }
+      // Folder name = the filenames' common prefix ("eagles logo white/black" → "eagles
+      // logo"); each extra web file's leftover ("white", "black") labels its color way.
+      const names = [...webs, ...prods].map((x) => x.name);
+      let prefix = names[0] || 'Store logo';
+      for (const n of names.slice(1)) { let i = 0; while (i < prefix.length && n[i] === prefix[i]) i++; prefix = prefix.slice(0, i); }
+      prefix = prefix.replace(/[\s_-]+$/, '');
+      const folderName = (prefix.length >= 3 ? prefix : names[0]) || 'Store logo';
+      webs.forEach((w, i) => { if (i > 0) w.cwLabel = w.name.slice(prefix.length).trim() || 'CW ' + (i + 1); });
+      const rec = await onSaveArtFolder({ name: folderName, webFiles: webs, prodFiles: prods });
+      if (rec) setActiveId(rec.id);
+    } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
 
@@ -10078,15 +10177,15 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           onClick={() => !upBusy && emptyRef.current && emptyRef.current.click()}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadArt(f); }}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files && e.dataTransfer.files.length) uploadArtFolder(e.dataTransfer.files); }}
           style={{ margin: 16, padding: '40px 24px', textAlign: 'center', border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), borderRadius: 14, background: dragOver ? '#eff6ff' : '#fafbfc', cursor: upBusy ? 'wait' : 'pointer' }}>
-          <input ref={emptyRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
+          <input ref={emptyRef} type="file" multiple accept="image/*,.svg,.png,.ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { if (e.target.files && e.target.files.length) uploadArtFolder(e.target.files); e.target.value = ''; }} />
           <div style={{ fontSize: 34, marginBottom: 8 }}>🎨</div>
           <div style={{ fontWeight: 800, fontSize: 17, color: '#191919', marginBottom: 6 }}>Add artwork to this store</div>
           <div style={{ fontSize: 13, color: '#64748b', maxWidth: 460, margin: '0 auto 16px', lineHeight: 1.55 }}>
-            Drag a logo here, or click to upload (PNG, SVG). It's saved to this team's art library <i>and</i> this store — then set it up right here: attach a web‑ready cutout, place it, recolor, and apply to your items. No need to leave this page.
+            Drag your art files here — several at once become <b>one art folder</b>: web PNG/SVGs (each color way of the logo) plus production files (.ai, .eps, .dst, .pdf). Saved to this team's art library <i>and</i> this store — then place, recolor, and apply to your items right here. PNG‑only is fine too; the artist adds production files to the folder later.
           </div>
-          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload artwork'}</button>
+          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload art folder'}</button>
         </div>
       </div>
     );
@@ -10110,9 +10209,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Pick a logo <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· this store's art set</span></div>
           <div style={{ display: 'flex', gap: 8 }}>
             {pickOpen && <>
-              <button onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} className="btn btn-sm btn-secondary" title="Upload a new logo — saved to the customer's art folder">{upBusy ? 'Uploading…' : '⬆ Upload art'}</button>
+              <button onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} className="btn btn-sm btn-secondary" title="Upload new art — pick several files at once to create ONE art folder (web PNGs per color way + .ai/.eps/.dst production files), saved to the customer's art library">{upBusy ? 'Uploading…' : '⬆ Upload art'}</button>
               <button onClick={() => setAddOpen((v) => !v)} className="btn btn-sm btn-secondary">{addOpen ? 'Done' : '+ Add from library'}</button>
-              <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
+              <input ref={fileRef} type="file" multiple accept="image/*,.svg,.png,.ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { if (e.target.files && e.target.files.length) uploadArtFolder(e.target.files); e.target.value = ''; }} />
             </>}
             <button onClick={() => setPickOpen((v) => !v)} className="btn btn-sm btn-secondary" title={pickOpen ? 'Collapse this section' : 'Expand'}>{pickOpen ? '▲ Collapse' : `▼ Logos (${storeArt.length})`}</button>
           </div>
