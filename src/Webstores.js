@@ -9858,6 +9858,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
   const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
   const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
   const [name, setName] = useState('');
+  const [hoverZone, setHoverZone] = useState(null); // 'web' | 'prod' — which drop target is under the cursor
   const webRef = useRef(); const prodRef = useRef();
   // Revoke every thumbnail object-URL on close (ref mirror so late-added files are included).
   const allRef = useRef([]); allRef.current = [...webs, ...prods];
@@ -9877,6 +9878,16 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
     setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
   };
   const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  // Drag-and-drop is the primary way in — each section is a real drop target that lights up
+  // on hover. Files always sort by TYPE (a .ai dropped on the web zone still lands in
+  // production), so the labels guide without trapping a mis-drop. "browse" is the fallback.
+  const dropProps = (key) => ({
+    onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); if (hoverZone !== key) setHoverZone(key); },
+    onDragLeave: (e) => { e.preventDefault(); e.stopPropagation(); setHoverZone((z) => (z === key ? null : z)); },
+    onDrop: (e) => { e.preventDefault(); e.stopPropagation(); setHoverZone(null); addFiles(e.dataTransfer.files); },
+  });
+  const zoneStyle = (active) => ({ border: '1.5px dashed ' + (active ? '#2563eb' : '#d7dbe2'), borderRadius: 10, padding: 10, background: active ? '#eff6ff' : '#fafbfc', transition: 'background .12s, border-color .12s' });
+  const browseLink = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, padding: 0, textDecoration: 'underline' };
   const create = () => {
     if (busy || (!webs.length && !prods.length)) return;
     onCreate({
@@ -9904,7 +9915,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
           </div>
           <div style={{ marginBottom: 12 }}>
             <div style={secTitle}>Web logos — one per color way <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(PNG, SVG · placeable on garments)</span></div>
-            <div style={zone}>
+            <div style={zoneStyle(hoverZone === 'web')} {...dropProps('web')}>
               {webs.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
                 {webs.map((w, i) => (
                   <div key={i} style={rowSt}>
@@ -9916,13 +9927,17 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                   </div>
                 ))}
               </div>}
-              <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => webRef.current && webRef.current.click()}>+ Add web logos</button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: webs.length ? '2px 0' : '20px 0', color: '#6A7180', fontSize: 12.5, fontWeight: 600, pointerEvents: 'none' }}>
+                <span style={{ pointerEvents: 'auto' }}>{webs.length ? '📎 Drag more logos here' : '🖼 Drag logos here'}</span>
+                <span>·</span>
+                <button style={{ ...browseLink, pointerEvents: 'auto' }} disabled={busy} onClick={() => webRef.current && webRef.current.click()}>browse</button>
+              </div>
               <input ref={webRef} type="file" multiple accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
             </div>
           </div>
           <div style={{ marginBottom: 14 }}>
             <div style={secTitle}>Production files <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(.ai, .eps, .dst, .pdf — for the artist / production)</span></div>
-            <div style={zone}>
+            <div style={zoneStyle(hoverZone === 'prod')} {...dropProps('prod')}>
               {prods.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
                 {prods.map((p, i) => (
                   <div key={i} style={rowSt}>
@@ -9932,12 +9947,16 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                   </div>
                 ))}
               </div>}
-              <button className="btn btn-sm btn-secondary" disabled={busy} onClick={() => prodRef.current && prodRef.current.click()}>+ Add production files</button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: prods.length ? '2px 0' : '20px 0', color: '#6A7180', fontSize: 12.5, fontWeight: 600, pointerEvents: 'none' }}>
+                <span style={{ pointerEvents: 'auto' }}>{prods.length ? '📎 Drag more files here' : '📄 Drag production files here'}</span>
+                <span>·</span>
+                <button style={{ ...browseLink, pointerEvents: 'auto' }} disabled={busy} onClick={() => prodRef.current && prodRef.current.click()}>browse</button>
+              </div>
               <input ref={prodRef} type="file" multiple accept=".ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
             </div>
           </div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 11.5, color: '#9AA1AC', marginRight: 'auto' }}>Drop files anywhere in this window — they sort by type.</span>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC', marginRight: 'auto' }}>Drag files onto a section — or anywhere in this window; they sort by type.</span>
             <button className="btn btn-secondary" disabled={busy} onClick={onClose}>Cancel</button>
             <button className="btn btn-primary" disabled={busy || (!webs.length && !prods.length)} onClick={create}>{busy ? 'Uploading…' : '⬆ Create art folder'}</button>
           </div>
