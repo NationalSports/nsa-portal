@@ -5336,9 +5336,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   <input className="form-input" value={art.notes||''} onChange={e=>uArt(i,'notes',e.target.value)} placeholder="Notes..." style={{fontSize:12}}/>
                   <div style={{display:'flex',gap:8,alignItems:'center',marginTop:6,flexWrap:'wrap',justifyContent:'space-between'}}>
                     <span style={{fontSize:10,color:'#94a3b8'}}>Uploaded {art.uploaded} · Applied to {usedIn} decoration(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
-                    {libCust&&(artInLibrary(art)
-                      ?<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#16a34a',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'3px 9px'}} title={'Saved in '+(libCust.name||'the')+' library — available to other teams'}><Icon name="check" size={11}/> In {cust&&cust.parent_id?'parent ':''}library</span>
-                      :<button onClick={e=>{e.stopPropagation();promoteArtToLibrary(art)}} title={cust&&cust.parent_id?'Add to '+(libCust.name||'the parent')+'\'s program library so other teams can reuse it':'Add to the program library so it applies to all teams'} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#1e40af',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:6,padding:'4px 10px',cursor:'pointer'}}>↑ {cust&&cust.parent_id?'Apply to parent':'Add to library'}</button>)}
+                    {cust&&(cust.parent_id
+                      // Sub-team: the logo is already part of THIS team's library (assembled from its own
+                      // orders); the only promotion left is pushing it UP to the parent program so sibling
+                      // teams can reuse it. Show "Apply to parent" until it's in the parent library.
+                      ?(artInLibrary(art)
+                        ?<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#16a34a',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'3px 9px'}} title={'Saved in '+(libCust?.name||'the parent')+' program library — available to all teams'}><Icon name="check" size={11}/> In parent library</span>
+                        :<button onClick={e=>{e.stopPropagation();promoteArtToLibrary(art)}} title={'Apply to '+(libCust?.name||'the parent')+'\'s program library so other teams can reuse it'} style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:700,color:'#1e40af',background:'#eff6ff',border:'1px solid #93c5fd',borderRadius:6,padding:'4px 10px',cursor:'pointer'}}>↑ Apply to parent</button>)
+                      // No parent (standalone / top-level program): the team's own order art is automatically
+                      // part of their library — no button needed. Just reflect the saved state for named logos.
+                      :((art.name||'').trim()
+                        ?<span style={{display:'inline-flex',alignItems:'center',gap:4,fontSize:10,fontWeight:600,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'3px 9px'}} title={'Automatically saved in '+(cust.name||'this customer')+'’s library'}><Icon name="check" size={11}/> In library</span>
+                        :null))}
                   </div>
                 </div>
               </div>
