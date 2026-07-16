@@ -979,7 +979,11 @@ export default function CommissionsPage(){
           setTimeout(()=>URL.revokeObjectURL(url),1500);
         };
         const openEmailModal=()=>{
-          const reps={};payoutRows.forEach(p=>{reps[p.id]=true});
+          // Owners and departed staff are unchecked by default so accounting's report
+          // doesn't tag them as commissionable — they stay in the list and can be
+          // re-checked for a one-off send. Match by name (case-insensitive).
+          const DEFAULT_EXCLUDE=['steve peterson','gayle peterson','aaron mason'];
+          const reps={};payoutRows.forEach(p=>{const nm=(p.b.rep?.name||'').trim().toLowerCase();reps[p.id]=!DEFAULT_EXCLUDE.includes(nm)});
           setEmailModal({to:'accounting@nationalsportsapparel.com',reps});
         };
         const sendReport=async()=>{
