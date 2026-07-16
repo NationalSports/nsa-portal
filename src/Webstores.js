@@ -1310,7 +1310,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     let full = null;
     try { const { data } = await supabase.from('webstores').select('*').eq('id', result.store.id).single(); full = data; } catch (_) { /* best-effort */ }
     if (result.warnings && result.warnings.length) alert('Store built with warnings:\n\n• ' + result.warnings.join('\n• '));
-    if (ctx.publish) {
+    // Trust the server's actual outcome, not the request: a publish the server demoted to
+    // draft (failed pre-publish sanity check — result.published === false) must NOT send
+    // the "your store is live" email; route it to Settings like a draft instead. Older
+    // server responses without a published field are treated as published-as-requested.
+    const isLive = ctx.publish && result.published !== false;
+    if (isLive) {
       if (ctx.coachEmail && full) notifyCoachPublished(full);
     } else if (full) {
       setEditing(full);
@@ -4874,13 +4879,13 @@ function QuickBuildModal({ templates = [], cust = [], onClose, onDone }) {
     setLogoBusy(false);
   };
 
-  const build = async (publish) => {
+  const build = async (publish, opts = {}) => {
     setError('');
     if (!templateId) { setError('Pick a template store.'); return; }
     if (!storeName.trim()) { setError('Enter a store name.'); return; }
     if (!customerName.trim()) { setError('Enter a customer.'); return; }
     if (!emailOk) { setError('Enter a valid coach email, or leave it blank.'); return; }
-    if (publish && !window.confirm(`Build & publish “${storeName.trim()}”?\n\nThis creates the store from the template and opens it live for shoppers${coachEmail.trim() ? ', then emails the coach the store link.' : '.'}`)) return;
+    if (publish && !opts.skipConfirm && !window.confirm(`Build & publish “${storeName.trim()}”?\n\nThis creates the store from the template and opens it live for shoppers${coachEmail.trim() ? ', then emails the coach the store link.' : '.'}`)) return;
     setBusy(true);
     const body = {
       template_store_id: templateId,
@@ -4895,12 +4900,26 @@ function QuickBuildModal({ templates = [], cust = [], onClose, onDone }) {
       lead_id: null,
       publish,
       invite_coach: inviteOn,
+      duplicate_ok: !!opts.duplicateOk,
     };
     if (matchedCust) body.customer_id = matchedCust.id; else body.new_customer = { name: customerName.trim() };
     try {
       const r = await authFetch('/.netlify/functions/store-quick-build', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json().catch(() => ({}));
-      if (!r.ok || !j.ok) { setError(j.error || `Build failed (${r.status}).`); setBusy(false); return; }
+      if (!r.ok || !j.ok) {
+        // Duplicate guard: the server refuses a second draft/open store for the same
+        // customer+sport unless duplicate_ok is passed. Offer the override here instead
+        // of dead-ending the rep on the raw error (retry skips the publish re-confirm).
+        if (j.duplicate && j.existing_store) {
+          setBusy(false);
+          const ex = j.existing_store;
+          if (window.confirm(`${customerName.trim()} already has a ${sport.trim()} store: “${ex.name}” (${ex.status}).\n\nBuild another one anyway?`)) {
+            return build(publish, { duplicateOk: true, skipConfirm: true });
+          }
+          return;
+        }
+        setError(j.error || `Build failed (${r.status}).`); setBusy(false); return;
+      }
       await onDone(j, { publish, coachEmail: coachEmail.trim() });
       // Parent unmounts the modal on success — leave busy set so the buttons stay disabled.
     } catch (e) { setError(e.message || 'Build failed.'); setBusy(false); }
