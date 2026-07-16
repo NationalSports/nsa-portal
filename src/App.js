@@ -26632,44 +26632,76 @@ export default function App(){
                     {w.target&&(()=>{
                       const target=w.target;const mappings=w.mappings||{};
                       const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
-                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped).length;
+                      const _ns=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                      const _cz=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase().trim();
+                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped&&mappings[i].target_idx!=null).length;
+                      const skipped=bill.items.filter((_,i)=>mappings[i]&&mappings[i].skipped).length;
                       const total=bill.items.length;
+                      const untied=total-matched-skipped;
+                      // Running money reconciliation: what S&S billed on the tied lines vs what those
+                      // lines will apply to the order (qty × the order's own unit cost). A gap is a real
+                      // price variance the operator should see BEFORE pushing, not after.
+                      let billSum=0,applySum=0;
+                      bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const q=safeNum(mm.allocated_qty);billSum+=safeNum(bl.extension)||safeNum(bl.unit_price)*q;applySum+=q*safeNum(tt&&tt.unit_cost);});
+                      const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
-                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>{matched} of {total} bill line(s) mapped. Auto-suggestions in green; pick a different target item or skip per row.</div>
-                        <div style={{maxHeight:260,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>Tie each bill line to the item on <b>{target.label}</b> it pays for. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null}. The badge shows why each matched — <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
+                        <div style={{maxHeight:320,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:6,background:'#fff'}}>
                           <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
-                            <thead style={{background:'#f8fafc',position:'sticky',top:0}}><tr>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Bill line</th>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Map to target item</th>
-                              <th style={{textAlign:'right',padding:'4px 8px'}}>Apply qty</th>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Notes</th>
+                            <thead style={{background:'#f1f5f9',position:'sticky',top:0,zIndex:1}}><tr>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>BILL LINE — WHAT S&amp;S CHARGED</th>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>&rarr; TIE TO THIS ORDER ITEM</th>
+                              <th style={{textAlign:'right',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>APPLY</th>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>MATCH</th>
                             </tr></thead>
                             <tbody>{bill.items.map((bl,bli)=>{
                               const m=mappings[bli]||{};
                               const tgt=m.target_idx!=null?target.items[m.target_idx]:null;
-                              const openQty=tgt?tgt.qty:0;
-                              const over=tgt&&m.allocated_qty>openQty;
-                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
-                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span>{bl.color?<span style={{color:'#475569'}}> · {bl.color}</span>:null} · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
-                                <td style={{padding:'4px 8px'}}>
-                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
-                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
-                                    <option value="">— pick —</option>
-                                    <option value="__skip">Skip this line</option>
-                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} {it.size} ({it.qty} open){it.so_id?' · '+it.so_id:''}{it.color?' · '+it.color:''}</option>)}
-                                  </select>
+                              const openQty=tgt?safeNum(tgt.qty):0;
+                              const q=safeNum(m.allocated_qty);
+                              const over=tgt&&q>openQty;
+                              const billExt=safeNum(bl.extension)||safeNum(bl.unit_price)*safeNum(bl.qty);
+                              const applyCost=tgt?q*safeNum(tgt.unit_cost):0;
+                              const costGap=tgt&&Math.abs(billExt-applyCost)>0.02;
+                              // Why did it match? exact SKU beats a color+size guess beats size-only beats
+                              // a differ — surfaced so a near-miss auto-map (bill 5157175 → order 5157176)
+                              // can't hide behind a flat green "Mapped".
+                              const exact=tgt&&_ns(bl.sku)&&_ns(bl.sku)===_ns(tgt.sku);
+                              const sameSize=tgt&&_cz(bl.size)===_cz(tgt.size);
+                              const sameColor=tgt&&bl.color&&tgt.color&&_ns(bl.color)===_ns(tgt.color);
+                              const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
+                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fefce8':(over?'#fef2f2':(tgt?'#f7fdf9':'#fff')),verticalAlign:'top'}}>
+                                <td style={{padding:'6px 8px'}}>
+                                  <div style={{fontFamily:'monospace',fontWeight:700,color:'#0f172a'}}>{bl.sku||'(no sku)'}</div>
+                                  <div style={{color:'#64748b',marginTop:1}}>{[bl.size,bl.color].filter(Boolean).join(' · ')||'—'} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${billExt.toFixed(2)}</b></div>
+                                  {bl.desc?<div style={{color:'#94a3b8',fontSize:9,marginTop:1,maxWidth:230,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={bl.desc}>{bl.desc}</div>:null}
                                 </td>
-                                <td style={{padding:'4px 8px',textAlign:'right'}}>
-                                  {!m.skipped&&tgt&&<input className="form-input" type="number" style={{width:60,fontSize:10,padding:'2px 4px',textAlign:'right'}} value={m.allocated_qty||0}
+                                <td style={{padding:'6px 8px'}}>
+                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'3px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
+                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
+                                    <option value="">— pick an order item —</option>
+                                    <option value="__skip">Skip this line (don’t bill it)</option>
+                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} · {[it.color,it.size].filter(Boolean).join(' ')||'—'} — {safeNum(it.qty)} open @ ${safeNum(it.unit_cost).toFixed(2)}</option>)}
+                                  </select>
+                                  {tgt&&<div style={{color:costGap?'#b45309':'#94a3b8',fontSize:9,marginTop:2}}>order cost ${safeNum(tgt.unit_cost).toFixed(2)} · {openQty} open{costGap?' · bill ≠ order by $'+Math.abs(billExt-applyCost).toFixed(2):''}</div>}
+                                </td>
+                                <td style={{padding:'6px 8px',textAlign:'right'}}>
+                                  {!m.skipped&&tgt&&<input className="form-input" type="number" min="0" style={{width:56,fontSize:10,padding:'3px 4px',textAlign:'right'}} value={m.allocated_qty||0}
                                     onChange={e=>setMap(bli,{...m,allocated_qty:parseInt(e.target.value)||0})}/>}
                                 </td>
-                                <td style={{padding:'4px 8px',fontSize:10,color:over?'#dc2626':(m.ambiguous?'#d97706':(m.skipped?'#92400e':'#166534'))}}>
-                                  {m.skipped?'Skipped':over?`Over-receipt (${m.allocated_qty}>${openQty})`:m.ambiguous?'Ambiguous — verify':tgt?'Mapped':(bl.sku||'')+' not on target'}
+                                <td style={{padding:'6px 8px',fontSize:9}}>
+                                  {m.skipped?<span style={{color:'#92400e',fontWeight:700}}>Skipped</span>
+                                   :over?<span style={{color:'#dc2626',fontWeight:700}}>Over — {q}&gt;{openQty} open</span>
+                                   :basis?<span style={{fontWeight:700,color:basis.c,background:basis.bg,borderRadius:4,padding:'2px 6px',whiteSpace:'nowrap'}}>{basis.t}</span>
+                                   :<span style={{color:'#dc2626',fontWeight:700}}>Not tied yet</span>}
                                 </td>
                               </tr>;
                             })}</tbody>
                           </table>
                         </div>
+                        {matched>0&&<div style={{marginTop:8,padding:'7px 11px',background:reconciles?'#f0fdf4':'#fffbeb',border:'1px solid '+(reconciles?'#bbf7d0':'#fde68a'),borderRadius:6,fontSize:11,color:'#334155'}}>
+                          Tied total <b style={{color:'#0f172a'}}>${applySum.toFixed(2)}</b> vs bill <b style={{color:'#0f172a'}}>${billSum.toFixed(2)}</b> {reconciles?<span style={{color:'#166534',fontWeight:700}}>&#10003; reconciles</span>:<span style={{color:'#b45309',fontWeight:700}}>&#9888; ${Math.abs(applySum-billSum).toFixed(2)} variance — check the flagged rows</span>}
+                        </div>}
                         <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
                           <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setW({open:false})}>Cancel</button>
                           <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
