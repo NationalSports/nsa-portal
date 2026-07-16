@@ -7048,8 +7048,11 @@ export default function App(){
         }
       });
     });
-    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready
-    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so)!=='complete').forEach(so=>{
+    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready.
+    // Use the pure auto-status ({ignoreOverride:true}): closing/invoicing an SO sets the sticky
+    // status='complete' independently of shipping, and must not hide unshipped goods from the
+    // warehouse. Auto-status only reaches 'complete' once jobs are actually shipped.
+    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so,{ignoreOverride:true})!=='complete').forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
