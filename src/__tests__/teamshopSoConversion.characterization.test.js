@@ -1,0 +1,520 @@
+/* Stage 7 — create_teamshop_sales_order (migration 00196) characterization.
+ *
+ * The RPC writes sales_orders / so_items / so_item_decorations / so_jobs /
+ * job_stage_events rows that MUST load cleanly through the staff portal's save
+ * engine (dbEngine.js) and match what the reference client path writes
+ * (Webstores.js batchOrders → App.js webstoreCreateSO → dbEngine _dbSaveSOInner).
+ *
+ * This is a STATIC test: it parses the migration SQL's INSERT column lists and
+ * pins them against fixtures derived from that client path — the column
+ * allowlists in src/constants.js (_soCols/_itemCols/_decoCols/_jobCols are
+ * exactly what _dbSaveSOInner persists) plus the specific fields batchOrders
+ * sets. If the migration drifts (a renamed column, a new field the client
+ * can't round-trip), this fails before the branch DB ever does.
+ *
+ * HONESTY CONTRACT: fields the RPC deliberately does NOT write (because their
+ * value could not be traced with confidence from the client path) are listed in
+ * DELIBERATELY_OMITTED below and asserted absent — adding one requires
+ * consciously updating both the SQL and this fixture.
+ */
+const fs = require('fs');
+const path = require('path');
+const { _soCols, _itemCols, _decoCols, _jobCols } = require('../constants');
+
+const SQL = fs.readFileSync(
+  path.join(__dirname, '../../supabase/migrations/00196_create_teamshop_sales_order.sql'),
+  'utf8'
+);
+// 00199 CREATE OR REPLACEs the same RPC, keeping every 00196 behavior and
+// adding the conversion invoice (money-of-record for commissions/A-R).
+const SQL195 = fs.readFileSync(
+  path.join(__dirname, '../../supabase/migrations/00199_teamshop_conversion_invoice.sql'),
+  'utf8'
+);
+// 00207 CREATE OR REPLACEs the RPC again, keeping every 00199 write shape and
+// adding auto-art at job birth (a logo resolving to a production-ready
+// customer art-library entry is born art_complete). create_teamshop_sales_order
+// is the FIRST function in the file, so the non-global insertColumns/insertValues
+// helpers (first-match) read the teamshop function's inserts.
+const SQL207 = fs.readFileSync(
+  path.join(__dirname, '../../supabase/migrations/00207_auto_art.sql'),
+  'utf8'
+);
+
+// Extract the column list of `insert into <table> (col, col, ...)`.
+// Column lists in this migration contain no nested parens, so a lazy match to
+// the first `)` is exact.
+function insertColumns(table, sql = SQL) {
+  const re = new RegExp(`insert\\s+into\\s+${table}\\s*\\(([^)]+)\\)`, 'i');
+  const m = sql.match(re);
+  if (!m) return null;
+  return m[1].split(',').map((s) => s.trim()).filter(Boolean);
+}
+
+// Split a SQL expression list on top-level commas (values lists here contain
+// case/function calls with nested parens and quoted strings).
+function splitTopLevel(s) {
+  const out = [];
+  let depth = 0; let cur = ''; let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) { cur += ch; if (ch === "'" && s[i + 1] !== "'") inStr = false; else if (ch === "'" && s[i + 1] === "'") { cur += s[++i]; } continue; }
+    if (ch === "'") { inStr = true; cur += ch; continue; }
+    if (ch === '(') depth++;
+    if (ch === ')') depth--;
+    if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+
+// Extract the VALUES expression list for `insert into <table> (...) values (...)`.
+function insertValues(table, sql = SQL) {
+  const re = new RegExp(`insert\\s+into\\s+${table}\\s*\\([^)]+\\)\\s*values\\s*\\(`, 'i');
+  const m = sql.match(re);
+  if (!m) return null;
+  let i = m.index + m[0].length; let depth = 1; let body = '';
+  while (i < sql.length && depth > 0) {
+    const ch = sql[i];
+    if (ch === '(') depth++;
+    if (ch === ')') { depth--; if (depth === 0) break; }
+    body += ch; i++;
+  }
+  return splitTopLevel(body);
+}
+
+describe('00196 migration structure', () => {
+  test('adds the additive nullable so_jobs.digitizing_needed column', () => {
+    expect(SQL).toMatch(/alter table public\.so_jobs add column if not exists digitizing_needed boolean;/);
+    // additive + nullable: no NOT NULL, no DEFAULT rewrite
+    expect(SQL).not.toMatch(/digitizing_needed boolean\s+(not null|default)/i);
+  });
+
+  test('RPC is SECURITY DEFINER, service_role-only, with rollback notes', () => {
+    expect(SQL).toMatch(/create or replace function public\.create_teamshop_sales_order\(\s*p_webstore_order_id uuid\s*\)/);
+    expect(SQL).toMatch(/security definer/);
+    expect(SQL).toMatch(/set search_path = public/);
+    expect(SQL).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from public;/);
+    expect(SQL).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from anon;/);
+    expect(SQL).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from authenticated;/);
+    expect(SQL).toMatch(/grant execute on function public\.create_teamshop_sales_order\(uuid\) to service_role;/);
+    expect(SQL).toMatch(/── Rollback/);
+    expect(SQL).toMatch(/drop function if exists public\.create_teamshop_sales_order\(uuid\);/);
+  });
+
+  test('idempotency + guards: row lock, so_id replay, teamshop + paid gates, NSA_* codes', () => {
+    expect(SQL).toMatch(/from webstore_orders where id = p_webstore_order_id for update/);
+    expect(SQL).toMatch(/if v_ord\.so_id is not null then/);
+    expect(SQL).toMatch(/'so_id', v_ord\.so_id, 'replayed', true/);
+    expect(SQL).toMatch(/NSA_NOT_FOUND/);
+    expect(SQL).toMatch(/<> 'teamshop'[\s\S]{0,80}NSA_BAD_SOURCE/);
+    // 'paid' is the exact status webstore-checkout finalize / stripe-webhook write
+    expect(SQL).toMatch(/<> 'paid'[\s\S]{0,80}NSA_NOT_PAID/);
+    expect(SQL).toMatch(/NSA_BAD_INPUT/);
+  });
+
+  test('SO id mint matches the client rule (App.js nextSOId) under an advisory lock', () => {
+    expect(SQL).toMatch(/pg_advisory_xact_lock\(hashtext\('nsa_sales_orders_id_mint'\)\)/);
+    // numeric extraction of existing ids: first digit run, /(\d+)/ — same as _maxNum/_syncDbMaxIds
+    expect(SQL).toMatch(/regexp_match\(id, '\(\\d\+\)'\)\)\[1\]::bigint/);
+    // floor 1000 then +1: Math.max(_maxNum(sos), _dbMaxIds.so, 1000) + 1
+    expect(SQL).toMatch(/greatest\(coalesce\(max\(\(regexp_match\(id, '\(\\d\+\)'\)\)\[1\]::bigint\), 0\), 1000\) \+ 1/);
+    expect(SQL).toMatch(/v_so_id := 'SO-' \|\| v_num;/);
+  });
+
+  test('links the order back exactly like batchOrders (so_id + status batched)', () => {
+    expect(SQL).toMatch(/update webstore_orders\s*set so_id = v_so_id, status = 'batched'\s*where id = v_ord\.id/);
+  });
+});
+
+describe('00196 column sets vs the client save engine', () => {
+  // ── sales_orders ── fixture derived from App.js webstoreCreateSO's newSO
+  // (minus client-only members: items/jobs/art_files/firm_dates are child
+  // tables; created_by is the signed-in staff user — none exists server-side;
+  // batch label/cutoff/default_markup are not set on this path either).
+  const SALES_ORDERS_EXPECTED = [
+    'id', 'customer_id', 'memo', 'status', 'created_at', 'updated_at',
+    'expected_date', 'production_notes', 'shipping_type', 'shipping_value',
+    'ship_to_id', 'tax_rate', 'tax_exempt', '_webstore_fundraise', 'source', 'webstore_id',
+  ];
+  // Deliberately omitted — traceable-value rule (see the migration header):
+  //   created_by      — client writes cu.id (the staff session); no server analog.
+  //   default_markup  — webstoreCreateSO never sets it; DB default applies.
+  //   webstore_batch_no — owned by the 00177 trigger, never written by any client.
+  //   _version / updated-at trigger bookkeeping — owned by 00049's trigger (DEFAULT 1 on insert).
+  const SALES_ORDERS_OMITTED = ['created_by', 'default_markup', 'webstore_batch_no', '_version', 'deco_pos', 'estimate_id'];
+
+  test('sales_orders insert = webstoreCreateSO field set, all within _soCols (dbEngine round-trip)', () => {
+    const cols = insertColumns('sales_orders');
+    expect(cols).toEqual(SALES_ORDERS_EXPECTED);
+    cols.forEach((c) => expect(_soCols).toContain(c));
+    SALES_ORDERS_OMITTED.forEach((c) => expect(cols).not.toContain(c));
+  });
+
+  // ── so_items ── fixture from batchOrders' soItems objects
+  // ({sku,name,brand,color,product_id,nsa_cost,retail_price,unit_sell,sizes,
+  //   available_sizes,no_deco}) + the so_id/item_index bookkeeping
+  // _dbSaveSOInner injects. pick_lines/po_lines/decorations are child tables.
+  const SO_ITEMS_EXPECTED = [
+    'so_id', 'item_index', 'product_id', 'sku', 'name', 'brand', 'color',
+    'nsa_cost', 'retail_price', 'unit_sell', 'sizes', 'available_sizes', 'no_deco',
+  ];
+  // Deliberately omitted: vendor_id/_colors/is_custom/custom_* etc. — batchOrders
+  // never sets them on webstore→SO lines; DB defaults are the loaded truth.
+  const SO_ITEMS_OMITTED = ['vendor_id', '_colors', 'is_custom', 'custom_desc', 'custom_cost', 'custom_sell', 'est_qty', 'qty_only'];
+
+  test('so_items insert = batchOrders item shape, non-bookkeeping columns within _itemCols', () => {
+    const cols = insertColumns('so_items');
+    expect(cols).toEqual(SO_ITEMS_EXPECTED);
+    cols.filter((c) => c !== 'so_id' && c !== 'item_index')
+      .forEach((c) => expect(_itemCols).toContain(c));
+    SO_ITEMS_OMITTED.forEach((c) => expect(cols).not.toContain(c));
+  });
+
+  test("so_items sizes map is batchOrders' {size: qty} jsonb (merged per size), available_sizes its keys", () => {
+    // sizes: jsonb_object_agg(size, qty) with 'OS' fallback — the g.sizes[sz]+=q shape
+    expect(SQL).toMatch(/jsonb_object_agg\(s\.sz, s\.q\)/);
+    expect(SQL).toMatch(/coalesce\(nullif\(i2\.size, ''\), 'OS'\)/);
+    expect(SQL).toMatch(/sum\(coalesce\(i2\.qty, 1\)\)::int/);
+    // available_sizes = Object.keys(sizes)
+    expect(SQL).toMatch(/jsonb_object_keys\(coalesce\(v_grp\.sizes, '\{\}'::jsonb\)\)/);
+  });
+
+  test('unit_sell = collected revenue ÷ units (garment + deco sell), mirroring batchOrders reconciliation', () => {
+    expect(SQL).toMatch(/coalesce\(i\.unit_price, 0\) \+ coalesce\(i\.unit_deco_price, 0\)/);
+    expect(SQL).toMatch(/round\(v_grp\.collected \/ greatest\(v_grp\.units, 1\), 2\)/);
+  });
+
+  // ── so_item_decorations ── batchOrders' art-deco mapping (kind 'art',
+  // position via POS_LABEL, suppressed sells, 00169 web_url/placement/side/
+  // color_label) + the dP pricing fields the decoSpec carries
+  // (colors/underbase/stitches/dtf_size — no art file exists to hold them).
+  const SO_DECO_EXPECTED = [
+    'so_item_id', 'deco_index', 'kind', 'position', 'type',
+    'colors', 'underbase', 'stitches', 'dtf_size',
+    'sell_override', 'sell_each', 'cost_each',
+    'web_url', 'placement', 'side', 'color_label',
+  ];
+  // Deliberately omitted:
+  //   art_file_id — NO so_art_files row is created by the RPC (staff attach real
+  //     art via the art pipeline; null art_file_id = 'Unassigned Art' in
+  //     buildJobs/syncJobs). It is therefore not in the insert list at all.
+  //   color_way_id/transfer_code/roster/names — storefront/OMG concepts with no
+  //     teamshop source data.
+  const SO_DECO_OMITTED = ['art_file_id', 'color_way_id', 'transfer_code', 'roster', 'names', 'art_tbd_type'];
+
+  test('so_item_decorations insert = batchOrders deco mapping + dP fields, within _decoCols', () => {
+    const cols = insertColumns('so_item_decorations');
+    expect(cols).toEqual(SO_DECO_EXPECTED);
+    cols.filter((c) => c !== 'so_item_id' && c !== 'deco_index')
+      .forEach((c) => expect(_decoCols).toContain(c));
+    SO_DECO_OMITTED.forEach((c) => expect(cols).not.toContain(c));
+  });
+
+  test("deco position uses batchOrders' exact POS_LABEL placement table with the side fallback", () => {
+    expect(SQL).toMatch(/when 'left_chest'\s+then 'Left Chest'/);
+    expect(SQL).toMatch(/when 'full_front'\s+then 'Front'/);
+    expect(SQL).toMatch(/when 'full_back'\s+then 'Back'/);
+    expect(SQL).toMatch(/when 'left_sleeve'\s+then 'Left Sleeve'/);
+    expect(SQL).toMatch(/when 'right_sleeve'\s+then 'Right Sleeve'/);
+    expect(SQL).toMatch(/when v_deco->>'side' = 'back' then 'Back' else 'Front'/);
+  });
+
+  test('deco sells are suppressed (0,0,0) — revenue rides on unit_sell, batchOrders style', () => {
+    const vals = insertValues('so_item_decorations');
+    const cols = insertColumns('so_item_decorations');
+    ['sell_override', 'sell_each', 'cost_each'].forEach((c) => {
+      expect(vals[cols.indexOf(c)]).toBe('0');
+    });
+  });
+
+  // ── so_jobs ── syncJobs/buildJobs persisted field set + so_id +
+  // the new digitizing_needed.
+  const SO_JOBS_EXPECTED = [
+    'so_id', 'id', 'key', 'art_file_id', '_art_ids', 'art_name', 'deco_type', 'positions',
+    'art_status', 'item_status', 'prod_status', 'total_units', 'fulfilled_units',
+    'split_from', 'created_at', 'ship_method', 'items', '_auto', 'digitizing_needed',
+  ];
+  // Deliberately omitted: workflow fields syncJobs only carries forward from an
+  // existing job (assigned_machine/assigned_to/run_order/rejections/…) — a
+  // brand-new job has none; DB defaults/NULLs are the loaded truth.
+  const SO_JOBS_OMITTED = ['assigned_machine', 'assigned_to', 'split_group', 'rejections', 'run_order', 'coach_rejected'];
+
+  test('so_jobs insert = syncJobs field set (+digitizing_needed), within _jobCols', () => {
+    const cols = insertColumns('so_jobs');
+    expect(cols).toEqual(SO_JOBS_EXPECTED);
+    cols.filter((c) => c !== 'so_id' && c !== 'digitizing_needed')
+      .forEach((c) => expect(_jobCols).toContain(c));
+    SO_JOBS_OMITTED.forEach((c) => expect(cols).not.toContain(c));
+  });
+
+  test('jobs are born on hold with the art-pipeline entry state (needs_art / need_to_order), _auto, null art', () => {
+    const cols = insertColumns('so_jobs');
+    const vals = insertValues('so_jobs');
+    const at = (c) => vals[cols.indexOf(c)];
+    expect(at('prod_status')).toBe("'hold'");
+    expect(at('art_status')).toBe("'needs_art'");
+    expect(at('item_status')).toBe("'need_to_order'");
+    expect(at('art_file_id')).toBe('null'); // no so_art_files row exists
+    expect(at('_art_ids')).toBe("'[]'::jsonb");
+    expect(at('fulfilled_units')).toBe('0');
+    expect(at('split_from')).toBe('null');
+    expect(at('ship_method')).toBe("'ship_customer'"); // syncJobs' non-rep-delivery default
+    expect(at('_auto')).toBe('true');
+  });
+
+  test('job id + key match the client formats (JOB-<n>-NN; syncJobs signature)', () => {
+    expect(SQL).toMatch(/'JOB-' \|\| v_num \|\| '-' \|\| lpad\(v_jn::text, 2, '0'\)/);
+    // syncJobs sig for a null-art deco: dt + '::' + sorted 'unassigned@<pos>' parts
+    expect(SQL).toMatch(/'unassigned@' \|\| d\.position/);
+    expect(SQL).toMatch(/v_job\.deco_type \|\| '::' \|\| v_job\.key_parts/);
+  });
+
+  test('one job per distinct (logo ref × deco method); digitizing_needed = teamshop logo × embroidery', () => {
+    expect(SQL).toMatch(/group by d\.deco_type, d\.logo_ref/);
+    // logo ref normalization matches the v2 quote hash ('teamshop:<id>' | 'art:<id>')
+    expect(SQL).toMatch(/'teamshop:' \|\| \(v_deco->>'teamshop_logo_id'\)/);
+    expect(SQL).toMatch(/'art:'\s+\|\| \(v_deco->>'art_file_id'\)/);
+    expect(SQL).toMatch(/coalesce\(v_deco->>'logo_source', ''\) = 'teamshop'\s*and v_deco->>'type' = 'embroidery'/);
+  });
+
+  test("job items carry buildJobs' per-item entry shape", () => {
+    ['item_idx', 'deco_idx', 'deco_idxs', 'sku', 'name', 'color', 'units', 'fulfilled'].forEach((k) => {
+      expect(SQL).toMatch(new RegExp(`'${k}',`));
+    });
+  });
+
+  // ── job_stage_events ── the 00192 log, same transaction, source 'teamshop'.
+  test("job_stage_events insert matches 00192's column list, event 'created', source 'teamshop'", () => {
+    const cols = insertColumns('job_stage_events');
+    expect(cols).toEqual(['so_id', 'job_id', 'event', 'from_state', 'to_state', 'actor', 'source', 'payload']);
+    const vals = insertValues('job_stage_events');
+    expect(vals[cols.indexOf('event')]).toBe("'created'");
+    expect(vals[cols.indexOf('source')]).toBe("'teamshop'");
+  });
+
+  // ── dbEngine bookkeeping ── _version is trigger-owned (00049): the RPC must
+  // NEVER write it; created_at/updated_at are the client's TEXT locale shapes.
+  test('_version is left to the DB trigger; created_at/updated_at use the client TEXT formats', () => {
+    ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events'].forEach((t) => {
+      expect(insertColumns(t)).not.toContain('_version');
+    });
+    // toLocaleString() shape for the SO row
+    expect(SQL).toMatch(/to_char\(now\(\), 'FMMM\/FMDD\/YYYY, FMHH12:MI:SS AM'\)/);
+    // toLocaleDateString() shape for jobs (syncJobs writes date-only)
+    expect(SQL).toMatch(/to_char\(now\(\), 'FMMM\/FMDD\/YYYY'\)/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 00199 — conversion invoice (money-of-record). CREATE OR REPLACEs the RPC:
+// every 00196 write must survive byte-for-byte in column shape, plus the
+// invoice block mirroring App.js createAndSettleWebstoreInvoice (~12238).
+// ═════════════════════════════════════════════════════════════════════════════
+describe('00199 preserves the 00196 write shapes', () => {
+  test('every 00196 insert column list is unchanged in the replaced function', () => {
+    ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events'].forEach((t) => {
+      expect(insertColumns(t, SQL195)).toEqual(insertColumns(t, SQL));
+    });
+  });
+
+  test('idempotency + guards survive: row lock, so_id replay, source gate, id mint, order link', () => {
+    expect(SQL195).toMatch(/from webstore_orders where id = p_webstore_order_id for update/);
+    expect(SQL195).toMatch(/if v_ord\.so_id is not null then/);
+    expect(SQL195).toMatch(/'so_id', v_ord\.so_id, 'replayed', true/);
+    expect(SQL195).toMatch(/<> 'teamshop'[\s\S]{0,80}NSA_BAD_SOURCE/);
+    expect(SQL195).toMatch(/pg_advisory_xact_lock\(hashtext\('nsa_sales_orders_id_mint'\)\)/);
+    expect(SQL195).toMatch(/update webstore_orders\s*set so_id = v_so_id, status = 'batched'\s*where id = v_ord\.id/);
+  });
+
+  test("status gate widens ONLY to po_verified (defensive; later workstream) — NSA_NOT_PAID otherwise", () => {
+    expect(SQL195).toMatch(/not in \('paid', 'po_verified'\)[\s\S]{0,80}NSA_NOT_PAID/);
+    expect(SQL195).toMatch(/v_is_po := \(v_ord\.status = 'po_verified'\)/);
+  });
+
+  test('service_role-only grants identical to 00196, with rollback notes', () => {
+    expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from public;/);
+    expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from anon;/);
+    expect(SQL195).toMatch(/revoke all on function public\.create_teamshop_sales_order\(uuid\) from authenticated;/);
+    expect(SQL195).toMatch(/grant execute on function public\.create_teamshop_sales_order\(uuid\) to service_role;/);
+    expect(SQL195).toMatch(/── Rollback/);
+  });
+});
+
+describe('00199 invoice vs createAndSettleWebstoreInvoice (App.js ~12238)', () => {
+  // Fixture = the client inv object's field set ∩ dbEngine's _invCols
+  // allowlist (dbEngine.js:1632 — what _dbSaveInvoiceInner actually persists).
+  // payments/items are child tables (invoice_payments / invoice_items).
+  const INVOICES_EXPECTED = [
+    'id', 'customer_id', 'so_id', 'type', 'inv_type', 'date', 'due_date',
+    'total', 'paid', 'status', 'memo', 'tax', 'tax_rate', 'tax_exempt', 'shipping',
+    'line_items', 'created_at', 'updated_at',
+  ];
+  // Deliberately omitted — traceable-value rule:
+  //   _rep        — client-state only; NOT in _invCols, never persisted by dbEngine.
+  //   cc_fee      — client doesn't set it on this path; DB DEFAULT 0 is the truth.
+  //   _version    — owned by 00180 (DEFAULT 1 + trigger), like sales_orders._version.
+  //   deposit_pct — full invoice; client leaves it undefined.
+  //   _po_number  — batch path only spreads it when so.po_number exists; a teamshop
+  //                 SO has none (and no invoices column traces for it).
+  //   created_by  — no staff session exists server-side (same rule as sales_orders).
+  const INVOICES_OMITTED = ['_rep', 'cc_fee', '_version', 'deposit_pct', '_po_number', 'created_by', 'payments', 'items'];
+
+  test('invoices insert = the batch-path field set', () => {
+    const cols = insertColumns('invoices', SQL195);
+    expect(cols).toEqual(INVOICES_EXPECTED);
+    INVOICES_OMITTED.forEach((c) => expect(cols).not.toContain(c));
+  });
+
+  test('INV id mint matches the client rule (App.js nextInvId, line 165) under its own advisory lock', () => {
+    expect(SQL195).toMatch(/pg_advisory_xact_lock\(hashtext\('nsa_invoices_id_mint'\)\)/);
+    // same /(\d+)/ first-digit-run + floor 1000 + 1 rule as the SO mint, read from invoices
+    expect(SQL195).toMatch(/greatest\(coalesce\(max\(\(regexp_match\(id, '\(\\d\+\)'\)\)\[1\]::bigint\), 0\), 1000\) \+ 1\s*into v_inv_num\s*from invoices/);
+    expect(SQL195).toMatch(/v_inv_id := 'INV-' \|\| v_inv_num;/);
+  });
+
+  test("invoice values mirror the batch path: type 'invoice', inv_type 'full', tax 0/0/exempt, shipping 0, memo 'Invoice — '", () => {
+    const cols = insertColumns('invoices', SQL195);
+    const vals = insertValues('invoices', SQL195);
+    const at = (c) => vals[cols.indexOf(c)];
+    expect(at('type')).toBe("'invoice'");
+    expect(at('inv_type')).toBe("'full'");
+    expect(at('tax')).toBe('0');
+    expect(at('tax_rate')).toBe('0');
+    expect(at('tax_exempt')).toBe('true');
+    expect(at('shipping')).toBe('0'); // teamshop has no team-tab extras (batch tabExtras = 0)
+    expect(at('memo')).toBe("'Invoice — ' || v_memo");
+    expect(at('total')).toBe('v_inv_total');
+    expect(at('paid')).toBe('v_applied');
+  });
+
+  test("line_items carry the batch path's row shape (desc/qty/rate/amount/_sku/_name/_color)", () => {
+    ["'desc',", "'qty',", "'rate',", "'amount',", "'_sku',", "'_name',", "'_color'"].forEach((k) => {
+      expect(SQL195).toContain(k);
+    });
+    // amount = round(qty × unit_sell, 2) — the client's r2(qty*unit_sell)
+    expect(SQL195).toMatch(/round\(\(q\.qty \* it\.unit_sell\)::numeric, 2\) as amount/);
+  });
+
+  test('status rule is the client rule (paid ≥ total − 0.005 → paid; > 0 → partial; else open)', () => {
+    expect(SQL195).toMatch(/case when v_applied >= v_inv_total - 0\.005 then 'paid'\s*when v_applied > 0 then 'partial'\s*else 'open' end/);
+  });
+
+  test("card settlement: batch clamp (min of invoice total and order-collected), 'store' payment with TEAMSHOP ref", () => {
+    // applied = min(max(0, total − tabGross=0), cardTotal) — under-apply only, never overpay
+    expect(SQL195).toMatch(/least\(v_inv_total, greatest\(coalesce\(v_ord\.total, 0\), 0\)\)/);
+    const cols = insertColumns('invoice_payments', SQL195);
+    expect(cols).toEqual(['invoice_id', 'amount', 'method', 'ref', 'date']);
+    const vals = insertValues('invoice_payments', SQL195);
+    expect(vals[cols.indexOf('method')]).toBe("'store'");
+    expect(vals[cols.indexOf('amount')]).toBe('v_applied');
+    expect(SQL195).toMatch(/'TEAMSHOP ' \|\| coalesce\(v_ord\.order_number::text, v_ord\.id::text\)/);
+    // MM/DD/YYYY payment date — the client's en-US 2-digit payDate
+    expect(vals[cols.indexOf('date')]).toBe("to_char(now(), 'MM/DD/YYYY')");
+    // only written when something was applied (PO branch applies 0)
+    expect(SQL195).toMatch(/if v_applied > 0 then/);
+  });
+
+  test('PO branch: po_verified → applied 0 (open invoice), due date = customer terms days (parseInt rule, default 30)', () => {
+    expect(SQL195).toMatch(/if v_is_po then\s*v_applied := 0;/);
+    // parseInt((payment_terms||'net30').replace(/\D/g,'')) || 30
+    expect(SQL195).toMatch(/regexp_replace\(coalesce\(v_cust\.payment_terms, ''\), '\\D', '', 'g'\)/);
+    expect(SQL195).toMatch(/if v_term_days is null or v_term_days = 0 then\s*v_term_days := 30;/);
+    expect(SQL195).toMatch(/make_interval\(days => v_term_days\)/);
+    // en-CA YYYY-MM-DD date/due_date, like the client's toLocaleDateString('en-CA')
+    expect(SQL195).toMatch(/to_char\(now\(\), 'YYYY-MM-DD'\)/);
+  });
+
+  test('invoice_items rows = what dbEngine persists from the client items array (sku/name/qty; unit_price undefined → NULL)', () => {
+    expect(SQL195).toMatch(/insert into invoice_items \(invoice_id, sku, name, qty\)/);
+    expect(insertColumns('invoice_items', SQL195)).not.toContain('unit_price');
+  });
+
+  test('replay/idempotency: invoice block is guarded by the client any-invoice check (App.js:12240)', () => {
+    expect(SQL195).toMatch(/if not exists \(select 1 from invoices where so_id = v_so_id\) then/);
+  });
+
+  test('_version is never written (00180 trigger/default own it)', () => {
+    expect(insertColumns('invoices', SQL195)).not.toContain('_version');
+  });
+
+  test('deco cost of record comes from teamshop_deco_rates (type + option_key, active), falling back to 0', () => {
+    expect(SQL195).toMatch(/select r\.cost into v_deco_cost\s*from teamshop_deco_rates r/);
+    expect(SQL195).toMatch(/r\.option_key = coalesce\(nullif\(v_deco->>'option', ''\), 'standard'\)/);
+    expect(SQL195).toMatch(/and r\.active/);
+    // cost_each = coalesce(rate cost, 0) — 0 is 00196's value; missing cost never blocks conversion
+    const cols = insertColumns('so_item_decorations', SQL195);
+    const vals = insertValues('so_item_decorations', SQL195);
+    expect(vals[cols.indexOf('cost_each')]).toBe('coalesce(v_deco_cost, 0)');
+    // sells stay suppressed like 00196
+    expect(vals[cols.indexOf('sell_override')]).toBe('0');
+    expect(vals[cols.indexOf('sell_each')]).toBe('0');
+  });
+
+  test('rep guard: NULL primary_rep_id raises a NOTICE (never blocks) and surfaces no_rep in the result', () => {
+    expect(SQL195).toMatch(/raise notice 'TEAMSHOP_NO_REP:%', v_ord\.customer_id;/);
+    expect(SQL195).not.toMatch(/raise exception 'TEAMSHOP_NO_REP/);
+    expect(SQL195).toMatch(/'invoice_id', v_inv_id, 'no_rep', v_no_rep/);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// 00207 — auto-art at conversion. CREATE OR REPLACEs create_teamshop_sales_order
+// (first fn in the file): every 00199 write shape is preserved; the ONLY change is
+// the job-birth values when a logo resolves to a production-ready customer
+// art-library entry.
+// ═════════════════════════════════════════════════════════════════════════════
+describe('00207 preserves the 00199 write shapes and adds teamshop auto-art', () => {
+  test('every insert column list is byte-identical to 00199 (only VALUES change)', () => {
+    ['sales_orders', 'so_items', 'so_item_decorations', 'so_jobs', 'job_stage_events',
+     'invoices', 'invoice_items', 'invoice_payments'].forEach((t) => {
+      expect(insertColumns(t, SQL207)).toEqual(insertColumns(t, SQL195));
+    });
+  });
+
+  test('idempotency + guards + service-role grants survive the replace', () => {
+    expect(SQL207).toMatch(/create or replace function public\.create_teamshop_sales_order\(\s*p_webstore_order_id uuid\s*\)/);
+    expect(SQL207).toMatch(/from webstore_orders where id = p_webstore_order_id for update/);
+    expect(SQL207).toMatch(/if v_ord\.so_id is not null then/);
+    expect(SQL207).toMatch(/<> 'teamshop'[\s\S]{0,80}NSA_BAD_SOURCE/);
+    expect(SQL207).toMatch(/not in \('paid', 'po_verified'\)[\s\S]{0,80}NSA_NOT_PAID/);
+    expect(SQL207).toMatch(/grant execute on function public\.create_teamshop_sales_order\(uuid\) to service_role;/);
+  });
+
+  test('auto-art fires ONLY on an art:<id> logo_ref resolved against the order customer’s art_files', () => {
+    // logo_ref carrying a customer art-library id is parsed out of 'art:<id>'
+    expect(SQL207).toMatch(/v_art_id\s*:=\s*case when v_job\.logo_ref like 'art:%' then substring\(v_job\.logo_ref from 5\) else null end;/);
+    // resolved against v_cust.art_files (the ORDER's customer) by id
+    expect(SQL207).toMatch(/from jsonb_array_elements\(coalesce\(v_cust\.art_files, '\[\]'::jsonb\)\) je\s*\n\s*where je\.value->>'id' = v_art_id/);
+  });
+
+  test('production-ready predicate = approved AND (prod_files_attached | prod_files | embroidery .dst) — isJobReady’s art half', () => {
+    expect(SQL207).toMatch(/coalesce\(v_art_entry->>'status', ''\) = 'approved'/);
+    expect(SQL207).toMatch(/\(v_art_entry->>'prod_files_attached'\)::boolean is true/);
+    expect(SQL207).toMatch(/jsonb_array_length\(coalesce\(v_art_entry->'prod_files', '\[\]'::jsonb\)\) > 0/);
+    expect(SQL207).toMatch(/coalesce\(v_art_entry->>'deco_type', ''\) = 'embroidery'/);
+    expect(SQL207).toMatch(/like '%\.dst'/);
+  });
+
+  test('so_jobs is born art_complete / real art id / no digitizing ONLY when v_auto_art, else 00199’s exact birth', () => {
+    const cols = insertColumns('so_jobs', SQL207);
+    const vals = insertValues('so_jobs', SQL207);
+    const at = (c) => vals[cols.indexOf(c)];
+    expect(at('art_status')).toBe("case when v_auto_art then 'art_complete' else 'needs_art' end");
+    expect(at('art_file_id')).toBe('case when v_auto_art then v_art_id else null end');
+    expect(at('_art_ids')).toBe("case when v_auto_art then jsonb_build_array(v_art_id) else '[]'::jsonb end");
+    expect(at('art_name')).toBe("case when v_auto_art then coalesce(v_art_entry->>'name', v_job_name) else v_job_name end");
+    expect(at('digitizing_needed')).toBe('case when v_auto_art then false else v_job.digitizing end');
+    // untouched birth fields stay literal (proves the non-auto path is unchanged)
+    expect(at('item_status')).toBe("'need_to_order'");
+    expect(at('prod_status')).toBe("'hold'");
+    expect(at('_auto')).toBe('true');
+  });
+
+  test("created event records the auto-art outcome (to_state art_status + payload auto_art/art_file_id)", () => {
+    expect(SQL207).toMatch(/'art_status', case when v_auto_art then 'art_complete' else 'needs_art' end/);
+    expect(SQL207).toMatch(/'auto_art', v_auto_art/);
+    expect(SQL207).toMatch(/'art_file_id', case when v_auto_art then v_art_id else null end/);
+  });
+});

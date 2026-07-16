@@ -633,6 +633,20 @@ function transferUsage(lines, maps) {
   return used;
 }
 
+// Pure computation behind pullBatchTransfers: which transfer rows to decrement (each
+// exactly once, regardless of how many orders/SOs share the code) and which so_ids to
+// stamp transfers_pulled on. soId accepts a single so_id (team-store single-batch pull)
+// or an array (club stores' Group Pull — every converted-but-unpulled order at once,
+// each its own SO). Exported so this array-vs-single behavior is unit-testable without
+// a live Supabase client.
+export function computePullPlan(soId, neededByCode, transfers) {
+  const soIds = Array.isArray(soId) ? soId.filter(Boolean) : [soId].filter(Boolean);
+  const decrements = (transfers || [])
+    .filter((t) => t && neededByCode && neededByCode[t.code])
+    .map((t) => ({ id: t.id, on_hand: Math.max(0, (t.on_hand || 0) - neededByCode[t.code]) }));
+  return { soIds, decrements };
+}
+
 function isMissingTable(err) {
   if (!err) return false;
   const m = (err.message || err.details || '').toLowerCase();
@@ -1791,15 +1805,52 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   // Pull a batch's transfers: deduct physical on-hand by the counts used and
   // flag the batch's orders as pulled (they move from On order → In process).
+  // soId accepts a single so_id (team-store single-batch pull, unchanged) OR an
+  // array of so_ids (club stores' Group Pull — every converted-but-unpulled order
+  // pulled in one action, each order individually converted to its own SO).
+  //
+  // Primary path (00206, Team Shop backend hardening #5): pull_webstore_transfers
+  // does the decrement + stamp in ONE transaction, server-side, against the
+  // LIVE on_hand row — no client read-then-write race between two staff
+  // sessions (or a double-click) pulling overlapping batches. computePullPlan
+  // still runs for soIds (needed either way) and `decrements` — kept ONLY as
+  // the fallback write plan below, not sent to the RPC (the RPC re-derives the
+  // decrement from p_needs against the current row itself).
   const pullBatchTransfers = useCallback(async (soId, neededByCode) => {
-    const list = detail?.transfers || [];
-    for (const t of list) {
-      const need = neededByCode[t.code];
-      if (need) await supabase.from('webstore_transfers').update({ on_hand: Math.max(0, (t.on_hand || 0) - need) }).eq('id', t.id);
+    const { soIds, decrements } = computePullPlan(soId, neededByCode, detail?.transfers || []);
+    if (!soIds.length) return;
+    const needs = Object.entries(neededByCode || {})
+      .filter(([, qty]) => Number(qty) > 0)
+      .map(([code, qty]) => ({ code, qty: Math.round(Number(qty)) }));
+    const rpc = await supabase.rpc('pull_webstore_transfers', { p_store_id: sel.id, p_so_ids: soIds, p_needs: needs });
+    if (rpc.error) {
+      const msg = (rpc.error.message || '') + ' ' + (rpc.error.details || '') + ' ' + (rpc.error.hint || '');
+      const migrationNotApplied = rpc.error.code === '42883' || rpc.error.code === '42P01' || /does not exist|could not find|schema cache/i.test(msg);
+      if (!migrationNotApplied) { flash('Pull failed: ' + rpc.error.message); return; }
+      // Fallback ONLY for "migration not applied yet" — any other RPC error
+      // (bad input, forbidden, …) is a real failure and must surface, not
+      // silently degrade to the racy client loop this migration replaces.
+      console.warn('[pullBatchTransfers] pull_webstore_transfers RPC not found (00206 not applied yet) — falling back to the legacy client read-then-write loop:', rpc.error.message);
+      for (const d of decrements) {
+        await supabase.from('webstore_transfers').update({ on_hand: d.on_hand }).eq('id', d.id);
+      }
+      const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).in('so_id', soIds);
+      if (error) { flash('Pull failed: ' + error.message); return; }
     }
-    const { error } = await supabase.from('webstore_orders').update({ transfers_pulled: true, transfers_pulled_at: new Date().toISOString() }).eq('store_id', sel.id).eq('so_id', soId);
-    if (error) { flash('Pull failed: ' + error.message); return; }
-    flash('Transfers pulled — moved to In process'); loadDetail(sel);
+    // Surface the RPC's structured result (00215): an already-pulled no-op and,
+    // critically, any transfer SHORTFALL — an oversell used to be clamped to 0 and
+    // silently swallowed, so production hit the press short with no warning.
+    const res = rpc.data || {};
+    if (res.already_pulled) { flash('Already pulled — no changes made'); loadDetail(sel); return; }
+    const short = Array.isArray(res.shortfalls) ? res.shortfalls : [];
+    if (short.length) {
+      flash('⚠ Transfers pulled, but SHORT on: '
+        + short.map((s) => `${s.code} (need ${s.needed}, had ${s.on_hand})`).join(', ')
+        + ' — check transfer inventory before pressing');
+    } else {
+      flash('Transfers pulled — moved to In process');
+    }
+    loadDetail(sel);
   }, [detail, sel, flash, loadDetail]);
 
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations, category, kit_name, required, options }) => {
@@ -1854,8 +1905,13 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null;
     const opts = (Array.isArray(cfg.options) && cfg.options.length) ? cfg.options : (Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : []);
     let base = (detail?.catalog?.length || 0);
+    // No explicit price from the rep → each product defaults to its ~45%-margin price
+    // (deco $5 when artwork is attached or this is a team store — same rule as the editor),
+    // falling back to the vendor list price when its cost is unknown.
+    const _hasRealDeco = (decorations || []).some((d) => d && d.kind !== 'perso_number' && d.kind !== 'perso_name');
+    const _decoEst = (_hasRealDeco || (sel?.org_type || 'team') !== 'club') ? 5 : 0;
     const mk = (p, groupId) => ({ store_id: sel.id, kind: 'single', product_id: p.id, sku: p.sku,
-      retail_price: hasPrice ? (Number(cfg.price) || 0) : (Number(p.retail_price) || 0),
+      retail_price: hasPrice ? (Number(cfg.price) || 0) : (price45(p.nsa_cost, _decoEst) ?? (Number(p.retail_price) || 0)),
       fundraise_amount: Number(cfg.fundraise) || 0, image_url: null,
       takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: Number(cfg.name_upcharge) || 0,
       transfer_codes: [], num_transfer_sets: [], decorations: decorations || [],
@@ -2331,6 +2387,47 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const { data: st } = await supabase.from('webstores').update({ store_art: [...curArt, { ...rec, _srcLabel: 'Uploaded' }] }).eq('id', sel.id).select().single();
     if (st) { setStores((prev) => prev.map((s) => (s.id === sel.id ? st : s))); setSel(st); }
     flash('Logo added to the store'); loadDetail(sel);
+    return rec;
+  }, [sel, flash, loadDetail]);
+
+  // Create ONE multi-file art FOLDER on the customer (and this store's set): several web
+  // PNG/SVG cutouts — the logo's color ways — plus production files (.ai/.eps/.dst/.pdf).
+  // Same record shape as the customer art library (files / prod_files / color_ways /
+  // web_logos), so production later works from this folder instead of a loose single PNG.
+  // webFiles/prodFiles are already-uploaded { url, name } lists; webFiles[1..] may carry
+  // cwLabel (from the filenames) to name each color way — renameable on the art page later.
+  const addStoreArtFolder = useCallback(async ({ name, webFiles = [], prodFiles = [] }) => {
+    if (!sel?.customer_id || (!webFiles.length && !prodFiles.length)) return null;
+    const { data: cust } = await supabase.from('customers').select('art_files').eq('id', sel.customer_id).maybeSingle();
+    const arr = Array.isArray(cust?.art_files) ? cust.art_files : [];
+    const ts = Date.now();
+    // EVERY labeled web cutout is attached to a real color way (the artist keeps working
+    // from these on the customer's art page), and the first one doubles as the "all
+    // garments" default entry. A single unlabeled PNG stays default-only — no noise CW.
+    const cwFor = webFiles.map((f, i) => (f.cwLabel ? { id: 'cw' + ts + '_' + i, garment_color: f.cwLabel, inks: [] } : null));
+    const color_ways = cwFor.filter(Boolean);
+    const web_logos = webFiles.length ? normalizeWebLogos([
+      { url: webFiles[0].url, color_way: '', is_default: true },
+      ...webFiles.map((f, i) => (cwFor[i] ? { url: f.url, color_way: cwFor[i].garment_color, color_way_id: cwFor[i].id } : null)).filter(Boolean),
+    ], color_ways) : [];
+    const base = {
+      id: 'logo' + ts + Math.random().toString(36).slice(2, 6), name: name || 'Store logo',
+      files: (webFiles.length ? webFiles : prodFiles).map((f) => ({ url: f.url, name: f.name })),
+      prod_files: prodFiles.map((f) => ({ url: f.url, name: f.name })),
+      status: 'approved', deco_type: 'screen_print', uploaded: new Date().toLocaleDateString(), color_ways,
+    };
+    // No web cutout at all (production files only) → source-only record, so the Art tab
+    // asks for a placeable PNG/SVG instead of stamping a raw .ai url onto a garment.
+    const rec = webFiles.length
+      ? { ...base, preview_url: webFiles[0].url, web_logo_url: webFiles[0].url, web_logos, kind: 'logo' }
+      : { ...base, kind: 'art' };
+    const { error } = await supabase.from('customers').update({ art_files: [...arr, rec] }).eq('id', sel.customer_id);
+    if (error) { flash('Could not save art folder: ' + error.message); return null; }
+    const curArt = Array.isArray(sel.store_art) ? sel.store_art : [];
+    const { data: st } = await supabase.from('webstores').update({ store_art: [...curArt, { ...rec, _srcLabel: 'Uploaded' }] }).eq('id', sel.id).select().single();
+    if (st) { setStores((prev) => prev.map((s) => (s.id === sel.id ? st : s))); setSel(st); }
+    const parts = [webFiles.length ? `${webFiles.length} web logo${webFiles.length === 1 ? '' : 's'}` : null, prodFiles.length ? `${prodFiles.length} production file${prodFiles.length === 1 ? '' : 's'}` : null].filter(Boolean).join(' + ');
+    flash('Art folder added (' + parts + ')'); loadDetail(sel);
     return rec;
   }, [sel, flash, loadDetail]);
 
@@ -2880,7 +2977,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     // we can emit a logo deco for it on the SO (numbers/names already carry via
     // `personalize`). Keyed by product_id to match byProduct.
     const xferLabel = {};
-    (detail.transfers || []).forEach((t) => { if (t && t.code) xferLabel[t.code] = t.label || t.code; });
+    // Transfer cost-of-record (webstore_transfers.unit_cost, 00204): staff set it from
+    // their bulk transfer buys; each batched application carries it as cost_each so GP/
+    // commissions see real transfer cost (dP's art branch prefers cost_each on
+    // transfer_code decos — previously these rows hit the generic DTF matrix cost).
+    const xferCost = {};
+    (detail.transfers || []).forEach((t) => { if (t && t.code) { xferLabel[t.code] = t.label || t.code; if (t.unit_cost != null && Number.isFinite(Number(t.unit_cost))) xferCost[t.code] = Number(t.unit_cost); } });
     const bundleXfersByPid = {};
     (detail.bundleItems || []).forEach((b) => {
       if (!b.product_id || !b.transfer_code) return;
@@ -2983,7 +3085,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       (bundleXfersByPid[g.product_id] ? [...bundleXfersByPid[g.product_id]] : []).forEach((code) => {
         const xId = 'xfer_' + code;
         addArtFile({ id: xId, name: 'Transfer: ' + (xferLabel[code] || code), deco_type: 'heat_press', web_logo_url: '', files: [], mockup_files: [], color_ways: [], status: 'approved', uploaded: new Date().toLocaleDateString() });
-        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: 0 });
+        decorations.push({ kind: 'art', art_file_id: xId, position: 'Front', type: 'heat_press', transfer_code: code, placement: 'full_front', side: 'front', color_label: 'original', sell_override: 0, sell_each: 0, cost_each: xferCost[code] != null ? xferCost[code] : 0 });
       });
       // unit_sell = actual collected revenue ÷ units (weighted avg across sizes/bundles),
       // scaled by the batch discount ratio so the SO reconciles to net-of-coupon
@@ -3158,9 +3260,10 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
             // team's name/customer/colors — open the color picker with THAT palette.
             if (!isNew && tplAfterEdit && r.data && r.data.id === tplAfterEdit.storeId) { const q = tplAfterEdit; setTplAfterEdit(null); beginTplColorFlow(q.tpl, r.data); return r; }
             // A brand-new team store (not from OMG or a template): open it straight to the
-            // Art & Logos page so the rep keeps building — add artwork next — instead of
-            // bouncing back to the store list. Club stores stay on the list (product-first).
-            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('art'); setDetail(null); await loadDetail(r.data); return r; }
+            // Catalog tab so the rep starts by adding products (art/logos come after there
+            // are items to decorate) — instead of bouncing back to the store list. Club
+            // stores stay on the list (product-first).
+            if (isNew && r.data && r.data.org_type !== 'club') { setSel(r.data); setTab('catalog'); setDetail(null); await loadDetail(r.data); return r; }
             return r;
           }}
           onImportFromOmg={(editing === 'new' && !omgPrefill) ? () => { setEditing(null); setOmgStep('link'); } : null} />
@@ -3174,7 +3277,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
           onCreateCoupons={createCoupons} onUpdateCoupon={updateCoupon} onRemoveCoupon={removeCoupon}
           onAddRoster={addRoster} onUpdateRoster={updateRoster} onRemoveRoster={removeRoster} onInviteRoster={inviteRoster}
           onSaveOrderEdits={saveOrderEdits} onRefundOrder={refundOrder}
-          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
+          onApplyLogo={applyLogoToItems} onApplyLogoBulk={applyLogoBulk} onSetItemDecorations={setItemDecorations} onSaveArtVariant={saveArtVariant} onSaveRepWebLogo={saveRepWebLogo} placementMemory={(wsSettings && wsSettings.placement_memory) || {}} onSavePlacementMemory={savePlacementMemory} onSaveMocks={saveStoreMocks} onAddStoreLogo={addStoreLogo} onAddStoreArtFolder={addStoreArtFolder} onSaveStoreArt={saveStoreArt} onAttachWebLogo={attachArtPreview} onFlash={flash}
           portalUrl={coachPortalUrl(sel)} onEmailDirector={(email) => emailDirector(sel, email)} onFlyer={() => openFlyer(sel, attachBundleImages([...(detail?.catalog || [])], detail?.bundleItems || []))} />
       ) : (
         <ListView stores={stores} custName={custName} repName={repName} REPS={REPS} cu={cu} storeStats={storeStats} onOpen={openStore} onNew={() => setEditing('new')} onDuplicate={duplicateStore} onToggleTemplate={toggleTemplate} onSaveAsTemplate={saveAsTemplate} onNewFromTemplate={startStoreFromStoreTemplate} onStoreDefaults={() => setShowDefaults(true)} onStartStoreFromTemplate={startStoreFromTemplate} onAddTemplateToStore={(t) => setPickStoreForTpl(t)} onCreateFromOmg={() => setOmgStep('link')} />
@@ -4891,7 +4994,7 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
-function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
+function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
   const [launchOpen, setLaunchOpen] = useState(false);
@@ -5097,7 +5200,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
-          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
+          {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
           {tab === 'inventory' && <InventoryTab catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} transfers={detail?.transfers || []} orders={orders} orderItems={orderItems} onUpdateTransfer={onUpdateTransfer} onAddTransfers={onAddTransfers} onRemoveTransfer={onRemoveTransfer} />}
@@ -5197,6 +5300,13 @@ const storeFundAmount = (price, sf) => {
   return Math.max(0, amt);
 };
 const effectiveFundraise = (price, perItemY, sf) => (Number(perItemY) > 0 ? Number(perItemY) : storeFundAmount(price, sf));
+// Default sale price for a NEWLY added item: the ~45%-margin price — the same math as the
+// item editor's "→ $X for 45%" link (ceil((cost + est. deco) / 0.55)), so items land at
+// 45% instead of the vendor list price and the rep doesn't have to click the link on each
+// one. Deco estimate mirrors the editor: $5 when the item has artwork or the store is a
+// team store (decorated by default). Returns null when the cost is unknown (caller falls
+// back to list price). Never applied to items already in a store.
+const price45 = (cost, decoCost = 0) => { const c = Number(cost) || 0; return c > 0 ? Math.ceil((c + decoCost) / 0.55) : null; };
 
 function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {}, invSrcByPid = {}, transfers = [], isTeam = false, library = [], storeColors = [], teamHexes = [], storeFund = {}, standardCategories = [], onApplyLogo, onSaveLogo, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onGoToArt, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onUpdateImage, onUpdateCost, onUpdateProductMeta, onReorder, onMove, onReorderColors, onUpdateItem, onBulkUpdate }) {
   const [mode, setMode] = useState(null); // null | 'single' | 'bundle'
@@ -5458,7 +5568,7 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
         );
       })()}
 
-      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
+      {mode === 'single' && <ProductPicker label="Add products to this store" storeColors={storeColors} storeFund={storeFund} isTeam={isTeam} library={library} catalog={catalog} standardCategories={standardCategories} onSaveLogo={onSaveLogo} onPick={(p) => setPending(p)} onPickMany={async (prods, decorations, cfg = {}) => { if (onAddGrouped) { await onAddGrouped(prods, decorations, cfg); } else { const hasPrice = cfg.price !== undefined && cfg.price !== '' && cfg.price !== null; for (const pr of prods) await onAddSingle({ product: pr, price: hasPrice ? cfg.price : pr.retail_price, fundraise: cfg.fundraise || 0, image_url: null, takes_number: !!cfg.takes_number, takes_name: !!cfg.takes_name, name_upcharge: cfg.name_upcharge || 0, transfer_codes: [], num_transfer_sets: [], category: cfg.category || null, kit_name: cfg.kit_name || null, required: !!cfg.required, options: cfg.options || [], decorations: decorations || [] }); } setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'ai' && <AiStoreBuilder onAddProducts={async (prods) => { for (const pr of prods) await onAddSingle({ product: pr, price: pr.retail_price, fundraise: 0, image_url: null, takes_number: false, takes_name: false, name_upcharge: 0, transfer_codes: [], num_transfer_sets: [] }); setMode(null); }} onClose={() => setMode(null)} />}
       {mode === 'import' && <SkuImporter existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} storeFund={storeFund} onApplyColors={onApplyTemplateColors} onGoToArt={onGoToArt} onClose={() => setMode(null)} />}
       {mode === 'template' && <TemplateGallery catalog={catalog} stockByWp={stockByWp} existingPids={new Set((catalog || []).map((c) => c.product_id).filter(Boolean))} teamHexes={teamHexes} onApply={async (tpl) => { await onApplyTemplate(tpl); setMode(null); }} onApplyColors={async (plan) => { await onApplyTemplateColors(plan); setMode(null); }} onClose={() => setMode(null)} />}
@@ -7089,8 +7199,10 @@ function MultiTransferFields({ designOptions = [], numberSets = [], transferCode
 // Color-selector modal — clicking a product card opens this over the picker so the rep can
 // see every colorway of the style and tick only the ones they want. Adds them at a shared
 // price (tweak fundraising / art per item after, in the catalog editor).
-function SinglePriceEditor({ product, storeFund = {}, onAdd, onCancel }) {
-  const [price, setPrice] = useState(product.retail_price || 0);
+function SinglePriceEditor({ product, storeFund = {}, isTeam = false, onAdd, onCancel }) {
+  // Default to the ~45%-margin price (team stores assume $5 deco), not the vendor list
+  // price — matches what the item editor's "→ $X for 45%" link would set.
+  const [price, setPrice] = useState(() => price45(product.nsa_cost, isTeam ? 5 : 0) ?? (product.retail_price || 0));
   const [rows, setRows] = useState([]);       // one row per colorway (incl. base), with _stock
   const [loading, setLoading] = useState(true);
   const [inStockOnly, setInStockOnly] = useState(false);
@@ -7653,7 +7765,7 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                   </div>
                 ) : (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 12 }}>
-                    {shown.map((t) => (
+                    {shown.map((t) => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return (
                       <div key={t.id} style={{ border: '1px solid #e8ebf0', borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 8, background: '#fff' }}>
                         <div style={{ fontWeight: 800, fontSize: 14.5, lineHeight: 1.2 }}>{t.name}</div>
                         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
@@ -7662,14 +7774,20 @@ function TemplateGallery({ catalog = [], stockByWp = {}, existingPids = new Set(
                           {t.brand_focus && chip(t.brand_focus)}
                           {t.gender && chip(t.gender)}
                         </div>
-                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{(() => { const secs = [...new Set(itemsOf(t).map((i) => (i.category || '').trim()).filter(Boolean))]; return secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''; })()}</div>
-                        <div style={{ marginTop: 'auto', display: 'flex', gap: 8, alignItems: 'center', paddingTop: 6 }}>
-                          <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>Add to store →</button>
-                          {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
-                          {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                        <div style={{ fontSize: 12, color: '#6A7180' }}>{itemsOf(t).length} item{itemsOf(t).length === 1 ? '' : 's'}{secs.length ? ` · ${secs.length} section${secs.length === 1 ? '' : 's'}` : ''}</div>
+                        <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 6 }}>
+                          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                            <button className="btn btn-sm btn-primary" onClick={() => setPicking(t)} style={{ flex: 1 }}>{secs.length >= 2 ? 'Add whole store →' : 'Add to store →'}</button>
+                            {isCurator && !t._storeTpl && <button title="Edit template" onClick={() => { setEditingTpl(t); setView('edit'); }} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#3A4150', fontSize: 13 }}>✎</button>}
+                            {isCurator && !t._storeTpl && <button title="Delete template" onClick={() => del(t.id)} style={{ background: 'none', border: '1px solid #e2e6ec', borderRadius: 8, padding: '6px 9px', cursor: 'pointer', color: '#b91c1c', fontSize: 13 }}>🗑</button>}
+                          </div>
+                          {/* Multi-section templates can also be applied one SECTION at a time
+                              (e.g. just the template's Hoods) — same color-picker flow, items
+                              pre-filtered to that section. */}
+                          {secs.length >= 2 && <MenuButton label="Add just a section" items={secs.map((sec) => { const n = itemsOf(t).filter((i) => (i.category || '').trim() === sec).length; return { label: `${sec} (${n})`, onClick: () => setPicking({ ...t, name: `${t.name} — ${sec}`, items: itemsOf(t).filter((i) => (i.category || '').trim() === sec) }) }; })} />}
                         </div>
                       </div>
-                    ))}
+                    ); })}
                   </div>
                 )}
               <div style={{ fontSize: 11.5, color: '#9AA1AC', marginTop: 14 }}>Using a template adds its products to this store (skipping any already added). Prices, colors &amp; art stay fully editable after.</div>
@@ -8709,6 +8827,15 @@ async function importVendorSelections(selected) {
   const rows = [...selected.values()].map(({ style, color }) => vendorColorToProductRow(style, color));
   const { data, error } = await supabase.from('products').upsert(rows, { onConflict: 'id' }).select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url');
   if (error) throw new Error(error.message);
+  // Kick an immediate live-stock backfill for each imported SanMar style (fire-and-forget).
+  // The storefront reads SYNCED vendor stock (sanmar_inventory), which otherwise only the
+  // nightly brands-sync writes — a style imported today would read "sold out" (or sell
+  // blind via the unsynced fallback) until then. Failures are fine: the nightly sync and
+  // the storefront fallback still cover the gap.
+  const smStyles = [...new Set([...selected.values()].filter(({ style }) => style.source === 'sm').map(({ style }) => String(style.sku || '').trim().toUpperCase()).filter(Boolean))];
+  for (const st of smStyles) {
+    try { fetch('/.netlify/functions/vendor-stock-backfill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ style: st, source: 'sanmar' }) }).catch(() => {}); } catch (e) { /* best-effort */ }
+  }
   return (data && data.length ? data : rows);
 }
 
@@ -8735,7 +8862,7 @@ function VendorStyleCards({ styles, selected, onToggle }) {
   ));
 }
 
-function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true }) {
+function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], storeFund = {}, library = [], catalog = [], standardCategories = [], onSaveLogo, initialFilter = {}, destLabel = 'store', initialInStock = true, isTeam = false }) {
   // Section options for the bulk-add category dropdown: the store's own sections plus the
   // global standard categories (Store defaults). First one is the default selection.
   const storeSections = useMemo(() => [...new Set([...(catalog || []).map((c) => c.category), ...(standardCategories || [])].filter(Boolean))].sort(), [catalog, standardCategories]);
@@ -8829,20 +8956,33 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     const t = setTimeout(async () => {
       const typed = q.trim();
       let rows = null;
-      // Typed search → fast server-side trigram RPC (same one the order editor uses). It
-      // covers the whole catalog including every vendor brand (SanMar/District, S&S,
-      // Richardson, Momentec, …), so name/SKU searches resolve instantly instead of a slow
-      // client-side ilike scan. Browse-by-category/brand and favorites keep the table query.
+      // Typed search → token-aware scan of the whole `products` catalog. Unlike the
+      // search_products RPC (which deliberately drops the API-backed vendors so the order
+      // editor sees them only via live API search), the webstore builder DOES want the
+      // synced SanMar / S&S / Momentec / Richardson rows: those vendors' live APIs are
+      // style-number-only, so their synced catalog rows are the ONLY way to find a style by
+      // name (e.g. "repeat short" → Sport-Tek Repeat 7" Short ST485). Any live-API duplicate
+      // is hidden later by vendorDeduped. We anchor the server query on the most selective
+      // (longest) token via the products name trigram index, then AND the rest client-side —
+      // so multi-word text searches match names like '…Repeat 7" Short…' that a single
+      // whole-phrase ilike never would.
       if (!favOnly && typed.length >= 2) {
         try {
-          const { data, error } = await supabase.rpc('search_products', { p_query: typed, p_category: null, p_vendor_id: null, p_color_category: null, p_in_stock: false, p_limit: limit, p_offset: 0 });
+          const ql = typed.toLowerCase();
+          const toks = ql.split(/\s+/).filter(Boolean);
+          // Strip PostgREST filter metacharacters so a token can't break the or()/ilike syntax.
+          const esc = (s) => String(s).replace(/[,()*%]/g, ' ').trim();
+          const anchor = esc([...toks].sort((a, b) => b.length - a.length)[0] || ql) || ql;
+          let query = supabase.from('products').select('id,sku,name,brand,color,category,retail_price,nsa_cost,available_sizes,image_front_url')
+            .or('is_active.is.null,is_active.eq.true').or('is_archived.is.null,is_archived.eq.false')
+            .or(`sku.ilike.${esc(ql)}*,name.ilike.*${anchor}*`);
+          if (brandSel) query = query.eq('brand', brandSel);
+          if (catSel) query = query.in('category', CAT_MAP[catSel] || [catSel]);
+          const { data, error } = await query.order('name').order('color').limit(limit);
           if (error) throw error;
-          rows = (data || []).filter((r) => (r.is_active == null || r.is_active === true) && !r.is_archived);
           // SKU matches are PREFIX-only — searching "112" returns Richardson 112, not IF9112
           // or JM5112 where "112" sits mid-SKU. Names still match on all tokens anywhere.
-          { const ql = typed.toLowerCase(); const toks = ql.split(/\s+/).filter(Boolean); rows = rows.filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); }); }
-          if (brandSel) rows = rows.filter((r) => r.brand === brandSel);
-          if (catSel) { const cats = CAT_MAP[catSel] || [catSel]; rows = rows.filter((r) => cats.includes(r.category)); }
+          rows = (data || []).filter((r) => { const sku = String(r.sku || '').toLowerCase(); const name = String(r.name || '').toLowerCase(); return sku.startsWith(ql) || (toks.length && toks.every((tk) => name.includes(tk))); });
         } catch (e) { rows = null; /* fall through to the table query */ }
       }
       if (rows == null) {
@@ -8933,8 +9073,19 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
   })();
   // Hide vendor styles the local search already surfaced (imported vendor rows carry SKU
   // "<style>-<color>", native rows the bare style) so the same garment isn't listed twice.
-  const localSkusU = useMemo(() => results.map((r) => String(r.sku || '').toUpperCase()), [results]);
-  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => { const sk = String(s.sku || '').toUpperCase(); return sk && !localSkusU.some((x) => x === sk || x.startsWith(sk + '-')); }), [vendorStyles, localSkusU]);
+  // A live style is hidden as a duplicate ONLY when its local copy is actually visible:
+  // synced stock rows can be missing or stale (e.g. an imported SanMar colorway whose
+  // upper-cased sku never matches sanmar_inventory), and with "In stock only" on, hiding
+  // the live card behind an invisible zero-stock local row would show a style as
+  // unavailable that the vendor has by the thousands. Live stock is real-time — it wins.
+  const vendorDeduped = useMemo(() => vendorStyles.filter((s) => {
+    const sk = String(s.sku || '').toUpperCase();
+    if (!sk) return false;
+    const twins = results.filter((r) => { const x = String(r.sku || '').toUpperCase(); return x === sk || x.startsWith(sk + '-'); });
+    if (!twins.length) return true;            // no local copy — show the live card
+    if (!inStockOnly) return false;            // local copy is in the grid — hide the dupe
+    return !twins.some(wellStocked);           // filter hides every local copy → keep the live card
+  }), [vendorStyles, results, inStockOnly]); // eslint-disable-line react-hooks/exhaustive-deps
   // Apply the "School colors" toggle to the live vendor styles too — drop colorways whose
   // color isn't in the school's palette (same primary-segment match as the local catalog),
   // and hide any style left with no matching colorway.
@@ -8970,7 +9121,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
     if (!ids.length) return;
     const first = ids.length === 1 ? (rowById.get(ids[0]) || selCacheRef.current.get(ids[0])) : null;
     setBulkDecos([]); setBulkTab('setup'); setBCategory((c) => c || storeSections[0] || ''); setBCatNew(storeSections.length === 0);
-    setBPrice((p) => p || (first ? String(first.retail_price ?? '') : ''));
+    // Seed the price box with the ~45%-margin number (store adds), so the default the rep
+    // sees IS the price that lands; templates keep seeding from the vendor list price.
+    setBPrice((p) => p || (first ? String((destLabel === 'template' ? null : price45(first.nsa_cost, isTeam ? 5 : 0)) ?? first.retail_price ?? '') : ''));
     setBulkOpen(true);
   };
 
@@ -9107,7 +9260,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
             <span style={{ fontWeight: 800, fontSize: 14 }}>{selTotal} selected</span>
             <button className="btn btn-primary" disabled={vendorImporting} onClick={openBulkAdd}>{vendorImporting ? 'Importing…' : `Add ${selTotal} to ${destLabel} →`}</button>
             <button className="btn btn-secondary" onClick={() => { setSelected(new Set()); setVendorSel(new Map()); }}>Clear</button>
-            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at list price{vendorSel.size ? '; vendor picks import at ~50% margin' : ''}.</span>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC' }}>Keeps across searches — adds at {destLabel === 'template' ? 'list price' : 'a ~45% margin price'}{vendorSel.size ? ' (vendor picks are imported first)' : ''}.</span>
           </div>
         </div>
       )}
@@ -9129,7 +9282,7 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                 <div>
                   <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>Applied to all <b>{selProducts.length}</b> items. Fine-tune sizes &amp; transfers per item afterward.</div>
                   <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
-                    <Row label="Price each (blank = list price)"><input className="form-input" type="number" step="0.01" value={bPrice} onChange={(e) => setBPrice(e.target.value)} placeholder="list" style={{ width: 160 }} /></Row>
+                    <Row label={destLabel === 'template' ? 'Price each (blank = list price)' : 'Price each (blank = ~45% margin)'}><input className="form-input" type="number" step="0.01" value={bPrice} onChange={(e) => setBPrice(e.target.value)} placeholder={destLabel === 'template' ? 'list' : '~45%'} style={{ width: 160 }} /></Row>
                     <Row label="Fundraising on top"><input className="form-input" type="number" step="0.01" value={bFund} onChange={(e) => setBFund(e.target.value)} placeholder="0.00" style={{ width: 150 }} /></Row>
                   </div>
                   {storeFund?.enabled && Number(bFund) <= 0 && (
@@ -9140,9 +9293,9 @@ function ProductPicker({ label, onPick, onPickMany, onClose, storeColors = [], s
                     const sp = selProducts[0];
                     const list = Number(sp.retail_price) || 0;
                     const cost = Number(sp.nsa_cost) || 0;
-                    const price = (bPrice !== '' && bPrice != null) ? Number(bPrice) : list;
+                    const decoCost = (bulkDecos.length || (destLabel !== 'template' && isTeam)) ? 5 : 0;
+                    const price = (bPrice !== '' && bPrice != null) ? Number(bPrice) : ((destLabel === 'template' ? null : price45(cost, decoCost)) ?? list);
                     const fund = (bFund !== '' && bFund != null && Number(bFund) > 0) ? Number(bFund) : storeFundAmount(price, storeFund);
-                    const decoCost = bulkDecos.length ? 5 : 0;
                     const margin = price > 0 && cost > 0 ? Math.round((1 - (cost + decoCost) / price) * 100) : null;
                     return (
                       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', fontSize: 12, background: '#f8fafc', border: '1px solid #e8ebf0', borderRadius: 8, padding: '8px 12px', marginBottom: 12 }}>
@@ -9759,7 +9912,126 @@ function DecoBadge({ deco }) {
   );
 }
 
-function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
+// ── New art folder modal ── the webstore twin of the customer page's "New Art" flow: one
+// folder = the logo's web cutouts (each color way, labels editable) + its production files
+// (.ai/.eps/.dst/.pdf), created in one action. Files picked in either section are sorted by
+// TYPE (a raw .ai is never usable as a web logo), and drag-dropped files land presorted.
+const _isWebArtFile = (f) => (((f && f.type) || '').startsWith('image/')) && !/\.(ai|eps|pdf|dst)$/i.test((f && f.name) || '');
+const _cleanFileName = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
+  const mk = (f) => ({ file: f, preview: _isWebArtFile(f) ? URL.createObjectURL(f) : null, label: '' });
+  const [webs, setWebs] = useState(() => (seed || []).filter(_isWebArtFile).map(mk));
+  const [prods, setProds] = useState(() => (seed || []).filter((f) => !_isWebArtFile(f)).map(mk));
+  const [name, setName] = useState('');
+  const [hoverZone, setHoverZone] = useState(null); // 'web' | 'prod' — which drop target is under the cursor
+  const webRef = useRef(); const prodRef = useRef();
+  // Revoke every thumbnail object-URL on close (ref mirror so late-added files are included).
+  const allRef = useRef([]); allRef.current = [...webs, ...prods];
+  useEffect(() => () => { allRef.current.forEach((x) => x.preview && URL.revokeObjectURL(x.preview)); }, []);
+  // Folder name + color-way labels suggest themselves from the filenames' common prefix
+  // ("eagles logo white/black" → folder "eagles logo", CWs "white"/"black") — all editable.
+  const names = [...webs, ...prods].map((x) => _cleanFileName(x.file.name));
+  let _pre = names[0] || '';
+  for (const n of names.slice(1)) { let i = 0; while (i < _pre.length && n[i] === _pre[i]) i++; _pre = _pre.slice(0, i); }
+  _pre = _pre.replace(/[\s_-]+$/, '');
+  const suggested = (_pre.length >= 3 ? _pre : names[0]) || 'Store logo';
+  const cwSuggestion = (i) => (_cleanFileName(webs[i].file.name).slice(_pre.length).trim() || 'CW ' + (i + 1));
+  const addFiles = (list) => {
+    const fs = Array.from(list || []).filter(Boolean);
+    if (!fs.length) return;
+    setWebs((w) => [...w, ...fs.filter(_isWebArtFile).map(mk)]);
+    setProds((p) => [...p, ...fs.filter((f) => !_isWebArtFile(f)).map(mk)]);
+  };
+  const drop = (fn) => (arr, i) => fn(arr.filter((_, j) => j !== i));
+  // Drag-and-drop is the primary way in — each section is a real drop target that lights up
+  // on hover. Files always sort by TYPE (a .ai dropped on the web zone still lands in
+  // production), so the labels guide without trapping a mis-drop. "browse" is the fallback.
+  const dropProps = (key) => ({
+    onDragOver: (e) => { e.preventDefault(); e.stopPropagation(); if (hoverZone !== key) setHoverZone(key); },
+    onDragLeave: (e) => { e.preventDefault(); e.stopPropagation(); setHoverZone((z) => (z === key ? null : z)); },
+    onDrop: (e) => { e.preventDefault(); e.stopPropagation(); setHoverZone(null); addFiles(e.dataTransfer.files); },
+  });
+  const zoneStyle = (active) => ({ border: '1.5px dashed ' + (active ? '#2563eb' : '#d7dbe2'), borderRadius: 10, padding: 10, background: active ? '#eff6ff' : '#fafbfc', transition: 'background .12s, border-color .12s' });
+  const browseLink = { background: 'none', border: 'none', color: '#2563eb', cursor: 'pointer', fontSize: 12.5, fontWeight: 700, padding: 0, textDecoration: 'underline' };
+  const create = () => {
+    if (busy || (!webs.length && !prods.length)) return;
+    onCreate({
+      name: name.trim() || suggested,
+      webs: webs.map((w, i) => ({ file: w.file, label: w.label.trim() || (webs.length > 1 ? cwSuggestion(i) : '') })),
+      prods: prods.map((p) => ({ file: p.file })),
+    });
+  };
+  const zone = { border: '1.5px dashed #d7dbe2', borderRadius: 10, padding: 10, background: '#fafbfc' };
+  const rowSt = { display: 'flex', alignItems: 'center', gap: 8, padding: '5px 6px', borderRadius: 8, background: '#fff', border: '1px solid #eef0f3' };
+  const secTitle = { fontSize: 11.5, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.4, color: '#475569', marginBottom: 6 };
+  return (
+    <div className="modal-overlay" onClick={() => !busy && onClose()}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 620 }}
+        onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}>
+        <div className="modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h2 style={{ margin: 0, fontSize: 17 }}>🎨 New art folder</h2>
+          <button onClick={() => !busy && onClose()} style={{ background: 'none', border: 'none', fontSize: 22, cursor: 'pointer', color: '#6A7180', lineHeight: 1 }}>×</button>
+        </div>
+        <div style={{ padding: 16 }}>
+          <div style={{ fontSize: 12.5, color: '#6A7180', marginBottom: 12 }}>One folder holds everything production needs for this logo: the web cutouts (one per color way) and the production files. Saved to the customer's art library <i>and</i> this store. PNG‑only is fine — the artist adds production files to the folder later.</div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={secTitle}>Folder name</div>
+            <input className="form-input" value={name} onChange={(e) => setName(e.target.value)} placeholder={suggested} style={{ width: '100%' }} />
+          </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={secTitle}>Web logos — one per color way <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(PNG, SVG · placeable on garments)</span></div>
+            <div style={zoneStyle(hoverZone === 'web')} {...dropProps('web')}>
+              {webs.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                {webs.map((w, i) => (
+                  <div key={i} style={rowSt}>
+                    <div style={{ width: 34, height: 34, borderRadius: 6, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
+                    <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
+                    {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
+                    <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 170, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
+                    <button onClick={() => !busy && drop(setWebs)(webs, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: webs.length ? '2px 0' : '20px 0', color: '#6A7180', fontSize: 12.5, fontWeight: 600, pointerEvents: 'none' }}>
+                <span style={{ pointerEvents: 'auto' }}>{webs.length ? '📎 Drag more logos here' : '🖼 Drag logos here'}</span>
+                <span>·</span>
+                <button style={{ ...browseLink, pointerEvents: 'auto' }} disabled={busy} onClick={() => webRef.current && webRef.current.click()}>browse</button>
+              </div>
+              <input ref={webRef} type="file" multiple accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={secTitle}>Production files <span style={{ fontWeight: 600, textTransform: 'none', letterSpacing: 0, color: '#94a3b8' }}>(.ai, .eps, .dst, .pdf — for the artist / production)</span></div>
+            <div style={zoneStyle(hoverZone === 'prod')} {...dropProps('prod')}>
+              {prods.length > 0 && <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
+                {prods.map((p, i) => (
+                  <div key={i} style={rowSt}>
+                    <span style={{ fontSize: 15 }}>📄</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{p.file.name}</span>
+                    <button onClick={() => !busy && drop(setProds)(prods, i)} title="Remove" style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 15, padding: 0, lineHeight: 1 }}>×</button>
+                  </div>
+                ))}
+              </div>}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: prods.length ? '2px 0' : '20px 0', color: '#6A7180', fontSize: 12.5, fontWeight: 600, pointerEvents: 'none' }}>
+                <span style={{ pointerEvents: 'auto' }}>{prods.length ? '📎 Drag more files here' : '📄 Drag production files here'}</span>
+                <span>·</span>
+                <button style={{ ...browseLink, pointerEvents: 'auto' }} disabled={busy} onClick={() => prodRef.current && prodRef.current.click()}>browse</button>
+              </div>
+              <input ref={prodRef} type="file" multiple accept=".ai,.eps,.pdf,.dst" style={{ display: 'none' }} onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, alignItems: 'center' }}>
+            <span style={{ fontSize: 11.5, color: '#9AA1AC', marginRight: 'auto' }}>Drag files onto a section — or anywhere in this window; they sort by type.</span>
+            <button className="btn btn-secondary" disabled={busy} onClick={onClose}>Cancel</button>
+            <button className="btn btn-primary" disabled={busy || (!webs.length && !prods.length)} onClick={create}>{busy ? 'Uploading…' : '⬆ Create art folder'}</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, storeArt = [], onSaveStoreArt, onSaveLogo, onSaveArtFolder, onAttachWebLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory = {}, onSavePlacementMemory, canMock, onOpenMockBuilder }) {
   const singles = (catalog || []).filter((c) => c.kind === 'single');
   const [activeId, setActiveId] = useState(storeArt[0]?.id || null);
   const [placement, setPlacement] = useState('left_chest');
@@ -9788,22 +10060,33 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const [pickOpen, setPickOpen] = useState(true); // collapse the logo-picker section
   const [upBusy, setUpBusy] = useState(false);
   const [dragOver, setDragOver] = useState(false);
-  const fileRef = useRef();
-  const emptyRef = useRef();
   const boxRefs = useRef({}); // styleKey -> the card's stage element (for drag math)
   const dragRef = useRef(null); // { itemId, styleKey, mode:'move'|'resize', scope:'style'|'item'|'backStyle', box, grab }
   // Picks (and placements) are specific to the active logo — a variant pick holds that
   // logo's cutout URL — so switching logos starts a clean staging slate. Selection is kept.
   useEffect(() => { setPickByItem({}); setPlaceByStyle({}); setPlaceByItem({}); setNudgeItem(null); setBackByStyle({}); setFlipped(new Set()); setPresetTouched(false); setDone(''); }, [activeId]);
-  // Upload a NEW artwork file here: saves it to the customer's art folder AND this
-  // store's set, so it's reusable on orders later and pickable on items now.
-  const uploadArt = async (file) => {
-    if (!file || !file.type.startsWith('image/')) return;
+  // Upload NEW artwork here via the "New art folder" modal: web PNG/SVGs are the logo's
+  // color-way cutouts (first = default), .ai/.eps/.dst/.pdf are production files — one
+  // record saved to the customer's art library AND this store's set. That folder is what
+  // production works from later; no more loose single PNGs.
+  const [folderOpen, setFolderOpen] = useState(false);
+  const [folderSeed, setFolderSeed] = useState(null); // File[] dropped before the modal opened
+  const openFolderWith = (fileList) => { setFolderSeed(Array.from(fileList || []).filter(Boolean)); setFolderOpen(true); };
+  const createArtFolder = async ({ name, webs, prods }) => {
+    if (!onSaveArtFolder || (!webs.length && !prods.length)) return;
     setUpBusy(true);
-    try { const url = await cloudUpload(file, 'nsa-store-art'); if (onSaveLogo) { const rec = await onSaveLogo(url, (file.name || 'Logo').replace(/\.[^.]+$/, '')); if (rec) setActiveId(rec.id); } }
-    catch (x) { /* cloudUpload surfaces error via toast */ }
+    try {
+      const clean = (n) => String(n || '').replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').trim();
+      const webFiles = [], prodFiles = [];
+      for (const w of webs) webFiles.push({ url: await cloudUpload(w.file, 'nsa-store-art'), name: clean(w.file.name) || 'Logo', cwLabel: w.label });
+      for (const p of prods) prodFiles.push({ url: await cloudUpload(p.file, 'nsa-production'), name: p.file.name || 'Production file' });
+      const rec = await onSaveArtFolder({ name, webFiles, prodFiles });
+      if (rec) setActiveId(rec.id);
+      setFolderOpen(false); setFolderSeed(null);
+    } catch (x) { /* cloudUpload surfaces error via toast */ }
     setUpBusy(false);
   };
+  const folderModal = folderOpen && <NewArtFolderModal seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
   const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
@@ -9837,7 +10120,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, backImg: st.image_back_url || '', color: st.color || '', decorations: it.decorations || [], styleKey: key });
+      // Normalize the garment photo to the SAME uniform 4:5 frame the storefront renders
+      // (normGarment trims + pads SanMar photos; other URLs pass through). Without this the
+      // editor places the logo against the RAW photo while the store shows the trimmed/padded
+      // one, so a logo dragged to a spot here lands somewhere else on the live store.
+      g.items.push({ id: it.id, sku: it.sku, img: normGarment(it.image_url || st.image_front_url), backImg: normGarment(st.image_back_url || ''), color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
   const allItems = groups.flatMap((g) => g.items);
@@ -10062,31 +10349,47 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         }
         onSavePlacementMemory(memPatch);
       }
-      // Link-only: nothing is placed on the image, so drop the selection — this clears the
-      // draggable placement previews, leaving each card as just the untouched image + its
-      // "Applied" badge (the whole point of Bypass mocks).
-      if (n > 0 && linkOnly) clearSel();
-      setDone(n > 0 ? `${linkOnly ? 'Linked art to' : 'Applied to'} ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}${linkOnly ? ' — image unchanged, no mockup.' : '.'}` : 'Error: nothing was applied — please retry.');
+      // Success → full reset so the rep moves cleanly to the NEXT logo and can't
+      // accidentally re-apply the one they just placed: clear the style selection, close the
+      // placement panel, and deselect the art itself. onApplyLogoBulk already flashed a
+      // confirmation ("Logo applied to N items") that survives the panel closing.
+      if (n > 0) { clearSel(); setBulkOpen(false); setActiveId(null); setDone(''); }
+      else setDone('Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
+    setApplying(false);
+  };
+
+  // Take the ACTIVE logo back off a style — strips every decoration whose art_id is this
+  // logo from each of the style's colors (both sides), leaving other logos and any
+  // number/name personalization intact.
+  const removeArtFromStyle = async (g) => {
+    if (!activeArt || applying) return;
+    const entries = (g.items || [])
+      .filter((it) => (it.decorations || []).some((d) => d && d.art_id === activeArt.id))
+      .map((it) => ({ id: it.id, decorations: (Array.isArray(it.decorations) ? it.decorations : []).filter((d) => !(d && d.art_id === activeArt.id)) }));
+    if (!entries.length) return;
+    setApplying(true); setDone('');
+    try { const n = await onApplyLogoBulk(entries); setDone(n > 0 ? `Removed ${activeArt.name || 'logo'} from ${g.name}.` : 'Error: could not remove — please retry.'); }
+    catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
 
   if (!libraryArt.length && !(storeArt || []).length) {
     return (
       <div className="card">
+        {folderModal}
         <div
-          onClick={() => !upBusy && emptyRef.current && emptyRef.current.click()}
+          onClick={() => !upBusy && setFolderOpen(true)}
           onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
           onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadArt(f); }}
+          onDrop={(e) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files && e.dataTransfer.files.length) openFolderWith(e.dataTransfer.files); }}
           style={{ margin: 16, padding: '40px 24px', textAlign: 'center', border: '2px dashed ' + (dragOver ? '#2563eb' : '#cbd5e1'), borderRadius: 14, background: dragOver ? '#eff6ff' : '#fafbfc', cursor: upBusy ? 'wait' : 'pointer' }}>
-          <input ref={emptyRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
           <div style={{ fontSize: 34, marginBottom: 8 }}>🎨</div>
           <div style={{ fontWeight: 800, fontSize: 17, color: '#191919', marginBottom: 6 }}>Add artwork to this store</div>
           <div style={{ fontSize: 13, color: '#64748b', maxWidth: 460, margin: '0 auto 16px', lineHeight: 1.55 }}>
-            Drag a logo here, or click to upload (PNG, SVG). It's saved to this team's art library <i>and</i> this store — then set it up right here: attach a web‑ready cutout, place it, recolor, and apply to your items. No need to leave this page.
+            Drag your art files here — several at once become <b>one art folder</b>: web PNG/SVGs (each color way of the logo) plus production files (.ai, .eps, .dst, .pdf). Saved to this team's art library <i>and</i> this store — then place, recolor, and apply to your items right here. PNG‑only is fine too; the artist adds production files to the folder later.
           </div>
-          <button onClick={(e) => { e.stopPropagation(); emptyRef.current && emptyRef.current.click(); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ Upload artwork'}</button>
+          <button onClick={(e) => { e.stopPropagation(); setFolderOpen(true); }} disabled={upBusy} className="btn btn-primary">{upBusy ? 'Uploading…' : '⬆ New art folder'}</button>
         </div>
       </div>
     );
@@ -10094,6 +10397,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
 
   return (
     <div>
+      {folderModal}
       {/* Store decoration mode — drives how strict the art needs to be */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', borderRadius: 10, marginBottom: 12, fontSize: 12.5, fontWeight: 600, border: '1px solid', ...(decorationMode === 'outsourced' ? { background: '#fff7ed', borderColor: '#fed7aa', color: '#9a3412' } : { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }) }}>
         {decorationMode === 'outsourced'
@@ -10110,9 +10414,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', color: '#475569', letterSpacing: 0.5 }}>1 · Pick a logo <span style={{ fontWeight: 600, color: '#94a3b8', textTransform: 'none', letterSpacing: 0 }}>· this store's art set</span></div>
           <div style={{ display: 'flex', gap: 8 }}>
             {pickOpen && <>
-              <button onClick={() => fileRef.current && fileRef.current.click()} disabled={upBusy} className="btn btn-sm btn-secondary" title="Upload a new logo — saved to the customer's art folder">{upBusy ? 'Uploading…' : '⬆ Upload art'}</button>
+              <button onClick={() => setFolderOpen(true)} disabled={upBusy} className="btn btn-sm btn-secondary" title="Create ONE art folder for this logo — web PNGs per color way + .ai/.eps/.dst production files — saved to the customer's art library">{upBusy ? 'Uploading…' : '⬆ New art folder'}</button>
               <button onClick={() => setAddOpen((v) => !v)} className="btn btn-sm btn-secondary">{addOpen ? 'Done' : '+ Add from library'}</button>
-              <input ref={fileRef} type="file" accept="image/*,.svg,.png" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files && e.target.files[0]; if (f) uploadArt(f); e.target.value = ''; }} />
             </>}
             <button onClick={() => setPickOpen((v) => !v)} className="btn btn-sm btn-secondary" title={pickOpen ? 'Collapse this section' : 'Expand'}>{pickOpen ? '▲ Collapse' : `▼ Logos (${storeArt.length})`}</button>
           </div>
@@ -10188,9 +10491,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         </button>
       ) : (
         <div className="card"><div style={{ padding: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12, position: 'sticky', top: 0, background: '#fff', zIndex: 4, paddingBottom: 4 }}>
             <div style={{ fontSize: 13, fontWeight: 800 }}>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</div>
-            <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button className="btn btn-sm btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'} →` : 'Select styles to apply'}</button>
+              <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
+            </div>
           </div>
 
           {/* 1 · Placement — a starting preset; drag on any garment to fine-tune per style */}
@@ -10254,7 +10560,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 <button onClick={(e) => { e.stopPropagation(); toggleStyle(g.key); }} title={selG ? 'Deselect style' : 'Select style'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: selG ? '#4f46e5' : 'rgba(255,255,255,.92)', border: selG ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0, zIndex: 3 }}>{selG ? '✓' : ''}</button>
                 {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Back</span>}
                 {!showBack && selG && hasBack && <span title="This style also gets a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>+ Back</span>}
-                {!selG && has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Applied</span>}
+                {!selG && has && <button onClick={(e) => { e.stopPropagation(); removeArtFromStyle(g); }} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Applied <span style={{ fontSize: 11, lineHeight: 1, opacity: 0.85 }} aria-label="remove">✕</span></button>}
                 {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
               {/* color name + pager dots */}
@@ -10295,6 +10601,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {!showBack && (nudged
                     ? <button onClick={() => clearNudge(item.id)} title="Reset this color to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
                     : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this color's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
+                  {has && <button onClick={() => removeArtFromStyle(g)} disabled={applying} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: applying ? 'wait' : 'pointer' }}>✕ Remove logo</button>}
                 </div>
               </div>}
             </div>
@@ -10747,6 +11054,10 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
   const InProc = ({ t }) => { const v = inProcUse[t.code] || 0; return <span style={{ color: v ? '#6d28d9' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const OnOrder = ({ t }) => { const v = onOrderUse[t.code] || 0; return <span style={{ color: v ? '#92400e' : '#cbd5e1', fontWeight: v ? 600 : 400 }}>{v}</span>; };
   const NumCell = ({ t, field }) => <input defaultValue={t[field] || 0} type="number" key={t[field]} onBlur={(e) => { const v = Number(e.target.value) || 0; if (v !== (t[field] || 0)) onUpdateTransfer(t.id, { [field]: v }); }} style={{ width: 64, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
+  // Cost per unit — what staff paid per transfer (total spend ÷ qty bought). Feeds
+  // create_club_sales_order's so_item_decorations.cost_each for GP (migration 00204).
+  // Blank = unset (not the same as $0); only writes when the value actually changed.
+  const CostCell = ({ t }) => <input defaultValue={t.unit_cost != null ? t.unit_cost : ''} type="number" step="0.01" min="0" placeholder="—" key={t.unit_cost} onBlur={(e) => { const raw = e.target.value; const v = raw === '' ? null : Number(raw) || 0; if (v !== (t.unit_cost != null ? t.unit_cost : null)) onUpdateTransfer(t.id, { unit_cost: v }); }} style={{ width: 72, padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }} />;
   const receiveRow = (t) => { if (!(t.incoming > 0)) return; onUpdateTransfer(t.id, { on_hand: (t.on_hand || 0) + (t.incoming || 0), incoming: 0, incoming_eta: null }); };
   const Recv = ({ t }) => t.incoming > 0 ? <button onClick={() => receiveRow(t)} title="Mark incoming as received into On hand" style={{ background: '#ecfdf5', border: '1px solid #a7f3d0', color: '#047857', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: '3px 8px', borderRadius: 6 }}>Receive</button> : <span style={{ color: '#cbd5e1' }}>—</span>;
   const EtaCell = ({ t }) => <input type="date" defaultValue={t.incoming_eta || ''} key={t.incoming_eta || ''} onBlur={(e) => { const v = e.target.value || null; if (v !== (t.incoming_eta || null)) onUpdateTransfer(t.id, { incoming_eta: v }); }} style={{ padding: '4px 6px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }} />;
@@ -10801,13 +11112,14 @@ function InventoryTab({ catalog, bundleItems, stockByWp, transfers, orders, orde
 
         {designs.length > 0 && <div className="card" style={{ marginBottom: 12 }}><div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th}></th></tr></thead>
+            <thead><tr style={{ textAlign: 'left', color: '#64748b', fontSize: 11, textTransform: 'uppercase' }}><th style={th}>Design transfer</th><th style={th}>On hand</th><th style={th}>Incoming</th><th style={th}>ETA</th><th style={th}></th><th style={th}>On order</th><th style={th}>In process</th><th style={th}>Available</th><th style={th} title="Cost per unit (what you paid, total spend ÷ qty) — feeds club-store GP">Cost/unit</th><th style={th}></th></tr></thead>
             <tbody>
               {designs.map((t) => (
                 <tr key={t.id} style={{ borderTop: '1px solid #f1f5f9' }}>
                   <td style={td}><div style={{ fontWeight: 600 }}>{t.label}</div><div style={{ fontSize: 11, color: '#94a3b8', fontFamily: 'monospace' }}>{t.code}</div></td>
                   <td style={td}><NumCell t={t} field="on_hand" /></td><td style={td}><NumCell t={t} field="incoming" /></td><td style={td}><EtaCell t={t} /></td><td style={td}><Recv t={t} /></td>
                   <td style={td}><OnOrder t={t} /></td><td style={td}><InProc t={t} /></td><td style={td}><Avail t={t} /></td>
+                  <td style={td}><CostCell t={t} /></td>
                   <td style={{ ...td, textAlign: 'right' }}><button onClick={() => onRemoveTransfer(t.id)} style={{ background: 'none', border: 'none', color: '#b91c1c', cursor: 'pointer', fontSize: 12 }}>remove</button></td>
                 </tr>
               ))}
@@ -10955,6 +11267,29 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
     (orderItems || []).forEach((i) => { (itemsByOrder[i.order_id] = itemsByOrder[i.order_id] || []).push(i); });
     return mergeStoreTracking(sos, orders, itemsByOrder, invProducts);
   }, [sos, orders, orderItems, invProducts]);
+  // Club stores: every order converts to its OWN Sales Order automatically (no
+  // staff batch step), so there is no single so_id to pull transfers against.
+  // Group every converted-but-unpulled order instead — combined garment size
+  // counts (this memo) + combined transfer needs (batchTransfers below, now
+  // array-capable), pulled in one action. Computed unconditionally (before the
+  // loading/error early-returns) to keep this hook's call order stable.
+  const clubUnpulled = store.org_type === 'club'
+    ? (orders || []).filter((o) => isLiveWebstoreOrder(o) && o.so_id && !o.transfers_pulled)
+    : [];
+  const clubSoIds = clubUnpulled.map((o) => o.so_id);
+  const clubGarmentSizes = useMemo(() => {
+    if (!clubUnpulled.length) return [];
+    const ids = new Set(clubUnpulled.map((o) => o.id));
+    const by = {};
+    (orderItems || []).forEach((i) => {
+      if (i.is_bundle_parent || !ids.has(i.order_id)) return;
+      const key = (i.sku || i.product_id || i.name || 'item') + '|' + (i.size || 'OS');
+      if (!by[key]) by[key] = { label: i.name || i.sku || 'Item', size: i.size || 'OS', qty: 0 };
+      by[key].qty += i.qty || 1;
+    });
+    return Object.values(by).sort((a, b) => a.label.localeCompare(b.label) || a.size.localeCompare(b.size));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clubSoIds.join(','), orderItems]);
   const TRK = { shipped: { l: '✓ Shipped', c: '#166534', b: '#dcfce7' }, ready: { l: 'Ready', c: '#166534', b: '#dcfce7' }, partial: { l: 'Partial', c: '#92400e', b: '#fef3c7' }, incoming: { l: 'Incoming', c: '#1d4ed8', b: '#dbeafe' }, awaiting: { l: 'Awaiting', c: '#475569', b: '#f1f5f9' }, backordered: { l: 'Backordered', c: '#b91c1c', b: '#fee2e2' } };
   // The per-customer tracking grid (In Inv · Ordered+IF · Billed · Received ·
   // Need · Status) for a set of webstore orders.
@@ -11059,10 +11394,13 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   };
   const maps = buildTransferMaps(catalog, bundleItems);
   const transferLabel = (code) => { const t = transfers.find((x) => x.code === code); if (t) return t.label; const [d, s, c] = code.split('|'); return s ? `#${d} · ${s} · ${c}` : code; };
-  // Transfers needed for one SO. By default counts only the orders whose
+  // Transfers needed for one SO — or several (club stores' Group Pull passes every
+  // converted-but-unpulled order's so_id as an array; each club order is its own SO,
+  // so there is no single soId to key off). By default counts only the orders whose
   // transfers haven't been pulled yet (so re-pulling won't double-deduct).
   const batchTransfers = (soId, onlyUnpulled = true) => {
-    const linked = orders.filter((o) => o.so_id === soId && (!onlyUnpulled || !o.transfers_pulled));
+    const soIds = Array.isArray(soId) ? new Set(soId) : new Set([soId]);
+    const linked = orders.filter((o) => soIds.has(o.so_id) && (!onlyUnpulled || !o.transfers_pulled));
     const ids = new Set(linked.map((o) => o.id));
     const used = transferUsage(orderItems.filter((i) => ids.has(i.order_id)), maps);
     const designs = []; const numbers = []; const byCode = {};
@@ -11100,8 +11438,41 @@ function BatchesTab({ store, productStock, onOpenSO, catalog = [], bundleItems =
   // tracking entry, so rendering it would show a misleading all-defaults row.
   const allWOrders = (orders || []).filter((w) => isLiveWebstoreOrder(w) && sos.some((o) => o.id === w.so_id)).sort((a, b) => String(a.created_at || '').localeCompare(String(b.created_at || '')));
   const tBtn = (mode, label) => <button onClick={() => setTrackMode(mode)} style={{ padding: '6px 14px', borderRadius: 7, border: '1px solid ' + (trackMode === mode ? '#0f172a' : '#e2e8f0'), background: trackMode === mode ? '#0f172a' : '#fff', color: trackMode === mode ? '#fff' : '#334155', fontWeight: 700, fontSize: 12.5, cursor: 'pointer' }}>{label}</button>;
+  const clubTransfers = store.org_type === 'club' ? batchTransfers(clubSoIds, true) : { designs: [], numbers: [], byCode: {} };
+  const clubDoPull = () => {
+    const totalXfer = Object.values(clubTransfers.byCode).reduce((a, n) => a + n, 0);
+    if (!window.confirm(`Pull transfers for ${clubUnpulled.length} converted order${clubUnpulled.length === 1 ? '' : 's'}? This deducts ${totalXfer} transfer unit${totalXfer === 1 ? '' : 's'} from On hand and moves them to In process.`)) return;
+    onPullTransfers && onPullTransfers(clubSoIds, clubTransfers.byCode);
+  };
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {store.org_type === 'club' && clubUnpulled.length > 0 && (
+        <div className="card"><div style={{ padding: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>Group pull — {clubUnpulled.length} converted order{clubUnpulled.length === 1 ? '' : 's'} awaiting pull</div>
+            {onPullTransfers && <button onClick={clubDoPull} style={{ marginLeft: 'auto', background: '#6d28d9', color: '#fff', border: 'none', borderRadius: 6, padding: '6px 14px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer' }}>Pull all transfers</button>}
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>Every order converted to its own Sales Order that hasn't had transfers pulled yet, combined into one group — same as a batch, but automatic.</div>
+          {clubGarmentSizes.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Garments</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {clubGarmentSizes.map((g) => <span key={g.label + g.size} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#eff6ff', color: '#1e40af' }}>{g.label} · {g.size}: {g.qty}</span>)}
+              </div>
+            </div>
+          )}
+          {(clubTransfers.designs.length > 0 || clubTransfers.numbers.length > 0) && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: '#64748b', marginBottom: 6 }}>Transfers to pull</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {clubTransfers.designs.map((d) => <span key={d.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#ede9fe', color: '#6d28d9' }}>{d.label}: {d.qty}</span>)}
+                {clubTransfers.numbers.map((n) => <span key={n.code} style={{ fontSize: 12, fontWeight: 600, padding: '4px 10px', borderRadius: 6, background: '#dcfce7', color: '#166534' }}>{n.label}: {n.qty}</span>)}
+              </div>
+            </div>
+          )}
+        </div></div>
+      )}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11.5, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, color: '#64748b' }}>Tracking view:</span>
         {tBtn('batch', '📦 By batch')}
@@ -11525,9 +11896,11 @@ function OrdersTab({ orders, orderItems, numbersEnabled, onBatch, onAvailability
             <option value="orders">Orders CSV</option>
           </select>
         )}
-        <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
-          Create Batch ({unbatchedCount})
-        </button>
+        {store.org_type === 'club'
+          ? <span style={{ fontSize: 12, color: '#64748b', fontStyle: 'italic', alignSelf: 'center' }} title="Club orders convert to their own Sales Order automatically the moment they're paid — no staff batching step.">Club orders convert automatically — see the Batches tab to pull transfers.</span>
+          : <button className="btn btn-primary" disabled={!unbatchedCount} onClick={onBatch} title={unbatchedCount ? 'Pull the open orders into a batch (a Sales Order) — the store stays open' : 'No unbatched orders'} style={!unbatchedCount ? { opacity: 0.5, cursor: 'not-allowed' } : {}}>
+              Create Batch ({unbatchedCount})
+            </button>}
       </div>
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>Showing {filtered.length} of {listable.length} orders.</div>
       <div className="card"><div style={{ overflowX: 'auto' }}>

@@ -349,10 +349,10 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo } from './netsuiteOldPos';
-import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -1073,13 +1073,18 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
       +'</div></div>'
     :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
+  // Non-embroidery jobs (DTF / screen print / vinyl) have no DST/DG to scan, so the
+  // sheet carries a stable JOB:<so>:<job> identity barcode — job-scan resolves it
+  // straight to this job (advance its stage at a floor station or on a phone).
+  const _jobScanCode='JOB:'+so.id+':'+j.id;
+  const _jobBcHtml=isEmb?'':'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🏷️ JOB BARCODE — SCAN TO ADVANCE</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Scan at a floor station or on a phone to move this job through production.</div><div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(_jobScanCode)||'<div style="font-size:12px;font-weight:700;padding:8px">'+_jobScanCode+'</div>')+'</div></div></div>';
   return{title:c?.name||j.customer||'Job',docNum:j.id,docType:'Production Job Sheet',
     headerRight:'<div class="ta" style="font-size:20px">'+j.total_units+' UNITS</div><div class="ts">'+j.deco_type?.replace(/_/g,' ')+'</div>',
     infoBoxes,tables:[],
     // Repeat the Customer / Sales Order / Expected Date / Rep header on every
     // page (without the NSA logo block) so multi-page sheets stay identifiable.
     repeatInfoHeader:true,
-    notes:_notesCssReset+(_bcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
+    notes:_notesCssReset+(_bcHtml||'')+(_jobBcHtml||'')+_itemSectionsHtml+_genericMockHtml+_prodFilesHtml+(_linkHtml||'')+(j.notes||(so.production_notes?'SO Notes: '+so.production_notes:'')||''),
     showPricing:false,_embSources:isEmb?allArtFiles:[]};
 };
 // ── Production Work Order sheet options (National Team Shop layout) ──
@@ -1474,22 +1479,27 @@ function dP(d,q,artFiles,cq){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
       if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
       if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
+      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
     if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
+    // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
+    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
+  // Team Shop conversion decos (00199): cost_each is the rate-card cost-of-record; sell
+  // stays 0 (already folded into unit_sell). Keep in sync with src/lib/decoPricing.js.
+  if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   // Legacy/fallback type-based
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override||npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
-  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
+  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+  // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
+  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Outside decoration — user-entered cost/sell
-  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
+  if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 // Module-scope helpers shared with pages extracted out of App() (QBPage, ...).
 // They stay defined here until the pricing-unification pass relocates them.
@@ -5422,15 +5432,36 @@ export default function App(){
     nf('Box '+id+' didn\'t update ('+(lastErr?.message||lastErr)+') — it shows stale status/location for everyone','error');
     return false;
   };
-  // Mint a plate + persist a box for what a pull just physically boxed. Returns the row only
-  // when it persisted (the label should carry the plate) — null means print today's IF label.
-  const createBoxForPull=async({ifId,soId,contents})=>{
+  // Mint a plate + persist a box of `kind` for what a flow just physically boxed.
+  // Returns the row only when it persisted (the label should carry the plate) —
+  // null means the caller prints its legacy IF/PO-coded label. Generalized from
+  // the pull path so receiving boxes (kind='receiving', 00185) share ONE mint.
+  const createBoxFor=async({kind='fulfillment',ifId=null,soId=null,poId=null,contents})=>{
     if(!supabase||_boxesMissing.current||!(contents||[]).length)return null;
     let plate=null;
     try{const n=await _nextCounter('box_plate');if(n)plate=plateFromCounter(n)}catch(e){/* fall through */}
     if(!plate)plate='BX-'+Date.now().toString(36).toUpperCase().slice(-6);// counter RPC not deployed — unique (non-sequential) plate
-    const row=makeBoxRow({id:plate,contents,soId,ifId,createdBy:cu?.id||'warehouse'});
-    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between pull-click and label print
+    const row=makeBoxRow({id:plate,kind,contents,soId,ifId,poId,createdBy:cu?.id||'warehouse'});
+    return(await _dbSaveBox(row,1))?row:null;// 1 retry: this sits between the action and label print
+  };
+  // Pull path — behavior identical to before (kind='fulfillment', IF+SO refs).
+  const createBoxForPull=({ifId,soId,contents})=>createBoxFor({kind:'fulfillment',ifId,soId,contents});
+  // Receiving-box contents from a just-received line array ([{sku,name,color,sizes,soId}]);
+  // drops zero cells, carries per-line so_id so a multi-SO PO's box stays traceable.
+  const _recvBoxContents=(lines,poId)=>(lines||[]).map(l=>({sku:l.sku||'',name:l.name||'',color:l.color||'',so_id:l.soId||'',po_id:poId||'',sizes:Object.fromEntries(Object.entries(l.sizes||{}).filter(([,v])=>(+v||0)>0))})).filter(e=>Object.keys(e.sizes).length>0);
+  // Box the goods a PO receive just put away (kind='receiving', source_refs=[{PO}]) and
+  // print its SCANNABLE plate label (buildBoxLabel — resolves via ?scan= after the box-scan
+  // fix). When box tracking isn't deployed (createBoxFor → null), runs printFallback so
+  // receiving degrades to today's PO-scan label exactly like the pull path.
+  const receiveBoxAndPrint=async({poId,soId,lines,program,rep,printFallback})=>{
+    const contents=_recvBoxContents(lines,poId);
+    let box=null;
+    try{if(contents.length)box=await createBoxFor({kind:'receiving',soId:soId||null,poId,contents})}catch(e){/* best-effort */}
+    if(box){
+      const _lbl=buildBoxLabel(box,{program:program||'',scanBase:window.location.origin+window.location.pathname});
+      printQrLabel({..._lbl,rep:rep||'',note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534'});
+    } else if(typeof printFallback==='function'){printFallback()}
+    return box;
   };
   // Resolve a scanned BX code → freshest row, following merged_into redirects (max 5 hops).
   const lookupBox=async(code)=>{
@@ -6212,7 +6243,11 @@ export default function App(){
     try {
       const ssResponse = await pushSOToShipStation(so, customer);
       const updatedSO = { ...so, _shipstation_order_id: ssResponse.orderId, _shipping_status: 'submitted', updated_at: new Date().toLocaleString() };
-      setSOs(prev => prev.map(s => s.id === so.id ? updatedSO : s));
+      // savSO (not a bare setSOs) so this actually persists — same pattern the
+      // ship modal uses (App.js ~17870). A setSOs-only write updates local
+      // state but skips savSO's diff-snapshot bookkeeping and merge guards,
+      // so it's vulnerable to being silently clobbered by the next poll.
+      savSO(updatedSO);
       nf('Order ' + so.id + ' submitted to ShipStation (' + ssResponse.orderId + ')');
     } catch (error) {
       console.error('[ShipStation] Ship order failed:', error);
@@ -6228,7 +6263,8 @@ export default function App(){
         const updatedSO = sos.find(s => s.id === soId);
         if (updatedSO && !updatedSO._tracking_number) {
           const updated = { ...updatedSO, _tracking_number: shipment.trackingNumber, _carrier: shipment.carrierCode, _ship_date: shipment.shipDate, _tracking_url: shipment.trackingUrl, _shipped: true, _shipping_status: 'shipped', updated_at: new Date().toLocaleString() };
-          setSOs(prev => prev.map(s => s.id === soId ? updated : s));
+          // savSO, same reasoning as handleShipToShipStation above.
+          savSO(updated);
           nf(soId + ' shipped - Tracking: ' + shipment.trackingNumber);
         }
       } else { nf('No shipment data yet for ' + soId, 'error'); }
@@ -6913,8 +6949,10 @@ export default function App(){
         // Check if any other invoices remain for this SO
         const remainingInvs=invs.filter(i=>i.so_id===inv.so_id&&i.id!==invId);
         if(remainingInvs.length===0){
-          // No more invoices — SO goes back to ready_to_invoice
-          setSOs(prev=>prev.map(s=>s.id===inv.so_id?{...s,status:'ready_to_invoice',updated_at:new Date().toLocaleString()}:s));
+          // No more invoices — SO goes back to ready_to_invoice. savSO (not a
+          // bare setSOs) so this persists — same reasoning as the ShipStation
+          // handlers above.
+          savSO({...so,status:'ready_to_invoice',updated_at:new Date().toLocaleString()});
           nf('Invoice '+invId+' deleted — '+inv.so_id+' reverted to ready_to_invoice');
         }else{nf('Invoice '+invId+' deleted')}
       }else{nf('Invoice '+invId+' deleted')}
@@ -7048,8 +7086,11 @@ export default function App(){
         }
       });
     });
-    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready
-    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so)!=='complete').forEach(so=>{
+    // Handle "wait_complete" SOs — add to shipTasks only if entire order is ready.
+    // Use the pure auto-status ({ignoreOverride:true}): closing/invoicing an SO sets the sticky
+    // status='complete' independently of shipping, and must not hide unshipped goods from the
+    // warehouse. Auto-status only reaches 'complete' once jobs are actually shipped.
+    sos.filter(so=>(so.ship_preference||'ship_as_ready')==='wait_complete'&&calcSOStatus(so,{ignoreOverride:true})!=='complete').forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const cName=c?.name||'Unknown';const alpha=c?.alpha_tag||'';
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
@@ -10350,6 +10391,18 @@ export default function App(){
     }
     applyJobMove(j,newStatus,j.assigned_machine||'',j.assigned_to||'');
   };
+  // Hand an embroidery job's art off to the Top Star digitizing vendor. Annotation-only —
+  // goes through advance_job_stage (00192) rather than the local savSO writer, mirroring
+  // TeamShopQueue's RPC call shape, since digitizing_sent stamps digitizing_vendor/sent_at
+  // columns that are deliberately NOT in _jobCols (the RPC is their sole writer). On success,
+  // patches local state to match so the button hides immediately instead of waiting on a refetch.
+  const sendToDigitizingVendor=(j)=>{
+    supabase.rpc('advance_job_stage',{p_so_id:j.soId,p_job_id:j.id,p_event:'digitizing_sent',p_actor:cu?.name||cu?.id||'',p_payload:{vendor:'topstar'}}).then(({error})=>{
+      if(error){nf('Send to digitizing failed: '+(error.message||'unknown error'),'error');return}
+      setSOs(prev=>prev.map(s=>s.id===j.soId?{...s,jobs:safeJobs(s).map(jj=>jj.id===j.id?{...jj,digitizing_vendor:'topstar',digitizing_sent_at:new Date().toISOString()}:jj)}:s));
+      nf('🧵 Sent to Top Star for digitizing');
+    });
+  };
   // ── Single source of truth for stopping a job's decorator clock (audit L10) ──
   // Logs the elapsed run and clears the active timer + idle accumulator. Used by
   // applyJobMove (production board) AND passed into OrderEditor as onStopJobClock —
@@ -10756,6 +10809,7 @@ export default function App(){
                     {col.id==='staging'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'hold')}}>← Ready</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>→ In Process</button></>}
                     {col.id==='in_process'&&<><button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'staging')}}>← In Line</button><button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#6d28d9',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();setAssignModal({job:j,soId:j.soId,targetStatus:'in_process'});setAssignTo({machine:j.assigned_machine||'',person:j.assigned_to||''})}}>👤 Reassign</button><button className="btn btn-sm btn-primary" style={{fontSize:9,padding:'3px 8px',background:'#166534',borderColor:'#166534'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'completed')}}>✓ Done</button></>}
                     {col.id==='completed'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'3px 8px'}} onClick={e=>{e.stopPropagation();moveJobStatus(j,'in_process')}}>← Back</button>}
+                    {j.deco_type==='embroidery'&&j.art_status==='upload_emb_files'&&!j.digitizing_sent_at&&<button className="btn btn-sm" style={{fontSize:9,padding:'3px 8px',background:'#7c3aed',color:'white',border:'none'}} onClick={e=>{e.stopPropagation();sendToDigitizingVendor(j)}}>🧵 Send to Digitizing Vendor</button>}
                   </div>
                 </div>}
               </div>})}
@@ -11686,6 +11740,7 @@ export default function App(){
                   const linesBySO={};
                   matchedLines.forEach(ml=>{(linesBySO[ml.soId]=linesBySO[ml.soId]||[]).push(ml)});
                   const _decoReady=[];
+                  const _recvLines=[]; // actual received qtys per line — box contents (not ordered sizes)
                   Object.keys(linesBySO).forEach(soId=>{
                     const so=sos.find(s=>s.id===soId);if(!so)return;
                     const updItems=[...safeItems(so)];
@@ -11707,6 +11762,7 @@ export default function App(){
                         const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
                         pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
+                        if(_rcvd>0)_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
                       }
                     });
                     // Recalculate job item_status/fulfilled_units after receiving — mirrors the warehouse
@@ -11722,7 +11778,10 @@ export default function App(){
                     printBatchSeparateLabels(batchMatch.source_pos,poId,'RECEIVED — '+new Date().toLocaleDateString());
                   } else {
                     const labelItems=poItems.map(it2=>({sku:it2.sku,name:it2.name,color:it2.color,sizes:it2.sizes,customer:it2.customer,soId:it2.soId}));
-                    printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString());
+                    // Box the received goods (kind='receiving', scannable plate) from the ACTUAL received
+                    // qtys; fall back to the PO-scan label when box tracking isn't deployed.
+                    const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
+                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
@@ -17020,9 +17079,12 @@ export default function App(){
                       const n=batchMatch.source_pos.length;
                       printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
-                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered}));
+                      const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered,soId:it.soId}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      printQrLabel({code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'});
+                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
+                      // Box tracking v1: the received goods get a kind='receiving' box (source_refs=[{PO}])
+                      // and a SCANNABLE plate label; falls back to the PO-scan label above when boxes aren't deployed.
+                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -17915,9 +17977,19 @@ export default function App(){
                     const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
                       const key=it.sku+'|'+(it.color||'');shippedByItem[key]=(shippedByItem[key]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
                     })});
+                    // Jobs this Mark-Shipped action is explicitly clearing for this SO: the ready-to-ship
+                    // tasks grouped here (deco_done tasks carry their job; wait_complete ships the whole
+                    // order). Marking these directly reflects the user's intent and — unlike the sku|color
+                    // coverage recompute below — can't silently leave a job stuck at 'completed' when its
+                    // frozen item snapshot drifts from the live item or its unit total doesn't line up with
+                    // the item sizes. The coverage check stays as a fallback for any other completed job.
+                    const _grpItems=(clearShipModal.grp.items||[]).filter(t=>t.soId===soId);
+                    const _clearedJobIds=new Set(_grpItems.map(t=>t.job&&t.job.id).filter(Boolean));
+                    const _wholeOrder=_grpItems.some(t=>t.type==='wait_complete');
                     const origJobs=safeJobs(so);
                     const updatedJobs=origJobs.map(jj=>{
                       if(jj.prod_status!=='completed')return jj;
+                      if(_wholeOrder||_clearedJobIds.has(jj.id))return{...jj,prod_status:'shipped'};
                       const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
                       return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
                     });
@@ -23147,11 +23219,17 @@ export default function App(){
         nf('No S&S orders found ('+_win+')','success');
         return;
       }
+      // Style enrichment for lines with no yourSku (CrossRef not set yet): one chunked
+      // GET /Products lookup turns each S&S part # into its mfr style, which the resolver
+      // uses to split two styles sharing a color+size. Best-effort — a failed lookup just
+      // means those lines fall to the manual wizard exactly as before.
+      let styleBySku={};
+      try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
       const seenDocs=new Set();const skippedDups=[];const heldSkip=[];const results=[];let empty=0;let credits=0;let idx=0;
       const pulledOrderNos=[];// every order this pull saw — scopes the badge-clear below
       let _ssCands=null;// built once on the first matched bill (reflects current SOs; pull doesn't mutate them)
       orders.forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(parsed.si_doc_number)pulledOrderNos.push(String(parsed.si_doc_number));
         // Credits/returns (negative total) carry no positive shipped lines, so they can't flow
         // into Billed tracking — surface the count instead of silently lumping them into "not
@@ -23179,6 +23257,11 @@ export default function App(){
       const extraNote=(empty?' — '+empty+' order(s) with no shipped lines skipped':'')+(credits?' — '+credits+' return/credit order(s) skipped (handle in QB)':'')+(heldSkip.length?' — '+heldSkip.length+' left parked in Look at Later':'');
       _finishBillReview(results,{skippedDups,sourceCount:orders.length,sourceNoun:'S&S order(s)',verb:'pulled',extraNote});
       _markSsReviewed(pulledOrderNos);// staff have now seen these → clear the "new" badge from the daily cron
+      // The list this pull just REPLACED the review session with — pullAllBills passes it to
+      // _siSendToReview so its in-review dedup sees the fresh list, not the stale pre-pull state
+      // (same-tick setState hasn't re-rendered yet). null on the early-outs above = "no replace
+      // happened", so callers know the state read is still valid.
+      return results;
     };
     // Mark the S&S orders the daily cron flagged 'new' as 'reviewed' once staff pull them in for
     // review, so the Import & Review badge clears. Scoped to the order #s THIS pull actually
@@ -23225,10 +23308,10 @@ export default function App(){
     // bills from a color+size guess to an exact SKU match (kills the two-styles-same-color case).
     // Grounded in matched order history: reuses the all-or-nothing resolver, so only fully-
     // confident orders contribute a mapping and we never teach S&S a wrong pairing.
-    const _ssCrossRefProposals=(orders)=>{
+    const _ssCrossRefProposals=(orders,styleBySku={})=>{
       const out=[];let cands=null;
       (orders||[]).forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order))}catch(e){return}
+        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
         if(!parsed.matchedPO)return;
         let r;try{r=_ssResolveLineMappings(parsed,cands||(cands=_buildMatchCandidates()))}catch(e){return}
         if(!r)return;// all-or-nothing: only fully-resolved orders yield proposals
@@ -23245,7 +23328,11 @@ export default function App(){
       try{
         const f=ssPullFrom||'';const filters=f?{startDate:f,endDate:new Date().toISOString().slice(0,10)}:{};
         const orders=await ssGetOrders(filters);
-        const proposals=_ssCrossRefProposals(orders);
+        // Same style enrichment as the pull: fully-resolved bills are the seeder's ONLY
+        // source of proposals, so disambiguating more lines directly grows the plan.
+        let styleBySku={};
+        try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
+        const proposals=_ssCrossRefProposals(orders,styleBySku);
         if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0}}));nf('No confidently-matched S&S lines to map yet — nothing to seed','error');return}
         // What's already on the account for the styles we'd assign (idempotency).
         const styles=[...new Set(proposals.map(p=>p.yourSku))];
@@ -23316,11 +23403,15 @@ export default function App(){
     // that skipped push validation, the problems modal, write plans, and bill history, and once
     // enabled a double-apply. The tab is now read-and-route; the hardened review push is the
     // only writer, and pushing already marks the queue row approved + flips the doc Historical.)
-    const _siSendToReview=(rowsIn)=>{
+    const _siSendToReview=(rowsIn,freshList)=>{
       const rows=(rowsIn||[]).filter(Boolean);
       if(!rows.length)return;
       const cands=_siBuildCandidates();
-      const inReview=new Set(billImport.parsed.map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+      // freshList: pullAllBills just replaced the review session via pullFromSS in this same
+      // tick, so billImport.parsed here is the STALE pre-pull list — deduping against it would
+      // silently drop any Sports Inc bill that happened to sit in the old session. When given,
+      // dedup against what the list actually contains now.
+      const inReview=new Set((freshList||billImport.parsed).map(b=>(b.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
       const results=[];const dups=[];let idx=0;
       rows.forEach(row=>{
         const t=row._t||_siTriage(row,cands);
@@ -23353,6 +23444,37 @@ export default function App(){
       setBillView('import');
       setBillFilter('all');
       _finishBillReview(results,{skippedDups:dups,sourceCount:rows.length,sourceNoun:'queued document(s)',verb:'loaded for review',extraNote:results.length?' — review below, then Push to Portal':'',append:true});
+    };
+    // ── ONE pull for everything ─────────────────────────────────────────────
+    // "Pull bills" = S&S Orders API + the Sports Inc queue in one flow (two processes,
+    // one button). Order matters: the S&S pull REPLACES the review list (fresh working
+    // session), then Sports Inc's workable docs APPEND through _siSendToReview's own
+    // dedup. The two halves can't collide: S&S reaches Sports Inc only as scanned docs,
+    // which triage to Grab/Outside and are never auto-routed here (see _siTriage).
+    const pullAllBills=async()=>{
+      const f=ssPullFrom||'',t=ssPullTo||'';
+      // ssList = the fresh review list when the S&S pull replaced it; undefined when the pull
+      // errored/found nothing (list untouched → the state read inside _siSendToReview is valid).
+      const ssList=await pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});
+      if(!supabase){nf('Database not connected — Sports Inc queue skipped','error');return}
+      setSiQueueLoading(true);
+      try{
+        // Refresh from SportsLink best-effort — an outage there shouldn't block reviewing
+        // what's already queued — then re-read + re-triage fresh rows (NOT stale state).
+        try{const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});await _siUpsertDocs(docs)}
+        catch(e){nf('SportsLink refresh failed ('+(e.message||e)+') — using the queue as of the last sync','error')}
+        const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
+        if(error)throw error;
+        const cands=_siBuildCandidates();
+        const rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+        setSiQueue(rows);
+        // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
+        // they can be tied to their order right here. Grab (PDF-only) and Outside are not
+        // pushable bills — they stay on the Sports Inc tab.
+        const work=rows.filter(r=>r._t&&(r._t.bucket==='approve'||r._t.bucket==='review'));
+        if(work.length)_siSendToReview(work,ssList||undefined);
+      }catch(e){nf('Sports Inc queue failed: '+(e.message||e)+' — S&S results are in the list below','error')}
+      setSiQueueLoading(false);
     };
     const markSiStatus=async(row,status,verb)=>{
       const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
@@ -24961,7 +25083,10 @@ export default function App(){
     // When some selected bills have problems, open the styled review dialog instead of a
     // browser confirm so the user can push the clean ones and park the rest for later.
     const pushBillsToPortal=(force)=>{
-      const selected=billImport.parsed.filter(_billIsReadyToPush);
+      // Only the full-go bills — matched AND clean. Flagged/matched bills are left for review or
+      // AI-match rather than bulk-pushed, so this mirrors the primary button's count exactly and a
+      // clean push needs no problem modal. (A flagged bill pushes once it's been reconciled clean.)
+      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
       if(!selected.length){nf('No matched bills selected to push','error');return}
       if(force!==true){
         const cleanBills=[],problemBills=[];
@@ -26031,38 +26156,31 @@ export default function App(){
           </div>}
         </div>;})()}
         {billImport.step==='upload'&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
+          {/* ONE pull, both vendors. The button runs the S&S Orders pull + the Sports Inc queue
+              refresh/route back-to-back (see pullAllBills) — staff shouldn't have to know which
+              middleman a bill rides through. Per-vendor pulls remain as small escape hatches. */}
           <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
             <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8}}><span style={{fontSize:18}}>&#9889;</span> Pull from Sports Inc (SportsLink API)</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Auto-load Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) straight from the Invoice Center &mdash; no PDF needed. They drop into the same review below, matched to their POs; nothing is applied until you push. S&amp;S Activewear comes through Sports Inc only as a scanned doc &mdash; use the S&amp;S pull below for those instead.</div>
-              </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>pullFromSportsInc()}>
-                {billImport.uploading?'Pulling…':'⚡ Pull from Sports Inc'}
-              </button>
-            </div>
-          </div>
-          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+RED,background:'#fff',borderRadius:6}}>
-            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:240}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#128230;</span> Pull from S&amp;S Activewear (Orders API){ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>Pull S&amp;S orders straight from S&amp;S by invoice date &mdash; not Sports Inc, which only scans them. The lines come through clean with our own SKUs echoed back, so they match their POs exactly with no size guessing. They drop into the same review below; nothing is applied until you push.{ssNewCount>0?' A daily sync found '+ssNewCount+' new — click to review.':''}</div>
+              <div style={{flex:1,minWidth:280}}>
+                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
+                <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail stay on the Sports Inc tab to grab.</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months."/>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>S&amp;S invoiced from</label>
+                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull S&S bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months. Sports Inc always refreshes from its 2026-04-01 cutover."/>
                   <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
                   <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
                   {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'last 3 months'}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'S&S from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'S&S: last 3 months'}</span>
+                </div>
+                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
+                  <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
+                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
                 </div>
               </div>
-              <button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:.6}} disabled={billImport.uploading}
-                onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';
-                  // both blank → last 3 months (All=True); otherwise an invoice-date window, with a
-                  // blank "To" resolved to today so the live call sends a concrete end, not a sentinel.
-                  pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}}>
-                {billImport.uploading?'Pulling…':'📦 Pull from S&S'}
+              <button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:15,padding:'12px 22px'}} disabled={billImport.uploading||siQueueLoading}
+                onClick={()=>pullAllBills()}>
+                {(billImport.uploading||siQueueLoading)?'Pulling…':'⚡ Pull bills'}
               </button>
             </div>
           </div>
@@ -26192,23 +26310,28 @@ export default function App(){
           {/* Sticky action bar: stays pinned while scrolling a long pull, with a running $ total
               of what the push will apply and filter chips to work the list as a queue. */}
           {(()=>{
-            const ready=billImport.parsed.filter(_billIsReadyToPush);
+            // ONE vocabulary, ONE set: "Matched" = matched AND reconciles clean (no duplicate /
+            // over-billing / size mismatch) AND checked — exactly what the red button pushes.
+            // The tile, the value, the chip badge and the button all read from it, so no two
+            // numbers on this bar can disagree. Bills needing work are "Review" — matched-but-
+            // flagged bills sit there (wizard / AI-match), never bulk-pushed.
+            const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
             const qbSel=billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater);
             const counts={all:0,ready:0,attention:0,done:0};
             billImport.parsed.forEach(b=>{const t=_billTriage(b);counts.all++;if(!t)counts.done++;else if(t.issue)counts.attention++;else counts.ready++});
-            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Ready',counts.ready,'#166534'],['attention','⚠ Needs attention',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
+            const unchecked=counts.ready-ready.length;// matched+clean but checkbox off — excluded from the push
+            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Matched',counts.ready,'#166534'],['attention','⚠ Review',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
             return<div style={{marginBottom:16}}>
               <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',flexWrap:'wrap'}}>
                 <div style={{display:'flex',gap:30,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
-                  {statTile(billImport.parsed.length,'Bills parsed')}
-                  <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
-                  {statTile(counts.ready,'Ready to push','#6FD59A')}
-                  {statTile(counts.attention,'Need attention',RED_LT)}
-                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Ready value</div></div>
+                  {statTile(ready.length,'Matched — will push','#6FD59A')}
+                  {unchecked>0&&statTile(unchecked,'Matched, unchecked','#94a3b8')}
+                  {statTile(counts.attention,'To review',RED_LT)}
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Matched value</div></div>
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
-                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} ready → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
+                  {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',disabled:billImport.uploading||!qbSel.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+qbSel.length+' to QuickBooks'})}
                 </div>
               </div>
@@ -26517,8 +26640,11 @@ export default function App(){
                     </div>
                   </div>;
                 })()}
-                {/* Manual match wizard — goods bills, line items parsed, no auto-match */}
-                {bill.kind!=='decoration'&&!poMatch&&bill.items.length>0&&(()=>{
+                {/* Manual match wizard — goods bills whose lines need pinning. Shows for an
+                    unmatched bill (pick the order), AND for a bill matched by PO number only whose
+                    lines don't map to that order cleanly (would-apply-nothing) — so a "matched but
+                    won't push" bill has a real way to reconcile line-by-line instead of a dead end. */}
+                {bill.kind!=='decoration'&&bill.items.length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&!_billApplyPlan(bill)))&&(()=>{
                   const w=bill._wizard;
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
@@ -26542,11 +26668,11 @@ export default function App(){
                         ✨ AI couldn’t confidently match this to an open PO{fp.reason?' — '+fp.reason:'.'} Try matching manually.
                       </div>}
                       <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,color:'#3730a3'}}>No PO matched automatically — line items parsed and ready.</span>
+                        <span style={{fontSize:12,color:'#3730a3'}}>{poMatch?'Matched to '+(poMatch.so_id||poMatch.so?.id||'the order')+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.':'No PO matched automatically — line items parsed and ready.'}</span>
                         <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                          onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>Match manually…</button>
+                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?'🧵 Match lines to the order…':'Match manually…'}</button>
                         {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
-                          :!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
+                          :!poMatch&&!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
                             title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
                             onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiTried?'Re-run AI':'Find PO with AI'}</button>}
                       </div>
@@ -26658,7 +26784,7 @@ export default function App(){
             // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
-            [[GREEN,'Ready to push','Clean matches · safe to push','ready'],[RED,'Need attention','Reconcile before pushing','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
+            [[GREEN,'Matched — ready to push','Push in one click','ready'],[RED,'Review','Tie each bill to its order','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
               if(!_bk[k].length)return;
               _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
               _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
@@ -30732,7 +30858,7 @@ export default function App(){
   }
 
     // NAV
-  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']}];
+  const nav=[{section:'Overview'},{id:'dashboard',label:'Dashboard',icon:'home'},{id:'messages',label:'Messages',icon:'mail'},{section:'Sales'},{id:'estimates',label:'Estimates',icon:'dollar'},{id:'orders',label:'Sales Orders',icon:'box'},{id:'invoices',label:'Invoices',icon:'dollar'},{id:'omg',label:'OMG Stores',icon:'cart'},{id:'webstores',label:'Webstores',icon:'store'},{id:'sales_tools',label:'Sales Tools',icon:'edit'},{id:'sales_history',label:'Sales History',icon:'file'},{section:'Production'},{id:'jobs',label:'Jobs',icon:'grid'},{id:'art',label:'Art Dashboard',icon:'image'},{id:'production',label:'Prod Board',icon:'package'},{id:'warehouse',label:'Warehouse',icon:'warehouse'},{id:'purchase_orders',label:'Purchase Orders',icon:'cart'},{id:'batch_pos',label:'Batch POs',icon:'cart'},{section:'People'},{id:'customers',label:'Customers',icon:'users'},{id:'vendors',label:'Vendors',icon:'building'},{id:'team',label:'Team',icon:'users'},{section:'Catalog'},{id:'products',label:'Products',icon:'package'},{id:'inventory',label:'Inventory',icon:'warehouse'},{section:'Analytics'},{id:'reports',label:'Reports',icon:'dollar'},{id:'commissions',label:'Commissions',icon:'dollar',roles:['admin','rep']},{section:'System'},{id:'import',label:'Import / Upload',icon:'upload'},{id:'issues',label:'Issues',icon:'alert'},{id:'qb',label:'QuickBooks Sync',icon:'dollar'},{id:'backup',label:'Backup & Data',icon:'save'},{id:'settings',label:'Settings',icon:'grid',roles:['admin']},{section:'Tools'},{id:'production_hq',label:'Production HQ',icon:'package',href:'/teamshop-queue',external:true},{id:'floor_station',label:'Floor Station',icon:'grid',href:'/floor-station',external:true}];
   const titles={dashboard:'Dashboard',reports:'Reports & Analytics',commissions:'Commissions',estimates:'Estimates',orders:'Sales Orders',invoices:'Invoices',omg:'OMG Team Stores',webstores:'Club Webstores',jobs:'Jobs',art:'Art Dashboard',production:'Production Board',warehouse:'Warehouse',purchase_orders:'Purchase Orders',batch_pos:'Batch PO Queue',customers:'Customers',vendors:'Vendors',team:'Team Directory',products:'Products',inventory:'Inventory',messages:'Messages',issues:'Issues',import:'Import / Upload',qb:'QuickBooks Online',backup:'Backup & Data',settings:'Settings',sales_tools:'Sales Tools',sales_history:'Sales History',search:'Search Results'};
   // ─── SCAN RESULT HANDLER ───
   function handleScanResult(val){
@@ -30888,8 +31014,8 @@ export default function App(){
         const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
         const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
         const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
-        return<a key={item.id} href={_newTabHref({pg:item.id})} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
-          onClick={ev=>{if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
+        return<a key={item.id} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
+          onClick={ev=>{if(item.external)return;if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
     <div className="main"><div className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)}><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button><h1>{(eEst&&pg==='estimates')?eEst.id:(eSO&&pg==='orders')?eSO.id:(selC&&pg==='customers')?selC.name:(selV&&pg==='vendors')?selV.name:(titles[pg]||'Dashboard')}</h1>
         <div style={{flex:1,maxWidth:400,margin:'0 20px',position:'relative'}}>

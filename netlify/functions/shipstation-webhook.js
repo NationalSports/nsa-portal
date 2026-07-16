@@ -89,16 +89,25 @@ exports.handler = async (event) => {
       if (!order) continue;
 
       const tracking = sh.trackingNumber || null;
-      // Idempotency: skip if we already recorded this tracking number.
-      if (tracking) {
+      // Idempotency: prefer ShipStation's own shipment id — it's present even when a
+      // shipment has NO tracking number, which the old tracking-only dedup missed,
+      // letting a webhook redelivery insert a duplicate (double cost + false shipped).
+      // Fall back to tracking for shipments/records without a shipment id.
+      const ssShipmentId = sh.shipmentId != null ? String(sh.shipmentId) : null;
+      if (ssShipmentId) {
+        const { data: existing } = await sb.from('webstore_shipments').select('id').eq('ss_shipment_id', ssShipmentId).limit(1);
+        if (existing && existing.length) continue;
+      } else if (tracking) {
         const { data: existing } = await sb.from('webstore_shipments').select('id').eq('tracking_number', tracking).limit(1);
         if (existing && existing.length) continue;
       }
 
       const shipItems = (sh.shipmentItems || []).map((i) => ({ sku: i.sku, name: i.name, qty: i.quantity, image: i.imageUrl || null, lineItemKey: i.lineItemKey || null }));
       const shipmentCost = (Number(sh.shipmentCost) || 0) + (Number(sh.insuranceCost) || 0); // ShipStation's actual billed cost
+      // The unique index on ss_shipment_id is the concurrency belt: a racing
+      // redelivery's insert errors out (ignored) instead of duplicating the row.
       await sb.from('webstore_shipments').insert({
-        order_id: order.id, store_id: order.store_id, tracking_number: tracking,
+        order_id: order.id, store_id: order.store_id, tracking_number: tracking, ss_shipment_id: ssShipmentId,
         carrier: sh.carrierCode || null, service: sh.serviceCode || null, ship_date: sh.shipDate || null,
         items: shipItems, cost: shipmentCost || null, emailed: false,
       });

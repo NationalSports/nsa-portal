@@ -1,6 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
 import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
+import { statusChipLabel } from './lib/teamshopOrderStatus';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
@@ -8,6 +9,7 @@ import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinar
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
+import { supabaseCoach } from './lib/supabaseCoach';
 import Papa from 'papaparse';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
@@ -532,15 +534,15 @@ function CoachStoreCard({ store: s, d }) {
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
+      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 16, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
         {/* Navy header */}
-        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
+        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             <span style={{ display: 'inline-flex', opacity: 0.92 }}>{bagIcon}</span>
             <span style={{ ...disp, fontWeight: 800, fontSize: 20, letterSpacing: '.01em', textTransform: 'uppercase' }}>{s.name}</span>
             {closeStr && <span style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap' }}>· {closeStr}</span>}
           </div>
-          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 4, padding: '8px 15px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
+          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 8, padding: '8px 16px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
         </div>
 
         {/* KPI strip */}
@@ -571,7 +573,7 @@ function CoachStoreCard({ store: s, d }) {
           {/* Search */}
           <div style={{ position: 'relative', maxWidth: 360, marginBottom: 12 }}>
             <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: _CPD.textLight, display: 'inline-flex' }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 4, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 10, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
           </div>
 
           {/* Status filter chips */}
@@ -579,7 +581,7 @@ function CoachStoreCard({ store: s, d }) {
             {chipDefs.map(([key, label]) => {
               const on = filter === key; const isBack = key === 'backordered';
               return (
-                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 11px', borderRadius: 4, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
+                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
               );
             })}
           </div>
@@ -604,21 +606,21 @@ function CoachStoreCard({ store: s, d }) {
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
                       <span style={{ width: 8, height: 8, borderRadius: 999, background: row.statusTone, flex: '0 0 auto' }} />
                       <span style={{ ...disp, fontWeight: 700, fontSize: 13, letterSpacing: '.02em', textTransform: 'uppercase', color: row.statusTone }}>{row.statusLabel}</span>
-                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 6px', borderRadius: 3 }}>{row.backCount} backordered</span>}
+                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 8px', borderRadius: 999 }}>{row.backCount} backordered</span>}
                     </span>
                   </div>
 
                   {open[row.id] && (
                     <div style={{ padding: '4px 10px 18px' }}>
                       {/* Contact / order meta band */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, marginBottom: 12 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 12, marginBottom: 12 }}>
                         {[['Order', row.no, tnum], ['Ordered', row.date], ['Ordered by', row.buyerName], ['Email', row.buyerEmail ? <a href={`mailto:${row.buyerEmail}`}>{row.buyerEmail}</a> : '—'], ['Phone', row.buyerPhone, tnum], ['Delivery', row.delivery]].map(([lbl, val, extra]) => (
                           <div key={lbl}><div style={{ ...eyebrow, marginBottom: 3 }}>{lbl}</div><div style={{ fontSize: 14, color: _CPD.text, fontWeight: lbl === 'Order' || lbl === 'Ordered by' ? 700 : 400, ...(lbl === 'Order' ? { color: _CPD.navy } : {}), ...(extra || {}) }}>{val}</div></div>
                         ))}
                       </div>
 
                       {/* Priced line items */}
-                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
+                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, padding: '9px 14px', background: _CPD.offWhite, borderBottom: `1px solid ${_CPD.lightGray}` }}>
                           {['Item', 'Size', 'Qty', 'Price', 'Batch', 'Status'].map((h, idx) => <span key={h} style={{ ...eyebrow, ...(idx === 3 ? { textAlign: 'right' } : {}) }}>{h}</span>)}
                         </div>
@@ -639,7 +641,7 @@ function CoachStoreCard({ store: s, d }) {
                       </div>
 
                       {/* Fundraising + shipping footer */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 12 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                           <span style={{ display: 'inline-flex', color: _CPD.green }}>{fundIcon}</span>
                           <span style={{ fontSize: 13, color: _CPD.textLight }}>Fundraising from this order</span>
@@ -651,7 +653,7 @@ function CoachStoreCard({ store: s, d }) {
                             <div style={{ fontSize: 13.5, color: _CPD.navy, fontWeight: 700 }}>{row.shipHeadline}</div>
                             <div style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.shipSub} · Ships to {row.shipTo}</div>
                           </div>
-                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 12px', borderRadius: 4, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
+                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 13px', borderRadius: 999, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
                         </div>
                       </div>
                     </div>
@@ -750,6 +752,69 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
   // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
   const hasRoster=!!customer.coach_roster;
+  // ── National Team Shop crossover (Coach Crossover, Workstream 1) ──
+  // Connect itself has no coach sign-in (the portal is alpha-tag gated), so the
+  // one-click handoff keys off a supabaseCoach session — the same isolated
+  // coach auth client the Team Shop / Live Look use. undefined = not checked yet.
+  const[ntsSession,setNtsSession]=useState(undefined);
+  useEffect(()=>{let dead=false;
+    supabaseCoach.auth.getSession().then(({data})=>{if(!dead)setNtsSession((data&&data.session)||null);}).catch(()=>{if(!dead)setNtsSession(null);});
+    const{data:_ntsSub}=supabaseCoach.auth.onAuthStateChange((_e,s)=>{if(!dead)setNtsSession(s||null);});
+    return()=>{dead=true;if(_ntsSub&&_ntsSub.subscription)_ntsSub.subscription.unsubscribe();};
+  },[]);
+  const[ntsBannerHidden,setNtsBannerHidden]=useState(()=>{try{return localStorage.getItem('cp_nts_banner_dismissed')==='1';}catch{return true;}});
+  const[ntsEmail,setNtsEmail]=useState('');
+  const[ntsOtpState,setNtsOtpState]=useState('idle');// idle|sending|sent|error
+  // Same signInWithOtp pattern as src/teamshop/CoachGate.js / storefront/AdidasInventory.js:
+  // isolated supabaseCoach client, emailRedirectTo back to THIS portal URL
+  // (incl. ?portal= param — must be allow-listed in Supabase Auth redirects).
+  const ntsSendOtp=async()=>{
+    const em=ntsEmail.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)||ntsOtpState==='sending')return;
+    setNtsOtpState('sending');
+    const{error}=await supabaseCoach.auth.signInWithOtp({email:em,options:{emailRedirectTo:window.location.origin+window.location.pathname+window.location.search}});
+    setNtsOtpState(error?'error':'sent');
+  };
+  // Tile click: with a coach session, mint a one-time handoff code (the URL
+  // carries ONLY this opaque single-use 60s code — never a session credential)
+  // and open the Team Shop signed in; otherwise a plain link. Minting happens
+  // inside the click gesture; if window.open comes back blocked, same-tab.
+  const openTeamShop=async()=>{
+    let href='https://nationalteamshop.com';
+    try{
+      const{data}=await supabaseCoach.auth.getSession();
+      const sess=data&&data.session;
+      if(sess){
+        const _mint=(withCust)=>fetch('/.netlify/functions/teamshop-handoff',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+sess.access_token},body:JSON.stringify(withCust?{action:'mint',customer_id:customer.id}:{action:'mint'})});
+        let r=await _mint(true);
+        if(r.status===403)r=await _mint(false);// this coach sign-in may not be linked to this portal's customer — hand off without a team preselect
+        const b=await r.json().catch(()=>null);
+        if(r.ok&&b&&b.code)href='https://nationalteamshop.com/?handoff='+b.code;
+      }
+    }catch(e){/* fall through to the plain link */}
+    try{const w=window.open(href,CP_LINK_TARGET,'noopener');if(!w)window.location.assign(href);}catch(e){window.location.assign(href);}
+  };
+  // ── Team Shop orders card (Stage 8) — only once a coach session exists
+  // (ntsSession above); netlify/functions/teamshop-orders.js 'list' against
+  // THIS portal's customer.id, same auth model as the handoff mint. Fetched
+  // once per session+customer, not polled — this is a compact recent-orders
+  // peek, not a live order desk.
+  const[ntsOrders,setNtsOrders]=useState(null);// null = not loaded yet
+  useEffect(()=>{let dead=false;
+    if(!ntsSession||!customer?.id){setNtsOrders(null);return;}
+    (async()=>{
+      try{
+        const r=await fetch('/.netlify/functions/teamshop-orders',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+ntsSession.access_token},body:JSON.stringify({action:'list',customer_id:customer.id})});
+        const b=await r.json().catch(()=>null);
+        if(!dead)setNtsOrders(r.ok&&b&&Array.isArray(b.orders)?b.orders:[]);
+      }catch(e){if(!dead)setNtsOrders([]);}
+    })();
+    return()=>{dead=true;};
+  },[ntsSession,customer?.id]);
+  // Same friendly status vocabulary as src/teamshop/AccountPage.js's
+  // statusChipLabel — intentionally a small standalone copy (CoachPortal.js
+  // sits outside the teamshop chunk, no shared module between them).
+  const ntsStatusLabel=(o)=>statusChipLabel(o); // shared: src/lib/teamshopOrderStatus.js
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -1576,14 +1641,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}
           {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
-          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:16,padding:18,marginBottom:16}}>
+
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
-            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
+            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
-              <textarea className="form-input" rows={3} placeholder="Add a note (optional for approval, required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical'}}/>
+              <textarea className="form-input" rows={3} placeholder="Add a note (optional for approval, required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical',borderRadius:10}}/>
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 // A coach must never approve a proof with unmocked garments — they'd be
                 // approving art they can't see. Same per-garment gate the rep side enforces
@@ -1623,7 +1689,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const _fb=comment.trim();
@@ -1651,8 +1717,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               }}>❌ Request Changes</button>
             </div>
           </div>}
-          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
-          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
+          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
             const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
             return<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
@@ -2017,13 +2083,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div className="cp-col">
         {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
         {page==='home'&&<div>
-          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}`}</style>
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}
+          /* ── Dashboard-only restyle tokens (flat/rounded, teamshop-aligned). Scoped to this
+             home-page block only — NOT touching the shared .nsa-tile/.nsa-skew/.nsa-card rules
+             above, which other pages (Orders/Billing/Art Locker/Shop) still rely on. ── */
+          .nsa-dtile{transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+          .nsa-dtile:hover{transform:translateY(-3px);box-shadow:0 14px 32px rgba(25,40,83,.12)!important;border-color:#E2E6F0!important}
+          .nsa-dbtn{transition:transform .15s ease,filter .15s ease}
+          .nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}`}</style>
           {/* ── Pennant hero ── */}
-          <div style={{position:'relative',overflow:'hidden',borderRadius:8,minHeight:320,boxShadow:'0 16px 40px rgba(0,0,0,.25)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
-            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
-            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'46%',background:tAccent,opacity:.14,clipPath:'polygon(28% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+          <div style={{position:'relative',overflow:'hidden',borderRadius:16,minHeight:320,boxShadow:'0 10px 32px rgba(15,26,56,.18)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
             <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
-              <div style={{width:'100%',height:'100%',borderRadius:10,background:'rgba(255,255,255,.05)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
                 {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
               </div>
             </div>
@@ -2033,12 +2104,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{fontSize:15,color:'rgba(255,255,255,.78)',marginTop:10}}>{isP?(adData?adData.teamCount:subs.length)+' teams · ':''}Powered by National Sports Apparel</div>
               <div style={{display:'flex',alignItems:'center',gap:12,marginTop:18}}>
                 <span className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Team Colors</span>
-                {cpSwatches.map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
+                {/* merge: main's cpSwatches (real school-color families) in the Team Shop branch's circle styling */}
+                {cpSwatches.map((c,i)=><span key={i} style={{width:22,height:22,borderRadius:'50%',background:c,border:'2px solid rgba(255,255,255,.5)'}}/>)}
               </div>
               {totalDue>0&&<><div style={{height:1,background:'rgba(255,255,255,.15)',margin:'22px 0 18px',maxWidth:400}}/>
               <div style={{display:'flex',alignItems:'center',gap:22,flexWrap:'wrap'}}>
                 <div><div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Balance Due</div><div className="nsa-disp" style={{fontWeight:800,fontSize:38,color:tAccentLight,lineHeight:1}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
-                <button className="nsa-skew nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 22px',borderRadius:4,cursor:'pointer'}}><span>Pay Balance →</span></button>
+                <button className="nsa-dbtn nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 24px',borderRadius:8,cursor:'pointer'}}>Pay Balance →</button>
               </div></>}
             </div>
           </div>
@@ -2061,11 +2133,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               ...(adData?[{k:'spend',t:adData.hasPromo?'Promo & Spend':'Spend Report',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
-              <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
-                <span style={{width:50,height:50,flexShrink:0,borderRadius:6,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>{q.icon}</span>
+              <button key={q.k} className="nsa-dtile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
+                <span style={{width:48,height:48,flexShrink:0,borderRadius:12,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}}>{q.icon}</span>
                 <span style={{minWidth:0}}>
                   <span className="nsa-disp" style={{display:'block',fontWeight:700,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>{q.t}</span>
-                  <span style={{display:'block',fontSize:13,color:q.sa?tAccent:'#5A6075',fontWeight:q.sa?700:400,marginTop:4}}>{q.sub}</span>
+                  {q.sa?<span style={{display:'inline-flex',alignItems:'center',gap:6,marginTop:6,background:tAccentSoft,color:tAccent,fontSize:12,fontWeight:700,borderRadius:999,padding:'4px 10px 4px 8px'}}><span style={{width:6,height:6,borderRadius:999,background:tAccent,flexShrink:0}}/>{q.sub}</span>:<span style={{display:'block',fontSize:13,color:'#5A6075',marginTop:4}}>{q.sub}</span>}
                 </span>
               </button>
             ));})()}
@@ -2073,7 +2145,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Needs Your Attention ── */}
           <div className="nsa-attn" style={{marginTop:28}}>
             {(()=>{const openE=custEsts.filter(e=>e.status==='sent'||e.status==='open').slice(0,3);return(
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
                 <button onClick={()=>setPage('orders')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
@@ -2085,11 +2157,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id} · ${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                   </div>
-                  <button className="nsa-skew nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                  <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:8,cursor:'pointer'}}>Approve</button>
                 </div>})}
             </div>);})()}
             {(()=>{const jobs=waitingArtJobs.slice(0,3);return(
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review</div>
                 <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
@@ -2097,30 +2169,29 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>No proofs waiting on you right now.</div>:
                jobs.map((j,ix)=>{const so=j.so;
                 return<div key={j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
-                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:4,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16,clipPath:'polygon(0 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px))'}}>{String(ix+1).padStart(2,'0')}</div>
+                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:12,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16}}>{String(ix+1).padStart(2,'0')}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{j.art_name||so.memo||'Artwork'}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||so.id}</div>
                   </div>
-                  <button className="nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:4,cursor:'pointer'}}>Review</button>
+                  <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:8,cursor:'pointer'}}>Review</button>
                 </div>})}
             </div>);})()}
           </div>
           {/* ── Rep + Contact ── */}
           <div className="nsa-rep" style={{marginTop:24}}>
-            <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
-              <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',overflow:'hidden',borderRadius:16,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
               <div style={{position:'relative',minWidth:0}}>
                 <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:tAccentLight}}>Your Dedicated Rep</div>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
                 <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
               </div>
-              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-dbtn nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 22px',borderRadius:8}}>Contact {(rep?.name||'NSA Team').split(' ')[0]}</a>
             </div>
-            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
+            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:16,padding:'20px 22px'}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
               <div style={{fontSize:13,color:'#5A6075',margin:'6px 0 12px'}}>{(customer.contacts||[])[0]?.name||'—'}{(customer.contacts||[])[0]?.email?' · '+(customer.contacts||[])[0].email:''}{customer.shipping_city?' · '+customer.shipping_city+', '+(customer.shipping_state||''):''}</div>
-              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:4,cursor:'pointer'}}>Request Update</button>
+              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-dbtn nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:8,cursor:'pointer'}}>Request Update</button>
             </div>
           </div>
         </div>}
@@ -2132,19 +2203,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           let filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q))&&(!_tfName||(a.teams||[]).includes(_tfName)));
           if(isP)filtered=[...filtered].sort((a,b)=>((a.teams||[])[0]||'').localeCompare((b.teams||[])[0]||''));
           return<div>
-            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:6px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}`}</style>
+            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:16px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}
+            .nsa-dbtn{transition:transform .15s ease,filter .15s ease}.nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}`}</style>
             <div style={{marginBottom:24}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Proofs &amp; Approved Designs</div>
               <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Art Locker</h1>
-              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              <div style={{width:60,height:4,background:tAccent,borderRadius:999,marginTop:10}}/>
             </div>
             {artLibrary.length===0?
-              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
             :<>
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
-                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:6,fontSize:14,fontFamily:'inherit'}}/>
+                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:8,fontSize:14,fontFamily:'inherit'}}/>
                 {isP&&_teamSelect}
-                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:4,padding:'9px 14px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
+                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-dbtn nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:999,padding:'9px 16px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
               </div>
               {filtered.length===0?<div style={{color:'#5A6075',fontSize:14,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
               <div className="nsa-artgrid">
@@ -2153,8 +2225,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div style={{position:'relative',aspectRatio:'4 / 3.4',background:`linear-gradient(150deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',padding:14,overflow:'hidden'}}>
                       <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
                       {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{position:'relative',maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 6px 16px rgba(0,0,0,.35))'}}/>:<span className="nsa-disp" style={{position:'relative',color:'rgba(255,255,255,.9)',fontSize:48,fontWeight:800}}>{cpMonogram}</span>}
-                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:0,transform:'skewX(-12deg)',background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px 4px 14px'}}><span style={{display:'inline-block',transform:'skewX(12deg)'}}>{a.deco}</span></span>}
-                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:4,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
+                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:10,background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 10px',borderRadius:999}}>{a.deco}</span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:999,padding:'2px 8px'}}>⊞ {a.urls.length}</span>}
                     </div>
                     <div style={{padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
                       <div style={{minWidth:0}}>
@@ -2324,18 +2396,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
           return<div>
-            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}`}</style>
+            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}
+            .nsa-dbtn{transition:transform .15s ease,filter .15s ease}.nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}
+            .nsa-drow{transition:transform .15s ease,box-shadow .15s ease}.nsa-drow:hover{box-shadow:0 8px 20px rgba(25,40,83,.08)}`}</style>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
               <div>
                 <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
                 <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
-                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+                <div style={{width:60,height:4,background:tAccent,borderRadius:999,marginTop:10}}/>
               </div>
               {isP&&_teamSelect}
             </div>
             {/* ── Estimates — always present in the Orders section as a dropdown; lists
                 open (to-approve) first, then approved-awaiting-conversion estimates. ── */}
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
               <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
                 <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
                   {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
@@ -2352,7 +2426,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
                     <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-                    <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                    <button className="nsa-dbtn nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:8,cursor:'pointer'}}>Approve</button>
                   </div>
                 </div>})}
               {estOpen&&approvedEsts.length>0&&openEsts.length>0&&<div style={{padding:'11px 22px 5px',fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'.5px',color:'#94A0B0',background:'#FAFBFC',borderBottom:'1px solid #EEF1F6'}}>Approved — awaiting your rep</div>}
@@ -2364,15 +2438,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
                     <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-                    <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
+                    <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px 8px 12px',borderRadius:999,whiteSpace:'nowrap'}}><span style={{width:6,height:6,borderRadius:999,background:'#1F7A43',flexShrink:0}}/>Approved</span>
                   </div>
                 </div>})}
               {estOpen&&openEsts.length===0&&approvedEsts.length===0&&<div style={{padding:'18px 22px',color:'#5A6075',fontSize:13}}>No estimates right now — your rep posts quotes here for you to review &amp; approve.</div>}
             </div>
             {/* ── Order History table ── */}
             <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
-            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div className="nsa-disp nsa-otab nsa-ohead" style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'14px 24px',background:'#F7F8FB',fontWeight:700,fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>
                 <span>Order</span><span>Status</span><span>Delivery</span><span style={{textAlign:'right'}}>Total</span>
               </div>
@@ -2382,13 +2456,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const pct=totalU>0?Math.round(fulU/totalU*100):0;
                 const team=(allCustomers||[]).find(c=>c.id===so.customer_id);const tn=isP&&team&&team.id!==customer.id?team.name:(so.memo||so.id);
                 const tot=calcOrderTotals(so).grand;
-                return<div key={so.id} className="nsa-card nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
+                return<div key={so.id} className="nsa-card nsa-drow nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
                   <div style={{minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:17,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'Order'} · {totalU} pcs · {so.id}</div>
                     <div style={{height:5,background:'#EEF1F6',borderRadius:999,marginTop:9,overflow:'hidden',maxWidth:220}}><div style={{height:'100%',width:pct+'%',background:tPrimary,borderRadius:999}}/></div>
                   </div>
-                  <div><span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{sm[0]}</span></span></div>
+                  <div><span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px 5px 10px',borderRadius:999}}><span style={{width:6,height:6,borderRadius:999,background:sm[1],flexShrink:0}}/>{sm[0]}</span></div>
                   <div style={{fontSize:14,color:'#2A2F3E'}}>{so.expected_date?(st==='shipped'?'Arrives ':'ETA ')+so.expected_date:'—'}</div>
                   <div className="nsa-disp" style={{textAlign:'right',fontWeight:700,fontSize:18,color:tPrimary}}>${tot.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                 </div>;
@@ -2547,6 +2621,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>}
 
         {page==='shop'&&<div>
+          {/* National Team Shop sign-in nudge — only when NO coach session exists.
+              Verifying once creates the supabaseCoach session that turns the
+              National Team Shop tile below into a one-click signed-in handoff. */}
+          {ntsSession===null&&!ntsBannerHidden&&<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#F7F8FB',border:'1px solid #EEF1F6',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:13,color:'#2A2F3E'}}>
+            <span style={{fontWeight:600}}>Verify your email once to enable one-click shopping on National Team Shop</span>
+            {ntsOtpState==='sent'?<span style={{color:'#1F7A43',fontWeight:600}}>Check your email for the sign-in link.</span>:<>
+              <input type="email" value={ntsEmail} onChange={e=>setNtsEmail(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')ntsSendOtp();}} placeholder="coach@school.org" style={{flex:'1 1 180px',minWidth:150,padding:'6px 10px',border:'1px solid #D1D5DE',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              <button onClick={ntsSendOtp} disabled={ntsOtpState==='sending'} style={{background:tPrimary,color:'#fff',border:'none',borderRadius:6,padding:'7px 14px',fontSize:12.5,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>{ntsOtpState==='sending'?'Sending…':'Email me a link'}</button>
+              {ntsOtpState==='error'&&<span style={{color:'#962C32',fontSize:12}}>Couldn't send — try again.</span>}
+            </>}
+            <button onClick={()=>{setNtsBannerHidden(true);try{localStorage.setItem('cp_nts_banner_dismissed','1');}catch{/* won't persist */}}} aria-label="Dismiss" style={{marginLeft:'auto',background:'none',border:'none',color:'#94A0B0',fontSize:16,cursor:'pointer',lineHeight:1,padding:0}}>×</button>
+          </div>}
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
             <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
@@ -2573,6 +2659,50 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
           {/* Shop & Order section */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
+
+          {/* National Team Shop tile — one-click handoff (Coach Crossover) */}
+          <button onClick={openTeamShop} className="nsa-tile" style={{width:'100%',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14,fontFamily:'inherit'}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',width:58,height:58,flexShrink:0,borderRadius:8,background:tAccent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>🛍️</div>
+            <div style={{position:'relative',flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:24,textTransform:'uppercase',color:'#fff',lineHeight:1}}>National Team Shop</div>
+                <span style={{display:'inline-flex',alignItems:'center',background:'rgba(150,44,50,.25)',border:`1px solid ${tAccentLight}`,color:tAccentLight,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:11,letterSpacing:'1px',textTransform:'uppercase',padding:'3px 9px',borderRadius:999}}>New</span>
+              </div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:5}}>Quick-turn custom gear — your logos, your pricing</div>
+            </div>
+            <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
+          </button>
+
+          {/* Team Shop orders — compact recent-orders peek (Stage 8). Only
+              renders once a coach session exists; the verify-email banner
+              above already invites sign-in when there's none. */}
+          {ntsSession&&ntsOrders&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'18px 22px',marginBottom:14,boxShadow:'0 2px 12px rgba(0,0,0,.06)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Team Shop orders</div>
+              <button onClick={openTeamShop} style={{background:'none',border:'none',color:tAccent,fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'inherit',padding:0}}>View all →</button>
+            </div>
+            {!ntsOrders.length&&<div style={{fontSize:13,color:'#64748b',padding:'6px 0'}}>No orders yet — browse National Team Shop to place your first one.</div>}
+            {ntsOrders.slice(0,3).map(o=>{
+              const first=o.items&&o.items[0];
+              const extra=o.items?o.items.length-1:0;
+              const label=first?(first.name||first.sku||'Item')+(extra>0?` + ${extra} more`:''):'Order';
+              return(
+                <div key={o.id} style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'9px 0',borderTop:'1px solid #F1F5F9'}}>
+                  <div style={{flex:'1 1 200px',minWidth:0}}>
+                    <div style={{fontSize:13.5,fontWeight:700,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{label}</div>
+                    <div style={{fontSize:11.5,color:'#64748b',marginTop:2}}>{o.created_at?new Date(o.created_at).toLocaleDateString():''}</div>
+                  </div>
+                  <span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,fontWeight:800,padding:'4px 9px 4px 8px',borderRadius:999,background:'#F1F5F9',color:'#475569',whiteSpace:'nowrap'}}><span style={{width:6,height:6,borderRadius:999,background:'#475569',flexShrink:0}}/>{ntsStatusLabel(o)}</span>
+                  {/* /shop/order/<token> is host-agnostic (src/index.js checks the
+                      PATH before any host routing — see OrderTrack.js's header
+                      comment), so a relative link works from this portal's own
+                      origin same as it would from nationalteamshop.com. */}
+                  {o.status_token&&<a href={'/shop/order/'+o.status_token} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{fontSize:11.5,fontWeight:700,color:tAccent,textDecoration:'none',whiteSpace:'nowrap'}}>Track ↗</a>}
+                </div>
+              );
+            })}
+          </div>}
 
           {/* Live Look tile — the highlight */}
           <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>

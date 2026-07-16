@@ -20,6 +20,7 @@
 --   047  fundraise amount/display price        052  variant_group_id (color grouping)
 --   053  store_category   054  vendor_size_eta  055/056  description (+ ai)
 --   062  variant_label    064  vendor stock from inventory_unified (all vendors)
+--   199  vendor stock matched on NORMALIZED sku (live-import vs sync spelling)
 -- ════════════════════════════════════════════════════════════════════════
 
 CREATE OR REPLACE VIEW webstore_storefront_products AS
@@ -80,14 +81,17 @@ CREATE OR REPLACE VIEW webstore_storefront_products AS
      LEFT JOIN webstore_product_eta eta_pid ON eta_pid.product_id = wp.product_id
      LEFT JOIN webstore_product_eta eta_sku ON eta_sku.product_id IS NULL AND eta_sku.sku = wp.sku
      -- Live vendor (drop-ship) stock + ETA for EVERY synced vendor. Matched on
-     -- sku AND source (= products.inventory_source) so a SKU that collides across
-     -- brands can't pull the wrong vendor's stock, and so each (sku,size) is unique.
+     -- NORMALIZED sku (separators stripped, uppercased — the live import and the
+     -- vendor syncs spell the same colorway differently; expression indexes on each
+     -- vendor table serve the lookup, see migration 00199) AND source
+     -- (= products.inventory_source) so a SKU that collides across brands can't
+     -- pull the wrong vendor's stock.
      LEFT JOIN LATERAL ( SELECT jsonb_object_agg(ai.size, ai.stock_qty) AS vendor_size_stock,
             COALESCE(sum(GREATEST(ai.stock_qty, 0)), 0::bigint) AS vendor_on_hand,
             min(NULLIF(ai.future_delivery_date, ''::text)) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0) AS vendor_eta,
             jsonb_object_agg(ai.size, ai.future_delivery_date) FILTER (WHERE COALESCE(ai.stock_qty, 0) <= 0 AND ai.future_delivery_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'::text) AS vendor_size_eta
            FROM inventory_unified ai
-          WHERE ai.sku = wp.sku AND ai.source = p.inventory_source AND (p.available_sizes IS NULL OR (ai.size IN ( SELECT jsonb_array_elements_text(p.available_sizes) AS jsonb_array_elements_text)) OR (
+          WHERE regexp_replace(upper(ai.sku), '[^A-Z0-9]', '', 'g') = regexp_replace(upper(wp.sku), '[^A-Z0-9]', '', 'g') AND ai.source = p.inventory_source AND (p.available_sizes IS NULL OR (ai.size IN ( SELECT jsonb_array_elements_text(p.available_sizes) AS jsonb_array_elements_text)) OR (
                 CASE upper(ai.size)
                     WHEN 'ST'::text THEN 'S'::text
                     WHEN 'MT'::text THEN 'M'::text

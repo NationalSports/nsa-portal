@@ -158,6 +158,10 @@ async function checkStock(sb, store, lines) {
     // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
     const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
     if (!tracked) return;
+    // Tracked drop-ship item whose stock has NEVER synced (both stock maps null, not
+    // zero): don't block — the vendor backorders, and the storefront sells these sizes
+    // (same rule as its hasStockData fallback). Synced-and-zero still blocks below.
+    if (p.size_stock == null && p.vendor_size_stock == null) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
@@ -459,6 +463,13 @@ async function placeOrder(sb, body) {
   if (mode === 'paid' && Math.round(total * 100) < 50) return bad(409, 'Card payments must be at least $0.50 — use the team tab for this order.');
 
   // ── Build every row up front; nothing is written until all checks pass ──
+  // Club stores (org_type 'club'): each order converts into its own Sales Order the
+  // moment it's paid (create_club_sales_order, migration 00204) — same identity
+  // stamp teamshop-checkout.js writes for its own conversion RPC (order_source +
+  // customer_id), read by the RPC's org_type join back to webstores. Team stores
+  // (org_type 'team'/null) get neither field — batchOrders' `.is('so_id', null)`
+  // query is untouched, so nothing here can affect the staff batch flow.
+  const isClubStore = store.org_type === 'club';
   const orderRow = {
     store_id: store.id, status: mode === 'paid' ? 'pending_payment' : 'unpaid', payment_mode: mode, order_kind: 'individual',
     buyer_name: String(buyer.name).trim().slice(0, 120), buyer_email: String(buyer.email).trim().slice(0, 160), buyer_phone: buyer.phone ? String(buyer.phone).slice(0, 40) : null,
@@ -466,6 +477,7 @@ async function placeOrder(sb, body) {
     ship_method: store.delivery_mode,
     subtotal: priced.subtotal, fundraise_amt: priced.fundraise, shipping_fee: shipping, processing_fee: processing, tax, total,
     coupon_code: coupon ? coupon.code : null, discount_amt: discount,
+    ...(isClubStore ? { order_source: 'club', customer_id: store.customer_id || null } : {}),
   };
 
   // Order-level "who this is for" name (checkout's Player name field). Used as the
@@ -680,6 +692,15 @@ async function finalize(sb, body) {
   if (!order) return bad(404, 'Order not found');
   if (order.stripe_pi_id !== stripePiId) return bad(409, 'Payment reference does not match this order.');
 
+  // Never resurrect a terminated order. A buyer re-opening the checkout return
+  // URL (or a retried finalize) on a refunded/cancelled order must NOT flip it
+  // back to 'paid' or trigger conversion — the money was already returned. The
+  // PaymentIntent still reads 'succeeded' (a refund is a separate Stripe object),
+  // so the guard must be on our order status, not the PI (audit HIGH).
+  if (['refunded', 'cancelled', 'void', 'disputed', 'deleted', 'archived'].includes(order.status)) {
+    return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ ok: true, orderId: order.id, status: order.status, skipped: 'terminal' }) };
+  }
+
   const sk = process.env.STRIPE_SECRET_KEY;
   if (!sk) return bad(500, 'Stripe not configured');
   const pi = await stripe(sk).paymentIntents.retrieve(stripePiId);
@@ -687,7 +708,23 @@ async function finalize(sb, body) {
   if (pi.amount !== Math.round((Number(order.total) || 0) * 100)) return bad(409, 'Payment amount does not match the order.');
   if (pi.metadata && pi.metadata.webstore_order_id && pi.metadata.webstore_order_id !== order.id) return bad(409, 'Payment does not belong to this order.');
 
-  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).neq('status', 'paid');
+  // Promote ONLY from a genuine pre-paid state — never from a post-paid status
+  // (e.g. 'batched'), so a re-called finalize can't regress a downstream order.
+  await sb.from('webstore_orders').update({ status: 'paid' }).eq('id', order.id).in('status', ['pending_payment', 'unpaid']);
+
+  // Club store order -> production conversion (migration 00204), the same
+  // post-payment trigger point as stripe-webhook's teamshop conversion fallback.
+  // Best-effort and STRICTLY guarded: this call must never fail the checkout
+  // response — the RPC is idempotent (so_id replay + paid re-guard), and the
+  // stripe-webhook fallback below picks it up if this never lands.
+  if (order.order_source === 'club' && !order.so_id) {
+    try {
+      const { error: convErr } = await sb.rpc('create_club_sales_order', { p_order_id: order.id });
+      if (convErr) console.error('[webstore-checkout] club conversion failed (order stays paid; stripe-webhook will retry):', convErr.message);
+    } catch (e) {
+      console.error('[webstore-checkout] club conversion error:', e.message);
+    }
+  }
 
   // Atomic claim — whoever flips confirmation_sent (this call or the Stripe
   // webhook fallback) owns the coupon bump + the one confirmation email.
@@ -886,6 +923,7 @@ async function updateShip(sb, body) {
 // isolation. Netlify invokes `handler`; these extra exports are inert in prod.
 module.exports.priceCart = priceCart;
 module.exports.placeOrder = placeOrder;
+module.exports.finalize = finalize;
 module.exports.checkStock = checkStock;
 module.exports.checkSizesRequired = checkSizesRequired;
 module.exports.checkNumberRange = checkNumberRange;
@@ -894,3 +932,13 @@ module.exports._availForSize = _availForSize;
 module.exports.effFund = effFund;
 module.exports.shipFee = shipFee;
 module.exports.r2 = r2;
+
+// ── Team Shop checkout reuse (Stage 6) ───────────────────────────────
+// teamshop-checkout.js REQUIRES these instead of forking the tax math,
+// rollback compensation, or clientRef idempotency — one implementation for
+// both order sources. Export-only additions: no behavior change here.
+module.exports.calcTax = calcTax;
+module.exports.rollbackOrder = rollbackOrder;
+module.exports.validClientRef = validClientRef;
+module.exports.findOrderByClientRef = findOrderByClientRef;
+module.exports.replayOrder = replayOrder;

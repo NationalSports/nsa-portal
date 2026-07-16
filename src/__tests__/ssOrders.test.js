@@ -5,7 +5,7 @@
 // shape mapSportsLinkDocToBill / parseSingleInvoice produce so the match / review / push
 // pipeline consumes it unchanged. These lock in the field mapping, the shipped-qty-only rule,
 // the two-key dedup, credit handling, and the query builder.
-const { mapSsOrderToBill, buildSsOrdersQuery, resolveSsBillLines, planCrossRefs } = require('../ssOrders');
+const { mapSsOrderToBill, buildSsOrdersQuery, resolveSsBillLines, planCrossRefs, collectSsLineSkus } = require('../ssOrders');
 
 // Realistic shape of a GET /Orders?lines=true item (camelCase, as S&S V2 returns).
 const ssOrder = {
@@ -214,6 +214,77 @@ describe('resolveSsBillLines', () => {
     const dupe = [cand('L', 6.63), cand('L', 6.63)]; // same item_id/po_id/size twice
     const r = resolveSsBillLines([{ sku: 'B1', size: 'L', color: 'Ivory', qty: 10 }], dupe);
     expect(r[0].cand && r[0].cand.sku).toBe('3023CL');
+  });
+
+  // The real SO-1130 case: Youth (9018) + Unisex (1717) garment-dyed tees on the same SO,
+  // SAME color, overlapping sizes, and SO unit costs that don't equal the S&S bill price —
+  // color+size and the price tie-break both fail. _ss_style (from GET /Products) is the
+  // only signal that can split them.
+  describe('_ss_style tie-break', () => {
+    const chambray = [
+      { sku: 'CC9018', size: 'S', color: 'Chambray', so_id: 'SO-1130', item_id: 'y1', po_id: 'PO 3132 TUH', unit_cost: 9.5 },
+      { sku: 'CC9018', size: 'M', color: 'Chambray', so_id: 'SO-1130', item_id: 'y1', po_id: 'PO 3132 TUH', unit_cost: 9.5 },
+      { sku: 'CC1717', size: 'S', color: 'Chambray', so_id: 'SO-1130', item_id: 'u1', po_id: 'PO 3132 TUH', unit_cost: 10.25 },
+      { sku: 'CC1717', size: 'M', color: 'Chambray', so_id: 'SO-1130', item_id: 'u1', po_id: 'PO 3132 TUH', unit_cost: 10.25 },
+    ];
+    test('splits two styles sharing a color+size by the enriched mfr style (containment: CC1717 ⊇ 1717)', () => {
+      const r = resolveSsBillLines([
+        { sku: 'B31608683', size: 'S', color: 'Chambray', qty: 1, unit_price: 5.75, _ss_style: '9018' },
+        { sku: 'B00708043', size: 'S', color: 'Chambray', qty: 30, unit_price: 6.29, _ss_style: '1717' },
+      ], chambray);
+      expect(r[0].cand && r[0].cand.sku).toBe('CC9018');
+      expect(r[0].via).toBe('color_size_style');
+      expect(r[1].cand && r[1].cand.sku).toBe('CC1717');
+      expect(r[1].via).toBe('color_size_style');
+    });
+    test('same bill WITHOUT enrichment stays unresolved (no guess) — the pre-fix behavior', () => {
+      const r = resolveSsBillLines([
+        { sku: 'B31608683', size: 'S', color: 'Chambray', qty: 1, unit_price: 5.75 },
+      ], chambray);
+      expect(r[0].cand).toBeNull();
+    });
+    test('style containment still refuses an ambiguous hit (two candidates both wrap the token)', () => {
+      const twins = [
+        { sku: 'CC1717', size: 'S', color: 'Chambray', so_id: 'SO-1130', item_id: 'a', po_id: 'P1', unit_cost: 9 },
+        { sku: 'X1717Y', size: 'S', color: 'Chambray', so_id: 'SO-1130', item_id: 'b', po_id: 'P1', unit_cost: 9 },
+      ];
+      const r = resolveSsBillLines([{ sku: 'B1', size: 'S', color: 'Chambray', qty: 1, _ss_style: '1717' }], twins);
+      expect(r[0].cand).toBeNull();
+      expect(r[0].via).toBe('none');
+    });
+    test('short style tokens (<3 chars after normalize) never activate the tie-break', () => {
+      const r = resolveSsBillLines([{ sku: 'B1', size: 'S', color: 'Chambray', qty: 1, _ss_style: '18' }], chambray);
+      expect(r[0].cand).toBeNull();
+    });
+  });
+});
+
+describe('style enrichment plumbing', () => {
+  test('mapSsOrderToBill attaches _ss_style/_ss_brand from opts.styleBySku, keyed by the S&S part #', () => {
+    const bill = mapSsOrderToBill(ssOrder, { styleBySku: { B00760003: { styleName: 'PC61', brandName: 'Port & Company' } } });
+    expect(bill.items[0]._ss_style).toBe('PC61');
+    expect(bill.items[0]._ss_brand).toBe('Port & Company');
+    expect(bill.items[1]._ss_style).toBeUndefined(); // no lookup entry → untouched
+  });
+  test('mapSsOrderToBill without opts behaves exactly as before (no _ss_style keys)', () => {
+    const bill = mapSsOrderToBill(ssOrder);
+    expect(bill.items.every((it) => !('_ss_style' in it))).toBe(true);
+  });
+  test('collectSsLineSkus gathers shipped, yourSku-less line skus (uppercased, deduped)', () => {
+    const orders = [
+      { lines: [
+        { sku: 'b14953095', qtyShipped: 1 },                                  // needs enrichment
+        { sku: 'b14953095', qtyShipped: 2 },                                  // dupe → once
+        { sku: 'B00760003', yourSku: 'PC61-BLACK-M', qtyShipped: 12 },        // has yourSku → skip
+        { sku: 'B99999999', qtyShipped: 0 },                                  // unshipped → skip
+      ] },
+      { Lines: [{ Sku: 'B56553095', QtyShipped: 1 }] },                       // PascalCase variant
+    ];
+    expect(collectSsLineSkus(orders).sort()).toEqual(['B14953095', 'B56553095']);
+  });
+  test('collectSsLineSkus is safe on empty/missing lines', () => {
+    expect(collectSsLineSkus([{}, { lines: [] }, null])).toEqual([]);
+    expect(collectSsLineSkus(null)).toEqual([]);
   });
 });
 

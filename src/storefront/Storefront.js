@@ -3,7 +3,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
-import { placementById } from '../lib/artPlacements';
+import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
 
@@ -188,6 +188,11 @@ const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] ||
 // never tracked — every offered size stays sellable. track_inventory=false opts a tracked
 // item out, so it keeps selling all sizes regardless of stock.
 const isTracked = (p) => p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+// A tracked drop-ship item whose stock has NEVER synced (no warehouse rows, no vendor
+// rows — both maps null, not zero) sells every size: the vendor backorders anyway, and a
+// style added from the live vendor search shouldn't read "sold out" until the nightly
+// sync catches up. Synced-and-zero still reads sold out. Checkout mirrors this rule.
+const hasStockData = (p) => p.size_stock != null || p.vendor_size_stock != null;
 // Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
 // (common in the Adidas feed) and squeeze the leftover separators/whitespace.
 function cleanDesc(s) {
@@ -825,7 +830,7 @@ function GarmentTile({ theme, store, kind = 'top', badge, catLabel }) {
 function stockBadge(p, theme) {
   const ink = theme ? theme.ink : NEUTRAL.ink;
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: ink };
-  if (!isTracked(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked
+  if (!isTracked(p) || !hasStockData(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked / stock not synced yet
   if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: STOCK.in };
   if (isIncoming(p)) { return { text: 'Low stock', color: '#fff', bg: STOCK.low }; }
   return { text: 'Sold out', color: '#fff', bg: theme ? theme.primary : '#8C1D40' };
@@ -839,29 +844,8 @@ function bundleBadge(count, theme) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
-// Per-color web-logo override (mirrors the store builder): a deco's cw_by_color maps a
-// lowercased garment color -> the web logo to show for that color (e.g. a white logo on a
-// black tee); falls back to the placed art_url.
-const decoUrlForColor = (d, colorName) => {
-  const k = String(colorName || '').trim().toLowerCase();
-  const v = d && d.cw_by_color && k && d.cw_by_color[k]; // bare url (legacy) or { url, color_way_id }
-  return (typeof v === 'string' ? v : (v && v.url) || '') || (d && d.art_url) || '';
-};
-// Applied logo art (from webstore_products.decorations) composited on the
-// garment image at its placement — the on-screen mock shoppers see. colorName picks the
-// per-color web logo so the right color way shows for the active variant.
-function DecoOverlay({ decorations, side = 'front', colorName }) {
-  if (!Array.isArray(decorations)) return null;
-  // Skip `baked` decorations — their logo is already rendered into the garment image (a
-  // Quick Mock), so overlaying it again would double-stamp. They're retained on the record
-  // only so the store→SO conversion still knows what art to print.
-  return <>{decorations.filter((d) => d && !d.baked && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
-    const pl = placementById(d.placement);
-    // A decoration may carry its own x/y/w (editable placement) overriding the preset.
-    const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
-    return <img key={i} src={decoUrlForColor(d, colorName)} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
-  })}</>;
-}
+// decoUrlForColor + DecoOverlay moved to src/lib/decoOverlay.js (shared with the
+// Team Shop placement picker) — imported at the top of this file, rendering unchanged.
 
 // Sample number/name on the garment mockup so shoppers see an item is personalized.
 // Default back placement; the real value is entered at checkout. Mirrors the builder.
@@ -1115,10 +1099,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
-    if (!isTracked(c)) {
+    if (!isTracked(c) || !hasStockData(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
-      // made-to-order item these always sell — checkout's stock guard skips them too.
+      // made-to-order item (or a drop-ship style whose stock hasn't synced yet) these
+      // always sell — checkout's stock guard skips them too.
       const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
       const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
       return [...scale, ...extras]; // not inventory-tracked → every offered size sells

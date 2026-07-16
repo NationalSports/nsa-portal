@@ -1837,11 +1837,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return dropShip||outOfHouse;
     });
   },[isSO,o]);
-  // Far-account ship default — when this SO has no delivery method chosen yet and the account's
-  // shipping ZIP is more than 100 mi from our office (Orange, CA 92865), pre-fill "Wait to Ship
-  // Complete" so we don't run repeated long-haul partial shipments. The rep can still change it;
-  // nearby accounts stay blank so the rep is forced to pick one. Skips already-complete orders and
-  // loads the zipcodes table on demand to keep its ~1MB dataset out of the main bundle.
+  // A sales order must have an explicit ship-vs-delivery method before it can be saved. Mirrors the
+  // ship_preference picker's own visibility conditions (SO only, not all-drop-ship, not already
+  // closed) so the gate never demands a choice the picker doesn't even show. The two explicit Save
+  // buttons enforce this; autosave and inline saves stay exempt so in-progress work is never lost.
+  const _shipPrefRequired=()=>isSO&&!allShipDirect&&o.status!=='complete'&&!o.ship_preference;
+  // Distance-based delivery default — when this SO has no delivery method chosen yet, pre-fill one
+  // based on how far the account's shipping ZIP is from our office (Orange, CA 92865):
+  //   • within 10 mi  → "Deliver" (warehouse_delivery) — local, we drive it over
+  //   • more than 100 mi → "Ship as Ready" — avoid repeated long-haul partial shipments
+  // Mid-range accounts stay blank so the rep is forced to pick one (enforced at save). The rep can
+  // always override either default. Skips already-complete orders and loads the zipcodes table on
+  // demand to keep its ~1MB dataset out of the main bundle. (Zip-centroid distance is coarse, so a
+  // borderline 10-mi account may need a manual correction.)
   useEffect(()=>{
     if(!isSO||o.ship_preference||o.status==='complete'||allShipDirect)return;
     const custZip=String(cust?.shipping_zip||cust?.billing_zip||'').trim().slice(0,5);
@@ -1851,7 +1859,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     import('zipcodes').then(m=>{
       const zc=m.default||m;
       const miles=zc.distance(officeZip,custZip);
-      if(!cancelled&&typeof miles==='number'&&miles>100){
+      if(cancelled||typeof miles!=='number')return;
+      if(miles<=10){
+        sv('ship_preference','warehouse_delivery');
+        if(nf)nf('🚚 '+(cust?.name||'Account')+' is ~'+Math.round(miles)+' mi from the office — defaulted to "Deliver"');
+      }else if(miles>100){
         sv('ship_preference','ship_as_ready');
         if(nf)nf('📦 '+(cust?.name||'Account')+' is ~'+Math.round(miles)+' mi from the office — defaulted to "Ship as Ready"');
       }
@@ -3389,6 +3401,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!o.memo?.trim()){nf('Memo is required','error');return}
         const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
+        if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
         onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
     </div>
     {/* COACH APPROVED BANNER */}
@@ -3559,6 +3572,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
+          if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
           if(saveO!==o)setO(saveO);
           onSave(saveO);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'10px 28px',fontSize:16,fontWeight:800}}><Icon name="check" size={16}/> Save</button>
         {isE&&saved&&(o.status==='sent'||o.status==='draft'||o.status==='open')&&<button className="btn btn-primary" style={{background:'#22c55e'}} onClick={()=>{sv('status','approved');onSave({...o,status:'approved'});nf('Estimate approved')}}><Icon name="check" size={14}/> Approve</button>}
