@@ -63,6 +63,14 @@
 [functions."adidas-desc-backfill"]
   timeout = 26
 
+# Quick Build (netlify/functions/store-quick-build.js) clones a template's products +
+# bundle items row-at-a-time inside one synchronous request (never a bulk copy — see the
+# function's comments), which can exceed Netlify's default synchronous timeout for a
+# template with many items. Unscheduled (called directly from the admin Quick Build
+# modal) — timeout-only block, same shape as adidas-desc-backfill above.
+[functions."store-quick-build"]
+  timeout = 26
+
 # S&S Activewear pricing sync — daily at 5:00 AM CT (11:00 UTC)
 [functions."ss-pricing-sync"]
   schedule = "0 11 * * *"
@@ -107,8 +115,12 @@
 # (status new -> enriched). Logos stay manual. Feeds auto store creation —
 # see COACH_AUTO_STORE_PLAN_2026-07-10.md Phase 2 and
 # netlify/functions/coach-leads-enrich.js.
+# TIME_BUDGET_MS in that file (18s) exceeds Netlify scheduled functions' ~10s synchronous
+# default (documented in followup-sweep.js) — timeout=26 gives it the same explicit budget
+# as the other long-running synchronous functions (see adidas-desc-backfill above).
 [functions."coach-leads-enrich"]
   schedule = "15 13 * * *"
+  timeout = 26
 
 # Roster reminder sweep — daily at 16:20 UTC. Nudges roster players who were
 # emailed their store link but never opened it after 5 days (and haven't

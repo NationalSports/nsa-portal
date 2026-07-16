@@ -85,12 +85,17 @@ function mapRows(rows) {
     const raw = {};
     let email = '';
 
+    // First-non-empty wins when two header variants map to the same column (e.g. both
+    // "Email" and "Coach Email" present) — a later duplicate column, blank or not, must
+    // never clobber a value an earlier column already supplied. Without this, a blank (or
+    // just different) trailing "Coach Email" column silently erased a populated "Email"
+    // one, and a bad overwritten value could fail EMAIL_RE below and drop the whole lead.
     headers.forEach((h, i) => {
       const val = cells[i] != null ? String(cells[i]).trim() : '';
       if (!val) return;
       const col = HEADER_MAP[h];
-      if (col === 'email') email = val;
-      else if (col) lead[col] = val;
+      if (col === 'email') { if (!email) email = val; }
+      else if (col) { if (!lead[col]) lead[col] = val; }
       else raw[rows[0][i]] = val;
     });
 
@@ -116,6 +121,10 @@ const chunk = (arr, size) => {
   return out;
 };
 
+// Postgres unique-violation: code 23505, or (some drivers/proxies only surface the text)
+// a message containing "duplicate key". Exported for testing.
+const isUniqueViolation = (err) => !!err && (err.code === '23505' || /duplicate key/i.test(err.message || ''));
+
 // Insert only the leads whose email isn't already in coach_leads. Chosen over
 // upsert+ignoreDuplicates because it makes the "never clobber an existing lead" guarantee
 // structural (a plain .insert() literally cannot touch an existing row) rather than
@@ -136,8 +145,21 @@ async function insertNewLeads(supabase, leads) {
     if (!toInsert.length) continue;
 
     const { error: insErr } = await supabase.from('coach_leads').insert(toInsert);
-    if (insErr) throw new Error(`insert failed: ${insErr.message}`);
-    inserted += toInsert.length;
+    if (!insErr) { inserted += toInsert.length; continue; }
+
+    // A batch insert fails ENTIRELY if even one row collides (e.g. a concurrent sync run,
+    // or an email variant our pre-check's exact Set lookup didn't catch) — without this
+    // fallback, one collided row would silently discard every other good row in the chunk.
+    // Only a unique-violation gets the row-at-a-time retry; any other error still aborts
+    // the sync as before (a real error should surface, not be papered over).
+    if (!isUniqueViolation(insErr)) throw new Error(`insert failed: ${insErr.message}`);
+
+    for (const lead of toInsert) {
+      const { error: rowErr } = await supabase.from('coach_leads').insert([lead]);
+      if (!rowErr) inserted++;
+      else if (isUniqueViolation(rowErr)) alreadyKnown++;
+      else throw new Error(`insert failed: ${rowErr.message}`);
+    }
   }
   return { inserted, alreadyKnown };
 }
@@ -185,4 +207,4 @@ exports.handler = async () => {
 
 // Exposed for tests (no other precedent in this repo for a test-only export, so this is
 // kept minimal and clearly named rather than restructuring the module around testability).
-exports._internals = { parseCsv, mapRows, HEADER_MAP };
+exports._internals = { parseCsv, mapRows, HEADER_MAP, isUniqueViolation };

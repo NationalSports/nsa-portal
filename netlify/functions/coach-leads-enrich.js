@@ -135,6 +135,23 @@ function buildEnrichment(parsed, researchLen) {
   return { enrichment, patch };
 }
 
+// Build the patch for a lead whose research came back empty, or whose research/extract
+// call threw. Tracks attempts in the enrichment jsonb so a school that can't be found (or
+// keeps erroring) doesn't get retried forever: once attempts reaches 3 the lead goes
+// terminal (status 'enrich_failed'), which the handler's status='new' query filter then
+// excludes from every future run automatically. Below that, status stays 'new' so the next
+// scheduled run retries it. Pure/exported for testing.
+function buildAttemptPatch(existingEnrichment, errMessage) {
+  const prior = (existingEnrichment && typeof existingEnrichment === 'object' && Number(existingEnrichment.attempts)) || 0;
+  const attempts = prior + 1;
+  const enrichment = {
+    ...(existingEnrichment || {}),
+    attempts,
+    last_error: String(errMessage || '').trim().slice(0, 300),
+  };
+  return { enrichment, patch: { enrichment, status: attempts >= 3 ? 'enrich_failed' : 'new' } };
+}
+
 exports.handler = async () => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
@@ -144,7 +161,7 @@ exports.handler = async () => {
   const admin = getSupabaseAdmin();
   const { data: rows, error } = await admin
     .from('coach_leads')
-    .select('id,school,sport')
+    .select('id,school,sport,enrichment')
     .eq('status', 'new')
     .not('school', 'is', null)
     .order('created_at', { ascending: true })
@@ -164,7 +181,15 @@ exports.handler = async () => {
     processed++;
     try {
       const research = await researchSchool(apiKey, String(lead.school).trim(), lead.sport);
-      if (!research) { skippedNoData++; continue; } // leave status 'new' for a later run
+      if (!research) {
+        // No data found — count the attempt (caps at 3 tries before going terminal) but
+        // don't treat the empty result itself as an error worth surfacing.
+        skippedNoData++;
+        const { patch } = buildAttemptPatch(lead.enrichment, 'No research results found');
+        const { error: uErr } = await admin.from('coach_leads').update(patch).eq('id', lead.id);
+        if (uErr) errors.push(lead.id + ': ' + uErr.message);
+        continue;
+      }
 
       const parsed = await extractBrand(apiKey, research); // throws on unparseable JSON
       const { patch } = buildEnrichment(parsed, research.length);
@@ -173,8 +198,16 @@ exports.handler = async () => {
       if (uErr) { errors.push(lead.id + ': ' + uErr.message); continue; } // stays 'new'
       enriched++;
     } catch (e) {
-      // One bad lead must not abort the batch; it stays status='new' and can retry next run.
-      errors.push(lead.id + ': ' + (e.message || String(e)));
+      // One bad lead must not abort the batch. Track the attempt so a lead that keeps
+      // erroring eventually goes terminal instead of retrying forever; best-effort (if
+      // this write also fails, the lead simply stays 'new' and retries next run, same as
+      // before this hardening).
+      const msg = e.message || String(e);
+      errors.push(lead.id + ': ' + msg);
+      try {
+        const { patch } = buildAttemptPatch(lead.enrichment, msg);
+        await admin.from('coach_leads').update(patch).eq('id', lead.id);
+      } catch (_) { /* best effort */ }
     }
   }
 
@@ -183,4 +216,4 @@ exports.handler = async () => {
 };
 
 // Exposed for tests (mirrors coach-leads-sheet-sync.js's _internals pattern).
-exports._internals = { EXTRACT_SCHEMA, buildEnrichment };
+exports._internals = { EXTRACT_SCHEMA, buildEnrichment, buildAttemptPatch };
