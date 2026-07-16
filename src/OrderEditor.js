@@ -3501,6 +3501,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             Submitted to ShipStation (ID: {o._shipstation_order_id})
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
+          {/* Order fields — reflowed into the left column beside the ledger (DESIGN 2A) */}
+          <div style={{display:'flex',gap:12,marginTop:14,alignItems:'end',flexWrap:'wrap'}}>
+            <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
+            {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
+            {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
+            {isSO&&<div style={{width:120}}>
+              <label className="form-label">Order Type</label>
+              <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
+                <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
+            </div>}
+            {isSO&&<div style={{width:140}}>
+              <label className="form-label">Expected</label>
+              <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
+            </div>}
+            {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
+              <label className="form-label">Ship Date</label>
+              <input className="form-input" type="date" value={o.expected_ship_date||''} onChange={e=>sv('expected_ship_date',e.target.value)}/>
+            </div>}
+            {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
+              <label className="form-label">Alert Days</label>
+              <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
+              <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
+            </div>}
+          </div>
         </div>
         <div className="oe2-ledger">
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
@@ -3531,28 +3555,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {!approved&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={()=>{setShowFirmApprove(true)}}>Review & Approve</button>}
       </div>})()}
       </div>
-      <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
-        <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
-        {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
-        {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
-        {isSO&&<div style={{width:120}}>
-          <label className="form-label">Order Type</label>
-          <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
-            <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
-        </div>}
-        {isSO&&<div style={{width:140}}>
-          <label className="form-label">Expected</label>
-          <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
-        </div>}
-        {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
-          <label className="form-label">Ship Date</label>
-          <input className="form-input" type="date" value={o.expected_ship_date||''} onChange={e=>sv('expected_ship_date',e.target.value)}/>
-        </div>}
-        {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
-          <label className="form-label">Alert Days</label>
-          <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
-          <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
-        </div>}
+      <div style={{display:'flex',gap:8,margin:'2px 0 4px',alignItems:'end',flexWrap:'wrap'}}>
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
@@ -10689,9 +10692,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
         <h2>Production Jobs ({activeJobs.length}{hasDrafts?' + '+draftJobs.length+' drafts':''})</h2>
         <div style={{display:'flex',gap:6}}>
-          <button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">🔄 Sync Jobs</button>
-          {jobs.some(j=>j.art_status==='needs_art')&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={openJobWizard}>Submit to Art</button>}
-          {jobs.length>1&&!mergeMode&&<button className="btn btn-sm" style={{fontSize:10,background:'#1e40af',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} onClick={()=>setMergeMode({selected:[]})}>Merge Jobs</button>}
+          <button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={refreshJobs} title="Rebuild jobs from current line items & decorations — picks up newly added items. Keeps merges, splits & submitted art.">⟳ Sync Jobs</button>
+          {jobs.length>1&&!mergeMode&&<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setMergeMode({selected:[]})}>⇥ Merge Jobs</button>}
+          {jobs.some(j=>j.art_status==='needs_art')&&<button className="oe2-cta" style={{fontSize:12,padding:'7px 14px'}} onClick={openJobWizard}><span>Submit to Art</span></button>}
           {mergeMode&&(()=>{const _ms=mergeMode.selected.map(i=>jobs[i]).filter(Boolean);const _he=_ms.some(j=>j.deco_type==='embroidery'),_hs=_ms.some(j=>j.deco_type==='screen_print');const _cross=_he&&_hs;const _sameG=!_cross||(_ms.length>=2&&(()=>{const ss=_ms.map(j=>new Set((j.items||[]).map(it=>it.item_idx)));const f=ss[0]||new Set();return ss.every(s=>s.size===f.size&&[...f].every(i=>s.has(i)));})());const _mOk=mergeMode.selected.length>=2&&(!_cross||_sameG);return<><button className="btn btn-sm" style={{fontSize:10,background:'#166534',color:'white',border:'none',padding:'4px 12px',fontWeight:700}} disabled={!_mOk} onClick={()=>{
             const sel=mergeMode.selected.sort((a,b)=>a-b);const target=jobs[sel[0]];
             // Auto-absorb any split children of the selected jobs (recursively) so no

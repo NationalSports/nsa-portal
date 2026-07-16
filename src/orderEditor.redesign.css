@@ -112,7 +112,7 @@
 .oe2-cta:disabled{ opacity:.55; cursor:not-allowed; }
 
 /* ═══ Bespoke: navy financial ledger ═══ */
-.oe2-ledger{ background:var(--oe-navy); border-radius:0; padding:12px 18px; display:flex; flex-direction:column; justify-content:center; min-width:300px; }
+.oe2-ledger{ background:var(--oe-navy); border-radius:10px; padding:14px 18px; display:flex; flex-direction:column; justify-content:center; min-width:300px; align-self:stretch; }
 .oe2-ledger-row{ display:flex; justify-content:space-between; align-items:baseline; padding:5px 0; }
 .oe2-ledger-row .lbl{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.6px; font-size:10px; color:rgba(255,255,255,.6); }
 .oe2-ledger-row .val{ font-variant-numeric:tabular-nums; font-size:16px; font-weight:700; color:#fff; }
