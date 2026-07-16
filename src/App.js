@@ -22375,19 +22375,24 @@ export default function App(){
     // PDF.js outputs tab-separated columns so the label can share a row with another header
     // (e.g. Frontier: "P.O. NUMBER\tJOB NAME") with the value one row below ("PO8097\t..").
     const _findLabeledPO=(lines,labelRe)=>{
+      // A PO cell value: "PO1234", "PO 3514 OLuST" (optional store tag), or a bare "1234".
+      // Anchored at the cell START only (not both ends) so a trailing description — Silver Screen
+      // prints "PO 3514 OLuST - tackle twill" in the P.O. NUMBER cell — is trimmed down to the PO,
+      // while a store-tag suffix (like Frontier's "PO4133 OLUF") is kept as part of the number.
+      const PO_CELL=/^(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})\b/i;
       for(let i=0;i<lines.length;i++){
         if(!labelRe.test(lines[i]))continue;
         // Same line (after label and/or in a later tab column)
         const parts=lines[i].split('\t').map(p=>p.trim());
-        for(const p of parts){const m=p.match(/^(PO\s*\d{3,}|\d{3,})$/i);if(m)return m[1]}
-        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}|\d{3,})/i);
-        if(sameM)return sameM[1];
+        for(const p of parts){const m=p.match(PO_CELL);if(m)return m[1].trim()}
+        const sameM=lines[i].match(/P\.?\s*O\.?\s*(?:NUMBER|No\.?)\s*[:\s]+(PO\s*\d{3,}(?:\s+[A-Za-z][A-Za-z0-9]*)?|\d{3,})/i);
+        if(sameM)return sameM[1].trim();
         // Next 1-4 lines: check first column (i.e. below the label cell)
         for(let j=i+1;j<Math.min(i+5,lines.length);j++){
           const nParts=lines[j].split('\t').map(p=>p.trim());
           const first=nParts[0]||'';
-          const m=first.match(/^(PO\s*\d{3,}|\d{3,})$/i);
-          if(m)return m[1];
+          const m=first.match(PO_CELL);
+          if(m)return m[1].trim();
         }
       }
       return '';
@@ -22399,9 +22404,13 @@ export default function App(){
       const parts=line.split('\t').map(p=>p.trim());
       if(parts.length<(cfg.minCols||3))return null;
       const at=i=>parts[i<0?parts.length+i:i];
-      const qtyStr=at(cfg.qty)||'';
-      const rateStr=at(cfg.rate)||'';
-      const amtStr=(at(cfg.amount)||'').replace(/T$/,'');// strip SilverScreen taxable marker
+      // Strip thousands separators so a line like "…\t264\t13.00\t3,432.00T" parses. Once a line
+      // hits $1,000 the amount column carries a comma; without this the row fails the numeric
+      // check, gets dropped, and the bill's line items no longer sum to its printed total.
+      const _n=s=>String(s==null?'':s).replace(/,/g,'');
+      const qtyStr=_n(at(cfg.qty));
+      const rateStr=_n(at(cfg.rate));
+      const amtStr=_n(at(cfg.amount)).replace(/T$/,'');// strip SilverScreen taxable marker
       if(!/^\d{1,4}$/.test(qtyStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(rateStr))return null;
       if(!/^\d+(?:\.\d{1,2})?$/.test(amtStr))return null;
