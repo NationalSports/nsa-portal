@@ -5216,12 +5216,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     })()}
 
     {/* ART LIBRARY TAB */}
-    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={async()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);
+    {tab==='art'&&<div className="card"><div className="card-header"><div style={{display:'flex',alignItems:'baseline',gap:10}}><h2>Art Library</h2><span className="oe-num" style={{fontSize:12,color:'#9aa0ad'}}>{af.length} group{af.length===1?'':'s'}{(()=>{const _w=af.filter(a=>(a.status||'waiting_for_art')!=='approved').length;return _w>0?' · '+_w+' waiting on approval':''})()}</span></div><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={async()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);
         // Prefer the art-only persister: it returns a real success/failure so we never falsely report "saved".
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>setShowPrevArt(true)}>📂 Previous Artwork</button><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
+        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setShowPrevArt(true)}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -5233,19 +5233,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _thumbMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()];
             const thumbUrl=art.preview_url||_thumbMocks.map(_thumbUrlOf).find(u=>u&&_isImgUrl(u))||'';
             const pickPreview=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.webp';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading preview...');try{const url=await fileUpload(f,'nsa-art-previews');const arts=(oRef.current.art_files||[]).map(fa=>fa.id===art.id?{...fa,preview_url:url}:fa);await saveArtFilesNow(arts,'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()};
-            return(<div key={art.id} style={{padding:0,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
+            return(<div key={art.id} className="oe-card" style={{background:'#fff',borderRadius:10,border:afSt==='approved'?'1px solid #C9E7D4':afSt==='needs_approval'?'1px solid #FDE68A':'1px solid #EEF1F6',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
               {/* Collapsible header */}
-              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
-                <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0}}>▼</span>
-                <div onClick={thumbUrl?(e=>{e.stopPropagation();setMockupLightbox(thumbUrl)}):undefined} title={thumbUrl?'Click to enlarge':undefined} style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',cursor:thumbUrl?'zoom-in':'pointer',background:thumbUrl?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div className="oe-trow" style={{display:'flex',gap:13,alignItems:'center',padding:'11px 16px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
+                <span style={{fontSize:13,color:'#9aa0ad',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0,width:14}}>▼</span>
+                <div onClick={thumbUrl?(e=>{e.stopPropagation();setMockupLightbox(thumbUrl)}):undefined} title={thumbUrl?'Click to enlarge':undefined} style={{width:44,height:44,borderRadius:8,flexShrink:0,overflow:'hidden',border:'1px solid #E2E6EF',cursor:thumbUrl?'zoom-in':'pointer',background:thumbUrl?'white':art.deco_type==='screen_print'?'#FEF3C7':art.deco_type==='embroidery'?'#E8ECF6':art.deco_type==='dtf'?'#FEF3C7':'#EAF6EE',display:'flex',alignItems:'center',justifyContent:'center'}}>
                   {thumbUrl?<img src={thumbUrl} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
-                  :<span style={{fontSize:16}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</span>}
+                  :<span style={{fontSize:20}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</span>}
                 </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <span style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</span>
-                  <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>{(art.deco_type||'').replace(/_/g,' ')}{art.art_size?' · '+art.art_size:''} · {usedIn} deco(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:700,color:'#2A2F3E',fontSize:15,whiteSpace:'nowrap'}}>{art.name||'Untitled'}</span>
+                    {art.deco_type&&<span className="oe-eb" style={{fontSize:10,color:'#6D28D9',background:'#EDE9FE',padding:'2px 7px',borderRadius:4}}>{(art.deco_type||'').replace(/_/g,' ')}</span>}
+                    {art.art_size&&<span className="oe-num" style={{fontSize:12,color:'#5A6075'}}>{art.art_size}</span>}
+                  </div>
+                  <div className="oe-num" style={{fontSize:12,color:'#9aa0ad',marginTop:1}}>{usedIn} deco{usedIn===1?'':'s'} · {garmentCount} garment{garmentCount===1?'':'s'}</div>
                 </div>
-                <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
+                <div style={{flex:1}}/>
+                {(art.color_ways||[]).length>0&&<span className="oe-num" style={{fontSize:11,color:'#9aa0ad',marginRight:2}}>{(art.color_ways||[]).length} CW</span>}
+                <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
               {/* Collapsible body */}
@@ -5648,7 +5654,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.estimate_id&&<a href={_navHref({est:o.estimate_id})} style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',cursor:onViewEstimate?'pointer':'default',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();onViewEstimate&&onViewEstimate(o.estimate_id)}}>
           <div style={{width:40,height:40,background:'#ede9fe',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="dollar" size={20}/></div>
           <div><div style={{fontWeight:700,color:'#7c3aed',textDecoration:'underline',textDecorationStyle:'dotted'}}>{o.estimate_id}</div><div style={{fontSize:12,color:'#64748b'}}>Source Estimate</div></div><span className="badge badge-green">Converted</span></a>}
-        <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}><div style={{fontWeight:600,marginBottom:4,color:'#166534'}}>🔗 Shared-Screen Jobs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— other orders that run on the same artwork (linked jobs share one screen setup)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>🖥</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Shared-Screen Jobs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— other orders that run on the same artwork (linked jobs share one screen setup)</span></div>
           {sharedJobs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No other orders share this artwork</div>:
           sharedJobs.map((sj,i)=><div key={sj.soId+'|'+i} onClick={()=>onViewSO&&onViewSO(sj.soId)} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #d1fae5',cursor:onViewSO?'pointer':'default',flexWrap:'wrap'}}>
             <span style={{fontSize:13,fontWeight:600,color:'#0f172a'}}>{sj.art}</span>
@@ -5661,7 +5667,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ?<span title="Manually linked — decoration cost is combined across these jobs (one screen, not billed twice). Customer invoice unaffected." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#166534',color:'white'}}>🔗 linked · cost combined</span>
               :<span title="Same artwork detected — link them on the Jobs tab to run together and combine the screen cost." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#fef9c3',color:'#854d0e'}}>same artwork</span>}
           </div>)}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Item Fulfillments</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>📦</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Item Fulfillments</span></div>
           {linkedIFs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No item fulfillments yet</div>:
           linkedIFs.map(pk=><a key={pk.pick_id} href={_navHref({if:pk.pick_id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();setTab('items')}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{pk.pick_id}</span>
@@ -5669,7 +5675,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>{pk.totalQty} units</span>
             {pk.memo&&<span style={{fontSize:11,color:'#94a3b8'}}>{pk.memo}</span>}
           </a>)}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>🛒</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Purchase Orders</span></div>
           {linkedPOs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No purchase orders yet</div>:
           linkedPOs.map(po=><a key={po.po_id} href={_navHref({po:po.po_id})} style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start',padding:'8px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();_openPOInPage(po.po_id)}}>
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
@@ -5686,7 +5692,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {po.memo&&<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>"{po.memo}"</span>}
             </div>
           </a>)}</div>
-        <div style={{padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #ede9fe'}}><div style={{fontWeight:600,marginBottom:4,color:'#7c3aed'}}>Decoration POs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— outside-decorator cost buckets (not line-item orders)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>🧵</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Decoration POs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— outside-decorator cost buckets (not line-item orders)</span></div>
           {(o.deco_pos||[]).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No decoration POs yet</div>:
           (o.deco_pos||[]).map(dp=>{const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);const actual=safeNum(dp._bill_cost||0);return<a key={dp.id||dp.po_id} href={_navHref({po:dp.po_id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #ede9fe',cursor:'pointer',flexWrap:'wrap',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12}}>{dp.po_id}</span>
@@ -5696,7 +5702,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>Expected ${expected.toFixed(2)}{actual>0?' · Actual $'+actual.toFixed(2):''}</span>
             {(dp.item_idxs||[]).length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{(dp.item_idxs||[]).length} item{(dp.item_idxs||[]).length!==1?'s':''}</span>}
           </a>})}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>🧾</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Invoices</span></div>
           {linkedInvs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div>:
           linkedInvs.map(inv=><a key={inv.id} href={_navHref({inv:inv.id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:onNavInvoice?'pointer':'default',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();onNavInvoice&&onNavInvoice(inv)}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</span>
@@ -5704,7 +5710,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':'Open'}</span>
             {inv.date&&<span style={{fontSize:11,color:'#94a3b8'}}>{inv.date}</span>}
           </a>)}</div>
-        <div style={{padding:12,background:'#eef2ff',borderRadius:8,border:'1px solid #e0e7ff'}}><div style={{fontWeight:600,marginBottom:4,color:'#4338ca'}}>Tasks / TODOs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— assigned tasks for this order &amp; its POs (PO tasks show the PO# in the title)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>☑</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Tasks / TODOs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— assigned tasks for this order &amp; its POs (PO tasks show the PO# in the title)</span></div>
           {(()=>{
             const _name=id=>(REPS||[]).find(r=>r.id===id)?.name||id||'—';
             const _dt=v=>{if(!v)return'';try{const d=new Date(v);if(isNaN(d))return String(v);return(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2)+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch{return String(v)}};
