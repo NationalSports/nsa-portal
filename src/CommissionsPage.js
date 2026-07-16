@@ -161,6 +161,11 @@ export default function CommissionsPage(){
       // never bills the fundraise, so it's added on top of invRev.
       // (Pre-2026-07 webstore fundraise was booked as a cost here.)
       const fundraiseRev=safeNum(so._omg_fundraise||0);
+      if(dtl){
+        if(shipRev||shipCost)dtl.push({kind:'bucket',label:'Shipping (charged to customer vs cost)',rev:shipRev,cost:shipCost});
+        if(inboundFreight)dtl.push({kind:'bucket',label:'Inbound freight (supplier bills)',rev:0,cost:inboundFreight});
+        if(fundraiseRev)dtl.push({kind:'bucket',label:'OMG fundraise revenue',rev:fundraiseRev,cost:0});
+      }
       const totalRev=rev+shipRev;const totalCost=cost+shipCost+inboundFreight;
       // Scale to invoice proportion (invoice may be partial payment of SO)
       const soTotal=totalRev||1;const scale=invRev/soTotal;
@@ -1061,7 +1066,7 @@ export default function CommissionsPage(){
                                 <td style={{fontWeight:d.kind==='item'?600:400,color:d.kind==='bucket'?'#64748b':'#0f172a',paddingLeft:d.kind==='deco'?18:6}}>{label}{zero&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#dc2626'}}>$0 COST</span>}</td>
                                 <td style={{textAlign:'center'}}>{d.qty!=null?d.qty:'—'}</td>
                                 <td style={{textAlign:'right'}}>{d.qty>0?'$'+(d.rev/d.qty).toFixed(2):'—'}</td>
-                                <td style={{textAlign:'right',color:'#dc2626'}}>{d.qty>0?'$'+(d.cost/d.qty).toFixed(2):'—'}</td>
+                                <td style={{textAlign:'right',color:'#dc2626'}}>{d.qty>0?'$'+(d.cost/d.qty).toFixed(2):'—'}{d.kind==='item'&&d.poCovered&&<span title="This unit cost comes from the actual PO line — edit the PO unit cost in ✎ Edit job costs to change it; the catalog cost only covers non-PO quantity" style={{marginLeft:3,fontSize:8,fontWeight:700,color:'#6d28d9',cursor:'help'}}>PO</span>}</td>
                                 <td style={{textAlign:'right'}}>{fmt(Math.round((d.rev||0)*100)/100)}</td>
                                 <td style={{textAlign:'right',color:'#dc2626'}}>{fmt(Math.round((d.cost||0)*100)/100)}</td>
                                 <td style={{textAlign:'right',fontWeight:600,color:lgp>=0?'#166534':'#dc2626'}}>{fmt(Math.round(lgp*100)/100)}</td>
