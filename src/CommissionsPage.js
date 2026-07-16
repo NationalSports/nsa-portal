@@ -10,6 +10,7 @@ import { safeArt, safeDecos, safeItems, safeNum, safeSizes } from './safeHelpers
 import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
+import { sendBrevoEmail } from './utils';
 import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
@@ -17,7 +18,7 @@ import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnap
 const ADMIN_DASH_USER_ID='00000000-0000-0000-0000-000000000001';
 
 export default function CommissionsPage(){
-  const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos}=useAppData();
+  const {REPS,commMonth,commOverrides,commRep,commTab,cu,cust,invs,setCommMonth,setCommOverrides,setCommRep,setCommTab,setESO,setESOC,setESOTab,setPg,sos,setSOs}=useAppData();
 
     const isAdmin=cu.role==='admin'||cu.role==='super_admin';
     const isSteve=cu?.id===ADMIN_DASH_USER_ID;
@@ -31,8 +32,9 @@ export default function CommissionsPage(){
     // not loaded yet (lines render live and NOTHING is written — never freeze blind).
     const[snaps,setSnaps]=useState(null);
     const _snapWriting=useRef(false);
-    // Admin Dashboard: which rep rows are expanded to show their paid invoices
+    // Admin Dashboard: which rep rows / invoice rows are expanded
     const[dashOpen,setDashOpen]=useState({});
+    const[dashInvOpen,setDashInvOpen]=useState({});
     useEffect(()=>{let cancelled=false;
       if(!supabase)return;
       supabase.from('commission_snapshots').select('*').limit(20000).then(({data,error})=>{
@@ -45,12 +47,17 @@ export default function CommissionsPage(){
 
     // Gross profit calculator for an invoice
     // GP = Invoice Revenue − Garment Cost − Deco Cost − Outbound Shipping (ShipStation) − Inbound Freight (Supplier Bills)
-    const calcGP=(inv)=>{
+    // dtl (optional array): filled with per-line detail rows for the Admin Dashboard
+    // drill-down. Detail is captured as DELTAS of the same running totals the money
+    // math already produces — the arithmetic below is untouched, so passing dtl can
+    // never change a GP number. Detail rows are SO-level (unscaled); the returned
+    // `scale` says what fraction of the SO this invoice covers.
+    const calcGP=(inv,dtl)=>{
       // Commission revenue excludes CC surcharges: recordPayment folds card fees into inv.total
       // (tracked in inv.cc_fee), and reps must not earn GP on a processing-fee pass-through.
       const invRev=Math.max(0,safeNum(inv.total)-safeNum(inv.cc_fee||0));
       const so=sos.find(s=>s.id===inv.so_id);
-      if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0};
+      if(!so)return{rev:invRev,cost:0,gp:invRev,shipRev:0,shipCost:0,inboundFreight:0,scale:1};
       const _aq={};safeItems(so).forEach(it=>{const q2=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){_aq[d.art_file_id]=(_aq[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q2)*(d.reversible?2:1)}})});
       // Combined deco cost when the SO's jobs are manually linked to a shared screen on other SOs.
       const _comb=linkedArtCostQty(so,_aq,sos);
@@ -63,15 +70,20 @@ export default function CommissionsPage(){
       const _poMeta=new Set(['status','po_id','received','shipments','cancelled','po_type','deco_vendor','deco_type','created_at','memo','notes','expected_date','billed','tracking_numbers','unit_cost','vendor','drop_ship','batch_queue_id','batch_po_number','preexisting','email_history','shipping']);
       const outByItem=outsourcedDecoTypes(so);
       safeItems(so).forEach((it,ii)=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sq>0?sq:safeNum(it.est_qty);if(!qty)return;
+        const _dr0=rev,_dc0=cost;
         if(it._sizeSells&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)rev+=n*(it._sizeSells[sz]||safeNum(it.unit_sell))})}else{rev+=qty*safeNum(it.unit_sell)}
         let poQty=0,poCost=0;(Array.isArray(it.po_lines)?it.po_lines:[]).forEach(pl=>{if(!pl)return;const u=pl.unit_cost!=null?safeNum(pl.unit_cost):safeNum(it.nsa_cost);Object.entries(pl).forEach(([k,v])=>{if(k.startsWith('_')||_poMeta.has(k))return;if(typeof v!=='number'||v<=0)return;poQty+=v;poCost+=v*u})});
         if(poQty>0){cost+=poCost;const uncov=Math.max(0,qty-poQty);if(uncov>0){if(it._sizeCosts&&sq>0){const tot=Object.entries(safeSizes(it)).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0);const avg=sq>0?tot/sq:safeNum(it.nsa_cost);cost+=uncov*avg}else{cost+=uncov*safeNum(it.nsa_cost)}}}
         else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
         else{cost+=qty*safeNum(it.nsa_cost)}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);rev+=eq*dp2.sell;if(!isDecoOutsourced(so,ii,d,outByItem))cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb)});
+        if(dtl)dtl.push({kind:'item',ii,soId:so.id,sku:it.sku||'',name:it.name||'',color:it.color||'',qty,rev:rev-_dr0,cost:cost-_dc0,poCovered:poQty>0,hasSizeCosts:!!(it._sizeCosts&&sq>0),nsaCost:safeNum(it.nsa_cost)});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?_aq[d.art_file_id]:qty;const dp2=dP(d,qty,af,cq);const eq=dp2._nq!=null?dp2._nq:(d.reversible?qty*2:qty);const _ddr=rev,_ddc=cost;const _out=isDecoOutsourced(so,ii,d,outByItem);rev+=eq*dp2.sell;if(!_out)cost+=eq*_decoUnitCostComb(d,qty,af,cq,_comb);
+          if(dtl)dtl.push({kind:'deco',ii,type:String(d.type||d.kind||'deco').replace(/_/g,' '),qty:eq,rev:rev-_ddr,cost:cost-_ddc,outsourced:_out});});
       });
       // Outside deco POs — SO-level cost bucket
+      const _db0=cost;
       (so.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
+      if(dtl&&cost-_db0>0)dtl.push({kind:'bucket',label:'Outside deco POs',rev:0,cost:cost-_db0});
       // Shipping revenue (charged to customer)
       const shipRev=so.shipping_type==='pct'?rev*(safeNum(so.shipping_value)/100):safeNum(so.shipping_value);
       // Outbound shipping cost from ShipStation — fallback to shipment records
@@ -728,6 +740,63 @@ export default function CommissionsPage(){
         const fmtD=d=>d?(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2):'—';
         const gpBadge=(gp,rev)=>{const ok=rev>0&&gp/rev>=0.3;return<span style={{padding:'2px 6px',borderRadius:8,fontSize:10,fontWeight:600,background:ok?'#dcfce7':'#fef3c7',color:ok?'#166534':'#92400e'}}>{rev>0?Math.round(gp/rev*100):0}%</span>};
         const openSO=l=>{if(l.so){setESOTab('costs');setESO(l.so);setESOC(l.customer);setPg('orders')}};
+        const repName=b=>b.rep?.name||(b.repId==='_none'?'Unassigned':b.repId);
+        // Edit an item's purchase price (nsa_cost). Persists through the sanctioned path:
+        // setSOs → App's diff-save effect → _dbSaveSO (outbox). nsa_cost is a real so_items
+        // column; per-size costs are session-only and PO-line costs win where set, so those
+        // limits are spelled out in the prompt instead of silently mis-saving.
+        const editItemCost=(l,d)=>{
+          const curEff=d.qty>0?d.cost/d.qty:0;
+          let msg='Set purchase (unit) cost for '+(d.sku||d.name||'item')+' on '+(l.so?.id||'?')+'\nEffective unit cost now: $'+curEff.toFixed(2)+' · Catalog cost (nsa_cost): $'+d.nsaCost.toFixed(2);
+          if(d.poCovered)msg+='\n\n⚠ Part of this item is costed from actual PO lines — the PO unit cost wins for covered qty. This edit changes the fallback catalog cost only; to fix a PO cost, open the order.';
+          if(d.hasSizeCosts)msg+='\n⚠ This item has live per-size vendor costs that override catalog cost per size.';
+          const v=window.prompt(msg,String(d.nsaCost||''));
+          if(v===null)return;
+          const n=parseFloat(v);
+          if(isNaN(n)||n<0){alert('Enter a number ≥ 0.');return}
+          setSOs(prev=>prev.map(s=>s.id!==l.so.id?s:{...s,items:safeItems(s).map((it,x)=>x===d.ii?{...it,nsa_cost:n}:it),updated_at:new Date().toLocaleString()}));
+          if(l.snapped)setTimeout(()=>alert('Cost saved. '+l.inv.id+' is frozen at payment — its commission stays at the frozen amount until you click Re-freeze in the expanded row.'),100);
+        };
+        // ── Export / email ──
+        const csvCell=v=>{const s=v==null?'':String(v);return /[",\n\r]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+        const csvString=()=>{
+          const out=[['Rep','Type','Ref','Customer','Paid / Date','Days to Pay','Rate','Revenue','Cost','GP','GP%','Commission','Frozen']];
+          rows.forEach(b=>{const name=repName(b);
+            [...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).forEach(l=>out.push([name,'Invoice',l.inv.id,l.customer?.name||'',fmtD(l.paidDate),l.daysToPay??'',Math.round(l.commRate*100)+'%',l.gp.rev.toFixed(2),l.gp.cost.toFixed(2),l.gp.gp.toFixed(2),(l.gp.rev>0?Math.round(l.gp.gp/l.gp.rev*100):0)+'%',l.commAmt.toFixed(2),l.snapped?'yes':'no']));
+            b.promo.forEach(l=>out.push([name,'Promo deduction',l.so.id,l.customer?.name||'',l.soDate,'','','','','','',(-l.totalCost).toFixed(2),'']));
+            out.push([name+' — TOTAL','','','','','','',b.rev.toFixed(2),b.cost.toFixed(2),b.gp.toFixed(2),(b.rev>0?Math.round(b.gp/b.rev*100):0)+'%',b.net.toFixed(2),'']);
+          });
+          out.push(['TOTAL ALL REPS','','','','','','',tot.rev.toFixed(2),tot.cost.toFixed(2),tot.gp.toFixed(2),totGpPct+'%',tot.net.toFixed(2),'']);
+          return out.map(r=>r.map(csvCell).join(',')).join('\r\n');
+        };
+        const downloadCsv=()=>{
+          const blob=new Blob(['\ufeff'+csvString()],{type:'text/csv;charset=utf-8;'});
+          const url=URL.createObjectURL(blob);const a=document.createElement('a');
+          a.href=url;a.download='commissions-'+commMonth+'.csv';document.body.appendChild(a);a.click();a.remove();
+          setTimeout(()=>URL.revokeObjectURL(url),1500);
+        };
+        const emailReport=async()=>{
+          const to=window.prompt('Email the '+monthLabel+' commission report (CSV attached) to:','accounting@nationalsportsapparel.com');
+          if(to===null)return;
+          if(!to.trim()||!to.includes('@')){alert('Enter a valid email address.');return}
+          const esc=s=>String(s||'').replace(/</g,'&lt;');
+          const td='padding:6px 8px;border-bottom:1px solid #e2e8f0';
+          const summary=rows.map(b=>`<tr><td style="${td};font-weight:700">${esc(repName(b))}</td><td style="${td};text-align:center">${b.lines.length}</td><td style="${td};text-align:right">${fmt0(b.rev)}</td><td style="${td};text-align:right">${fmt0(b.gp)}</td><td style="${td};text-align:center">${b.rev>0?Math.round(b.gp/b.rev*100):0}%</td><td style="${td};text-align:right">${fmt(b.comm)}</td><td style="${td};text-align:right;color:#dc2626">${b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td><td style="${td};text-align:right;font-weight:700">${fmt(b.net)}</td></tr>`).join('');
+          const html=`<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;max-width:720px">
+            <h2 style="margin:0 0 4px">Commission Report — ${monthLabel}${isMTD?' (Month to Date)':''}</h2>
+            <p style="margin:0 0 16px;color:#64748b;font-size:13px">Sent from the NSA Portal admin commissions dashboard by ${esc(cu?.name||'')}. Full invoice detail is in the attached CSV.</p>
+            <table style="border-collapse:collapse;width:100%;font-size:13px"><thead><tr>
+              <th style="${td};text-align:left">Rep</th><th style="${td}">Invoices</th><th style="${td};text-align:right">Revenue</th><th style="${td};text-align:right">GP</th><th style="${td}">GP%</th><th style="${td};text-align:right">Earned</th><th style="${td};text-align:right">Promo</th><th style="${td};text-align:right">Net</th>
+            </tr></thead><tbody>${summary}
+              <tr><td style="${td};font-weight:800">TOTAL</td><td style="${td};text-align:center;font-weight:800">${tot.inv}</td><td style="${td};text-align:right;font-weight:800">${fmt0(tot.rev)}</td><td style="${td};text-align:right;font-weight:800">${fmt0(tot.gp)}</td><td style="${td};text-align:center;font-weight:800">${totGpPct}%</td><td style="${td};text-align:right;font-weight:800">${fmt(tot.comm)}</td><td style="${td};text-align:right;font-weight:800;color:#dc2626">${tot.promoCost>0?'−'+fmt(tot.promoCost):'—'}</td><td style="${td};text-align:right;font-weight:800">${fmt(tot.net)}</td></tr>
+            </tbody></table>
+            <p style="margin:16px 0 0;font-size:11px;color:#64748b">Policy: 30% of GP paid within 90 days, 15% after. Promo order costs deduct from net commission. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise).</p>
+          </div>`;
+          const b64=btoa(unescape(encodeURIComponent('\ufeff'+csvString())));
+          const res=await sendBrevoEmail({to:[{email:to.trim()}],subject:'Commission Report — '+monthLabel+(isMTD?' (MTD)':''),htmlContent:html,senderName:'NSA Portal',senderEmail:'accounting@nationalsportsapparel.com',attachment:[{name:'commissions-'+commMonth+'.csv',content:b64}]});
+          if(res?.ok)alert('Report emailed to '+to.trim());
+          else alert('Email failed: '+(res?.error||'unknown error'));
+        };
         return<>
           <div className="card">
             <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
@@ -750,7 +819,14 @@ export default function CommissionsPage(){
             </div>
           </div>
           <div className="card" style={{marginTop:16}}>
-            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>Commissions by Rep</h2><span style={{fontSize:11,color:'#64748b'}}>Click a rep to see their paid invoices</span></div>
+            <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+              <h2>Commissions by Rep</h2>
+              <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                <span style={{fontSize:11,color:'#64748b'}}>Click a rep → invoices · click an invoice → line items</span>
+                <button className="btn btn-sm btn-secondary" disabled={rows.length===0} title="Download this report as a CSV spreadsheet" onClick={downloadCsv}>⬇ Export CSV</button>
+                <button className="btn btn-sm btn-primary" disabled={rows.length===0} title="Email this report (CSV attached) to accounting" onClick={emailReport}>✉ Email to Accounting</button>
+              </div>
+            </div>
             <div className="card-body" style={{padding:0}}>
               {rows.length===0?<div style={{padding:40,textAlign:'center',color:'#94a3b8'}}>No paid invoices or promo orders in {monthLabel}.</div>:
               <table style={{fontSize:12}}><thead><tr>
@@ -769,16 +845,60 @@ export default function CommissionsPage(){
                       <td style={{textAlign:'right',color:b.promoCost>0?'#dc2626':'#94a3b8'}}>{b.promoCost>0?'−'+fmt(b.promoCost):'—'}</td>
                       <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:b.net>=0?'#166534':'#dc2626'}}>{fmt(b.net)}</td>
                     </tr>
-                    {open&&[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=><tr key={l.inv.id} style={{background:'#f8fafc'}}>
-                      <td style={{paddingLeft:28}}><span style={{fontWeight:700,color:'#1e40af',cursor:'pointer'}} onClick={()=>openSO(l)}>{l.inv.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span>{l.snapped&&<span title="Frozen at payment — later order edits no longer change this line" style={{marginLeft:4,fontSize:10}}>🔒</span>}</td>
-                      <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>paid {fmtD(l.paidDate)}</td>
-                      <td style={{textAlign:'right'}}>{fmt0(l.gp.rev)}</td>
-                      <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(l.gp.cost)}</td>
-                      <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>{fmt0(l.gp.gp)}</td>
-                      <td style={{textAlign:'center'}}>{gpBadge(l.gp.gp,l.gp.rev)}</td>
-                      <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>@{Math.round(l.commRate*100)}%</span></td>
-                      <td colSpan={2}/>
-                    </tr>)}
+                    {open&&[...b.lines].sort((a,c)=>(c.paidDate||0)-(a.paidDate||0)).map(l=>{
+                      const iOpen=!!dashInvOpen[l.inv.id];
+                      // Verification flags: red = no cost at all (missing purchase price →
+                      // GP and commission overstated); yellow = GP over 60% (suspiciously
+                      // high — usually the same problem in partial form).
+                      const zeroInv=l.gp.cost===0;const hotInv=!zeroInv&&l.gp.rev>0&&l.gp.gp/l.gp.rev>0.6;
+                      return<Fragment key={l.inv.id}>
+                      <tr style={{background:zeroInv?'#fee2e2':hotInv?'#fef9c3':iOpen?'#eef2f7':'#f8fafc',cursor:'pointer'}} onClick={()=>setDashInvOpen(p=>({...p,[l.inv.id]:!p[l.inv.id]}))}>
+                        <td style={{paddingLeft:28}}><span style={{display:'inline-block',width:12,color:'#94a3b8',fontSize:9}}>{iOpen?'▼':'▶'}</span><span style={{fontWeight:700,color:'#1e40af'}} onClick={e=>{e.stopPropagation();openSO(l)}} title="Open the order's Costs tab">{l.inv.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span>{l.snapped&&<span title="Frozen at payment — later order edits no longer change this line" style={{marginLeft:4,fontSize:10}}>🔒</span>}{zeroInv&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#dc2626'}}>$0 COST</span>}</td>
+                        <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>paid {fmtD(l.paidDate)}</td>
+                        <td style={{textAlign:'right'}}>{fmt0(l.gp.rev)}</td>
+                        <td style={{textAlign:'right',color:'#dc2626'}}>{fmt0(l.gp.cost)}</td>
+                        <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>{fmt0(l.gp.gp)}</td>
+                        <td style={{textAlign:'center'}}>{gpBadge(l.gp.gp,l.gp.rev)}</td>
+                        <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>@{Math.round(l.commRate*100)}%</span></td>
+                        <td colSpan={2}/>
+                      </tr>
+                      {iOpen&&(()=>{
+                        const dtl=[];const g=calcGP(l.inv,dtl);
+                        const dRev=dtl.reduce((a,d)=>a+(d.rev||0),0);const dCost=dtl.reduce((a,d)=>a+(d.cost||0),0);
+                        const scaled=Math.abs((g.scale!=null?g.scale:1)-1)>0.02;
+                        return<tr><td colSpan={9} style={{padding:'0 12px 12px 46px',background:'#f1f5f9'}}>
+                          {l.snapped&&<div style={{display:'flex',gap:8,alignItems:'center',padding:'8px 0 4px',fontSize:10,color:'#64748b'}}>🔒 The invoice totals above are frozen at payment; the line detail below is live from today's order data.<button className="btn btn-sm" style={{fontSize:9,background:'#f8fafc',border:'1px solid #cbd5e1',color:'#475569',padding:'2px 6px'}} title="Recompute the frozen commission from today's live order data — use after correcting a cost" onClick={()=>_resnap(l)}>Re-freeze</button></div>}
+                          <table style={{fontSize:11,width:'100%',marginTop:4}}><thead><tr>
+                            <th>Line</th><th style={{textAlign:'center'}}>Qty</th><th style={{textAlign:'right'}}>Unit Sell</th><th style={{textAlign:'right'}}>Unit Cost</th><th style={{textAlign:'right'}}>Revenue</th><th style={{textAlign:'right'}}>Cost</th><th style={{textAlign:'right'}}>GP</th><th style={{textAlign:'center'}}>GP%</th><th/>
+                          </tr></thead><tbody>
+                            {dtl.map((d,di)=>{
+                              const lgp=(d.rev||0)-(d.cost||0);
+                              const zero=(d.kind==='item'||(d.kind==='deco'&&!d.outsourced))&&d.qty>0&&d.cost===0;
+                              const hot=!zero&&(d.kind==='item'||d.kind==='deco')&&d.rev>0&&lgp/d.rev>0.6;
+                              const label=d.kind==='item'?((d.sku?d.sku+' ':'')+(d.name||'Item')+(d.color?' · '+d.color:'')):d.kind==='deco'?('↳ '+d.type+(d.outsourced?' (outsourced — cost in Outside deco POs)':'')):d.label;
+                              return<tr key={di} style={{background:zero?'#fee2e2':hot?'#fef9c3':'white'}}>
+                                <td style={{fontWeight:d.kind==='item'?600:400,color:d.kind==='bucket'?'#64748b':'#0f172a',paddingLeft:d.kind==='deco'?18:6}}>{label}{zero&&<span style={{marginLeft:6,fontSize:9,fontWeight:700,color:'#dc2626'}}>$0 COST</span>}</td>
+                                <td style={{textAlign:'center'}}>{d.qty!=null?d.qty:'—'}</td>
+                                <td style={{textAlign:'right'}}>{d.qty>0?'$'+(d.rev/d.qty).toFixed(2):'—'}</td>
+                                <td style={{textAlign:'right',color:'#dc2626'}}>{d.qty>0?'$'+(d.cost/d.qty).toFixed(2):'—'}</td>
+                                <td style={{textAlign:'right'}}>{fmt(Math.round((d.rev||0)*100)/100)}</td>
+                                <td style={{textAlign:'right',color:'#dc2626'}}>{fmt(Math.round((d.cost||0)*100)/100)}</td>
+                                <td style={{textAlign:'right',fontWeight:600,color:lgp>=0?'#166534':'#dc2626'}}>{fmt(Math.round(lgp*100)/100)}</td>
+                                <td style={{textAlign:'center'}}>{d.rev>0?gpBadge(lgp,d.rev):'—'}</td>
+                                <td style={{textAlign:'center'}}>{d.kind==='item'&&<button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'1px 6px'}} title="Edit this item's purchase (unit) cost" onClick={()=>editItemCost(l,d)}>✎ Cost</button>}</td>
+                              </tr>})}
+                            <tr style={{fontWeight:700,borderTop:'1px solid #cbd5e1'}}>
+                              <td>Order total{scaled?' (full order)':''}</td><td colSpan={3}/>
+                              <td style={{textAlign:'right'}}>{fmt(Math.round(dRev*100)/100)}</td>
+                              <td style={{textAlign:'right',color:'#dc2626'}}>{fmt(Math.round(dCost*100)/100)}</td>
+                              <td style={{textAlign:'right',color:dRev-dCost>=0?'#166534':'#dc2626'}}>{fmt(Math.round((dRev-dCost)*100)/100)}</td>
+                              <td style={{textAlign:'center'}}>{dRev>0?gpBadge(dRev-dCost,dRev):'—'}</td><td/>
+                            </tr>
+                          </tbody></table>
+                          {scaled&&<div style={{marginTop:6,fontSize:10,color:'#92400e'}}>This invoice covers ~{Math.round((g.scale||0)*100)}% of {l.so?.id} — line detail is the full order; the invoice totals above are scaled to this invoice's share.</div>}
+                          {dtl.length===0&&<div style={{padding:'8px 0',fontSize:11,color:'#94a3b8'}}>No line detail available — the order behind this invoice isn't loaded or has no items.</div>}
+                        </td></tr>})()}
+                      </Fragment>})}
                     {open&&b.promo.map(l=><tr key={'p_'+l.so.id} style={{background:'#fef2f2'}}>
                       <td style={{paddingLeft:28}}><span style={{fontWeight:700,color:'#dc2626',cursor:'pointer'}} onClick={()=>openSO(l)}>{l.so.id}</span><span style={{marginLeft:8,color:'#475569'}}>{l.customer?.name||'—'}</span><span style={{marginLeft:8,fontSize:9,fontWeight:700,color:'#dc2626'}}>PROMO</span></td>
                       <td style={{textAlign:'center',fontSize:10,color:'#64748b'}}>{l.soDate}</td>
@@ -802,6 +922,7 @@ export default function CommissionsPage(){
             </div>
             <div style={{padding:'10px 16px',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>
               Grouped by <strong>payment month</strong> — an invoice lands in the month its last payment came in, same as the Statement tab. Revenue is commissionable revenue (excludes CC surcharges, includes OMG fundraise). 🔒 lines are frozen at payment.
+              <span style={{marginLeft:8}}><span style={{background:'#fee2e2',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#dc2626'}}>Red</span> = $0 cost (missing purchase price — GP overstated). <span style={{background:'#fef9c3',padding:'1px 6px',borderRadius:4,fontWeight:600,color:'#92400e'}}>Yellow</span> = GP over 60% — verify before paying.</span>
             </div>
           </div>
         </>;
