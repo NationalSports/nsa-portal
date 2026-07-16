@@ -22,6 +22,7 @@ import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJo
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims } from './lib/syncJobsMatch';
+import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -3215,7 +3216,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const allFp=(fp.length>0?fp:_serverFp).filter(p=>!(isRichardsonItem(p)||isSSItem(p)||isSanMarItem(p)||isMomentecItem(p)));
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
-  return(<div>
+  return(<div className="oe2">
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -3320,21 +3321,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}/>;
     })()}
     {/* Sticky header — appears when scrolling */}
-    <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
-      <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
-      {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
-      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
-      <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
-      {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
-      <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
-      {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
-      <button className="btn btn-sm btn-primary" onClick={()=>{
+    <div className="oe2-toolbar">
+      <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:12,padding:'6px 12px'}}><Icon name="back" size={12}/> Back</button>
+      {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:12,padding:'6px 12px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
+      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:12,padding:'6px 12px'}}><Icon name="plus" size={12}/> New Est</button>}
+      <span className="oe2-tb-id">{o.id}</span>
+      {isSO&&<span className="oe2-status-pill" style={{background:SC[o.status]?.bg||'#EEF1F6',color:SC[o.status]?.c||'#5A6075'}}>{o.status?.replace(/_/g,' ')}</span>}
+      {cust&&<><span className="oe2-tb-sep"/><span className="oe2-tb-cust" onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span></>}
+      {o.memo&&<span className="oe2-tb-chip">{o.memo}</span>}
+      <span style={{flex:1}}/>
+      {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
+      <button className="oe2-cta" onClick={()=>{
         if(!cust){nf('Select a customer first','error');return}
         if(!o.memo?.trim()){nf('Memo is required','error');return}
         const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
+        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -3445,7 +3447,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
         </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        <div className="oe2-ledger">
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
@@ -3454,8 +3456,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
             {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
-            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
-            <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
+            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>{
+            const _fmt='$'+x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+            if(x.l==='TOTAL')return<React.Fragment key={x.l}><div className="oe2-ledger-div"/><div className="oe2-ledger-total"><span className="lbl">Order Total</span><span className="val oe-num">{_fmt}</span></div></React.Fragment>;
+            const pos=x.l==='REV'||x.l==='FUNDRAISE'||x.l==='CREDIT';const neg=x.l==='COST';const isMargin=x.l==='MARGIN';
+            return<div key={x.l} className="oe2-ledger-row"><span className="lbl">{x.l}{x.s&&!isMargin?' · '+x.s:''}</span><span className={'val oe-num'+(pos?' pos':neg?' neg':'')}>{isMargin&&x.s&&<span className="oe2-ledger-pct">{x.s}</span>}{_fmt}</span></div>;
+          })}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
@@ -3907,16 +3913,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
         const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
-        return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
-          <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
-          {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=sf===displaySt;
-            return<span key={sf} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,
-              background:cur?sc.bg:'#f8fafc',color:cur?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0',
-              cursor:sf==='complete'?'pointer':'default',opacity:cur?1:0.5}}
-              onClick={()=>{if(sf==='complete')sv('status','complete')}}
-              title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
-              {stLabels[sf]||sf}</span>})}
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+        const _curIdx=statusFlow.indexOf(displaySt);
+        return<div style={{marginTop:12,borderTop:'1px solid #EEF1F6',paddingTop:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+          <span className="oe-eb" style={{fontSize:10,color:'#5A6075'}}>Order Status</span>
+          <div className="oe2-stepper">
+          {statusFlow.map((sf,i)=>{const cur=sf===displaySt;const done=_curIdx>=0&&i<_curIdx;
+            return<React.Fragment key={sf}>
+              <span className={'step'+(cur?' current':done?' done':'')+(sf==='complete'?' clickable':'')}
+                onClick={()=>{if(sf==='complete')sv('status','complete')}}
+                title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>{stLabels[sf]||sf}</span>
+              {i<statusFlow.length-1&&<span className={'conn'+(done?' done':'')}/>}
+            </React.Fragment>})}
+          </div>
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
         <div style={{marginTop:10}}>

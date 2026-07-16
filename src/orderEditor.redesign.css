@@ -1,0 +1,148 @@
+/* ═══════════════════════════════════════════════════════════════
+   ORDER EDITOR — NSA REDESIGN  (scoped under .oe2)
+   Everything here is namespaced to `.oe2` so it ONLY affects the
+   Order Editor page. No other portal page is touched. This layer is
+   purely visual — it re-skins the shared primitives (card, btn,
+   form fields, badge, tabs, modal, size-cell) to the NSA brand and
+   adds bespoke classes for the signature pieces (navy ledger,
+   stepper, line-item cards, PO modal). No data or logic change.
+
+   Design system: National Sports Apparel
+   navy #192853 (dominant) · red #962C32 (accent only) · money green
+   #1E7A46 · cool off-whites #F7F8FB/#EEF1F6 · Barlow Condensed
+   (display/labels, uppercase) + Source Sans 3 (body) · small radii ·
+   soft navy-tinted shadows · subtle −6° skew on primary CTAs.
+   ═══════════════════════════════════════════════════════════════ */
+
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,500;0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+
+.oe2 {
+  --oe-navy:#192853; --oe-navy-dark:#0F1A38; --oe-navy-mid:#1c2d4f;
+  --oe-red:#962C32; --oe-red-bright:#B8333B;
+  --oe-green:#1E7A46; --oe-mint:#7BE0A8; --oe-green-bg:#EAF6EE; --oe-green-bd:#C9E7D4;
+  --oe-cost:#962C32; --oe-cost-mint:#F4A6AB;
+  --oe-page:#EEF1F6; --oe-alt:#F7F8FB; --oe-alt2:#FAFBFD; --oe-white:#fff;
+  --oe-bd:#E2E6EF; --oe-bd-hair:#EEF1F6; --oe-bd-input:#D1D5DE;
+  --oe-text:#2A2F3E; --oe-text-2:#5A6075; --oe-muted:#9aa0ad; --oe-faint:#C2C7D2;
+  --oe-amber-bg:#FEF3C7; --oe-amber-bd:#FDE68A; --oe-amber-tx:#92400E; --oe-amber-lo:#B45309;
+  --oe-purple:#6D28D9; --oe-purple-bg:#EDE9FE;
+  --oe-radius:10px; --oe-radius-sm:6px; --oe-radius-lg:12px;
+  --oe-shadow:0 2px 12px rgba(0,0,0,.05); --oe-shadow-hover:0 8px 28px rgba(25,40,83,.10);
+  --oe-font:'Source Sans 3',system-ui,'Segoe UI',sans-serif;
+  --oe-font-dt:'Barlow Condensed','Arial Narrow',sans-serif;
+
+  font-family:var(--oe-font);
+  color:var(--oe-text);
+}
+
+/* ── Type helpers (mirror the mockup) ── */
+.oe2 .oe-num{ font-variant-numeric:tabular-nums; }
+.oe2 .oe-eb{ font-family:var(--oe-font-dt); font-weight:700; text-transform:uppercase; letter-spacing:1.2px; white-space:nowrap; }
+.oe2 .oe-dt{ font-family:var(--oe-font-dt); font-weight:700; text-transform:uppercase; letter-spacing:.4px; white-space:nowrap; }
+
+/* ═══ Primitive re-skins (scoped) ═══ */
+.oe2 .card{ background:var(--oe-white); border:1px solid var(--oe-bd-hair); border-radius:var(--oe-radius); box-shadow:var(--oe-shadow); }
+.oe2 .card-header{ border-bottom:1px solid var(--oe-bd-hair); }
+.oe2 .card-header h2{ color:var(--oe-navy); font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; font-size:16px; }
+
+/* Buttons */
+.oe2 .btn{ border-radius:7px; font-weight:600; transition:border-color .15s,background .15s,color .15s; }
+.oe2 .btn-primary{ background:var(--oe-navy); border-color:var(--oe-navy); color:#fff; }
+.oe2 .btn-primary:hover{ background:var(--oe-navy-dark); border-color:var(--oe-navy-dark); }
+.oe2 .btn-secondary{ background:#fff; color:var(--oe-text-2); border-color:var(--oe-bd-input); }
+.oe2 .btn-secondary:hover{ background:#fff; color:var(--oe-navy); border-color:var(--oe-navy); }
+.oe2 .btn-success{ background:var(--oe-green); border-color:var(--oe-green); color:#fff; }
+.oe2 .btn-danger{ background:#fff; color:var(--oe-red); border-color:#E8B4B7; }
+.oe2 .btn-danger:hover{ background:#fdecec; }
+
+/* Forms */
+.oe2 .form-label{ font-family:var(--oe-font-dt); font-weight:700; text-transform:uppercase; letter-spacing:.6px; font-size:10px; color:var(--oe-text-2); }
+.oe2 .form-input, .oe2 .form-select, .oe2 .form-textarea{
+  border:1px solid var(--oe-bd-input); border-radius:6px; color:var(--oe-text); background:#fff;
+}
+.oe2 .form-input:focus, .oe2 .form-select:focus, .oe2 .form-textarea:focus{ border-color:var(--oe-navy); box-shadow:0 0 0 3px rgba(25,40,83,.12); }
+.oe2 input:focus, .oe2 select:focus, .oe2 textarea:focus{ outline:none; }
+
+/* Badges → NSA (skewed eyebrow labels) */
+.oe2 .badge{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; font-weight:700; border-radius:4px; }
+.oe2 .badge-blue{ background:#F4F7FF; color:var(--oe-navy); }
+.oe2 .badge-green{ background:var(--oe-green-bg); color:var(--oe-green); }
+.oe2 .badge-amber{ background:var(--oe-amber-bg); color:var(--oe-amber-tx); }
+.oe2 .badge-red{ background:#FDECEC; color:var(--oe-red); }
+.oe2 .badge-purple{ background:var(--oe-purple-bg); color:var(--oe-purple); }
+.oe2 .badge-gray{ background:var(--oe-alt); color:var(--oe-text-2); }
+
+/* Tabs */
+.oe2 .tabs{ border-bottom:2px solid var(--oe-bd-hair); gap:4px; }
+.oe2 .tab{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; font-size:14px; color:var(--oe-muted); }
+.oe2 .tab:hover:not(.active){ color:var(--oe-navy); }
+.oe2 .tab.active{ color:var(--oe-navy); border-bottom-color:var(--oe-red); }
+
+/* Modal chrome */
+.oe2 .modal{ border-radius:12px; box-shadow:0 24px 64px rgba(10,16,38,.45); }
+.oe2 .modal-header{ border-bottom:1px solid var(--oe-bd-hair); }
+.oe2 .modal-header h2{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; color:var(--oe-navy); }
+.oe2 .modal-footer{ border-top:1px solid var(--oe-bd-hair); background:var(--oe-alt2); }
+
+/* Size matrix cells (baseline; bespoke matrix used in items slice) */
+.oe2 .size-cell.total{ background:var(--oe-navy); border-color:var(--oe-navy); }
+.oe2 .size-cell.total .size-label{ color:#93c5fd; }
+
+/* ═══ Bespoke: sticky toolbar strip ═══ */
+.oe2-toolbar{
+  position:sticky; top:52px; z-index:40; background:#fff; border-bottom:1px solid var(--oe-bd-hair);
+  padding:10px 18px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  box-shadow:0 1px 3px rgba(25,40,83,.05);
+}
+.oe2-toolbar .oe2-tb-id{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.5px; font-size:21px; color:var(--oe-navy); }
+.oe2-toolbar .oe2-tb-cust{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.3px; font-size:18px; font-weight:700; color:var(--oe-navy); text-decoration:none; cursor:pointer; }
+.oe2-toolbar .oe2-tb-cust:hover{ color:var(--oe-red); }
+.oe2-tb-sep{ width:1px; height:24px; background:var(--oe-bd-hair); }
+.oe2-tb-chip{ color:var(--oe-text-2); font-size:13px; background:var(--oe-alt); border:1px solid var(--oe-bd-hair); padding:3px 9px; border-radius:5px; }
+
+/* Status pill (order status in toolbar / header) */
+.oe2-status-pill{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; font-size:11px; padding:4px 10px; border-radius:20px; white-space:nowrap; }
+
+/* Skewed primary CTA (Save etc.) */
+.oe2-cta{ border:none; background:var(--oe-navy); color:#fff; border-radius:7px; padding:9px 20px; font-weight:700; font-size:14px; cursor:pointer; transform:skewX(-6deg); font-family:var(--oe-font); }
+.oe2-cta:hover{ background:var(--oe-navy-dark); }
+.oe2-cta > span{ display:inline-block; transform:skewX(6deg); }
+.oe2-cta.oe2-cta-red{ background:var(--oe-red); }
+.oe2-cta.oe2-cta-red:hover{ background:var(--oe-red-bright); }
+.oe2-cta:disabled{ opacity:.55; cursor:not-allowed; }
+
+/* ═══ Bespoke: navy financial ledger ═══ */
+.oe2-ledger{ background:var(--oe-navy); border-radius:0; padding:12px 18px; display:flex; flex-direction:column; justify-content:center; min-width:300px; }
+.oe2-ledger-row{ display:flex; justify-content:space-between; align-items:baseline; padding:5px 0; }
+.oe2-ledger-row .lbl{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.6px; font-size:10px; color:rgba(255,255,255,.6); }
+.oe2-ledger-row .val{ font-variant-numeric:tabular-nums; font-size:16px; font-weight:700; color:#fff; }
+.oe2-ledger-row .val.pos{ color:var(--oe-mint); }
+.oe2-ledger-row .val.neg{ color:var(--oe-cost-mint); }
+.oe2-ledger-row .val.sm{ font-size:14px; }
+.oe2-ledger-pct{ font-variant-numeric:tabular-nums; font-size:12px; color:var(--oe-mint); font-weight:600; margin-right:8px; }
+.oe2-ledger-div{ height:1px; background:rgba(255,255,255,.14); margin:7px 0; }
+.oe2-ledger-total{ display:flex; justify-content:space-between; align-items:center; background:var(--oe-navy-dark); border-radius:7px; padding:8px 12px; margin:7px -12px 0; }
+.oe2-ledger-total .lbl{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.6px; font-size:11px; color:rgba(255,255,255,.75); }
+.oe2-ledger-total .val{ font-variant-numeric:tabular-nums; font-size:21px; font-weight:800; color:#fff; }
+
+/* ═══ Bespoke: horizontal status stepper ═══ */
+.oe2-stepper{ display:flex; align-items:center; gap:0; flex:1; flex-wrap:wrap; }
+.oe2-stepper .step{ font-family:var(--oe-font-dt); text-transform:uppercase; letter-spacing:.4px; font-size:12px; padding:5px 11px; border-radius:20px; white-space:nowrap; border:1px solid var(--oe-bd-input); background:#fff; color:var(--oe-muted); }
+.oe2-stepper .step.done{ color:#fff; background:var(--oe-green); border-color:var(--oe-green); }
+.oe2-stepper .step.current{ color:#fff; background:var(--oe-red); border-color:var(--oe-red); padding:6px 13px; }
+.oe2-stepper .step.clickable{ cursor:pointer; }
+.oe2-stepper .conn{ flex:1; height:2px; background:var(--oe-bd); min-width:12px; }
+.oe2-stepper .conn.done{ background:var(--oe-green); }
+
+/* ═══ Header card grid (order fields | navy ledger) ═══ */
+.oe2-headcard{ overflow:hidden; }
+.oe2-headgrid{ display:grid; grid-template-columns:1fr 330px; align-items:stretch; }
+.oe2-fields{ padding:16px 18px; }
+.oe2-field-lbl{ font-family:var(--oe-font-dt); font-weight:700; text-transform:uppercase; letter-spacing:.6px; font-size:10px; color:var(--oe-text-2); margin-bottom:5px; }
+.oe2-input{ width:100%; border:1px solid var(--oe-bd-input); border-radius:6px; padding:8px 10px; font-size:14px; font-family:var(--oe-font); color:var(--oe-text); background:#fff; }
+.oe2-input:focus{ outline:none; border-color:var(--oe-navy); box-shadow:0 0 0 3px rgba(25,40,83,.12); }
+
+@media (max-width:900px){
+  .oe2-headgrid{ grid-template-columns:1fr; }
+  .oe2-ledger{ min-width:0; }
+}
