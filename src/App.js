@@ -4070,6 +4070,17 @@ export default function App(){
       if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
         setStTab(stParam);u.searchParams.delete('st');changed=true;
       }
+      // Commissions deep link (monthly commission-report-reminder email): open a
+      // sub-tab (?comm=adminDash) and/or a month (?month=YYYY-MM). ?pg=commissions
+      // itself is applied by the pg initializer; here we set the tab + month.
+      const commParam=p.get('comm');
+      if(commParam&&['statement','pipeline','promo','ytd','byCustomer','monthly','adminDash'].includes(commParam)){
+        setCommTab(commParam);u.searchParams.delete('comm');changed=true;
+      }
+      const monthParam=p.get('month');
+      if(monthParam&&/^\d{4}-\d{2}$/.test(monthParam)){
+        setCommMonth(monthParam);u.searchParams.delete('month');changed=true;
+      }
       if(changed)window.history.replaceState({},'',u);
     }catch{}
   },[sos,ests,cust,invs,vend,prod,dbLoading]); // eslint-disable-line
