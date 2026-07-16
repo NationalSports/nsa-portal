@@ -10064,11 +10064,11 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       const key = (it.display_name || st.name || it.sku || '').toUpperCase();
       let g = m.get(key);
       if (!g) { g = { key, name: it.display_name || st.name || it.sku, items: [] }; m.set(key, g); groups.push(g); }
-      // Normalize the garment photo to the SAME uniform 4:5 frame the storefront renders
-      // (normGarment trims + pads SanMar photos; other URLs pass through). Without this the
-      // editor places the logo against the RAW photo while the store shows the trimmed/padded
-      // one, so a logo dragged to a spot here lands somewhere else on the live store.
-      g.items.push({ id: it.id, sku: it.sku, img: normGarment(it.image_url || st.image_front_url), backImg: normGarment(st.image_back_url || ''), color: st.color || '', decorations: it.decorations || [], styleKey: key });
+      // Use the RAW garment photo with object-fit:contain (below) — the SAME frame the
+      // per-item placement editor and the storefront now use. All three must agree, or a
+      // logo dragged here lands somewhere else on the live store. (Do NOT normGarment here:
+      // its trim+pad reframes the photo and the storefront no longer does that.)
+      g.items.push({ id: it.id, sku: it.sku, img: it.image_url || st.image_front_url, backImg: st.image_back_url || '', color: st.color || '', decorations: it.decorations || [], styleKey: key });
     }
   }
   const allItems = groups.flatMap((g) => g.items);
@@ -10481,12 +10481,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
             return (
             <div key={g.key} onClick={() => { if (!selG) toggleStyle(g.key); }} title={selG ? '' : 'Tap to select this style'} style={{ border: selG ? '2px solid #4f46e5' : '1px solid #e2e8f0', borderRadius: 12, padding: 8, background: '#fff', cursor: selG ? 'default' : 'pointer', boxShadow: selG ? '0 2px 10px rgba(79,70,229,.10)' : 'none' }}>
               <div style={{ fontSize: 12, fontWeight: 800, color: '#1e293b', marginBottom: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={g.name}>{g.name}</div>
-              {/* WYSIWYG: this stage frames the garment with objectFit:cover (fills the 4:5 box),
-                  and the storefront (Storefront.js) now matches — same box, same cover — so a
-                  logo placed here lands on the same spot on the garment the shopper sees. */}
+              {/* WYSIWYG: raw photo + objectFit:contain in a 4:5 box — the SAME frame the
+                  per-item art editor and the storefront (Storefront.js) use — so a logo placed
+                  here lands on the same spot on the garment the shopper sees. */}
               <div ref={(el) => { if (el) boxRefs.current[g.key] = el; else delete boxRefs.current[g.key]; }} onPointerMove={onDragMove} onPointerUp={endDrag} onPointerCancel={endDrag}
                 style={{ position: 'relative', aspectRatio: '4 / 5', background: '#fff', border: '1px solid #f1f5f9', borderRadius: 9, overflow: 'hidden', touchAction: selG ? 'none' : 'auto' }}>
-                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
+                {bgImg ? <img src={bgImg} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#cbd5e1', fontSize: 11 }}>No {sideNow} image</div>}
                 {/* logos already on the shown color+side (other than the one we're placing) —
                     resolved per color (cw_by_color / web-logo variant), never the raw art_url,
                     which may be a different color's cutout. */}
