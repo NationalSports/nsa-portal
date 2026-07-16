@@ -4018,9 +4018,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
-                <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
-                {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
+                <span className="oe-num oe-dt" style={{fontSize:13,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 8px',borderRadius:5}}>{item.sku}</span>
+                <span style={{fontWeight:700,fontSize:15,color:'#2A2F3E'}}>{item.name}</span>
+                {item.color&&<span style={{fontSize:12,color:'#5A6075'}}>{item.color}</span>}
+                {item.brand&&<span style={{fontSize:12,color:'#9aa0ad'}}>{item.brand}</span>}
+                {(()=>{const _cs=Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
               </div>
               {/* Collapsed-row deco strip: see + change selected artwork, and the PO#(s) this line is ordered on, without expanding. */}
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:4}} onClick={e=>e.stopPropagation()}>
@@ -4049,13 +4051,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
               </div>
             </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
-              <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
-              <div style={{fontSize:10,color:'#94a3b8'}}>@ ${safeNum(item.unit_sell).toFixed(2)}/ea</div>
-            </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap',minWidth:88}}>
-              <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Line Total</div>
-              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${iR.toFixed(2)}</div>
+            <div style={{display:'flex',alignItems:'stretch',border:'1px solid #E2E6EF',borderRadius:8,background:'#FAFBFD',overflow:'hidden',whiteSpace:'nowrap'}}>
+              <div style={{padding:'6px 14px',textAlign:'right',borderRight:'1px solid #E9ECF3'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#9aa0ad',marginBottom:2}}>Sell / ea</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:700,color:'#1E7A46',lineHeight:1.05}}>${safeNum(item.unit_sell).toFixed(2)}</div>
+              </div>
+              <div style={{padding:'6px 16px',textAlign:'right',borderRight:'1px solid #E9ECF3'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#9aa0ad',marginBottom:1}}>Qty</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:800,color:'#192853',lineHeight:1.05}}>{qty}</div>
+              </div>
+              <div style={{padding:'6px 16px',textAlign:'right',background:'#F1F5FF',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#5A6075',marginBottom:1}}>Line Total</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:800,color:'#1E7A46',lineHeight:1.05}}>${iR.toFixed(2)}</div>
+              </div>
             </div>
           </div>
         </div>);
@@ -4075,8 +4083,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
               </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
-                  :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
+                {item.is_custom?<input className="form-input oe-num" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontWeight:700,color:'#192853',background:'#EEF1F6',padding:'3px 10px',borderRadius:5,fontSize:15,width:100,border:'1px solid #DCE2EE'}}/>
+                  :<span className="oe-num oe-dt" style={{fontWeight:700,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 10px',borderRadius:5,fontSize:15}}>{item.sku}</span>}
                 {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
@@ -7408,13 +7416,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
-          if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
-            <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
-          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDropShip(null);setPoShipTo('warehouse');setPoDecoInline(null);setPoAlphaSuffix(cust?.alpha_tag||'')}}>
-            <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
-            <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
+          if(openCount===0)return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'1px solid #E2E6EF',background:'#FAFBFD',borderRadius:9,padding:'11px 14px',marginBottom:8,opacity:0.7}}>
+            <span style={{width:16,height:16,borderRadius:'50%',border:'1px solid #D1D5DE',background:'#fff',flexShrink:0}}/>
+            <div style={{flex:1}}><div style={{fontWeight:700,color:'#5A6075',fontSize:15}}>{vn}</div><div style={{fontSize:12,color:'#9aa0ad',marginTop:1}}>All items covered</div></div>
+            <span style={{fontSize:12,color:'#1E7A46',fontWeight:700,background:'#EAF6EE',border:'1px solid #C9E7D4',padding:'4px 10px',borderRadius:20}}>✓ Covered</span></div>;
+          return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'2px solid #192853',background:'#F4F7FF',borderRadius:9,padding:'11px 14px',marginBottom:8,cursor:'pointer'}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDropShip(null);setPoShipTo('warehouse');setPoDecoInline(null);setPoAlphaSuffix(cust?.alpha_tag||'')}}>
+            <span style={{width:16,height:16,borderRadius:'50%',border:'5px solid #192853',background:'#fff',flexShrink:0}}/>
+            <div style={{flex:1}}><div style={{fontWeight:700,color:'#192853',fontSize:15}}>{vn}</div><div className="oe-num" style={{fontSize:12,color:'#5A6075',marginTop:1}}>{openItems.length} item{openItems.length!==1?'s':''} · <span style={{color:'#962C32',fontWeight:700}}>{openCount} units not yet on a PO</span></div></div>
+            <Icon name="back" size={16} style={{transform:'rotate(180deg)',color:'#192853'}}/></div>})}
           {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
             {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
