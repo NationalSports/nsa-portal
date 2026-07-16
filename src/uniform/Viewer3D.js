@@ -620,7 +620,10 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
           o.material = new THREE.MeshPhysicalMaterial({
             name: srcMat.name,
             color: srcMat.color ? srcMat.color.clone() : 0xffffff,
-            side: THREE.FrontSide,
+            // Double-sided so looking through the neck/openings shows the fabric
+            // interior, not the studio background bleeding through culled backfaces
+            // ("just white inside"). A real jersey's inside is the same cloth.
+            side: THREE.DoubleSide,
             envMapIntensity: studioRef.current.env,
             // Keep a baked normal map when the vendor supplied a REAL one (that's
             // the cloth-wrinkle detail); otherwise fall back to our knit bump so
