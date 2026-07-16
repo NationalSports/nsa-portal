@@ -290,10 +290,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const keyByNameDeco={},keyByDesign={};
     myArts.forEach(a=>{const k=(a.name||'').trim().toLowerCase()+'||'+(a.deco_type||'');const nm=(a.name||'').trim().toLowerCase();if(nm)keyByNameDeco[k]=k;if(a.design_id)keyByDesign[a.design_id]=k;});
     const pc=allCustomers.find(c=>c.id===o.customer_id);
-    // Sibling sub-accounts stay segmented (volleyball must not pull football mocks via parent).
-    const custIds=pc?.parent_id?[pc.parent_id,o.customer_id]:[o.customer_id];
-    const soIds=(allOrders||[]).filter(s=>custIds.includes(s.customer_id)&&s.id!==o.id).map(s=>s.id);
+    const _parentId=pc?.parent_id||null;
+    // Segmented set = this sub-account + the parent account itself. NAME-only matches stay
+    // confined here so a sibling sport's same-named-but-different design can't bleed in
+    // (the volleyball-must-not-pull-football-mocks rule).
+    const _segIds=_parentId?new Set([_parentId,o.customer_id]):new Set([o.customer_id]);
+    // Wider family = every sub-account under the same parent (+ the parent). We FETCH from the
+    // whole family, because an EXACT design_id match is a hard identity — the same approved logo
+    // legitimately runs across sibling teams of one school (e.g. a school mascot on Athletics,
+    // Water Polo and Basketball orders). Sibling rows that only match by NAME are dropped below;
+    // design_id matches are kept.
+    const _famIds=_parentId?new Set((allCustomers||[]).filter(c=>c.id===_parentId||c.parent_id===_parentId).map(c=>c.id)):new Set([o.customer_id]);
+    const _famOrders=(allOrders||[]).filter(s=>_famIds.has(s.customer_id)&&s.id!==o.id);
+    const soIds=_famOrders.map(s=>s.id);
     if(!soIds.length){setPriorMocks({});return}
+    // so_id -> is this order in the trusted (segmented) set? Drives the name-only guard below.
+    const _soSegmented={};_famOrders.forEach(s=>{_soSegmented[s.id]=_segIds.has(s.customer_id)});
     let cancelled=false;
     (async()=>{
       try{
@@ -302,8 +314,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _u=f=>typeof f==='string'?f:(f?.url||'');
         const map={};const seen={};
         data.forEach(row=>{
+          const _isDesignMatch=!!(row.design_id&&keyByDesign[row.design_id]);
           const key=resolvePriorMockKey(row,{keyByDesign,keyByNameDeco});
           if(!key)return;
+          // Cross-sibling reuse is allowed ONLY on an exact design_id match. A name-only match
+          // from a sibling sub-account (not in the segmented set) is the football/volleyball
+          // false-positive we must not surface.
+          if(!_isDesignMatch&&!_soSegmented[row.so_id])return;
           const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
           if(!map[key]){map[key]=[];seen[key]=new Set()}
           const sset=seen[key];
@@ -8917,7 +8934,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   // sub-customer ("team"), so we can float same-art / same-team jobs to the top.
                   const _selfSk=jobScreenKey(j);
                   const _selfCust=o.customer_id;
-                  const _CLOSED=new Set(['completed','shipped']); // anything else is still "open" (in art/production)
+                  // Status-aware linking: once a job is "lined up" (staging / In Line) or later
+                  // (in process / completed / shipped), its screen/digitized setup is already
+                  // committed to the production line — too late to (re)group it to reuse a screen.
+                  // New links are only offered while a job is still pre-production (draft / on hold).
+                  // Applies both ways: a locked THIS job stops offering links, and a locked sibling is
+                  // never offered as a target. Already-established manual links stay visible as history
+                  // (see `confirmed`), even after they ship.
+                  const _LOCKED_PROD=new Set(['staging','in_process','completed','shipped']);
+                  const _lockedProd=st=>_LOCKED_PROD.has(st);
+                  const _selfLocked=_lockedProd(j.prod_status);
                   const linked=[];const candidates=[];
                   (allOrders||[]).forEach(s=>{
                     if(!_familyIds.has(s.customer_id))return;
@@ -8926,16 +8952,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(s.id===o.id&&jj.id===j.id)return;
                       const gk=jobGroupKey(jj,_pidOf(s));
                       if(_grp&&gk===_grp){linked.push({soId:s.id,custId:s.customer_id,job:jj,auto:!jj.link_group});return}
+                      if(_lockedProd(jj.prod_status))return; // already lined up / shipped — its screen is committed; don't offer it as a new link
                       const _sameArt=!!_selfSk&&jobScreenKey(jj)===_selfSk; // identical artwork — almost certainly the same screen
                       const _sameTeam=s.customer_id===_selfCust;            // same sub-customer / team
-                      const _open=!_CLOSED.has(jj.prod_status);             // still in art/production, not finished
                       const _hint=_sameArt?'✨ same art · ':(_sameTeam?'★ same team · ':'');
-                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_open,_ts:Date.parse(jj.created_at||'')||0});
+                      candidates.push({value:s.id+'||'+jj.id,label:_hint+(jj.art_name||jj.deco_type?.replace(/_/g,' ')||'Job')+' — '+_custName(s.customer_id)+' · '+s.id,searchText:(jj.art_name||'')+' '+(jj.deco_type||'')+' '+(jj.prod_status||'')+' '+s.id+' '+_custName(s.customer_id),_sameArt,_sameTeam,_ts:Date.parse(jj.created_at||'')||0});
                     });
                   });
-                  // Most relevant first: identical artwork, then same team, then still-open jobs, then most recent.
-                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(Number(b._open)-Number(a._open))||(b._ts-a._ts));
-                  if(!linked.length&&!candidates.length)return null;
+                  // Most relevant first: identical artwork, then same team, then most recent.
+                  candidates.sort((a,b)=>(Number(b._sameArt)-Number(a._sameArt))||(Number(b._sameTeam)-Number(a._sameTeam))||(b._ts-a._ts));
+                  // Auto art-matches surface as suggestions to confirm; only manual links count as an
+                  // established "runs together" group. Withhold suggestions and new-link candidates once
+                  // THIS job is locked (a locked sibling is already filtered above); established manual
+                  // links (`confirmed`) stay regardless so their combined costing is still shown.
+                  const confirmed=_isAuto?[]:linked;
+                  const suggested=(_isAuto&&!_selfLocked)?linked.filter(m=>!_lockedProd(m.job.prod_status)):[];
+                  const linkCandidates=_selfLocked?[]:candidates;
+                  if(!confirmed.length&&!suggested.length&&!linkCandidates.length)return null;
                   const doLink=value=>{
                     const[tSoId,tJobId]=value.split('||');
                     const tSo=(allOrders||[]).find(s=>s.id===tSoId);const tSrc=tSoId===o.id?o:tSo;const tJob=tSrc&&safeJobs(tSrc).find(jj=>jj.id===tJobId);if(!tJob)return;
@@ -8967,10 +9000,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     setO(e2=>({...e2,jobs:safeJobs(e2).map(jj=>localIds.has(jj.id)?{...jj,link_group:newGid,auto_group_off:false}:jj),updated_at:new Date().toLocaleString()}));setDirty(true);
                     nf('Linked — these jobs will run together');
                   };
-                  // Auto art-matches are surfaced as suggestions to confirm; only manual links count
-                  // as an established "runs together" group.
-                  const confirmed=_isAuto?[]:linked;
-                  const suggested=_isAuto?linked:[];
                   const memberRow=(m,actions)=>{const mj=m.job;return<div key={m.soId+'|'+mj.id} style={{display:'flex',alignItems:'center',gap:6,padding:'3px 0',flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                     <span style={{fontSize:11,fontWeight:600,color:'#1e293b'}}>{mj.art_name||mj.deco_type?.replace(/_/g,' ')||'Job'}</span>
                     <span style={{fontSize:10,color:'#64748b'}}>{_custName(m.custId)} · {onViewSO?<span style={{cursor:'pointer',textDecoration:'underline',color:'#2563eb',fontWeight:600}} onClick={()=>onViewSO(m.soId)} title="Open sales order">{m.soId}</span>:m.soId}</span>
@@ -8998,7 +9027,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     </div>}
                     <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                       {!confirmed.length&&!suggested.length&&<span style={{fontSize:11,color:'#94a3b8'}}>🔗 not linked — pick a job below if it shares this screen</span>}
-                      {candidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={candidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
+                      {linkCandidates.length>0&&<div style={{flex:'0 1 320px',minWidth:220}}><SearchSelect options={linkCandidates} value="" onChange={doLink} placeholder="🔗 Link another job (same parent)…"/></div>}
                       {confirmed.length>0&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 8px'}} onClick={unlinkSelf} title="Remove this job from the linked group">Leave group</button>}
                     </div>
                   </div>;
