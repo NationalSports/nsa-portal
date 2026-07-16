@@ -9189,13 +9189,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // design on the job (_art_ids, not just the primary), stale coach state is cleared
               // (a redo invalidates "Sent to Coach"/approval residue and any scheduled follow-up
               // nag), and the seps confirmation is invalidated so the redone art can't skip the
-              // production-files re-check on the next approve. Stays art_in_progress — the
-              // assigned artist keeps the job on their board.
+              // production-files re-check on the next approve. Goes to art_requested — same as the
+              // coach-reject and CustDetail redo flows — so the status pill reads "Art Requested"
+              // rather than "In Progress" (nobody has started the redo yet). The artist board's
+              // Waiting-for-Art column includes art_requested, so the job stays visible there,
+              // with its Start Working button moving it to In Progress when the artist picks it up.
               const _sendBackToArtist=(reason)=>{
                 const _revAt=new Date().toISOString();
                 const rejection={by:cu.name,at:_revAt,rejected_at:_revAt,reason};
                 const _revArtIds=((j._art_ids&&j._art_ids.length?j._art_ids:[j.art_file_id])||[]).filter(Boolean);
-                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_in_progress',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
+                const updJobs=safeJobs(o).map((jj,i2)=>i2===ji?{...jj,art_status:'art_requested',...ART_PULLBACK_CLEARS,rejections:[...(jj.rejections||[]),rejection]}:jj);
                 const updArt2=af.map(a=>_revArtIds.includes(a.id)?{...a,status:'waiting_for_art',prod_files_attached:false}:a);
                 saveSONow({...o,jobs:updJobs,art_files:updArt2,updated_at:new Date().toLocaleString()},'Revision request','Art sent back to artist for revision');
               };
