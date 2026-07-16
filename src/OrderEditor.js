@@ -3517,37 +3517,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
             </div>}
           </div>
-        </div>
-        <div className="oe2-ledger">
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
-            ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
-            ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
-            ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
-            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
-            ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
-            ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
-            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
-            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>{
-            const _fmt='$'+x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-            if(x.l==='TOTAL')return<React.Fragment key={x.l}><div className="oe2-ledger-div"/><div className="oe2-ledger-total"><span className="lbl">Order Total</span><span className="val oe-num">{_fmt}</span></div></React.Fragment>;
-            const pos=x.l==='REV'||x.l==='FUNDRAISE'||x.l==='CREDIT';const neg=x.l==='COST';const isMargin=x.l==='MARGIN';
-            return<div key={x.l} className="oe2-ledger-row"><span className="lbl">{x.l}{x.s&&!isMargin?' · '+x.s:''}</span><span className={'val oe-num'+(pos?' pos':neg?' neg':'')}>{isMargin&&x.s&&<span className="oe2-ledger-pct">{x.s}</span>}{_fmt}</span></div>;
-          })}</div>
-          {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
-            return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
-              ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
-            </div>:null})()}
-      {isSO&&safeFirm(o).length>0&&(()=>{const fd=safeFirm(o)[0];const approved=fd.approved;return<div style={{padding:'8px 16px',background:approved?'#f5f3ff':'#faf5ff',border:approved?'2px solid #7c3aed':'2px solid #c4b5fd',borderRadius:8,marginTop:8,display:'flex',alignItems:'center',gap:10}}>
-        <span style={{fontSize:14}}>{approved?'✅':'📌'}</span>
-        <div style={{flex:1,fontSize:12}}>
-          {approved?<><strong style={{color:'#7c3aed'}}>Firm Date Approved:</strong> <strong>{fd.date}</strong></>
-          :<><strong style={{color:'#7c3aed'}}>Firm Date Requested:</strong> <strong>{fd.date}</strong> <span style={{color:'#94a3b8'}}>— Pending GM approval</span>{fd.note&&<span style={{color:'#64748b'}}> · {fd.note}</span>}</>}
-          {fd.rush_pct>0&&<span style={{marginLeft:8,padding:'1px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>+{fd.rush_pct}% deco rush fee</span>}
-        </div>
-        {!approved&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={()=>{setShowFirmApprove(true)}}>Review & Approve</button>}
-      </div>})()}
-      </div>
-      <div style={{display:'flex',gap:8,margin:'2px 0 4px',alignItems:'end',flexWrap:'wrap'}}>
+          {/* ── ledger + firm-date relocated to the flush right column (see below, after the controls) ── */}
+      <div style={{display:'flex',gap:8,margin:'12px 0 4px',alignItems:'end',flexWrap:'wrap'}}>
         <button className="btn btn-primary" onClick={()=>{
           if(!cust){nf('Select a customer first','error');return}
           const curMemo=(memoInputRef.current?.value??o.memo??'').trim();
@@ -3928,6 +3899,37 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.promo_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>}
         {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
         {o.pending_ship_applied&&safeNum(o.pending_ship_amount)>0&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#eff6ff',color:'#1e40af'}}>📦 PRIOR SHIP ${safeNum(o.pending_ship_amount).toFixed(2)}</span>}
+      </div>
+      {/* ── left column ends here; navy financial ledger as the flush right column ── */}
+        </div>
+        <div className="oe2-ledger">
+          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+            ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
+            ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
+            ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
+            ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
+            ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
+            ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
+            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
+            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>{
+            const _fmt='$'+x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+            if(x.l==='TOTAL')return<React.Fragment key={x.l}><div className="oe2-ledger-div"/><div className="oe2-ledger-total"><span className="lbl">Order Total</span><span className="val oe-num">{_fmt}</span></div></React.Fragment>;
+            const pos=x.l==='REV'||x.l==='FUNDRAISE'||x.l==='CREDIT';const neg=x.l==='COST';const isMargin=x.l==='MARGIN';
+            return<div key={x.l} className="oe2-ledger-row"><span className="lbl">{x.l}{x.s&&!isMargin?' · '+x.s:''}</span><span className={'val oe-num'+(pos?' pos':neg?' neg':'')}>{isMargin&&x.s&&<span className="oe2-ledger-pct">{x.s}</span>}{_fmt}</span></div>;
+          })}</div>
+        {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
+          return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4,alignSelf:'flex-start'}}>
+            ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
+          </div>:null})()}
+        {isSO&&safeFirm(o).length>0&&(()=>{const fd=safeFirm(o)[0];const approved=fd.approved;return<div style={{padding:'8px 16px',background:approved?'#f5f3ff':'#faf5ff',border:approved?'2px solid #7c3aed':'2px solid #c4b5fd',borderRadius:8,marginTop:8,display:'flex',alignItems:'center',gap:10,alignSelf:'flex-start'}}>
+          <span style={{fontSize:14}}>{approved?'✅':'📌'}</span>
+          <div style={{flex:1,fontSize:12}}>
+            {approved?<><strong style={{color:'#7c3aed'}}>Firm Date Approved:</strong> <strong>{fd.date}</strong></>
+            :<><strong style={{color:'#7c3aed'}}>Firm Date Requested:</strong> <strong>{fd.date}</strong> <span style={{color:'#94a3b8'}}>— Pending GM approval</span>{fd.note&&<span style={{color:'#64748b'}}> · {fd.note}</span>}</>}
+            {fd.rush_pct>0&&<span style={{marginLeft:8,padding:'1px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>+{fd.rush_pct}% deco rush fee</span>}
+          </div>
+          {!approved&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={()=>{setShowFirmApprove(true)}}>Review & Approve</button>}
+        </div>})()}
       </div>
       {/* Promo Summary */}
       {o.promo_applied&&promoTotals&&<div style={{margin:'8px 0',padding:'10px 16px',background:'#fffbeb',borderRadius:8,border:'1px solid #fde68a',display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}}>
