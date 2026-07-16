@@ -199,12 +199,17 @@ export default function CommissionsPage(){
         const ovr=commOverrides[inv.id];
         const overridden=ovr!==undefined&&ovr!==false&&ovr!==null;
         const customRate=typeof ovr==='number'?ovr:null;
-        const commRate=customRate!=null?customRate:(isLate&&!overridden?0.15:0.30);
-        const commAmt=Math.round(gp.gp*commRate*100)/100;
+        // Per-rep basis (team_members.commission_basis, 00198): 'revenue' reps earn
+        // commission_rate × commissionable revenue with no 90-day split (Rachel: 1%
+        // of sale price). Default (null) keeps the standard 30%/15% of GP policy.
+        const revBasis=rep?.commission_basis==='revenue';
+        const repRate=revBasis?(safeNum(rep.commission_rate)||0.01):null;
+        const commRate=customRate!=null?customRate:revBasis?repRate:(isLate&&!overridden?0.15:0.30);
+        const commAmt=Math.round((revBasis?gp.rev:gp.gp)*commRate*100)/100;
         const paidAmt=inv.payments?.reduce((a,p)=>a+safeNum(p.amount),0)||0;
         const invMonth=inv.date?inv.date.substring(0,2)+'/'+inv.date.substring(6,8):'';// MM/YY
         const paidMonth=paidDate?(paidDate.getMonth()+1)+'/'+paidDate.getFullYear():'';
-        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so)};
+        const line={inv,so,customer:c,rep,gp,daysToPay,isLate,overridden,ovrRaw:ovr,commRate,commAmt,paidAmt,paidDate,invMonth,paidMonth,linked:_combLinked,repId:commissionRepId(c,so),commBasis:revBasis?'revenue':'gp'};
         // Frozen line: money fields come from the snapshot; _live keeps today's computation
         // around for the admin Re-freeze action (deliberate corrections only).
         const snap=snaps&&snaps[inv.id];
@@ -234,8 +239,9 @@ export default function CommissionsPage(){
         const invDate=new Date(inv.date);
         const now=new Date();const daysOpen=Math.round((now-invDate)/(1000*60*60*24));
         const willBeLate=daysOpen>90;
-        const expRate=willBeLate?0.15:0.30;
-        const expComm=Math.round(gp.gp*expRate*100)/100;
+        const _revB=rep?.commission_basis==='revenue';
+        const expRate=_revB?(safeNum(rep.commission_rate)||0.01):(willBeLate?0.15:0.30);
+        const expComm=Math.round((_revB?gp.rev:gp.gp)*expRate*100)/100;
         const balance=safeNum(inv.total)-safeNum(inv.paid);
         return{inv,so,customer:c,rep,gp,daysOpen,willBeLate,expRate,expComm,balance,repId:commissionRepId(c,so),type:'invoice'};
       });
@@ -268,8 +274,9 @@ export default function CommissionsPage(){
         const totalRev=rev+shipRev+fundraiseRev;const totalCost=cost+shipCost+inboundFreight;
         const gp={rev:totalRev,cost:totalCost,gp:Math.round((totalRev-totalCost)*100)/100};
         const soStatus=calcSOStatus(so);
-        const expRate=0.30;// assume on-time since not yet invoiced
-        const expComm=Math.round(gp.gp*expRate*100)/100;
+        const _revB=rep?.commission_basis==='revenue';
+        const expRate=_revB?(safeNum(rep.commission_rate)||0.01):0.30;// on-time assumed since not yet invoiced
+        const expComm=Math.round((_revB?gp.rev:gp.gp)*expRate*100)/100;
         return{inv:null,so,customer:c,rep,gp,daysOpen:null,willBeLate:false,expRate,expComm,balance:totalRev,repId:commissionRepId(c,so),type:'so',soStatus};
       });
       return[...invLines,...soLines];
@@ -345,7 +352,9 @@ export default function CommissionsPage(){
     // not just app_state — otherwise the frozen statement and the override disagree.
     const _applyOvrToSnap=async(invId,ovr)=>{
       const snap=snaps&&snaps[invId];if(!snap||!supabase)return;
-      const patch=overrideSnapshotPatch(snap,ovr);
+      const _rep=REPS.find(r=>r.id===snap.rep_id);
+      const _basis=_rep?.commission_basis==='revenue'?'revenue':'gp';
+      const patch=overrideSnapshotPatch(snap,ovr,_basis,_basis==='revenue'?(safeNum(_rep?.commission_rate)||0.01):null);
       const{data,error}=await supabase.from('commission_snapshots').update({...patch,updated_at:new Date().toISOString()}).eq('invoice_id',invId).select();
       if(error){alert('Override saved for display, but the frozen statement row failed to update — try again.\n\n'+error.message);return}
       if(data&&data[0])setSnaps(prev=>({...prev,[invId]:data[0]}));
@@ -458,7 +467,7 @@ export default function CommissionsPage(){
               <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#166534'}}>${l.commAmt.toLocaleString(undefined,{maximumFractionDigits:2})}{l.snapped&&<span title={'Frozen at payment'+(l.snappedAt?' ('+String(l.snappedAt).substring(0,10)+')':'')+' — later order edits no longer change this line'} style={{marginLeft:4,fontSize:10,cursor:'default'}}>🔒</span>}</td>
               {isAdmin&&<td style={{textAlign:'center'}}>
                 <div style={{display:'flex',gap:4,justifyContent:'center',alignItems:'center',flexWrap:'wrap'}}>
-                  {l.isLate&&!l.overridden&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>Full 30%</button>}
+                  {l.isLate&&!l.overridden&&l.commBasis!=='revenue'&&<button className="btn btn-sm" style={{fontSize:9,background:'#fef3c7',border:'1px solid #f59e0b',color:'#92400e',padding:'2px 6px'}} title="Approve full 30% commission" onClick={()=>{setCommOverrides(p=>({...p,[l.inv.id]:true}));_applyOvrToSnap(l.inv.id,true)}}>Full 30%</button>}
                   <button className="btn btn-sm" style={{fontSize:9,background:'#eff6ff',border:'1px solid #93c5fd',color:'#1e40af',padding:'2px 6px'}} title="Set a custom commission % for this invoice" onClick={()=>{
                     const cur=Math.round(l.commRate*100);
                     const v=window.prompt(`Set commission % for ${l.inv.id}\n(default: ${l.isLate?'15% late / 30% on-time':'30%'})`,String(cur));
@@ -1030,8 +1039,8 @@ export default function CommissionsPage(){
                         <td style={{textAlign:'right',color:l.gp.gp>0?'#166534':'#dc2626'}}>{fmt0(l.gp.gp)}</td>
                         <td style={{textAlign:'center'}}>{gpBadge(l.gp.gp,l.gp.rev)}</td>
                         <td style={{textAlign:'center'}}>{daysBadge(l.daysToPay)}</td>
-                        <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30?'#166534':'#d97706'}}>@{Math.round(l.commRate*100)}%</span></td>
-                        <td colSpan={2} style={{textAlign:'center'}}>{lateInv&&(()=>{
+                        <td style={{textAlign:'right',color:'#1e40af'}}>{fmt(l.commAmt)}<span style={{marginLeft:4,fontSize:9,fontWeight:600,color:l.commRate===0.30||l.commBasis==='revenue'?'#166534':'#d97706'}}>@{l.commBasis==='revenue'?(Math.round(l.commRate*1000)/10)+'% of sale':Math.round(l.commRate*100)+'%'}</span></td>
+                        <td colSpan={2} style={{textAlign:'center'}}>{lateInv&&l.commBasis!=='revenue'&&(()=>{
                           // Paid >90 days late: pick the rate. 15% = the default late penalty
                           // (clears any override); 30% = admin restores the full rate. Both
                           // write through the same override + frozen-snapshot path as the
