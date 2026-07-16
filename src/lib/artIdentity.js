@@ -20,6 +20,24 @@ export function artNameKey(a) {
 }
 
 /**
+ * Dedup key for the Previous Artwork picker (OrderEditor).
+ *
+ * Keys on the stable logo identity — name + deco_type — plus art_size and
+ * color-way count as picker-level discriminators between real variants. It must
+ * NOT include the id: promoteArtToLibrary mints a fresh `caf…` id for the library
+ * copy, so a design's library record and its source-order record carry different
+ * ids. Keying on id split one design into two cards ("Library — …" and "SO-… — …")
+ * and the picker's own cross-source file merge could never fire. Blank-named rows
+ * fall back to id so distinct untitled art doesn't collapse (mirrors artLogoKey).
+ */
+export function prevArtDedupKey(a) {
+  if (!a) return '';
+  const nm = String(a.name || '').trim().toLowerCase();
+  const base = (a.deco_type || '') + '|' + (a.art_size || '') + '|' + ((a.color_ways || []).length);
+  return (nm ? nm : '__id__' + (a.id || '')) + '|' + base;
+}
+
+/**
  * Build a team's usable art library from team + parent + order/estimate sources.
  *
  * Invariant: a parent-library record must NEVER replace a team-owned record that

@@ -11,6 +11,7 @@ const {
   resolvePriorMockKey,
   prevArtAutoWireTargets,
   artWriteMatches,
+  prevArtDedupKey,
 } = require('../lib/artIdentity');
 
 describe('artLogoKey / artNameKey', () => {
@@ -22,6 +23,33 @@ describe('artLogoKey / artNameKey', () => {
   test('name key is lowercased trim of name (or id)', () => {
     expect(artNameKey({ name: 'Front Logo Tees Dolphin' })).toBe('front logo tees dolphin');
     expect(artNameKey({ id: 'caf9' })).toBe('caf9');
+  });
+});
+
+describe('prevArtDedupKey — library copy and source-order copy of one design collapse to one card', () => {
+  // The reported duplication: promoteArtToLibrary mints a fresh `caf…` id for the
+  // library copy, so the same design shows up as both "Library — …" and "SO-… — …".
+  // The dedup key must ignore the id and match on the design identity.
+  test('same design, different ids (library vs order) → same key', () => {
+    const library = { id: 'caf1720000000000', name: '8in 1 Color Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    const onOrder = { id: 'af1699999999999', name: '8in 1 Color Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    expect(prevArtDedupKey(library)).toBe(prevArtDedupKey(onOrder));
+  });
+  test('name is case/whitespace-insensitive', () => {
+    const a = { id: 'x', name: '  Full Color Sunbird ', deco_type: 'screen_print', art_size: '8in', color_ways: [{}] };
+    const b = { id: 'y', name: 'full color sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}] };
+    expect(prevArtDedupKey(a)).toBe(prevArtDedupKey(b));
+  });
+  test('real variants stay separate — different size, deco, or color-way count', () => {
+    const base = { name: 'Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, art_size: '3.5in' }));
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, deco_type: 'embroidery' }));
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, color_ways: [{}] }));
+  });
+  test('blank-named rows fall back to id so distinct untitled art does not collapse', () => {
+    const a = { id: 'af1', name: '', deco_type: 'screen_print', art_size: '', color_ways: [] };
+    const b = { id: 'af2', name: '', deco_type: 'screen_print', art_size: '', color_ways: [] };
+    expect(prevArtDedupKey(a)).not.toBe(prevArtDedupKey(b));
   });
 });
 
