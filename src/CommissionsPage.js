@@ -66,15 +66,25 @@ export default function CommissionsPage(){
       const prev=repComp;setRepComp(next);
       if(!supabase)return;
       const str=JSON.stringify(next);
+      // Writes need a real Supabase auth session. The LoginGate admin-override path
+      // (master password → user picker) sets cu WITHOUT one, so the DB sees anon and
+      // denies the RPC — detect that and say so instead of showing a bare SQL error.
+      const _failMsg=async(msg)=>{
+        let hint='';
+        try{const{data:sess}=await supabase.auth.getSession();if(!sess||!sess.session)hint='\n\nYou are signed in via the admin-override picker (no auth session), so the database rejects writes. Log out and sign in with your email + password, then retry.'}catch(_){/* ignore */}
+        alert('Draw/loan save failed: '+msg+hint);
+      };
       try{
         const{data,error}=await supabase.rpc('app_state_cas',{p_key:'comm_rep_comp',p_expected:_repCompVer.current,p_value:str});
         if(error){
-          if(error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'')){
+          const missingFn=error.code==='PGRST202'||error.code==='42883'||/could not find the function|does not exist|schema cache/i.test(error.message||'');
+          const denied=error.code==='42501'||/permission denied/i.test(error.message||'');
+          if(missingFn||denied){
             const{error:e2}=await supabase.from('app_state').upsert({id:'comm_rep_comp',value:str,updated_at:new Date().toISOString()});
-            if(e2){alert('Draw/loan save failed: '+e2.message);setRepComp(prev)}
+            if(e2){await _failMsg(e2.message);setRepComp(prev)}
             return;
           }
-          alert('Draw/loan save failed: '+error.message);setRepComp(prev);return;
+          await _failMsg(error.message);setRepComp(prev);return;
         }
         if(data===-1){
           const{data:row}=await supabase.from('app_state').select('value,version').eq('id','comm_rep_comp').maybeSingle();
@@ -83,7 +93,7 @@ export default function CommissionsPage(){
           return;
         }
         if(typeof data==='number')_repCompVer.current=data;
-      }catch(e){alert('Draw/loan save failed: '+(e?.message||e));setRepComp(prev)}
+      }catch(e){await _failMsg(e?.message||String(e));setRepComp(prev)}
     };
     useEffect(()=>{let cancelled=false;
       if(!supabase)return;
@@ -1108,7 +1118,7 @@ export default function CommissionsPage(){
               {repComp===null?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>Loading draw & loan settings… (edits are disabled until they load)</div>:
               payoutRows.length===0?<div style={{padding:30,textAlign:'center',color:'#94a3b8'}}>No commission activity or draw/loan settings for {monthLabel}.</div>:
               <table style={{fontSize:12}}><thead><tr>
-                <th>Rep</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw (GP)</th><th style={{textAlign:'right'}}>Payable</th><th>Loan</th><th style={{textAlign:'right'}}>To Loan</th><th style={{textAlign:'right'}}>Payout</th><th style={{textAlign:'center'}}></th>
+                <th>Rep</th><th style={{textAlign:'right'}}>Net Commission</th><th style={{textAlign:'right'}}>Monthly Draw (GP)</th><th style={{textAlign:'right'}}>Payable</th><th>Loan</th><th style={{textAlign:'right'}}>Payout</th><th style={{textAlign:'center'}}></th>
               </tr></thead><tbody>
                 {payoutRows.map(p=>{const name=repName(p.b);
                   return<tr key={p.id} style={{background:p.hasComp?'#f8fafc':''}}>
@@ -1117,10 +1127,10 @@ export default function CommissionsPage(){
                     <td style={{textAlign:'right',color:p.draw>0?'#92400e':'#94a3b8'}}>{p.draw>0?(p.underBy>0?<><span style={{fontWeight:700}}>−{fmt(p.underBy)}</span><div style={{fontSize:9,color:'#92400e'}}>under draw ({fmt(p.draw)} − {fmt(p.gp)} GP)</div></>:<><span>met</span><div style={{fontSize:9,color:'#166534'}}>GP {fmt(p.gp)} ≥ {fmt(p.draw)}</div></>):'—'}</td>
                     <td style={{textAlign:'right',fontWeight:600}}>{fmt(p.payable)}{p.draw>0&&p.excessGP>0&&<div style={{fontSize:9,color:'#94a3b8'}}>on {fmt(p.excessGP)} GP over draw</div>}</td>
                     <td>{p.loanBal>0||p.appliedAmt!=null?<div style={{fontSize:11}}>
-                        <div style={{fontWeight:600,color:'#b45309'}}>bal {fmt(p.loanBal)}</div>
-                        <label style={{fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:p.appliedAmt!=null?'not-allowed':'pointer'}}><input type="checkbox" checked={p.full} disabled={p.appliedAmt!=null} onChange={()=>toggleFullMonth(p)}/>pay full this month</label>
+                        <div style={{fontWeight:600,color:'#b45309'}}>bal {fmt(p.loanBal)}{p.withhold>0&&<span style={{color:'#dc2626',marginLeft:6,fontWeight:700}}>−{fmt(p.withhold)}{p.appliedAmt==null?' @'+p.pct+'%':''}</span>}</div>
+                        {p.appliedAmt!=null?<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied to loan</div>
+                        :<label style={{fontSize:10,color:'#64748b',display:'flex',alignItems:'center',gap:4,cursor:'pointer'}}><input type="checkbox" checked={p.full} onChange={()=>toggleFullMonth(p)}/>pay full this month</label>}
                       </div>:'—'}</td>
-                    <td style={{textAlign:'right',color:p.withhold>0?'#dc2626':'#94a3b8'}}>{p.withhold>0?'−'+fmt(p.withhold):'—'}{p.appliedAmt==null&&p.withhold>0&&<div style={{fontSize:9,color:'#94a3b8'}}>@{p.pct}%</div>}{p.appliedAmt!=null&&<div style={{fontSize:9,fontWeight:700,color:'#166534'}}>✓ applied to loan</div>}</td>
                     <td style={{textAlign:'right',fontWeight:800,fontSize:14,color:'#0f766e'}}>{fmt(p.payout)}</td>
                     <td style={{textAlign:'center'}}>
                       <div style={{display:'flex',gap:4,justifyContent:'center',flexWrap:'wrap'}}>
@@ -1135,8 +1145,7 @@ export default function CommissionsPage(){
                   <td style={{textAlign:'right'}}>{fmt(Math.round(payoutRows.reduce((a,p)=>a+p.b.net,0)*100)/100)}</td>
                   <td style={{textAlign:'right',color:'#92400e'}}>{(()=>{const d=payoutRows.reduce((a,p)=>a+p.underBy,0);return d>0?'−'+fmt(Math.round(d*100)/100)+' under':'—'})()}</td>
                   <td style={{textAlign:'right'}}>{fmt(Math.round(payoutRows.reduce((a,p)=>a+p.payable,0)*100)/100)}</td>
-                  <td/>
-                  <td style={{textAlign:'right',color:'#dc2626'}}>{(()=>{const w=payoutRows.reduce((a,p)=>a+p.withhold,0);return w>0?'−'+fmt(Math.round(w*100)/100):'—'})()}</td>
+                  <td style={{color:'#dc2626',fontSize:11}}>{(()=>{const w=payoutRows.reduce((a,p)=>a+p.withhold,0);return w>0?'−'+fmt(Math.round(w*100)/100)+' to loans':'—'})()}</td>
                   <td style={{textAlign:'right',fontSize:15,color:'#0f766e'}}>{fmt(Math.round(totPayout*100)/100)}</td>
                   <td/>
                 </tr>
