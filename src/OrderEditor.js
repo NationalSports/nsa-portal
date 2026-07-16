@@ -306,6 +306,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     if(!soIds.length){setPriorMocks({});return}
     // so_id -> is this order in the trusted (segmented) set? Drives the name-only guard below.
     const _soSegmented={};_famOrders.forEach(s=>{_soSegmented[s.id]=_segIds.has(s.customer_id)});
+    // Keys whose CURRENT art carries no design_id (legacy art predating design ids, or a clone
+    // path that dropped it — SO-1523's "2.25in Sunbird Hat"). With no identity to assert, the
+    // sibling design_id rule can never match and the approval panel dead-ends ("no mockup" and
+    // nothing to reuse). For exactly these keys, accept a sibling name+deco match: the reuse
+    // cards stay behind the rep's explicit confirm click, so a same-named-different-design
+    // false positive is an ignorable card, not an applied mock.
+    const _noDesignKeys=new Set();myArts.forEach(a=>{const nm=(a.name||'').trim().toLowerCase();if(nm&&!a.design_id)_noDesignKeys.add(nm+'||'+(a.deco_type||''))});
     let cancelled=false;
     (async()=>{
       try{
@@ -317,10 +324,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _isDesignMatch=!!(row.design_id&&keyByDesign[row.design_id]);
           const key=resolvePriorMockKey(row,{keyByDesign,keyByNameDeco});
           if(!key)return;
-          // Cross-sibling reuse is allowed ONLY on an exact design_id match. A name-only match
-          // from a sibling sub-account (not in the segmented set) is the football/volleyball
-          // false-positive we must not surface.
-          if(!_isDesignMatch&&!_soSegmented[row.so_id])return;
+          // Cross-sibling reuse is allowed on an exact design_id match, or — only when the
+          // current art has no design_id to match on (_noDesignKeys) — a name+deco match.
+          // Any other name-only match from a sibling sub-account (not in the segmented set)
+          // is the football/volleyball false-positive we must not surface.
+          if(!_isDesignMatch&&!_soSegmented[row.so_id]&&!_noDesignKeys.has(key))return;
           const im=(row.item_mockups&&typeof row.item_mockups==='object')?row.item_mockups:{};
           if(!map[key]){map[key]=[];seen[key]=new Set()}
           const sset=seen[key];
