@@ -10280,12 +10280,28 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         }
         onSavePlacementMemory(memPatch);
       }
-      // Link-only: nothing is placed on the image, so drop the selection — this clears the
-      // draggable placement previews, leaving each card as just the untouched image + its
-      // "Applied" badge (the whole point of Bypass mocks).
-      if (n > 0 && linkOnly) clearSel();
-      setDone(n > 0 ? `${linkOnly ? 'Linked art to' : 'Applied to'} ${n} garment${n === 1 ? '' : 's'} across ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}${linkOnly ? ' — image unchanged, no mockup.' : '.'}` : 'Error: nothing was applied — please retry.');
+      // Success → full reset so the rep moves cleanly to the NEXT logo and can't
+      // accidentally re-apply the one they just placed: clear the style selection, close the
+      // placement panel, and deselect the art itself. onApplyLogoBulk already flashed a
+      // confirmation ("Logo applied to N items") that survives the panel closing.
+      if (n > 0) { clearSel(); setBulkOpen(false); setActiveId(null); setDone(''); }
+      else setDone('Error: nothing was applied — please retry.');
     } catch (e) { setDone('Error: ' + (e.message || e)); }
+    setApplying(false);
+  };
+
+  // Take the ACTIVE logo back off a style — strips every decoration whose art_id is this
+  // logo from each of the style's colors (both sides), leaving other logos and any
+  // number/name personalization intact.
+  const removeArtFromStyle = async (g) => {
+    if (!activeArt || applying) return;
+    const entries = (g.items || [])
+      .filter((it) => (it.decorations || []).some((d) => d && d.art_id === activeArt.id))
+      .map((it) => ({ id: it.id, decorations: (Array.isArray(it.decorations) ? it.decorations : []).filter((d) => !(d && d.art_id === activeArt.id)) }));
+    if (!entries.length) return;
+    setApplying(true); setDone('');
+    try { const n = await onApplyLogoBulk(entries); setDone(n > 0 ? `Removed ${activeArt.name || 'logo'} from ${g.name}.` : 'Error: could not remove — please retry.'); }
+    catch (e) { setDone('Error: ' + (e.message || e)); }
     setApplying(false);
   };
 
@@ -10406,9 +10422,12 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
         </button>
       ) : (
         <div className="card"><div style={{ padding: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12, position: 'sticky', top: 0, background: '#fff', zIndex: 4, paddingBottom: 4 }}>
             <div style={{ fontSize: 13, fontWeight: 800 }}>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</div>
-            <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button className="btn btn-sm btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'} →` : 'Select styles to apply'}</button>
+              <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
+            </div>
           </div>
 
           {/* 1 · Placement — a starting preset; drag on any garment to fine-tune per style */}
@@ -10472,7 +10491,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                 <button onClick={(e) => { e.stopPropagation(); toggleStyle(g.key); }} title={selG ? 'Deselect style' : 'Select style'} style={{ position: 'absolute', top: 6, left: 6, width: 20, height: 20, borderRadius: 6, background: selG ? '#4f46e5' : 'rgba(255,255,255,.92)', border: selG ? 'none' : '1px solid #cbd5e1', color: '#fff', fontSize: 12, fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 1px 3px rgba(0,0,0,.18)', cursor: 'pointer', padding: 0, zIndex: 3 }}>{selG ? '✓' : ''}</button>
                 {showBack && <span style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Back</span>}
                 {!showBack && selG && hasBack && <span title="This style also gets a back logo" style={{ position: 'absolute', top: 6, right: 6, background: '#0f172a', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>+ Back</span>}
-                {!selG && has && <span style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 6px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Applied</span>}
+                {!selG && has && <button onClick={(e) => { e.stopPropagation(); removeArtFromStyle(g); }} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ position: 'absolute', top: 6, right: 6, background: '#166534', color: '#fff', fontSize: 9, fontWeight: 800, padding: '2px 7px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3, border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 5 }}>Applied <span style={{ fontSize: 11, lineHeight: 1, opacity: 0.85 }} aria-label="remove">✕</span></button>}
                 {nudged && !showBack && selG && <span title="This color has its own placement" style={{ position: 'absolute', bottom: 6, left: 6, background: '#b45309', color: '#fff', fontSize: 8.5, fontWeight: 800, padding: '2px 5px', borderRadius: 5, textTransform: 'uppercase', zIndex: 3 }}>Nudged</span>}
               </div>
               {/* color name + pager dots */}
@@ -10513,6 +10532,7 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
                   {!showBack && (nudged
                     ? <button onClick={() => clearNudge(item.id)} title="Reset this color to the style placement" style={{ fontSize: 9.5, fontWeight: 700, color: '#b45309', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>↺ reset</button>
                     : <button onClick={() => setNudgeItem(nudgeItem === item.id ? null : item.id)} title="Drag this color's logo without moving the rest of the style" style={{ fontSize: 9.5, fontWeight: 700, color: nudgeItem === item.id ? '#4f46e5' : '#94a3b8', background: nudgeItem === item.id ? '#eef2ff' : '#fff', border: '1px solid ' + (nudgeItem === item.id ? '#c7d2fe' : '#e2e8f0'), borderRadius: 6, padding: '2px 7px', cursor: 'pointer' }}>{nudgeItem === item.id ? '⤢ nudging' : '⤢ nudge'}</button>)}
+                  {has && <button onClick={() => removeArtFromStyle(g)} disabled={applying} title={`Remove ${activeArt.name || 'this logo'} from ${g.name}`} style={{ marginLeft: 'auto', fontSize: 9.5, fontWeight: 700, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, padding: '2px 7px', cursor: applying ? 'wait' : 'pointer' }}>✕ Remove logo</button>}
                 </div>
               </div>}
             </div>
