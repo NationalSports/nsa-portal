@@ -22,6 +22,7 @@ import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJo
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift } from './lib/syncJobsMatch';
+import './orderEditor.redesign.css';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -3270,7 +3271,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const allFp=(fp.length>0?fp:_serverFp).filter(p=>!(isRichardsonItem(p)||isSSItem(p)||isSanMarItem(p)||isMomentecItem(p)));
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
-  return(<div>
+  return(<div className="oe2">
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -3375,21 +3376,22 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}/>;
     })()}
     {/* Sticky header — appears when scrolling */}
-    <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
-      <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
-      {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
-      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
-      <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
-      {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
-      <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
-      {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
-      <button className="btn btn-sm btn-primary" onClick={()=>{
+    <div className="oe2-toolbar">
+      <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:12,padding:'6px 12px'}}><Icon name="back" size={12}/> Back</button>
+      {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:12,padding:'6px 12px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
+      {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:12,padding:'6px 12px'}}><Icon name="plus" size={12}/> New Est</button>}
+      <span className="oe2-tb-id">{o.id}</span>
+      {isSO&&<span className="oe2-status-pill" style={{background:SC[o.status]?.bg||'#EEF1F6',color:SC[o.status]?.c||'#5A6075'}}>{o.status?.replace(/_/g,' ')}</span>}
+      {cust&&<><span className="oe2-tb-sep"/><span className="oe2-tb-cust" onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span></>}
+      {o.memo&&<span className="oe2-tb-chip">{o.memo}</span>}
+      <span style={{flex:1}}/>
+      {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
+      <button className="oe2-cta" onClick={()=>{
         if(!cust){nf('Select a customer first','error');return}
         if(!o.memo?.trim()){nf('Memo is required','error');return}
         const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
         if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}} style={{padding:'6px 20px',fontSize:13,fontWeight:700}}><Icon name="check" size={14}/> Save</button>
+        onSave(o);setSaved(true);setDirty(false);nf(`${isE?'Estimate':'SO'} saved locally — syncing to cloud…`)}}><span><Icon name="check" size={13}/> Save</span></button>
     </div>
     {/* COACH APPROVED BANNER */}
     {isE&&o.status==='approved'&&o.approved_by==='Coach'&&<div style={{margin:'8px 0',padding:'12px 16px',background:'#f0fdf4',border:'2px solid #22c55e',borderRadius:10}}>
@@ -3500,7 +3502,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
         </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        <div className="oe2-ledger">
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
@@ -3509,8 +3511,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
             {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
-            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
-            <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
+            ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>{
+            const _fmt='$'+x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+            if(x.l==='TOTAL')return<React.Fragment key={x.l}><div className="oe2-ledger-div"/><div className="oe2-ledger-total"><span className="lbl">Order Total</span><span className="val oe-num">{_fmt}</span></div></React.Fragment>;
+            const pos=x.l==='REV'||x.l==='FUNDRAISE'||x.l==='CREDIT';const neg=x.l==='COST';const isMargin=x.l==='MARGIN';
+            return<div key={x.l} className="oe2-ledger-row"><span className="lbl">{x.l}{x.s&&!isMargin?' · '+x.s:''}</span><span className={'val oe-num'+(pos?' pos':neg?' neg':'')}>{isMargin&&x.s&&<span className="oe2-ledger-pct">{x.s}</span>}{_fmt}</span></div>;
+          })}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
@@ -3962,16 +3968,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
         const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
-        return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
-          <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
-          {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=sf===displaySt;
-            return<span key={sf} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,
-              background:cur?sc.bg:'#f8fafc',color:cur?sc.c:'#94a3b8',border:cur?`2px solid ${sc.c}`:'1px solid #e2e8f0',
-              cursor:sf==='complete'?'pointer':'default',opacity:cur?1:0.5}}
-              onClick={()=>{if(sf==='complete')sv('status','complete')}}
-              title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>
-              {stLabels[sf]||sf}</span>})}
-          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
+        const _curIdx=statusFlow.indexOf(displaySt);
+        return<div style={{marginTop:12,borderTop:'1px solid #EEF1F6',paddingTop:12,display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+          <span className="oe-eb" style={{fontSize:10,color:'#5A6075'}}>Order Status</span>
+          <div className="oe2-stepper">
+          {statusFlow.map((sf,i)=>{const cur=sf===displaySt;const done=_curIdx>=0&&i<_curIdx;
+            return<React.Fragment key={sf}>
+              <span className={'step'+(cur?' current':done?' done':'')+(sf==='complete'?' clickable':'')}
+                onClick={()=>{if(sf==='complete')sv('status','complete')}}
+                title={sf==='complete'?'Click to manually mark complete':'Auto-calculated'}>{stLabels[sf]||sf}</span>
+              {i<statusFlow.length-1&&<span className={'conn'+(done?' done':'')}/>}
+            </React.Fragment>})}
+          </div>
+          {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:10,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
         <div style={{marginTop:10}}>
@@ -4064,9 +4073,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
-                <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
-                {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
+                <span className="oe-num oe-dt" style={{fontSize:13,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 8px',borderRadius:5}}>{item.sku}</span>
+                <span style={{fontWeight:700,fontSize:15,color:'#2A2F3E'}}>{item.name}</span>
+                {item.color&&<span style={{fontSize:12,color:'#5A6075'}}>{item.color}</span>}
+                {item.brand&&<span style={{fontSize:12,color:'#9aa0ad'}}>{item.brand}</span>}
+                {(()=>{const _cs=Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
               </div>
               {/* Collapsed-row deco strip: see + change selected artwork, and the PO#(s) this line is ordered on, without expanding. */}
               <div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',marginTop:4}} onClick={e=>e.stopPropagation()}>
@@ -4095,13 +4106,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
               </div>
             </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
-              <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
-              <div style={{fontSize:10,color:'#94a3b8'}}>@ ${safeNum(item.unit_sell).toFixed(2)}/ea</div>
-            </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap',minWidth:88}}>
-              <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Line Total</div>
-              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${iR.toFixed(2)}</div>
+            <div style={{display:'flex',alignItems:'stretch',border:'1px solid #E2E6EF',borderRadius:8,background:'#FAFBFD',overflow:'hidden',whiteSpace:'nowrap'}}>
+              <div style={{padding:'6px 14px',textAlign:'right',borderRight:'1px solid #E9ECF3'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#9aa0ad',marginBottom:2}}>Sell / ea</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:700,color:'#1E7A46',lineHeight:1.05}}>${safeNum(item.unit_sell).toFixed(2)}</div>
+              </div>
+              <div style={{padding:'6px 16px',textAlign:'right',borderRight:'1px solid #E9ECF3'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#9aa0ad',marginBottom:1}}>Qty</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:800,color:'#192853',lineHeight:1.05}}>{qty}</div>
+              </div>
+              <div style={{padding:'6px 16px',textAlign:'right',background:'#F1F5FF',display:'flex',flexDirection:'column',justifyContent:'center'}}>
+                <div className="oe-eb" style={{fontSize:9,color:'#5A6075',marginBottom:1}}>Line Total</div>
+                <div className="oe-num" style={{fontSize:19,fontWeight:800,color:'#1E7A46',lineHeight:1.05}}>${iR.toFixed(2)}</div>
+              </div>
             </div>
           </div>
         </div>);
@@ -4121,8 +4138,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
               </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
-                  :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
+                {item.is_custom?<input className="form-input oe-num" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontWeight:700,color:'#192853',background:'#EEF1F6',padding:'3px 10px',borderRadius:5,fontSize:15,width:100,border:'1px solid #DCE2EE'}}/>
+                  :<span className="oe-num oe-dt" style={{fontWeight:700,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 10px',borderRadius:5,fontSize:15}}>{item.sku}</span>}
                 {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
@@ -5254,12 +5271,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     })()}
 
     {/* ART LIBRARY TAB */}
-    {tab==='art'&&<div className="card"><div className="card-header"><h2>Art Library</h2><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={async()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);
+    {tab==='art'&&<div className="card"><div className="card-header"><div style={{display:'flex',alignItems:'baseline',gap:10}}><h2>Art Library</h2><span className="oe-num" style={{fontSize:12,color:'#9aa0ad'}}>{af.length} group{af.length===1?'':'s'}{(()=>{const _w=af.filter(a=>(a.status||'waiting_for_art')!=='approved').length;return _w>0?' · '+_w+' waiting on approval':''})()}</span></div><div style={{display:'flex',gap:6}}>{dirty&&<button className="btn btn-sm btn-primary" onClick={async()=>{const updated={...o,updated_at:new Date().toLocaleString()};setO(updated);
         // Prefer the art-only persister: it returns a real success/failure so we never falsely report "saved".
         // On failure (e.g. an expired session whose writes RLS now rejects) keep the editor dirty and warn the
         // rep NOT to reload — her entries are still in memory and will save once she's signed back in.
         if(onSaveArtFiles){const ok=await onSaveArtFiles(updated);if(ok){setDirty(false);setSaved(true);nf('Art saved')}else{nf('⚠️ Artwork did NOT save. Your session may have expired — sign in again and click Save. Do NOT reload: your entries are still here.','error')}}
-        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',fontSize:11}} onClick={()=>setShowPrevArt(true)}>📂 Previous Artwork</button><button className="btn btn-sm btn-primary" onClick={addArt}><Icon name="plus" size={12}/> New Art Group</button></div></div>
+        else{onSave(updated);setDirty(false);setSaved(true);nf('Art saved')}}} style={{background:'#166534',borderColor:'#166534'}}>Save</button>}<button className="btn btn-sm btn-secondary" style={{fontSize:12}} onClick={()=>setShowPrevArt(true)}>🗂 Previous Artwork</button><button className="oe2-cta" style={{fontSize:13,padding:'8px 16px'}} onClick={addArt}><span><Icon name="plus" size={12}/> New Art Group</span></button></div></div>
       <div className="card-body">{af.length===0?<div className="empty">No art uploaded. Create art groups and add files.</div>:
         <div style={{display:'flex',flexDirection:'column',gap:12}}>
           {af.map((art,i)=>{const usedIn=safeItems(o).reduce((a,it)=>a+safeDecos(it).filter(d=>d.art_file_id===art.id).length,0);
@@ -5271,19 +5288,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _thumbMocks=[...(art.mockup_files||[]),...(art.files||[]),...Object.values(art.item_mockups||{}).flat()];
             const thumbUrl=art.preview_url||_thumbMocks.map(_thumbUrlOf).find(u=>u&&_isImgUrl(u))||'';
             const pickPreview=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.png,.jpg,.jpeg,.webp';inp.onchange=async()=>{const f=inp.files[0];if(!f)return;nf('Uploading preview...');try{const url=await fileUpload(f,'nsa-art-previews');const arts=(oRef.current.art_files||[]).map(fa=>fa.id===art.id?{...fa,preview_url:url}:fa);await saveArtFilesNow(arts,'Preview')}catch(e){nf('Upload failed: '+e.message,'error')}};inp.click()};
-            return(<div key={art.id} style={{padding:0,background:'#f8fafc',borderRadius:8,border:afSt==='approved'?'2px solid #22c55e':afSt==='needs_approval'?'2px solid #f59e0b':'1px solid #e2e8f0'}}>
+            return(<div key={art.id} className="oe-card" style={{background:'#fff',borderRadius:10,border:afSt==='approved'?'1px solid #C9E7D4':afSt==='needs_approval'?'1px solid #FDE68A':'1px solid #EEF1F6',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
               {/* Collapsible header */}
-              <div style={{display:'flex',gap:12,alignItems:'center',padding:'10px 14px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
-                <span style={{fontSize:12,color:'#64748b',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0}}>▼</span>
-                <div onClick={thumbUrl?(e=>{e.stopPropagation();setMockupLightbox(thumbUrl)}):undefined} title={thumbUrl?'Click to enlarge':undefined} style={{width:36,height:36,borderRadius:6,flexShrink:0,overflow:'hidden',border:'1px solid #e2e8f0',cursor:thumbUrl?'zoom-in':'pointer',background:thumbUrl?'white':art.deco_type==='screen_print'?'#dbeafe':art.deco_type==='embroidery'?'#ede9fe':art.deco_type==='dtf'?'#fef3c7':'#f0fdf4',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div className="oe-trow" style={{display:'flex',gap:13,alignItems:'center',padding:'11px 16px',cursor:'pointer',userSelect:'none'}} onClick={()=>setExpandedArt(prev=>({...prev,[art.id]:!prev[art.id]}))}>
+                <span style={{fontSize:13,color:'#9aa0ad',transition:'transform 0.2s',transform:isCollapsed?'rotate(-90deg)':'rotate(0deg)',flexShrink:0,width:14}}>▼</span>
+                <div onClick={thumbUrl?(e=>{e.stopPropagation();setMockupLightbox(thumbUrl)}):undefined} title={thumbUrl?'Click to enlarge':undefined} style={{width:44,height:44,borderRadius:8,flexShrink:0,overflow:'hidden',border:'1px solid #E2E6EF',cursor:thumbUrl?'zoom-in':'pointer',background:thumbUrl?'white':art.deco_type==='screen_print'?'#FEF3C7':art.deco_type==='embroidery'?'#E8ECF6':art.deco_type==='dtf'?'#FEF3C7':'#EAF6EE',display:'flex',alignItems:'center',justifyContent:'center'}}>
                   {thumbUrl?<img src={thumbUrl} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>
-                  :<span style={{fontSize:16}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</span>}
+                  :<span style={{fontSize:20}}>{art.deco_type==='screen_print'?'🎨':art.deco_type==='embroidery'?'🧵':art.deco_type==='dtf'?'🔥':'#️⃣'}</span>}
                 </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <span style={{fontWeight:700,fontSize:14}}>{art.name||'Untitled'}</span>
-                  <span style={{fontSize:11,color:'#64748b',marginLeft:8}}>{(art.deco_type||'').replace(/_/g,' ')}{art.art_size?' · '+art.art_size:''} · {usedIn} deco(s) · {garmentCount} garment{garmentCount===1?'':'s'}</span>
+                <div style={{minWidth:0}}>
+                  <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}}>
+                    <span style={{fontWeight:700,color:'#2A2F3E',fontSize:15,whiteSpace:'nowrap'}}>{art.name||'Untitled'}</span>
+                    {art.deco_type&&<span className="oe-eb" style={{fontSize:10,color:'#6D28D9',background:'#EDE9FE',padding:'2px 7px',borderRadius:4}}>{(art.deco_type||'').replace(/_/g,' ')}</span>}
+                    {art.art_size&&<span className="oe-num" style={{fontSize:12,color:'#5A6075'}}>{art.art_size}</span>}
+                  </div>
+                  <div className="oe-num" style={{fontSize:12,color:'#9aa0ad',marginTop:1}}>{usedIn} deco{usedIn===1?'':'s'} · {garmentCount} garment{garmentCount===1?'':'s'}</div>
                 </div>
-                <span style={{padding:'2px 8px',borderRadius:10,fontSize:11,fontWeight:600,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
+                <div style={{flex:1}}/>
+                {(art.color_ways||[]).length>0&&<span className="oe-num" style={{fontSize:11,color:'#9aa0ad',marginRight:2}}>{(art.color_ways||[]).length} CW</span>}
+                <span className="oe-eb" style={{fontSize:10,padding:'4px 10px',borderRadius:20,flexShrink:0,background:ART_FILE_SC[art.status]?.bg||ART_FILE_SC.waiting_for_art.bg,color:ART_FILE_SC[art.status]?.c||ART_FILE_SC.waiting_for_art.c}}>{art.status==='approved'?'Approved':art.status==='needs_approval'?'Needs Approval':'Waiting'}</span>
                 <button className="btn btn-sm btn-secondary" style={{fontSize:10,flexShrink:0}} onClick={e=>{e.stopPropagation();rmArt(i)}}><Icon name="trash" size={10}/></button>
               </div>
               {/* Collapsible body */}
@@ -5698,7 +5721,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.estimate_id&&<a href={_navHref({est:o.estimate_id})} style={{display:'flex',gap:12,alignItems:'center',padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #e9d5ff',cursor:onViewEstimate?'pointer':'default',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();onViewEstimate&&onViewEstimate(o.estimate_id)}}>
           <div style={{width:40,height:40,background:'#ede9fe',borderRadius:8,display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="dollar" size={20}/></div>
           <div><div style={{fontWeight:700,color:'#7c3aed',textDecoration:'underline',textDecorationStyle:'dotted'}}>{o.estimate_id}</div><div style={{fontSize:12,color:'#64748b'}}>Source Estimate</div></div><span className="badge badge-green">Converted</span></a>}
-        <div style={{padding:12,background:'#ecfdf5',borderRadius:8,border:'1px solid #a7f3d0'}}><div style={{fontWeight:600,marginBottom:4,color:'#166534'}}>🔗 Shared-Screen Jobs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— other orders that run on the same artwork (linked jobs share one screen setup)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>🖥</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Shared-Screen Jobs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— other orders that run on the same artwork (linked jobs share one screen setup)</span></div>
           {sharedJobs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No other orders share this artwork</div>:
           sharedJobs.map((sj,i)=><div key={sj.soId+'|'+i} onClick={()=>onViewSO&&onViewSO(sj.soId)} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #d1fae5',cursor:onViewSO?'pointer':'default',flexWrap:'wrap'}}>
             <span style={{fontSize:13,fontWeight:600,color:'#0f172a'}}>{sj.art}</span>
@@ -5711,7 +5734,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               ?<span title="Manually linked — decoration cost is combined across these jobs (one screen, not billed twice). Customer invoice unaffected." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#166534',color:'white'}}>🔗 linked · cost combined</span>
               :<span title="Same artwork detected — link them on the Jobs tab to run together and combine the screen cost." style={{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:6,background:'#fef9c3',color:'#854d0e'}}>same artwork</span>}
           </div>)}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Item Fulfillments</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>📦</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Item Fulfillments</span></div>
           {linkedIFs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No item fulfillments yet</div>:
           linkedIFs.map(pk=><a key={pk.pick_id} href={_navHref({if:pk.pick_id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();setTab('items')}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{pk.pick_id}</span>
@@ -5719,7 +5742,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>{pk.totalQty} units</span>
             {pk.memo&&<span style={{fontSize:11,color:'#94a3b8'}}>{pk.memo}</span>}
           </a>)}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Purchase Orders</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>🛒</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Purchase Orders</span></div>
           {linkedPOs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No purchase orders yet</div>:
           linkedPOs.map(po=><a key={po.po_id} href={_navHref({po:po.po_id})} style={{display:'flex',flexDirection:'column',gap:3,alignItems:'flex-start',padding:'8px 0',borderBottom:'1px solid #f1f5f9',cursor:'pointer',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();_openPOInPage(po.po_id)}}>
             <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
@@ -5736,7 +5759,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {po.memo&&<span style={{fontSize:11,color:'#94a3b8',fontStyle:'italic'}}>"{po.memo}"</span>}
             </div>
           </a>)}</div>
-        <div style={{padding:12,background:'#faf5ff',borderRadius:8,border:'1px solid #ede9fe'}}><div style={{fontWeight:600,marginBottom:4,color:'#7c3aed'}}>Decoration POs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— outside-decorator cost buckets (not line-item orders)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>🧵</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Decoration POs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— outside-decorator cost buckets (not line-item orders)</span></div>
           {(o.deco_pos||[]).length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No decoration POs yet</div>:
           (o.deco_pos||[]).map(dp=>{const expected=safeNum(dp.expected_cost||dp.qty*dp.unit_cost);const actual=safeNum(dp._bill_cost||0);return<a key={dp.id||dp.po_id} href={_navHref({po:dp.po_id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #ede9fe',cursor:'pointer',flexWrap:'wrap',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#7c3aed',fontSize:12}}>{dp.po_id}</span>
@@ -5746,7 +5769,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span style={{fontSize:11,color:'#64748b'}}>Expected ${expected.toFixed(2)}{actual>0?' · Actual $'+actual.toFixed(2):''}</span>
             {(dp.item_idxs||[]).length>0&&<span style={{fontSize:10,color:'#94a3b8'}}>{(dp.item_idxs||[]).length} item{(dp.item_idxs||[]).length!==1?'s':''}</span>}
           </a>})}</div>
-        <div style={{padding:12,background:'#f8fafc',borderRadius:8}}><div style={{fontWeight:600,marginBottom:4}}>Invoices</div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8}}><span style={{fontSize:15}}>🧾</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Invoices</span></div>
           {linkedInvs.length===0?<div style={{fontSize:12,color:'#94a3b8'}}>No invoices linked yet</div>:
           linkedInvs.map(inv=><a key={inv.id} href={_navHref({inv:inv.id})} style={{display:'flex',gap:10,alignItems:'center',padding:'6px 0',borderBottom:'1px solid #f1f5f9',cursor:onNavInvoice?'pointer':'default',color:'inherit',textDecoration:'none'}} onClick={e=>{if(_isNewTabClick(e))return;e.preventDefault();onNavInvoice&&onNavInvoice(inv)}}>
             <span style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',fontSize:12}}>{inv.id}</span>
@@ -5754,7 +5777,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span className={`badge ${inv.status==='paid'?'badge-green':inv.status==='partial'?'badge-amber':'badge-blue'}`} style={{fontSize:10}}>{inv.status==='paid'?'Paid':inv.status==='partial'?'Partial':'Open'}</span>
             {inv.date&&<span style={{fontSize:11,color:'#94a3b8'}}>{inv.date}</span>}
           </a>)}</div>
-        <div style={{padding:12,background:'#eef2ff',borderRadius:8,border:'1px solid #e0e7ff'}}><div style={{fontWeight:600,marginBottom:4,color:'#4338ca'}}>Tasks / TODOs <span style={{fontSize:10,fontWeight:400,color:'#94a3b8'}}>— assigned tasks for this order &amp; its POs (PO tasks show the PO# in the title)</span></div>
+        <div className="oe-card" style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:10,padding:'12px 14px',boxShadow:'0 2px 12px rgba(0,0,0,.05)'}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,flexWrap:'wrap'}}><span style={{fontSize:15}}>☑</span><span className="oe-dt" style={{fontSize:14,color:'#192853'}}>Tasks / TODOs</span><span style={{fontSize:11,fontWeight:400,color:'#9aa0ad'}}>— assigned tasks for this order &amp; its POs (PO tasks show the PO# in the title)</span></div>
           {(()=>{
             const _name=id=>(REPS||[]).find(r=>r.id===id)?.name||id||'—';
             const _dt=v=>{if(!v)return'';try{const d=new Date(v);if(isNaN(d))return String(v);return(d.getMonth()+1)+'/'+d.getDate()+'/'+String(d.getFullYear()).slice(2)+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch{return String(v)}};
@@ -7466,13 +7489,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         <div className="modal-body">{Object.entries(vendorMap).map(([vk,items])=>{const vn=vendorList.find(v=>v.id===vk)?.name||D_V.find(v=>v.id===vk)?.name||vk;
           const openItems=items.filter(it=>openSizesFor(it).reduce((a,[,v])=>a+v,0)>0);
           const openCount=openItems.reduce((tot,it)=>tot+openSizesFor(it).reduce((a,[,v])=>a+v,0),0);
-          if(openCount===0)return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,opacity:0.5,display:'flex',alignItems:'center',gap:12}}>
-            <div style={{width:40,height:40,borderRadius:8,background:'#dcfce7',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="check" size={20}/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#166534'}}>All items fully covered</div></div></div>;
-          return<div key={vk} style={{padding:'12px 16px',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:8,cursor:'pointer',display:'flex',alignItems:'center',gap:12}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDropShip(null);setPoShipTo('warehouse');setPoDecoInline(null);setPoAlphaSuffix(cust?.alpha_tag||'')}}>
-            <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
-            <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
-            <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
+          if(openCount===0)return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'1px solid #E2E6EF',background:'#FAFBFD',borderRadius:9,padding:'11px 14px',marginBottom:8,opacity:0.7}}>
+            <span style={{width:16,height:16,borderRadius:'50%',border:'1px solid #D1D5DE',background:'#fff',flexShrink:0}}/>
+            <div style={{flex:1}}><div style={{fontWeight:700,color:'#5A6075',fontSize:15}}>{vn}</div><div style={{fontSize:12,color:'#9aa0ad',marginTop:1}}>All items covered</div></div>
+            <span style={{fontSize:12,color:'#1E7A46',fontWeight:700,background:'#EAF6EE',border:'1px solid #C9E7D4',padding:'4px 10px',borderRadius:20}}>✓ Covered</span></div>;
+          return<div key={vk} style={{display:'flex',alignItems:'center',gap:12,border:'2px solid #192853',background:'#F4F7FF',borderRadius:9,padding:'11px 14px',marginBottom:8,cursor:'pointer'}} onClick={()=>{setShowPO(vk);setPOExcluded({});setPoDropShip(null);setPoShipTo('warehouse');setPoDecoInline(null);setPoAlphaSuffix(cust?.alpha_tag||'')}}>
+            <span style={{width:16,height:16,borderRadius:'50%',border:'5px solid #192853',background:'#fff',flexShrink:0}}/>
+            <div style={{flex:1}}><div style={{fontWeight:700,color:'#192853',fontSize:15}}>{vn}</div><div className="oe-num" style={{fontSize:12,color:'#5A6075',marginTop:1}}>{openItems.length} item{openItems.length!==1?'s':''} · <span style={{color:'#962C32',fontWeight:700}}>{openCount} units not yet on a PO</span></div></div>
+            <Icon name="back" size={16} style={{transform:'rotate(180deg)',color:'#192853'}}/></div>})}
           {unlinkedItems.length>0&&<div style={{borderTop:'2px solid #fca5a5',marginTop:8,paddingTop:8}}>
             <div style={{fontSize:10,fontWeight:700,color:'#dc2626',textTransform:'uppercase',marginBottom:6}}>⚠️ Items Without Vendor</div>
             {unlinkedItems.map((it,i)=>{const idx=safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name);
