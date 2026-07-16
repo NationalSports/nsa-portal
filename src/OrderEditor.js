@@ -21,7 +21,7 @@ import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
-import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims } from './lib/syncJobsMatch';
+import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -2790,14 +2790,38 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // merge-time stamp of the intended deco types — a follow-up, since that field must be persisted.)
     const _methodSetKnown=j=>!j._merged&&!j.split_from;
     const _dropStaleClaims=j=>(_methodSetKnown(j)||_frozenIdxDrift)?dropMismatchedFrozenClaims(j,_liveDecoType).job:j;
+    // Per-art job art_status, shared by the Step-3 builder and the frozen-job art heal below so
+    // the two derivations can't drift apart.
+    const _artStForFile=(artF,fallbackDt)=>artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||fallbackDt)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
+    // Live-art resolver for healFrozenJobArtDrift. Mirrors _liveDecoType's hydration-safety
+    // convention: 'unresolved' (art deco whose file isn't loaded) aborts the heal, while null
+    // (deleted line, non-art deco, TBD/unassigned, outsourced) just contributes nothing.
+    const _liveArtClaim=(ii,di)=>{const it=safeItems(o)[ii];if(!it)return null;const d=safeDecos(it)[di];
+      if(!d||d.kind!=='art')return null;
+      if(d.fulfillment==='outside'||d.deco_po_id)return null;
+      if(!d.art_file_id||d.art_file_id==='__tbd')return null;
+      const artF=af.find(a=>a.id===d.art_file_id);
+      if(!artF)return'unresolved';
+      return{artFileId:d.art_file_id,position:safeStr(d.position)}};
+    // A frozen job whose art pointer was healed is now gated on DIFFERENT artwork, so its frozen
+    // art_status describes the wrong file — recompute it from the healed ids with the same
+    // derivation the builder uses. Queue states are irrelevant here: they belonged to the old art.
+    const _healArtPointers=j=>{
+      const r=healFrozenJobArtDrift(j,_liveArtClaim);
+      if(!r.artChanged)return r.job;
+      const _hIds=(r.job._art_ids&&r.job._art_ids.length?r.job._art_ids:[r.job.art_file_id]).filter(Boolean);
+      let worst='art_complete';
+      for(const aid of _hIds){const artF=af.find(a=>a.id===aid);if(!artF)return r.job;const st=_artStForFile(artF,r.job.deco_type);if(st!=='art_complete')worst=st}
+      return worst!==r.job.art_status?{...r.job,art_status:worst}:r.job;
+    };
     const releasedJobs=safeJobs(o).filter(j=>_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
-      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
+      .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     // Manually merged jobs combine several decoration signatures into one job by hand. Like
     // released jobs, their item/deco pairs must not be re-grouped or re-split by the auto-builder.
     // (Unlike released jobs — whose snapshot is frozen except for a zero-total heal, see
     // recalcedReleased — merged unit counts are always refreshed below as item sizes change.)
     const mergedJobs=safeJobs(o).filter(j=>j._merged&&!_isRel(j)&&!_jobAllOutsourced(j)&&_jobHasLiveDeco(j))
-      .map(_dropStaleClaims).filter(j=>(j.items||[]).length>0);
+      .map(_dropStaleClaims).map(_healArtPointers).filter(j=>(j.items||[]).length>0);
     const frozenItemDecos=new Set();
     [...releasedJobs,...mergedJobs].forEach(j=>(j.items||[]).forEach(gi=>{
       const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:[gi.deco_idx];
@@ -2872,7 +2896,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             artIds.push(d.art_file_id);
             artNames.push(artF?.name||'Unknown Art');
             decoTypes.push(artF?.deco_type||d.deco_type||'screen_print');
-            const st=artF?.status==='approved'?(artProdFilesConfirmed(artF)?'art_complete':prodFilesStatusFor(artF?.deco_type||d.deco_type)):artF?.status==='needs_approval'?(_hasMockupContent(artF)?'waiting_approval':'needs_art'):'needs_art';
+            const st=_artStForFile(artF,d.deco_type);
             if(st!=='art_complete')worstArtSt=st;
           } else {
             artNames.push('Unassigned Art ('+safeStr(d.position)+')');
@@ -3190,7 +3214,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Garment identity (sku|color) is included so a _refreshGarmentIdentity heal (line product
     // swapped after release — SO-1480's phantom KD5416) also lands; the refresh converges on
     // the live line, so this can't ping-pong either.
-    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
+    // Art identity (art_file_id/_art_ids/positions/art_name) is included so the frozen-job art
+    // heals land too — healFrozenJobArtDrift re-pointing a released job at the artwork its line
+    // now carries (SO-1348's "5in Wide S Crest Football" header on the 2.5in-crest shorts job),
+    // and _healReleasedArtName's rename-only refresh, which previously only landed when a unit
+    // or status change happened to ride along. Both converge on live data — no ping-pong.
+    const _artSig=j=>(j.art_file_id||'')+'.'+((j._art_ids||[]).join('~'))+'.'+(j.positions||'')+'.'+(j.art_name||'');
+    const _unitSig=js=>js.map(j=>(j.id||j.key)+':'+j.total_units+'-'+j.fulfilled_units+'-'+(j.art_status||'')+'-'+_artSig(j)+':'+(j.items||[]).map(gi=>safeNum(gi.units)+'.'+safeNum(gi.fulfilled)+'.'+(gi.sku||'')+'.'+(gi.color||'')).join('|')).sort().join(',');
     if(_keySig(currentJobs)!==_keySig(synced)||_unitSig(currentJobs)!==_unitSig(synced)){
       setO(e=>{
         const next={...e,jobs:synced};
