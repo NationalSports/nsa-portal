@@ -20,7 +20,7 @@ import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
 import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
-import { resolvePriorMockKey, prevArtAutoWireTargets } from './lib/artIdentity';
+import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift } from './lib/syncJobsMatch';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
@@ -5413,7 +5413,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _teamLabel=cid=>{if(cid===custId)return'';const c=allCustomers.find(cc=>cc.id===cid);return c?(c.name||c.alpha_tag||''):''};
       const prevArtList=[];
       const _byKey=new Map();
-      const _dedupKey=a=>(a.id||'')+'|'+(a.name||'').toLowerCase().trim()+'|'+(a.deco_type||'')+'|'+(a.art_size||'')+'|'+((a.color_ways||[]).length);
+      // Merge a design's library copy with its source-order copy: key on the stable
+      // logo identity (name+deco+size+cw), NOT the id — promoteArtToLibrary gives the
+      // library copy a fresh id, so an id-keyed dedup double-listed the same design.
+      const _dedupKey=prevArtDedupKey;
       // Merge all file buckets across sources so the offered logo always carries every mockup AND production file,
       // even if one source (e.g. a library copy saved before the seps were uploaded) is missing some.
       const _fKey=f=>typeof f==='string'?f:(f?.url||'');
