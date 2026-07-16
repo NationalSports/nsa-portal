@@ -86,7 +86,11 @@ handled edge case, not a failure. Reduces disputes/chargebacks.
 ## Phases
 1. **Approval state machine + production gate + held-order state** (the safety invariant — build
    first, before anything is public).
-2. **Public build → publish-live + capture** (extend the `public` builder path).
+2. **Public build → publish-live + capture** (extend the `public` builder path). The builder
+   MUST set both `created_via='public'` AND `approval_status='pending_review'` explicitly —
+   the `trg_force_public_store_pending` trigger is a fail-open net keyed on the exact string
+   `'public'` (a typo'd/NULL `created_via` silently stays approved), so the trigger is the
+   backstop, never the mechanism.
 3. **Reject → auto-refund + close; approve → release.**
 4. **Review queue + 24h SLA alerting.**
 5. **Auto pre-screen (quality + moderation + TM hint) + rights attestation + customer messaging.**

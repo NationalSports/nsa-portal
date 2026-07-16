@@ -64,7 +64,16 @@ begin
   if new.webstore_id is null then
     return new;
   end if;
-  select approval_status into v_appr from webstores where id = new.webstore_id;
+  -- Whole-row client upserts include webstore_id on every save; skip re-validation when
+  -- it isn't actually changing (same short-circuit the so_jobs trigger uses). INSERTs
+  -- always validate.
+  if tg_op = 'UPDATE' and new.webstore_id is not distinct from old.webstore_id then
+    return new;
+  end if;
+  -- FOR SHARE: hold the store row until this transaction commits, so a concurrent
+  -- reject can't land between this read and the SO insert committing (the reject's
+  -- UPDATE blocks on the share lock instead of racing past it).
+  select approval_status into v_appr from webstores where id = new.webstore_id for share;
   if coalesce(v_appr, 'approved') <> 'approved' then
     raise exception 'NSA_STORE_UNAPPROVED:%', v_appr;
   end if;
@@ -99,10 +108,13 @@ begin
   if tg_op = 'UPDATE' and new.prod_status is not distinct from old.prod_status then
     return new;
   end if;
+  -- FOR SHARE on the store row (see the SO-trigger comment): a concurrent reject waits
+  -- for this transaction instead of racing the stage entry.
   select w.approval_status into v_appr
     from sales_orders so
     join webstores w on w.id = so.webstore_id
-   where so.id = new.so_id;
+   where so.id = new.so_id
+   for share of w;
   if v_appr is not null and v_appr <> 'approved' then
     raise exception 'NSA_STORE_UNAPPROVED:%', v_appr;
   end if;
@@ -149,8 +161,11 @@ begin
                  where table_schema = 'public' and table_name = 'webstores'
                    and column_name = 'approval_status'),
     'webstores.approval_status missing';
-  assert (select count(*) from public.webstores where approval_status <> 'approved') = 0,
-    'existing stores must all backfill to approved';
+  -- Re-run-safe form: assert the default APPLIED (no NULLs), not that every store is
+  -- approved — once Phase 2 ships, pending_review/rejected rows legitimately exist and
+  -- an all-approved assert would abort any re-application of this file.
+  assert (select count(*) from public.webstores where approval_status is null) = 0,
+    'approval_status default failed to backfill';
   assert exists (select 1 from pg_trigger
                  where tgname = 'trg_enforce_store_approval_so' and not tgisinternal),
     'sales_orders approval trigger missing';
