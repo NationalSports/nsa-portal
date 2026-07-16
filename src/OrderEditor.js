@@ -3382,7 +3382,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:12,padding:'6px 12px'}}><Icon name="plus" size={12}/> New Est</button>}
       <span className="oe2-tb-id">{o.id}</span>
       {isSO&&<span className="oe2-status-pill" style={{background:SC[o.status]?.bg||'#EEF1F6',color:SC[o.status]?.c||'#5A6075'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<><span className="oe2-tb-sep"/><span className="oe2-tb-cust" onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span></>}
+      {cust&&<><span className="oe2-tb-sep"/><span className="oe2-tb-cust" onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span><span className="oe-num" style={{fontSize:12,color:'#9aa0ad'}}>{cust.alpha_tag} · Tier {cust.adidas_ua_tier} · {o.default_markup||1.65}×</span></>}
       {o.memo&&<span className="oe2-tb-chip">{o.memo}</span>}
       <span style={{flex:1}}/>
       {dirty&&<span style={{fontSize:11,color:'#B45309',fontWeight:700}}>● Unsaved</span>}
@@ -3446,11 +3446,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
       <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:300}}>
-          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}><span style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{o.id}</span>
-            {isE&&<span className={`badge ${o.status==='draft'||o.status==='open'?'badge-blue':o.status==='sent'?'badge-amber':o.status==='approved'?'badge-green':'badge-blue'}`}>{o.status}</span>}
-            {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
+          {((isSO&&o.order_type==='booking')||isE)&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
             {isSO&&o.order_type==='booking'&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:'#e0e7ff',color:'#4338ca'}}>Booking{o.booking_confirmed?' (Confirmed)':''}</span>}
-            {isE&&<EmailBadge e={o}/>}</div>
+            {isE&&<EmailBadge e={o}/>}</div>}
           {isE&&(o.sent_history||[]).length>0&&<div style={{marginTop:6,padding:'8px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:4}}>Send History</div>
             {(o.sent_history||[]).map((h,hi)=><div key={hi} style={{fontSize:11,color:'#64748b',display:'flex',alignItems:'center',gap:6,marginBottom:2}}>
@@ -3464,24 +3462,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {o.follow_up_at&&<div style={{fontSize:11,color:'#92400e',marginTop:2}}>⏰ Follow-up: {new Date(o.follow_up_at).toLocaleDateString()}{new Date(o.follow_up_at)<new Date()?' (overdue)':''}</div>}
           </div>}
           {!cust?<div style={{marginBottom:8}}><label className="form-label">Select Customer *</label><SearchSelect options={allCustomers.map(c=>{const par=c.parent_id?allCustomers.find(p=>p.id===c.parent_id):null;const tags=[...(c.search_tags||[]),...(par?.search_tags||[])].filter(Boolean).join(' ');return{value:c.id,label:`${c.name} (${c.alpha_tag})`,searchText:tags}})} value={o.customer_id} onChange={selC} placeholder="Search customer..."/></div>
-          :<div><div style={{display:'flex',alignItems:'center',gap:6}}><span style={{fontSize:18,fontWeight:800,color:onNavCustomer?'#1e40af':undefined,cursor:onNavCustomer?'pointer':undefined,textDecoration:onNavCustomer?'underline':undefined,textDecorationStyle:'dotted',textUnderlineOffset:3}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={onNavCustomer?'View '+cust.name:undefined}>{cust.name}</span> <span style={{fontSize:14,color:'#64748b'}}>({cust.alpha_tag})</span>
-            <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
-            <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</div></div>}
-          {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
-          {isSO&&o.omg_store_id&&onNavOmgStore&&<div style={{fontSize:11,color:'#166534'}}>🏪 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">OMG Store</span></div>}
-          {isE&&linkedSO&&onViewSO&&<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>}
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
-          {isSO&&cust&&<div style={{display:'flex',alignItems:'center',gap:6,marginTop:2}}>
-            <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Rep:</span>
-            {editingRep
-              ?<><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}>
-                <option value="">— None —</option>
-                {REPS.filter(r=>r.is_active!==false&&isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}
-              </select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#94a3b8'}} onClick={()=>setEditingRep(false)}>Cancel</button></>
-              :<><span style={{fontSize:11,color:'#1e293b'}}>{REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}</span>
-              <button style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></>}
+          :<div style={{display:'flex',alignItems:'center',gap:'2px 12px',flexWrap:'wrap',fontSize:12,color:'#5A6075'}}>
+            <span>Tier {cust.adidas_ua_tier} · {o.default_markup||1.65}x · Tax {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</span>
+            <button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:11,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button>
+            {isSO&&o.estimate_id&&onViewEstimate&&<span style={{color:'#6D28D9'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></span>}
+            {isSO&&o.omg_store_id&&onNavOmgStore&&<span style={{color:'#1E7A46',cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">🏪 OMG Store</span>}
+            {isE&&linkedSO&&onViewSO&&<span style={{color:'#6D28D9'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></span>}
+            <span style={{color:'#9aa0ad'}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</span>
+            {isSO&&cust&&(editingRep
+              ?<span style={{display:'inline-flex',alignItems:'center',gap:6}}><span style={{fontWeight:600}}>Rep:</span><select className="form-select" style={{width:160,fontSize:11,padding:'1px 4px'}} defaultValue={cust.primary_rep_id||''} onChange={e=>{if(onChangeRep)onChangeRep(e.target.value);setEditingRep(false)}}><option value="">— None —</option>{REPS.filter(r=>r.is_active!==false&&isCommissionRep(r)).map(r=><option key={r.id} value={r.id}>{r.name}</option>)}</select><button style={{fontSize:10,background:'none',border:'none',cursor:'pointer',color:'#9aa0ad'}} onClick={()=>setEditingRep(false)}>Cancel</button></span>
+              :<span style={{display:'inline-flex',alignItems:'center',gap:4}}><span style={{fontWeight:600}}>Rep:</span> {REPS.find(r=>r.id===cust.primary_rep_id)?.name||'—'}<button style={{background:'none',border:'none',cursor:'pointer',color:'#9aa0ad',fontSize:10,padding:'0 2px'}} title="Change rep" onClick={()=>setEditingRep(true)}>✏️</button></span>)}
+            {cust?.alpha_tag&&<a href={'https://nationalsportsapparel.com/coach?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#6D28D9',textDecoration:'none',fontWeight:500}}>🔗 Portal</a>}
           </div>}
-          {cust?.alpha_tag&&<div style={{fontSize:11,marginTop:2}}><a href={'https://nationalsportsapparel.com/coach?portal='+cust.alpha_tag} target="_blank" rel="noreferrer" style={{color:'#7c3aed',textDecoration:'none',fontWeight:500}}>🔗 Customer Portal</a></div>}
           {isSO&&(o._shipments||[]).length>0&&<div style={{padding:8,background:'#f0fdf4',borderRadius:6,marginTop:8}}>
             <strong>Shipped:</strong> {(o._shipments||[]).length} package{(o._shipments||[]).length!==1?'s':''} —{' '}
             {(o._shipments||[]).map((s,si)=>s.tracking_number?<a key={si} href={s.tracking_url||((/^1Z/i.test(s.tracking_number))?'https://www.ups.com/track?tracknum='+s.tracking_number:'https://www.fedex.com/fedextrack/?trknbr='+s.tracking_number)} target="_blank" rel="noreferrer" style={{fontFamily:'monospace',fontSize:11,marginRight:6}}>{s.tracking_number}</a>:<span key={si} style={{fontSize:11,color:'#94a3b8',marginRight:6}}>Box {si+1} (no tracking)</span>)}
