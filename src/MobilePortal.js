@@ -48,7 +48,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -1374,7 +1374,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const sel=buildPOs().filter(p=>poKeys.includes(p.key)&&p.totOpen>0&&!p.dropShip);
     if(sel.length===0){if(nf)nf(batchNo+' has no open units to receive','error');return;}
     setWhBatchSelected(new Set(sel.map(p=>p.key)));setWhBatchQty({});setWhBatchMode(true);
-    setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
+    setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch',batchNo});
     setShowSearch(false);setQ('');
   };
   // ─── SCAN ROUTER — camera scans and ?scan= QR deep links (printed 4×6 labels) land here.
@@ -1553,6 +1553,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(whDetail?.kind==='batch'){
       const sel=pos.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0&&!p.dropShip);
       const grandRcv=sel.reduce((a,po)=>a+Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0),0);
+      // Source POs the frozen batch snapshot still lists but whose live PO line has since been re-batched
+      // onto another batch — surface them read-only (matching the desktop view) so the warehouse can see
+      // where they went instead of the PO silently vanishing from the batch. Snapshot is never mutated.
+      const _movLivePoIdsLc=new Set(pos.map(p=>(p.poId||'').toLowerCase()).filter(Boolean));
+      const _movLoadedSoIds=new Set(sos.map(s=>s.id));
+      const _movSb=whDetail.batchNo?(submittedBatches||[]).find(b=>(b.po_number||'').toLowerCase()===String(whDetail.batchNo).toLowerCase()):null;
+      const movedOut=_movSb?(_movSb.source_pos||[]).filter(sp=>{if(!sp.po_id)return false;if(sp.so_id&&!_movLoadedSoIds.has(sp.so_id))return false;return !_movLivePoIdsLc.has(String(sp.po_id).toLowerCase())}).map(sp=>{const dest=pos.find(p=>p.soId===sp.so_id&&p.batchPoNumber);return{poId:sp.po_id,soId:sp.so_id,customer:sp.customer||'',movedTo:(dest&&dest.batchPoNumber)||'',units:(sp.items||[]).reduce((a,it)=>a+(it.qty||0),0)}}):[];
       return<div className="mp-detail">
         <div className="mp-detail-header">
           <button className="mp-back-btn" onClick={()=>{setWhDetail(null);setWhBatchQty({})}}><MIcon name="back" size={22}/></button>
@@ -1596,6 +1603,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 <button onClick={()=>batchPoClear(po)} style={{padding:'8px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>Clear</button>
               </div>
             </div>})}
+          {movedOut.length>0&&<div style={{marginTop:2}}>
+            <div style={{fontSize:11,fontWeight:800,color:'#b45309',letterSpacing:0.3,margin:'4px 0 6px'}}>MOVED TO ANOTHER BATCH</div>
+            {movedOut.map(m=><div key={m.poId} style={{marginBottom:10,opacity:0.8,padding:'10px 12px',border:'1px dashed #e2e8f0',borderRadius:10,background:'#fafaf9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontWeight:800,color:'#94a3b8',fontSize:14,textDecoration:'line-through'}}>{m.poId}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#fef3c7',color:'#b45309',fontWeight:700}}>→ moved to {m.movedTo||'another batch'}</span>
+                {m.units>0&&<span style={{marginLeft:'auto',fontSize:11,color:'#94a3b8',fontWeight:700}}>{m.units} unit{m.units!==1?'s':''}</span>}
+              </div>
+              <div style={{fontSize:12,marginTop:3,color:'#94a3b8'}}>{m.customer||m.soId}{m.movedTo?' · receive on '+m.movedTo:''}</div>
+            </div>)}
+          </div>}
         </div>
         <div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
           <button disabled={whSaving||grandRcv===0} onClick={()=>confirmBatchReceive(sel)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
