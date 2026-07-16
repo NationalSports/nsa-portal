@@ -188,6 +188,11 @@ const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] ||
 // never tracked — every offered size stays sellable. track_inventory=false opts a tracked
 // item out, so it keeps selling all sizes regardless of stock.
 const isTracked = (p) => p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+// A tracked drop-ship item whose stock has NEVER synced (no warehouse rows, no vendor
+// rows — both maps null, not zero) sells every size: the vendor backorders anyway, and a
+// style added from the live vendor search shouldn't read "sold out" until the nightly
+// sync catches up. Synced-and-zero still reads sold out. Checkout mirrors this rule.
+const hasStockData = (p) => p.size_stock != null || p.vendor_size_stock != null;
 // Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
 // (common in the Adidas feed) and squeeze the leftover separators/whitespace.
 function cleanDesc(s) {
@@ -825,7 +830,7 @@ function GarmentTile({ theme, store, kind = 'top', badge, catLabel }) {
 function stockBadge(p, theme) {
   const ink = theme ? theme.ink : NEUTRAL.ink;
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: ink };
-  if (!isTracked(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked
+  if (!isTracked(p) || !hasStockData(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked / stock not synced yet
   if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: STOCK.in };
   if (isIncoming(p)) { return { text: 'Low stock', color: '#fff', bg: STOCK.low }; }
   return { text: 'Sold out', color: '#fff', bg: theme ? theme.primary : '#8C1D40' };
@@ -1115,10 +1120,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
-    if (!isTracked(c)) {
+    if (!isTracked(c) || !hasStockData(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
-      // made-to-order item these always sell — checkout's stock guard skips them too.
+      // made-to-order item (or a drop-ship style whose stock hasn't synced yet) these
+      // always sell — checkout's stock guard skips them too.
       const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
       const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
       return [...scale, ...extras]; // not inventory-tracked → every offered size sells

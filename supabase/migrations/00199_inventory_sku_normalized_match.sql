@@ -1,27 +1,23 @@
--- ════════════════════════════════════════════════════════════════════════
--- CANONICAL definition of the webstore_storefront_products view.
+-- 00199: match vendor inventory by NORMALIZED sku, not exact equality.
 --
--- This file is the SINGLE SOURCE OF TRUTH for the view. The public storefront
--- (src/storefront/Storefront.js) and the server checkout's stock guard
--- (netlify/functions/webstore-checkout.js → checkStock) both read it.
---
--- HOW TO CHANGE IT (read before editing — the view is easy to break):
---   1. Edit the SELECT below. It is CREATE OR REPLACE, so you may only APPEND
---      new columns (Postgres forbids reordering/removing/retyping columns of an
---      existing view). Add new output columns at the END of the select list.
---   2. Copy the full statement into a new numbered migration
---      (supabase_migration_0NN_*.sql) AND apply it to the project.
---   3. Keep this file and that migration identical. This file always reflects
---      the latest applied definition, so the next editor copies from HERE
---      instead of re-deriving it with pg_get_viewdef (which is how columns get
---      dropped by accident).
---
--- History of the columns/joins, newest last:
---   047  fundraise amount/display price        052  variant_group_id (color grouping)
---   053  store_category   054  vendor_size_eta  055/056  description (+ ai)
---   062  variant_label    064  vendor stock from inventory_unified (all vendors)
---   199  vendor stock matched on NORMALIZED sku (live-import vs sync spelling)
--- ════════════════════════════════════════════════════════════════════════
+-- The live vendor-catalog import mints product SKUs like 'PC450LS-BRIGHT-GOLD'
+-- (uppercased, hyphenated color) while the vendor syncs write inventory under
+-- 'PC450LS-BrightGold' (PascalCase, no separators). The storefront view joined
+-- inventory_unified on ai.sku = wp.sku, so search-imported items never matched
+-- their own stock and showed SOLD OUT with hundreds of units on hand.
+-- Fix: compare skus with separators stripped + uppercased, backed by matching
+-- expression indexes on every vendor inventory table (inventory_unified is a
+-- UNION ALL over them; the source filter prunes to one branch, the expression
+-- index serves the normalized lookup).
+
+CREATE INDEX IF NOT EXISTS sanmar_inventory_sku_norm     ON sanmar_inventory     (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS ss_inventory_sku_norm         ON ss_inventory         (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS adidas_inventory_sku_norm     ON adidas_inventory     (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS richardson_inventory_sku_norm ON richardson_inventory (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS momentec_inventory_sku_norm   ON momentec_inventory   (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS nike_inventory_sku_norm       ON nike_inventory       (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS ua_inventory_sku_norm         ON ua_inventory         (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
+CREATE INDEX IF NOT EXISTS agron_inventory_sku_norm      ON agron_inventory      (regexp_replace(upper(sku), '[^A-Z0-9]', '', 'g'));
 
 CREATE OR REPLACE VIEW webstore_storefront_products AS
  SELECT wp.id AS webstore_product_id,

@@ -158,6 +158,10 @@ async function checkStock(sb, store, lines) {
     // Not inventory-tracked (custom / made-to-order, or the item opted out) → never blocked.
     const tracked = p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
     if (!tracked) return;
+    // Tracked drop-ship item whose stock has NEVER synced (both stock maps null, not
+    // zero): don't block — the vendor backorders, and the storefront sells these sizes
+    // (same rule as its hasStockData fallback). Synced-and-zero still blocks below.
+    if (p.size_stock == null && p.vendor_size_stock == null) return;
     const incoming = (Number(p.on_order_qty) > 0) || !!p.earliest_eta || !!p.vendor_eta;
     if (incoming) return; // backorder allowed
     const avail = _availForSize(p, size);
