@@ -5,8 +5,10 @@
 // the rule can't drift between functions.
 //
 // Two accepted callers:
-//   • Service role — server-to-server / pg_cron, which sends the service_role
-//     key as the bearer token (see the taxcloud cron migrations 00011/00075/00094).
+//   • Service role — server-to-server callers send the service_role key as the
+//     bearer token: webstore-checkout's taxcloudRate() today, and the historic
+//     taxcloud crons did too (00011/00075/00094 — unscheduled by 00117, so no
+//     live cron depends on this, but any future re-enable already conforms).
 //   • Authenticated staff — a browser session JWT whose user is an active row in
 //     public.team_members. This mirrors the SQL public.is_team_member() used by
 //     RLS (migration 00173: team_members.auth_id = auth.uid() AND is_active).

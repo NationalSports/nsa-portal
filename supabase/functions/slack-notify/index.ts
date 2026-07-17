@@ -26,14 +26,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 // SLACK_NOTIFY_SECRET is unset we log loudly and allow, so deploying this code does
 // not break live notifications before the webhook is reconfigured. Setting the env
 // var AND the webhook's x-webhook-secret header is what actually closes the hole.
-function authorizeWebhook(req: Request): { ok: boolean } {
-  if (isServiceRole(bearerToken(req))) return { ok: true };
+// Returns a plain boolean on purpose: the call site is `if (!authorizeWebhook(req))`,
+// and a result OBJECT there would be always-truthy — the guard would never fire.
+function authorizeWebhook(req: Request): boolean {
+  if (isServiceRole(bearerToken(req))) return true;
   if (SLACK_NOTIFY_SECRET) {
     const provided = req.headers.get("x-webhook-secret") || "";
-    return { ok: provided === SLACK_NOTIFY_SECRET };
+    return provided === SLACK_NOTIFY_SECRET;
   }
   console.error("[slack-notify] SECURITY: SLACK_NOTIFY_SECRET is not set and the caller is not service-role — request auth is NOT enforced (staged rollout). Set SLACK_NOTIFY_SECRET in the edge function env AND add a matching x-webhook-secret header to the messages Database Webhook to close this.");
-  return { ok: true };
+  return true;
 }
 
 // ─── Slack API helpers ─────────────────────────────────
