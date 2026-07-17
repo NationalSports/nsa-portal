@@ -234,3 +234,36 @@ describe('priceCart — name fees are NSA revenue, not fundraising', () => {
     expect(r.subtotal).toBe(29); // 24 + 5 name fee
   });
 });
+
+describe('priceCart — bundle component qty is catalog-authoritative (fulfillment, not money)', () => {
+  const store = { id: 's1', fundraise_enabled: false };
+  const wpBundle = { id: 'wpB', store_id: 's1', kind: 'bundle', retail_price: 60, fundraise_amount: 0, active: true, takes_name: false, takes_number: false, name_upcharge: 0, display_name: 'Bundle', variant_label: null, image_url: null };
+
+  test('a "2×" component carries qty 2 from webstore_bundle_items, not the client', async () => {
+    // The pack still checks out as ONE unit at the parent's $60, but the jersey line
+    // must report qty 2 so batch demand / transfers / rosters don't undercount.
+    const compRow = { bundle_id: 'wpB', product_id: 'c1', sku: 'S1', size_required: true, takes_name: false, takes_number: false, name_upcharge: 0, qty: 2, sort_order: 1 };
+    const sb = fakeSb({
+      webstore_products: { data: [wpBundle], error: null },
+      webstore_storefront_products: { data: [], error: null },
+      webstore_bundle_items: { data: [compRow], error: null },
+    });
+    // Client omits qty entirely — the catalog value is authoritative.
+    const r = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wpB', qty: 1, components: [{ product_id: 'c1', size: 'M' }] }]);
+    expect(r.error).toBeUndefined();
+    expect(r.lines[0].components[0].qty).toBe(2);
+    expect(r.subtotal).toBe(60); // money unchanged — the $60 is on the parent at qty 1
+    expect(r.fundraise).toBe(0);
+  });
+
+  test('a missing/invalid catalog qty defaults to 1', async () => {
+    const compRow = { bundle_id: 'wpB', product_id: 'c1', sku: 'S1', size_required: true, takes_name: false, takes_number: false, name_upcharge: 0, sort_order: 1 };
+    const sb = fakeSb({
+      webstore_products: { data: [wpBundle], error: null },
+      webstore_storefront_products: { data: [], error: null },
+      webstore_bundle_items: { data: [compRow], error: null },
+    });
+    const r = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wpB', qty: 1, components: [{ product_id: 'c1', size: 'M' }] }]);
+    expect(r.lines[0].components[0].qty).toBe(1);
+  });
+});

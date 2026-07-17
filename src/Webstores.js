@@ -2680,9 +2680,22 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const oldSub = Number(order.subtotal) || 0;
     const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * subtotal : (Number(order.processing_fee) || 0));
     const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * subtotal : (Number(order.tax) || 0));
-    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - (Number(order.discount_amt) || 0)));
+    // The coupon discount is a percentage of the merchandise pot (subtotal + fundraise,
+    // per webstore-checkout couponDiscount), so it must scale with that pot when items are
+    // edited. Subtracting the ORIGINAL absolute dollars over-discounted a shrunken order —
+    // a 50%-off order edited from 2 items to 1 collapsed the goods total toward $0 while
+    // the card charge was unchanged, corrupting `total` and the refund cap that reads it.
+    // Re-derive from THIS order's own stored ratio, same approach as processing/tax above,
+    // and persist the scaled discount so the accounting ledger (sum of discount_amt)
+    // reconciles. (A coupon that also covered shipping carries a small shipping-discount
+    // component that doesn't scale with items; we don't reload the coupon here, so that
+    // residual is approximated — immaterial next to the original full-dollar bug.)
+    // NOTE: OrderManageModal's New-total preview + refund auto-suggest use the same scale.
+    const oldPot = oldSub + (Number(order.fundraise_amt) || 0);
+    const discount = round2(oldPot > 0 ? (Number(order.discount_amt) || 0) / oldPot * (subtotal + fundraise) : (Number(order.discount_amt) || 0));
+    const preTax = round2(Math.max(0, subtotal + fundraise + (Number(order.shipping_fee) || 0) + processing - discount));
     const total = round2(preTax + tax);
-    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total }).eq('id', order.id);
+    const { error } = await supabase.from('webstore_orders').update({ subtotal, fundraise_amt: fundraise, processing_fee: processing, tax, total, discount_amt: discount }).eq('id', order.id);
     if (error) { flash('Save failed: ' + error.message); return { error }; }
     flash('Order updated'); loadDetail(sel); return { ok: true };
   }, [sel, detail, flash, loadDetail]);
@@ -12028,6 +12041,13 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   const upd = (id, k, v) => setRows((r) => r.map((x) => (x.id === id ? { ...x, [k]: v } : x)));
   const remaining = (Number(order.total) || 0) - (Number(order.refunded_amt) || 0);
 
+  // The coupon discount scales with the merchandise pot it was a percentage of, so a
+  // qty/removal edit shrinks it proportionally — matching saveOrderEdits, which persists
+  // the same scaled value. Subtracting the original full dollars over-refunded/over-reduced
+  // a shrunken order. oldPot is the order's stored subtotal + fundraise at checkout.
+  const _oldPot = (Number(order.subtotal) || 0) + (Number(order.fundraise_amt) || 0);
+  const scaledDiscount = (newPot) => _oldPot > 0 ? Math.round((Number(order.discount_amt) || 0) / _oldPot * newPot * 100) / 100 : (Number(order.discount_amt) || 0);
+
   // Auto-suggest refund = value of removed items when user clicks "remove"
   useEffect(() => {
     if (!rows.some((r) => r._removed)) { setRefundAmt(''); return; }
@@ -12035,7 +12055,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
     const bFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
     const sub = bSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
     const fund = bFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
-    const nt = Math.max(0, sub + fund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+    const nt = Math.max(0, sub + fund - scaledDiscount(sub + fund)) + (Number(order.shipping_fee) || 0);
     const delta = Math.max(0, (Number(order.total) || 0) - (Number(order.tax) || 0) - nt);
     setRefundAmt(delta > 0.005 ? delta.toFixed(2) : '');
   }, [rows]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -12050,7 +12070,7 @@ function OrderManageModal({ order, items, availSizes = {}, onSave, onRefund, onC
   const bundleBaseFund = items.filter((i) => i.is_bundle_parent).reduce((a, i) => a + (Number(i.unit_fundraise) || 0) * (Number(i.qty) || 1), 0);
   const newSubtotal = bundleBaseSub + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_price) || 0) * (Number(r.qty) || 1), 0);
   const newFund = bundleBaseFund + rows.filter((r) => !r._removed).reduce((a, r) => a + (Number(r.unit_fundraise) || 0) * (Number(r.qty) || 1), 0);
-  const newTotal = Math.max(0, newSubtotal + newFund - (Number(order.discount_amt) || 0)) + (Number(order.shipping_fee) || 0);
+  const newTotal = Math.max(0, newSubtotal + newFund - scaledDiscount(newSubtotal + newFund)) + (Number(order.shipping_fee) || 0);
 
   const save = async () => { setBusy(true); const r = await onSave(order, rows); setBusy(false); if (r && r.ok) onClose(); };
   const refund = async () => { setBusy(true); const r = await onRefund(order, Number(refundAmt)); setBusy(false); if (r && r.ok) { setRefundAmt(''); onClose(); } };
