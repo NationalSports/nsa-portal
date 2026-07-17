@@ -552,7 +552,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
             <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
               <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
-              <td style={{...td,fontWeight:700,color:'#0369a1'}}>{s.name}</td>
+              <td style={td}>{onOpenWebstore
+                ? <span onClick={e=>{e.stopPropagation();onOpenWebstore(s.id);}} title="Open this store" style={{fontWeight:700,color:'#0369a1',cursor:'pointer',textDecoration:'underline',textDecorationColor:'#bae6fd',textUnderlineOffset:2}}>{s.name}</span>
+                : <span style={{fontWeight:700,color:'#0369a1'}}>{s.name}</span>}</td>
               <td style={td}>{chip(s.status)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.open_at)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.close_at)}</td>

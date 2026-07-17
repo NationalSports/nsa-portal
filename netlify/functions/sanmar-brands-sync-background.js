@@ -180,12 +180,18 @@ exports.handler = async () => {
           const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          const cost   = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
-          const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
+          // Our real per-size cost: the sale/program price when SanMar has one, else the
+          // piece price. Base cost = the LOWEST size's price (the XS–XL tier) — recs[0] is
+          // whatever size SanMar lists first (often an upsized 2XL+ row), which inflated
+          // nsa_cost for every color (e.g. LPC380 stored 4.52 vs the real 3.05 base).
+          const costOf = (r) => num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+          const _perSize = recs.map(costOf).filter((c) => c > 0);
+          const cost   = _perSize.length ? Math.min(..._perSize) : 0;
+          const retail = num(r0.msrp || r0.mapPrice) || num(r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
           // Per-size cost (2XL/3XL+ often run higher). Capture only sizes that differ from
           // the base; nsa_cost stays the base, size_costs is null when uniform.
           const _scMap = {};
-          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = num(r.piecePrice || r.customerPrice || r.casePrice); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
+          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
