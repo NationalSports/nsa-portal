@@ -482,7 +482,13 @@ function CoachStoreCard({ store: s, d }) {
   // ── KPIs ──
   const playersN = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
   const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
-  const fundraising = active.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  // Collected keys off payment_mode (NOT status === 'paid') so batching/shipping
+  // never drops it from "collected"; refunded orders owe nothing, so they're
+  // excluded from both collected and pending. Same rule as Webstores.js
+  // fundPaid/fundPending — keep in sync.
+  const fundLive = active.filter((o) => o.status !== 'refunded');
+  const fundraising = fundLive.filter((o) => o.payment_mode === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const fundPending = fundLive.filter((o) => o.payment_mode !== 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const sales = active.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const paidCount = active.filter((o) => o.payment_mode === 'paid').length;
   const fundGoal = Number(s.fundraise_goal) || 0;
@@ -552,6 +558,7 @@ function CoachStoreCard({ store: s, d }) {
           <Kpi label="Items" value={units} />
           <Kpi label="Sales" value={_cpMoney0(sales)} />
           <Kpi label="Fundraising" value={_cpMoney0(fundraising)} green />
+          {fundPending > 0.005 && <Kpi label="Fundraise pending" value={_cpMoney0(fundPending)} />}
           <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
         </div>
 
