@@ -654,6 +654,16 @@ function isMissingTable(err) {
 }
 
 // ── Coach launch email + printable flyer ─────────────────────────────
+// One card per STYLE, matching the storefront grid exactly (Storefront.js's
+// variantKey/groupProducts): color variants share `variant_group_id`, and the FIRST
+// row in sort_order is the representative whose photo/price leads the card. `items`
+// is already sort_order-ordered (loadFlyerItems queries `.order('sort_order')`), so
+// keeping the first occurrence per key reproduces that same lead selection.
+const _groupFlyerItems = (items) => {
+  const seen = new Set(); const out = [];
+  for (const it of (items || [])) { const k = it.variant_group_id || it.id; if (seen.has(k)) continue; seen.add(k); out.push(it); }
+  return out;
+};
 const _esc = (s) => String(s || '').replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[c]));
 // Families get the BRANDED marketing URL (nationalsportsapparel.com/shop/<slug>), which the
 // marketing site 200-proxies to this storefront — never the raw portal origin staff happen
@@ -771,7 +781,7 @@ function flyerHtml(store, items = []) {
   const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
     ? pkg._componentImages.slice(0, 4)
     : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items || []).filter((i) => i.active === false && i.image_front_url).map((i) => i.image_front_url).slice(0, 4)));
-  const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
+  const visItems = _groupFlyerItems((items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle'));
   // Image fills the whole card; the price floats as a pill badge (team accent color)
   // over the bottom-left corner so the product photo gets the maximum area.
   // A DECORATED garment renders RAW + object-fit:contain in a 4:5 box — exactly the
@@ -944,7 +954,7 @@ async function generateFlyerPdfBase64(store, items = []) {
   const pkgImgs = (pkg && pkg._componentImages && pkg._componentImages.length)
     ? pkg._componentImages.slice(0, 4)
     : ((pkg && pkg.image_front_url) ? [pkg.image_front_url] : ((items||[]).filter((i)=>i.active===false && i.image_front_url).map((i)=>i.image_front_url).slice(0, 4)));
-  const visItems = (items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle').slice(0,8);
+  const visItems = _groupFlyerItems((items||[]).filter((i)=>!i.is_bundle_parent && i.active!==false && i.kind!=='bundle')).slice(0,8);
   // Pre-load product images (best-effort), including the package images. Supplier CDNs
   // (cdnm.sanmar.com etc.) send no CORS headers, so a direct browser fetch() throws and
   // the flyer rendered empty gray cards — go through image-proxy first (same pattern as
@@ -1098,7 +1108,7 @@ async function loadFlyerItems(store) {
   // NOTE: webstore_products has NO is_bundle_parent column — selecting it 400s the whole query
   // (which silently emptied the flyer). Bundles are detected by kind==='bundle' below.
   const { data: cat } = await supabase.from('webstore_products')
-    .select('id,display_name,retail_price,image_url,product_id,kind,active,decorations')
+    .select('id,display_name,retail_price,image_url,product_id,kind,active,decorations,variant_group_id')
     .eq('store_id', store.id).order('sort_order');
   const rows = cat || [];
   const pids = [...new Set(rows.map((r) => r.product_id).filter(Boolean))];
