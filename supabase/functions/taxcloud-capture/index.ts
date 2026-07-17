@@ -7,6 +7,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireStaffOrService } from "../_shared/auth.ts";
 
 const TAXCLOUD_API_ID = Deno.env.get("TAXCLOUD_API_LOGIN_ID") || "";
 const TAXCLOUD_API_KEY = Deno.env.get("TAXCLOUD_API_KEY") || "";
@@ -78,6 +79,14 @@ interface CaptureRequest {
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS });
+  }
+
+  // Authorize before doing anything: this endpoint files real tax with TaxCloud
+  // (AuthorizedWithCapture) and previously trusted any caller's customer_id /
+  // invoice_id. Only staff or a trusted server (service role) may file.
+  const auth = await requireStaffOrService(req);
+  if (!auth.ok) {
+    return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
   }
 
   try {

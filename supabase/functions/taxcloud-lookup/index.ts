@@ -6,6 +6,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireStaffOrService } from "../_shared/auth.ts";
 
 const TAXCLOUD_API_ID = Deno.env.get("TAXCLOUD_API_LOGIN_ID") || "";
 const TAXCLOUD_API_KEY = Deno.env.get("TAXCLOUD_API_KEY") || "";
@@ -62,6 +63,15 @@ const CORS = {
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: CORS });
+  }
+
+  // Authorize first: this spends the metered TaxCloud budget. Callers are staff
+  // (customer form), the refresh cron, and webstore-checkout server-side — all
+  // send either a staff JWT or the service-role key. Previously any anon-key
+  // holder could drain the monthly cap.
+  const auth = await requireStaffOrService(req);
+  if (!auth.ok) {
+    return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
   }
 
   try {
