@@ -130,6 +130,7 @@ describe('priceCart', () => {
     expect(r.error).toBeUndefined();
     expect(r.subtotal).toBe(40);
     expect(r.fundraise).toBe(0);
+    expect(r.feeBase).toBe(40);
     expect(r.lines).toHaveLength(1);
     expect(r.lines[0].qty).toBe(2);
     expect(r.lines[0].unit_price).toBe(20);
@@ -163,5 +164,73 @@ describe('priceCart', () => {
     const sbFit = sb({ webstore_products: { data: [{ ...wpTee, variant_label: "Women's" }], error: null } });
     const r = await checkout.priceCart(sbFit, store, [{ webstore_product_id: 'wp1', size: 'M', qty: 1 }]);
     expect(r.lines[0].variant_label).toBe("Women's");
+  });
+});
+
+describe('priceCart — name fees are NSA revenue, not fundraising', () => {
+  const store = { id: 's1', fundraise_enabled: false };
+  const fStore = { id: 's1', fundraise_enabled: true, fundraise_pct: 10 };
+  const wpNamed = { id: 'wp1', store_id: 's1', kind: 'single', retail_price: 20, active: true, takes_name: true, takes_number: false, name_upcharge: 5, display_name: 'Tee', variant_label: null, image_url: null };
+  const sb = (extra = {}) => fakeSb({
+    webstore_products: { data: [wpNamed], error: null },
+    webstore_storefront_products: { data: [{ webstore_product_id: 'wp1', size_upcharges: { '2XL': 4 } }], error: null },
+    webstore_bundle_items: { data: [], error: null },
+    ...extra,
+  });
+
+  test('name fee rides on subtotal/unit_price when a name is entered', async () => {
+    const r = await checkout.priceCart(sb(), fStore, [{ webstore_product_id: 'wp1', size: 'M', qty: 2, player_name: 'Bo' }]);
+    expect(r.error).toBeUndefined();
+    expect(r.subtotal).toBe(50); // (20 + 5) * 2
+    expect(r.fundraise).toBe(4); // 2 * 2, name fee excluded
+    expect(r.feeBase).toBe(40); // retail + size only, no name fee
+    expect(r.lines[0].name_extra).toBe(5);
+    expect(r.lines[0].unit_price).toBe(20);
+  });
+
+  test('no player_name entered — no name fee anywhere', async () => {
+    const r = await checkout.priceCart(sb(), fStore, [{ webstore_product_id: 'wp1', size: 'M', qty: 2 }]);
+    expect(r.subtotal).toBe(40);
+    expect(r.fundraise).toBe(4);
+    expect(r.lines[0].name_extra).toBe(0);
+  });
+
+  test('regression guard: fundraise excludes the name fee', async () => {
+    // Old code did `fundraise += fundAmt + nameExtra`, which folded the NSA
+    // name-personalization fee into the club payout — inflating fundraise_cost,
+    // the club-SO conversion, and the store close-out by the name fee. The
+    // fundraise total here must be pure store/item fundraising with no name fee.
+    const r = await checkout.priceCart(sb(), fStore, [{ webstore_product_id: 'wp1', size: 'M', qty: 2, player_name: 'Bo' }]);
+    const fundraiseWithOldBug = 4 + r.lines[0].name_extra * 2; // what the buggy code would have produced
+    expect(r.fundraise).toBe(4);
+    expect(r.fundraise).not.toBe(fundraiseWithOldBug);
+  });
+
+  test('invariant: subtotal + fundraise still equals the full merchandise total', async () => {
+    const r = await checkout.priceCart(sb(), fStore, [{ webstore_product_id: 'wp1', size: 'M', qty: 2, player_name: 'Bo' }]);
+    expect(checkout.r2(r.subtotal + r.fundraise)).toBe(checkout.r2((20 + 5 + 2) * 2));
+  });
+
+  test('bundle: per-item fundraise_amount override plus a named component', async () => {
+    const wpBundle = { id: 'wpB', store_id: 's1', kind: 'bundle', retail_price: 60, fundraise_amount: 8, active: true, takes_name: false, takes_number: false, name_upcharge: 0, display_name: 'Bundle', variant_label: null, image_url: null };
+    const compRow = { bundle_id: 'wpB', product_id: 'c1', sku: 'S1', size_required: true, takes_name: true, takes_number: false, name_upcharge: 6, sort_order: 1 };
+    const sbBundle = fakeSb({
+      webstore_products: { data: [wpBundle], error: null },
+      webstore_storefront_products: { data: [], error: null },
+      webstore_bundle_items: { data: [compRow], error: null },
+    });
+    const r = await checkout.priceCart(sbBundle, store, [{ webstore_product_id: 'wpB', qty: 5, components: [{ product_id: 'c1', size: 'M', player_name: 'Bo' }] }]);
+    expect(r.error).toBeUndefined();
+    expect(r.subtotal).toBe(66); // 60 retail + 6 name fee
+    expect(r.fundraise).toBe(8); // per-item override, name fee excluded
+    expect(r.feeBase).toBe(60);
+    expect(r.lines[0].name_extra).toBe(6);
+    expect(r.lines[0].qty).toBe(1); // bundle qty is always forced to 1
+  });
+
+  test('size upcharge stays in feeBase alongside a name fee', async () => {
+    const r = await checkout.priceCart(sb(), store, [{ webstore_product_id: 'wp1', size: '2XL', qty: 1, player_name: 'Bo' }]);
+    expect(r.feeBase).toBe(24); // 20 retail + 4 size upcharge, no name fee
+    expect(r.subtotal).toBe(29); // 24 + 5 name fee
   });
 });

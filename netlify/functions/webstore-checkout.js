@@ -50,7 +50,18 @@ function getSb() {
 
 // ── Server-side cart pricing ─────────────────────────────────────────
 // Client lines carry only identity + personalization; every dollar figure is
-// looked up fresh. Returns { lines, subtotal, fundraise } or { error }.
+// looked up fresh. Returns { lines, subtotal, fundraise, feeBase } or { error }.
+//
+// Money split (fundraising-accounting fix): a name-personalization upcharge is
+// NSA revenue (it pays for the decoration), NOT club fundraising — so it lives
+// in `subtotal` (and the item's unit_price), never in `fundraise` (or the
+// item's unit_fundraise). Every payout surface (analytics fundPaid, batch
+// fundraise_cost, club-SO conversion, store close-out, rep digest) sums
+// fundraise_amt / unit_fundraise, so folding name fees in there paid the club
+// for work NSA performed. `feeBase` (retail + size upcharge only) is what the
+// processing fee and sales tax are computed on — the same base the storefront
+// client's cartProcBase uses (src/storefront/Storefront.js), so the buyer's
+// charge is unchanged by this split: subtotal + fundraise is invariant.
 async function priceCart(sb, store, cart) {
   if (!Array.isArray(cart) || !cart.length) return { error: 'Cart is empty' };
   if (cart.length > 60) return { error: 'Cart too large' };
@@ -77,7 +88,7 @@ async function priceCart(sb, store, cart) {
   }
 
   const lines = [];
-  let subtotal = 0, fundraise = 0;
+  let subtotal = 0, fundraise = 0, feeBase = 0;
   for (const l of cart) {
     const wp = byId[l && l.webstore_product_id];
     if (!wp || wp.active === false) return { error: 'An item in your cart is no longer available — please refresh the store.' };
@@ -103,8 +114,9 @@ async function priceCart(sb, store, cart) {
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
       const lineUnit = r2(unitPrice + fundAmt + nameExtra);
-      subtotal += unitPrice;
-      fundraise += r2(fundAmt + nameExtra);
+      subtotal += r2(unitPrice + nameExtra);
+      fundraise += fundAmt;
+      feeBase += unitPrice;
       lines.push({ kind: 'bundle', wp, qty: 1, unit_price: unitPrice, fundraise: fundAmt, name_extra: r2(nameExtra), line_total: lineUnit, components: outComps, name: wp.display_name, image: wp.image_url });
     } else {
       const qty = Math.min(100, Math.max(1, parseInt(l.qty, 10) || 1));
@@ -115,12 +127,13 @@ async function priceCart(sb, store, cart) {
       const size = (l.size || '').trim() || null;
       const sizeExtra = size ? r2(Number((upMap[wp.id] || {})[size]) || 0) : 0;
       const unit = r2(unitPrice + sizeExtra);
-      subtotal += r2(unit * qty);
-      fundraise += r2((fundAmt + nameExtra) * qty);
+      subtotal += r2((unit + nameExtra) * qty);
+      fundraise += r2(fundAmt * qty);
+      feeBase += r2(unit * qty);
       lines.push({ kind: 'single', wp, qty, size, unit_price: unit, fundraise: fundAmt, name_extra: nameExtra, line_total: r2((unit + fundAmt + nameExtra) * qty), player_name: pname || null, player_number: pnum || null, name: wp.display_name, color: l.color ? String(l.color).slice(0, 60) : null, variant_label: wp.variant_label || null, image: wp.image_url });
     }
   }
-  return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise) };
+  return { lines, subtotal: r2(subtotal), fundraise: r2(fundraise), feeBase: r2(feeBase) };
 }
 
 // Tall sizes fulfill their regular twin (a shopper picks "L"; we ship "LT" if that's the
@@ -435,7 +448,7 @@ async function placeOrder(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const processing = procFee(store, priced.subtotal);
+  const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
 
   // The drift guard validates the PRE-TAX total — the number the shopper saw and
@@ -449,7 +462,7 @@ async function placeOrder(sb, body) {
   // When a coupon fully covers the pre-tax total the order is comped — charge no tax
   // either, so we never create an "unpaid" order carrying tax that is never collected
   // (and never email a buyer a total they weren't charged).
-  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.subtotal, discount, cartTotal, shipping, coupon), { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
+  const taxRes = preTax > 0 ? await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), { zip: buyer.zip, state: buyer.state }) : { tax: 0 };
   const tax = taxRes.tax;
   const total = r2(preTax + tax);
   const totals = { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax, total };
@@ -489,10 +502,12 @@ async function placeOrder(sb, body) {
   for (const l of priced.lines) {
     if (l.kind === 'bundle') {
       const bref = require('crypto').randomUUID();
-      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
+      // Name fee rides on unit_price (NSA revenue); unit_fundraise is club raise only —
+      // batching/conversion sum unit_price + unit_fundraise, so the SO total is unchanged.
+      items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
       l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
-      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: l.unit_price, unit_fundraise: r2(l.fundraise + l.name_extra), player_name: l.player_name || orderPlayer, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
+      items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
   }
 
@@ -676,9 +691,9 @@ async function quoteTotals(sb, body) {
   const cartTotal = r2(priced.subtotal + priced.fundraise);
   const shipping = coupon && coupon.kind === 'free_shipping' ? 0 : shipFee(store);
   const discount = couponDiscount(coupon, cartTotal, shipping);
-  const processing = procFee(store, priced.subtotal);
+  const processing = procFee(store, priced.feeBase);
   const preTax = Math.max(0, r2(cartTotal + shipping + processing - discount));
-  const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.subtotal, discount, cartTotal, shipping, coupon), billing);
+  const taxRes = await calcTax(store, ship || {}, taxableBaseAfterDiscount(priced.feeBase, discount, cartTotal, shipping, coupon), billing);
   const total = r2(preTax + taxRes.tax);
   return { statusCode: 200, headers: HEADERS, body: JSON.stringify({ totals: { subtotal: priced.subtotal, fundraise: priced.fundraise, shipping, processing, discount, tax: taxRes.tax, tax_state: taxRes.state, total } }) };
 }
