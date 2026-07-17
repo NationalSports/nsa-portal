@@ -3518,7 +3518,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
             </div>
             <div style={{flex:1,minWidth:235}}><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center',flexWrap:'nowrap',whiteSpace:'nowrap'}}>
-              <Bg options={[{value:'pct',label:'% Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
+              <span style={{display:'inline-flex',border:'1px solid #D1D5DE',borderRadius:6,overflow:'hidden',flexShrink:0}}>
+                {[{v:'pct',l:'% Total'},{v:'flat',l:'Flat $'}].map((s,si)=>{const on=(o.shipping_type||'pct')===s.v;return<button key={s.v} type="button" onClick={()=>sv('shipping_type',s.v)} style={{padding:'7px 11px',fontSize:12,fontWeight:on?700:600,border:'none',borderLeft:si?'1px solid #EEF1F6':'none',cursor:'pointer',whiteSpace:'nowrap',background:on?'#192853':'#fff',color:on?'#fff':'#5A6075'}}>{s.l}</button>})}
+              </span>
               {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #D1D5DE',borderRadius:6,padding:'4px 8px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:36,border:'none',outline:'none',fontSize:14,fontWeight:700,textAlign:'center',background:'transparent',color:'#192853'}}/><span style={{fontWeight:700,color:'#5A6075'}}>%</span></span>
               :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
               <span className="oe-num" style={{fontSize:11,color:'#9aa0ad',whiteSpace:'nowrap'}}>= ${totals.ship.toFixed(2)} · Tax ${totals.tax.toFixed(2)}</span>
