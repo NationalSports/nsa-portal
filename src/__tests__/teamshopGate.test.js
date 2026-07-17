@@ -11,7 +11,10 @@ import handler, {
   isGatedHost, isExcludedPath, safeEqual, readCookie, gateHtml,
 } from '../../netlify/edge-functions/teamshop-gate';
 
-const KEY = 'NSA123abc';
+// A throwaway fixture ONLY — must never be the real TEAMSHOP_GATE_KEY value. The real key
+// lives solely in Netlify env; putting it here would leak it into the repo and (rightly)
+// fail Netlify's build-time secret scan.
+const KEY = 'test-gate-key-fixture';
 
 function setKey(v) {
   global.Netlify = { env: { get: (k) => (k === 'TEAMSHOP_GATE_KEY' ? v : '') } };
