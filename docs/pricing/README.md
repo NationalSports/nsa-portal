@@ -15,6 +15,10 @@ embroidery pricing at **1.6× the portal's decoration cost**.
   **1.5×** (`SP.mk`), so these numbers are intentionally a bit higher than portal quotes.
 - **Under-12 screen print** is a flat per-order charge (`SP` bracket 0), shown at 1.6× its
   implied cost `(flat / SP.mk) × 1.6`, rounded to the dollar — not a per-piece rate.
+- **Small embroidery** is a separate, owner-set **flat rate** (not the 1.6×-cost matrix and
+  exempt from the $8 minimum): **$5.00 ea at 12+ pieces**, **$6.00 ea under 12** (cost
+  $3 / $4). Its quantity break is at 12, so it's shown as its own callout rather than in the
+  stitch × qty matrix. Edit `EM_SMALL` in the generator to change it.
 
 ## Source of truth
 

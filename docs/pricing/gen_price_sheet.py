@@ -35,6 +35,17 @@ OUT_PDF = os.path.join(HERE, "NSA_Price_Sheet_1.6x.pdf")
 MARKUP = 1.6          # the one knob: this sheet is MARKUP x cost
 OPEN = 99999          # a bracket bound >= OPEN means "and up" (open-ended)
 
+# Flat-priced "Small" embroidery category (owner-set; NOT the 1.6x-cost matrix).
+# Quantity break is at 12 pieces. Cost is recorded for margin reference only — the
+# customer sheet shows the sell price. bands = (heading, sell, cost).
+EM_SMALL = {
+    "label": "Small embroidery",
+    "bands": [
+        ("12 + pieces", 5.00, 3.00),
+        ("Under 12 pieces", 6.00, 4.00),
+    ],
+}
+
 # ── Read SP / EM tables from decoPricing.js (drift-free) ──
 def _parse_literal(src, name):
     m = re.search(r'const\s+' + name + r'\s*=\s*(\{.*?\})\s*;', src)
@@ -165,6 +176,12 @@ em_body = "".join(em_body_parts)
 
 flat_chips = "".join(f'<span class="chip">{ci + 1} color {money(val)}</span>' for ci, val in sp_flat)
 
+small_chips = "".join(f'<span class="chip">{head} &mdash; {money(sell)} ea</span>'
+                      for head, sell, cost in EM_SMALL["bands"])
+em_small_box = (f'<div class="flatbox"><b>{EM_SMALL["label"]}:</b>'
+                f'<span>flat rate, per piece</span>{small_chips}'
+                f'<span style="color:{MUT}">not priced by stitch count</span></div>')
+
 html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
 @page {{ size: Letter portrait; margin: 0.42in 0.5in; }}
@@ -242,6 +259,7 @@ td.fl {{ color:{RED}; font-weight:600; }}
     </thead>
     <tbody>{em_body}</tbody>
   </table>
+  {em_small_box}
 </div>
 
 <div class="notes">
@@ -250,7 +268,7 @@ td.fl {{ color:{RED}; font-weight:600; }}
       <h3>How pricing works</h3>
       <ul>
         <li>Screen print is priced <b>per color, per location, per piece</b> — a 3-color left chest is 3 colors.</li>
-        <li>Embroidery is priced <b>per logo / location, per piece</b> by stitch count; <b>{money(EM_FL)} minimum</b> per piece.</li>
+        <li>Embroidery is priced <b>per logo / location, per piece</b> by stitch count ({money(EM_FL)} minimum). <b>Small embroidery</b> is a flat rate — see below the table.</li>
         <li>Add <b>15%</b> to screen print for an underbase / white base on dark garments.</li>
         <li>Additional locations price at the same matrix for their own color / stitch count.</li>
       </ul>
@@ -314,6 +332,8 @@ def main():
     print("\n--- EMBROIDERY (per piece, %gx cost, %s floor) ---" % (MARKUP, money(EM_FL)))
     for label, cells in em_rows:
         print(f"{label:<16} " + "".join(f"{money(v):>9}" for v in cells))
+    print("Small embroidery (flat): " + "  ".join(
+        f"{h} sell {money(s)} / cost {money(c)}" for h, s, c in EM_SMALL["bands"]))
     return 0
 
 if __name__ == "__main__":
