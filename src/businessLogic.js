@@ -33,6 +33,10 @@ const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 
 const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[4.8, 5.1, 4.8, 4.5], [5.4, 5.1, 4.8, 4.8], [6, 5.7, 5.4, 5.4], [7.2, 7.5, 7.2, 6]], mk: 1.6, fl: 8 };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
 const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front Chest (12"x4")', cost: 4.5, sell: 7.5 }];
+// Tackle twill (mirror of src/lib/decoPricing.js). TWA = chest/logo menu, TWN = jersey numbers
+// by height × color. Flat per-application; sell defaults to 2× cost. Guarded by pricingDrift test.
+const TWA = [{ label: 'Left Chest 1 Color', cost: 6, sell: 12 }, { label: 'Full Chest 1 Color', cost: 11, sell: 22 }, { label: 'Full Chest 1 Color — Open Jerseys', cost: 12.5, sell: 25 }, { label: 'Full Chest 2 Color', cost: 13.5, sell: 27 }, { label: 'Full Chest 2 Color — Open Jerseys', cost: 16.5, sell: 33 }];
+const TWN = [{ size: '1-4"', cost1: 1.5, sell1: 3, cost2: 2.5, sell2: 5 }, { size: '6"', cost1: 1.75, sell1: 3.5, cost2: 2.75, sell2: 5.5 }, { size: '8-10"', cost1: 3, sell1: 6, cost2: 4, sell2: 8 }];
 
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q, c, s = true) { const bi = SP.bk.findIndex(b => q >= b.min && q <= b.max); if (bi < 0 || c < 1 || c > 5) return 0; const v = SP.pr[bi]?.[c - 1]; if (v == null) return 0; if (bi === 0) return s ? v : rQ(v / SP.mk); return s ? rT(v * SP.mk) : v }
@@ -42,6 +46,9 @@ function spFlatShare(q, c, u = 1) { const b0 = SP.bk[0]; if (!(q >= b0.min && q 
 // EM.pr stores cost; sell = rT(cost × EM.mk).
 function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
 function npP(q, tw = false, s = true) { const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
+// Tackle twill (mirror of src/lib/decoPricing.js). twaP: chest/logo by TWA index. twnP: number by TWN size × color.
+function twaP(idx, s = true) { const t = TWA[idx || 0] || TWA[0]; if (!t) return 0; return s ? safeNum(t.sell) : safeNum(t.cost) }
+function twnP(size, tw = false, s = true) { const r = TWN.find(x => x.size === size) || TWN[0]; if (!r) return 0; return s ? safeNum(tw ? r.sell2 : r.sell1) : safeNum(tw ? r.cost2 : r.cost1) }
 
 function dP(d, q, artFiles, cq) {
   const pq = cq || q;
@@ -64,12 +71,16 @@ function dP(d, q, artFiles, cq) {
   if (d.kind === 'numbers' || d.type === 'number_press') {
     // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
     if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || safeNum(d.num_qty) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
+    // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
+    if (d.num_method === 'tackle_twill') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq > 0 ? nq : (safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
     const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : (safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
   if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
   if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
+  // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
+  if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
   if (d.kind === 'outside_deco') return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each) };
   return { sell: 0, cost: 0 }
 }
@@ -1034,7 +1045,7 @@ module.exports = {
   commissionRepId,
   isCommissionRep,
   // Pricing
-  rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
+  rQ, rT, spP, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
   poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders

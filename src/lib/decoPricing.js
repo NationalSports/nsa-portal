@@ -47,9 +47,26 @@ const SP={_v:3,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47
 const EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 const NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};
 const DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+// ── Tackle twill ── (sewn-on fabric letters/numbers/logos). Two flat menus, priced per
+// application per garment (NOT quantity-tiered): TWA = chest/logo placements, TWN = jersey
+// numbers by height × color count. Both store cost AND sell explicitly (same shape as DTF/NP,
+// editable in Settings); sell defaults to 2× cost. TWN rows carry 1-color (cost1/sell1) and
+// 2-color (cost2/sell2) prices; the deco's num_size string keys the row and two_color picks the pair.
+const TWA=[
+  {label:'Left Chest 1 Color',cost:6,sell:12},
+  {label:'Full Chest 1 Color',cost:11,sell:22},
+  {label:'Full Chest 1 Color — Open Jerseys',cost:12.5,sell:25},
+  {label:'Full Chest 2 Color',cost:13.5,sell:27},
+  {label:'Full Chest 2 Color — Open Jerseys',cost:16.5,sell:33}
+];
+const TWN=[
+  {size:'1-4"',cost1:1.5,sell1:3,cost2:2.5,sell2:5},
+  {size:'6"',cost1:1.75,sell1:3.5,cost2:2.75,sell2:5.5},
+  {size:'8-10"',cost1:3,sell1:6,cost2:4,sell2:8}
+];
 
 // Default table set for callers that don't layer overrides (i.e. server code).
-const DEFAULTS={SP,EM,NP,DTF};
+const DEFAULTS={SP,EM,NP,DTF,TWA,TWN};
 
 // ── Pricing calculators (pure — tables passed explicitly as T) ──
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
@@ -63,6 +80,13 @@ function spFlatShare(T,q,c,u=1){const SP=T.SP;const b0=SP.bk[0];if(!(q>=b0.min&&
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 function emP(T,st,q,s=true){const EM=T.EM;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
 function npP(T,q,tw=false,s=true){const NP=T.NP;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+// Tackle-twill chest/logo: flat per-application price from the TWA menu by index (stored on the
+// deco's dtf_size field — reused as the twill menu index; kind:'twill' disambiguates, so no new
+// column). Returns sell (s=true) or cost. Falls back to the first row if the index is out of range.
+function twaP(T,idx,s=true){const TWA=T.TWA||[];const t=TWA[idx||0]||TWA[0];if(!t)return 0;return s?safeNum(t.sell):safeNum(t.cost)}
+// Tackle-twill jersey number: flat per-application price from the TWN menu by size string
+// (the deco's num_size) and color count (two_color). Returns sell or cost; first row on no match.
+function twnP(T,size,tw=false,s=true){const TWN=T.TWN||[];const r=TWN.find(x=>x.size===size)||TWN[0];if(!r)return 0;return s?safeNum(tw?r.sell2:r.sell1):safeNum(tw?r.cost2:r.cost1)}
 // Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
 // null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
 const decoSplitQty=(d)=>(d&&d.split_group&&d.split_sizes)?Object.values(d.split_sizes).reduce((a,v)=>a+safeNum(v),0):null;
@@ -105,7 +129,11 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(T,d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
+  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
+    // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
+    // qty-tiered npP table. _nq (application count) still doubles for front+back and reversible.
+    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
+    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish check, matching the screen_print/embroidery
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
   // (club conversion writes sell_override=0: names revenue is already inside unit_sell).
@@ -113,7 +141,9 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // sell_override honors an explicit 0 (nullish, not falsy-||) — synced with the App.js /
   // businessLogic.js / pricing.js copies so a deliberate $0 override isn't overwritten.
+  // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
+  if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(T,d.dtf_size,true),cost:twaP(T,d.dtf_size,false)};
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
-module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, DEFAULTS, spP, spFlatShare, emP, npP, decoSplitQty, dP };
+module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, emP, npP, twaP, twnP, decoSplitQty, dP };

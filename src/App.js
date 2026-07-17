@@ -949,6 +949,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     const itemArtDecos=jobItemDecosOfKind(gi,it,'art');
     const itemNumDecos=jobItemDecosOfKind(gi,it,'numbers');
     const itemNameDecos=jobItemDecosOfKind(gi,it,'names');
+    const itemTwillDecos=jobItemDecosOfKind(gi,it,'twill');
     const rowTotal=Object.values(gi.sizes).reduce((a,v)=>a+v,0);
     // Match by item_idx, not sku — two garment lines can share a SKU (e.g. same jersey in two
     // colors) with numbers on only one of them; a sku match leaks the roster onto both.
@@ -961,7 +962,7 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     ordRow.cells.push({value:'<strong>'+rowTotal+'</strong>'});
     sHtml+=_tHtml(gi.sku+' — '+gi.name+(gi.color?' ('+gi.color+')':'')+' · '+rowTotal+' units',hdrs,hdrs.map((_,i)=>i===0?'left':'center'),[ordRow]);
     // Decoration spec
-    if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0){
+    if(itemArtDecos.length>0||itemNumDecos.length>0||itemNameDecos.length>0||itemTwillDecos.length>0){
       const specRows=[];
       itemArtDecos.forEach(d=>{
         const artF=safeArt(so).find(f=>f.id===d.art_file_id);
@@ -990,6 +991,10 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       });
       itemNameDecos.forEach(nd=>{
         specRows.push({cells:[nd.position||'—','Names'+(nd.front_and_back?' (Front + Back)':''),(nd.name_method||'heat_press').replace(/_/g,' '),'—',_nnColors(nd)]});
+      });
+      itemTwillDecos.forEach(d=>{
+        const tw=TWA[d.dtf_size||0]||TWA[0];
+        specRows.push({cells:[d.position||'—',(tw?tw.label:'Tackle Twill')+(d.reversible?' (Reversible)':''),'Tackle Twill','—','—']});
       });
       sHtml+=_tHtml('Decoration Spec — '+gi.sku,['Position','Art / Type','Method','Size','Colors'],['left','left','left','left','left'],specRows);
     }
@@ -1462,9 +1467,13 @@ let SP={_v:3,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},
 // fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
 let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
 let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+// Tackle twill (kept in sync with src/lib/decoPricing.js). TWA = chest/logo menu, TWN = jersey
+// numbers by height × color. Flat per-application; sell defaults to 2× cost, editable in Settings.
+let TWA=[{label:'Left Chest 1 Color',cost:6,sell:12},{label:'Full Chest 1 Color',cost:11,sell:22},{label:'Full Chest 1 Color — Open Jerseys',cost:12.5,sell:25},{label:'Full Chest 2 Color',cost:13.5,sell:27},{label:'Full Chest 2 Color — Open Jerseys',cost:16.5,sell:33}];
+let TWN=[{size:'1-4"',cost1:1.5,sell1:3,cost2:2.5,sell2:5},{size:'6"',cost1:1.75,sell1:3.5,cost2:2.75,sell2:5.5},{size:'8-10"',cost1:3,sell1:6,cost2:4,sell2:8}];
 let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
 // Load settings overrides from localStorage. SP/EM honored only when _v matches current schema.
-try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.TWA)TWA=_s.TWA;if(_s.TWN)TWN=_s.TWN;if(_s.CATEGORIES)CATEGORIES=_s.CATEGORIES;if(_s.BINS)BINS=_s.BINS;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
 // Under-12 screen print is an ALL-IN flat charge (mirrors src/pricing.js spFlatShare — keep in sync).
@@ -1472,6 +1481,10 @@ function spFlatShare(q,c,u=1){const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))retur
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
 function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+// Tackle twill (mirror of src/lib/decoPricing.js twaP/twnP). twaP: chest/logo by TWA index (d.dtf_size).
+// twnP: jersey number by TWN size (d.num_size) × color (d.two_color). sell (s=true) or cost.
+function twaP(idx,s=true){const t=TWA[idx||0]||TWA[0];if(!t)return 0;return s?safeNum(t.sell):safeNum(t.cost)}
+function twnP(size,tw=false,s=true){const r=TWN.find(x=>x.size===size)||TWN[0];if(!r)return 0;return s?safeNum(tw?r.sell2:r.sell1):safeNum(tw?r.cost2:r.cost1)}
 function dP(d,q,artFiles,cq){
   const pq=cq||q;
   // Art-based decoration: get type from art file
@@ -1494,10 +1507,15 @@ function dP(d,q,artFiles,cq){
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
   // Numbers
-  if(d.kind==='numbers'||d.type==='number_press'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+  if(d.kind==='numbers'||d.type==='number_press'){
+    // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
+    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
+    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
   if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
+  // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
+  if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};
   // Outside decoration — user-entered cost/sell
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
@@ -28625,7 +28643,7 @@ export default function App(){
   const[plManualSearch,setPlManualSearch]=useState('');
   const savSettings=(key,val)=>{
     try{const s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');s[key]=val;_lsSet('nsa_settings',JSON.stringify(s));
-      if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;
+      if(key==='SP')SP=val;if(key==='EM')EM=val;if(key==='NP')NP=val;if(key==='DTF')DTF=val;if(key==='TWA')TWA=val;if(key==='TWN')TWN=val;
       if(key==='CATEGORIES')CATEGORIES=val;if(key==='BINS')BINS=val;if(key==='POSITIONS')POSITIONS=val;if(key==='CONTACT_ROLES')CONTACT_ROLES=val;
       nf('Settings saved')}catch{nf('Error saving','warn')}};
   function rSettings(){
@@ -28778,6 +28796,33 @@ export default function App(){
             </tr>)}</tbody>
           </table>
           <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{savSettings('DTF',[...DTF,{label:'New Size',cost:0,sell:0}])}}>+ Add Size</button>
+        </div></div>
+
+        {/* Tackle Twill — Logos */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Tackle Twill — Logos</h3></div><div className="card-body">
+          <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Placement / Preset</th><th style={{fontSize:10,textAlign:'center'}}>Cost</th><th style={{fontSize:10,textAlign:'center'}}>Sell</th><th></th></tr></thead>
+            <tbody>{TWA.map((t,i)=><tr key={i}>
+              <td style={{padding:2}}><input className="form-input" style={{width:220,fontSize:11,padding:'2px 6px'}} value={t.label} onChange={e=>{savSettings('TWA',TWA.map((x,j)=>j===i?{...x,label:e.target.value}:x))}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={t.cost} onChange={e=>{savSettings('TWA',TWA.map((x,j)=>j===i?{...x,cost:parseFloat(e.target.value)||0}:x))}}/></td>
+              <td style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:60,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={t.sell} onChange={e=>{savSettings('TWA',TWA.map((x,j)=>j===i?{...x,sell:parseFloat(e.target.value)||0}:x))}}/></td>
+              <td style={{padding:2}}>{TWA.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,color:'#dc2626',padding:'2px 6px'}} title="Remove" onClick={()=>{savSettings('TWA',TWA.filter((_,j)=>j!==i))}}>×</button>}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{savSettings('TWA',[...TWA,{label:'New Twill Placement',cost:0,sell:0}])}}>+ Add Placement</button>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Sewn-on twill chest/logo presets. Price is per garment; reversible jerseys apply twice automatically. Reps pick a preset on the "+ Twill" decoration.</div>
+        </div></div>
+
+        {/* Tackle Twill — Numbers */}
+        <div className="card" style={{marginBottom:16}}><div className="card-header"><h3>Tackle Twill — Numbers</h3></div><div className="card-body">
+          <div style={{overflowX:'auto'}}><table style={{fontSize:12}}>
+            <thead><tr><th style={{fontSize:10}}>Size</th><th style={{fontSize:10,textAlign:'center'}}>1-Color Cost</th><th style={{fontSize:10,textAlign:'center'}}>1-Color Sell</th><th style={{fontSize:10,textAlign:'center'}}>2-Color Cost</th><th style={{fontSize:10,textAlign:'center'}}>2-Color Sell</th></tr></thead>
+            <tbody>{TWN.map((r,i)=><tr key={i}>
+              <td style={{padding:2}}><input className="form-input" style={{width:70,fontSize:11,padding:'2px 6px'}} value={r.size} onChange={e=>{savSettings('TWN',TWN.map((x,j)=>j===i?{...x,size:e.target.value}:x))}}/></td>
+              {['cost1','sell1','cost2','sell2'].map(k=><td key={k} style={{padding:2}}><input className="form-input" type="number" step="0.25" style={{width:70,fontSize:11,textAlign:'center',padding:'2px 4px'}} value={r[k]} onChange={e=>{savSettings('TWN',TWN.map((x,j)=>j===i?{...x,[k]:parseFloat(e.target.value)||0}:x))}}/></td>)}
+            </tr>)}</tbody>
+          </table></div>
+          <div style={{fontSize:10,color:'#64748b',marginTop:8}}>Per-number twill price by height × color count, applied per garment (front/back and reversible multiply automatically). Sizes here are the options shown in the Numbers editor's "Tackle Twill" method.</div>
         </div></div>
       </>}
 
