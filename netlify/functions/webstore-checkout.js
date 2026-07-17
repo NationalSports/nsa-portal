@@ -109,7 +109,14 @@ async function priceCart(sb, store, cart) {
         const pnum = c.takes_number ? String(cc.player_number || '').trim().slice(0, 4) : '';
         if (c.takes_number && !pnum) return undefined;
         if (c.takes_name && pname) nameExtra += r2(c.name_upcharge);
-        return { product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null };
+        // Component quantity is catalog-authoritative (webstore_bundle_items.qty, e.g.
+        // a "2 jerseys" pack), NOT client-supplied — a package still checks out as one
+        // unit at the parent's price, but each component line must carry its real qty so
+        // batch demand, transfers, and the number/name roster don't undercount (they sum
+        // order_item.qty). Money is unaffected: components are stored at $0 and the parent
+        // holds the whole package price at qty 1.
+        const cq = Math.max(1, parseInt(c.qty, 10) || 1);
+        return { product_id: c.product_id, sku: c.sku, size: (cc.size || '').trim() || null, player_name: pname || null, player_number: pnum || null, name: cc.name || null, image: cc.image || null, qty: cq };
       });
       if (outComps.some((c) => c === null)) return { error: 'Package contents changed — please re-add it to your cart.' };
       if (outComps.some((c) => c === undefined)) return { error: 'A package in your cart is missing a size or number — please re-add it.' };
@@ -505,7 +512,7 @@ async function placeOrder(sb, body) {
       // Name fee rides on unit_price (NSA revenue); unit_fundraise is club raise only —
       // batching/conversion sum unit_price + unit_fundraise, so the SO total is unchanged.
       items.push({ product_id: null, sku: null, size: null, qty: 1, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: null, player_number: null, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: true, name: l.name || null, image_url: l.image || null, line_status: 'pending' });
-      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: 1, unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
+      l.components.forEach((c) => items.push({ product_id: c.product_id, sku: c.sku, size: c.size, qty: Math.max(1, parseInt(c.qty, 10) || 1), unit_price: 0, unit_fundraise: 0, player_name: c.player_name || orderPlayer, player_number: c.player_number, bundle_ref: bref, bundle_product_id: l.wp.id, is_bundle_parent: false, name: c.name, image_url: c.image, line_status: 'pending' }));
     } else {
       items.push({ product_id: l.wp.product_id, sku: l.wp.sku, size: l.size, qty: l.qty, unit_price: r2(l.unit_price + l.name_extra), unit_fundraise: r2(l.fundraise), player_name: l.player_name || orderPlayer, player_number: l.player_number, name: l.name || null, color: l.color, variant_label: l.variant_label || null, image_url: l.image || null, line_status: 'pending' });
     }
