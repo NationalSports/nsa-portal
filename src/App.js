@@ -4170,8 +4170,13 @@ export default function App(){
     if(dbLoading||_resumeDone.current)return;
     try{
       const p=new URLSearchParams(window.location.search);
-      // An explicit deep-link (?so=/?est=/...) takes precedence over the saved resume.
-      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')){_resumeDone.current=true;return;}
+      // An explicit deep-link takes precedence over the saved resume. This must list
+      // EVERY nav param an email/notification can arrive with, or the resume reopens the
+      // last-viewed record and hijacks the link: store/tab/order (rep daily-store email →
+      // Webstores handler), st (ops recap "Open My Day"), comm/month (commission report)
+      // are all transient params (read once, then stripped) and never appear on a normal
+      // in-app refresh, so blocking on them is safe and only affects fresh email opens.
+      if(p.get('so')||p.get('est')||p.get('cust')||p.get('inv')||p.get('vend')||p.get('prod')||p.get('po')||p.get('if')||p.get('catreq')||p.get('scan')||p.get('quote')||p.get('store')||p.get('order')||p.get('st')||p.get('comm')||p.get('month')){_resumeDone.current=true;return;}
       const raw=localStorage.getItem('nsa_resume');if(!raw){_resumeDone.current=true;return;}
       const r=JSON.parse(raw);if(!r||!r.id){_resumeDone.current=true;return;}
       // Wait for the relevant collection to populate before resolving (mirrors the deep-link handler).
