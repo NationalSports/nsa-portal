@@ -23654,8 +23654,14 @@ export default function App(){
 
     // A bill is ready to push to the portal when it's selected, not already pushed/parked, and
     // has a target (auto-matched PO or a complete manual decoration target).
+    // ONE definition of pushable, no checkbox curation: a bill either reconciles (Matched
+    // bucket → the push button takes ALL of them) or it doesn't (Needs Review). To hold a
+    // matched bill back, move it to Look at Later — that's the exclusion mechanism, and it
+    // persists across machines. portalStatus gates as before (success = done; error = the
+    // apply/save failed, so it must NOT silently re-enter the pile — it shows as a failed
+    // row and retries only through the same button after the operator sees it).
     const _billIsReadyToPush=b=>{
-      if(!b||!b.selected||b.portalStatus||b.reviewLater)return false;// "look at later" bills sit in limbo
+      if(!b||b.portalStatus||b.reviewLater)return false;
       return _billHasTarget(b.parsed);
     };
 
@@ -23679,7 +23685,8 @@ export default function App(){
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
     const rematchBill=(bill,opts)=>{
-      const updated={...bill,matchedPO:null,matchedPOSource:null};
+      // _core_match recomputes every run — a fixed PO (exact match) must clear the guess flag.
+      const updated={...bill,matchedPO:null,matchedPOSource:null,_core_match:false};
       if(!bill.po_number)return updated;
       const rawLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
       // Hand-typed PO fields arrive with trailing punctuation ("P08689SBFBQ–", en-dash and all) —
@@ -23813,7 +23820,10 @@ export default function App(){
       if(!target||!Array.isArray(target.items))return mappings;
       (bill.items||[]).forEach((bl,bi)=>{
         const hit=_matchLineToItems(bl,target.items);
-        if(!hit){mappings[bi]={skipped:true,reason:'no-match'};return}
+        // No hit → leave the line UNTIED (empty), never auto-"skipped": skipped means "don't
+        // bill this line", and silently defaulting money to that hid real lines (the 5162436D
+        // suffix-variant case). Untied lines read "still to tie" and show suggestions instead.
+        if(!hit)return;
         mappings[bi]={target_idx:hit.idx,allocated_qty:bl.qty,ambiguous:hit.ambiguous};
       });
       return mappings;
@@ -23917,7 +23927,7 @@ export default function App(){
         if(!r||!r.cand)return li;
         const it=r.cand;
         const billCost=safeNum(li.extension||0)||safeNum(li.unit_price||0)*safeNum(li.qty||0);
-        mappings.push({bill_idx:i,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(li.qty||0),unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100});
+        mappings.push({bill_idx:i,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
         return{...li,_vendor_sku:li.sku,sku:it.sku,_ss_match:r.via};
       });
       return{items,_lineMappings:mappings};
@@ -23963,7 +23973,7 @@ export default function App(){
         if(!hit||hit.ambiguous)return null;
         const it=hit.item;
         const billCost=safeNum(u.li.extension||0)||safeNum(u.li.unit_price||0)*safeNum(u.li.qty||0);
-        maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100});
+        maps.push({bill_idx:u.i,target_kind:'so',target_id:it.so_id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:safeNum(u.li.qty||0),unit_cost:it.unit_cost||0,bill_unit:safeNum(u.li.unit_price||0),bill_cost:Math.round(billCost*100)/100});
       }
       return maps;
     };
@@ -24162,7 +24172,19 @@ export default function App(){
               lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
               const trackNums=[...(po.tracking_numbers||[])];
               if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
-              return{...po,billed:newBilled,tracking_numbers:trackNums,
+              // Auto price-sync: the bill is the source of truth for COST as well as quantity.
+              // When every mapped line for this po_line carries one consistent billed unit price
+              // that differs from the line's unit_cost, adopt it (audit entry kept) — order
+              // costing and commission margin then reflect what the vendor actually charged.
+              // Mixed prices across sizes → skip (never guess which price is "the" line cost).
+              let priceSync={};
+              const _pu=[...new Set(lineMaps.map(mp=>Math.round(safeNum(mp.bill_unit)*100)).filter(v=>v>0))];
+              if(_pu.length===1){
+                const nu=_pu[0]/100;
+                if(Math.abs(nu-safeNum(po.unit_cost))>0.02)priceSync={unit_cost:nu,
+                  _cost_corrections:[...(po._cost_corrections||[]),{doc:bill.doc_number||'',date:new Date().toISOString().slice(0,10),from:safeNum(po.unit_cost),to:nu,by:(cu?.name||cu?.email||'')}]};
+              }
+              return{...po,...priceSync,billed:newBilled,tracking_numbers:trackNums,
                 _bill_cost:Math.round((safeNum(po._bill_cost||0)+addedCost)*100)/100,
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
             })};
@@ -24728,6 +24750,11 @@ export default function App(){
     const _validateBillForPush=(p)=>{
       const errs=[];
       if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      // A numeric-core match (bill tag ≠ order tag) is a GUESS about which order this is —
+      // proven capable of picking the wrong school (a typo'd "3132 TUH" bill core-matched
+      // Stockdale's 3132 STOV while the real order was 3131 TUH). It never pushes until a
+      // human confirms the order on the card, or fixes the PO.
+      if(p._core_match&&!p._core_confirmed)errs.push('Matched by PO number only — the bill says '+(p._po_raw||'?')+' but the order is '+(p.po_number||'?')+'. Open the bill and confirm it’s the right order (or fix the PO — a one-digit typo lands on the wrong school).');
       let autoMaps=null;
       if(p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length){
         if(safeNum(p.freight)<=0){
@@ -24887,8 +24914,12 @@ export default function App(){
     const _aiReconcilePass=async(bills)=>{
       if(!supabase)return;
       const targets=(bills||[]).filter(b=>_billNeedsAi(b?.parsed));
-      if(!targets.length)return;
+      // Auto find-PO at pull time (owner opted in): every no-match bill goes hunting
+      // immediately, so by the time the operator reaches it the row already reads
+      // "✨ AI suggests: …" with a one-click accept. Nothing applies without the human.
+      const unmatched=(bills||[]).filter(b=>b?.parsed&&!_billHasTarget(b.parsed)&&(b.parsed.items||[]).length&&!b._aiFoundPO&&!b._aiTried);
       for(const b of targets){try{await _runAiBillMatch(b)}catch(e){/* leave flagged */}}
+      for(const b of unmatched){try{await _runAiBillFindPO(b)}catch(e){/* row keeps its Find-order button */}}
     };
 
     // ── AI "find the PO" — for bills that did NOT auto-match ────────────────────
@@ -24906,7 +24937,10 @@ export default function App(){
       if(!p)return[];
       const all=_buildMatchCandidates();
       if(!all.length)return[];
-      const billSkus=[...new Set((p.items||[]).map(it=>(it.sku||'').toUpperCase()).filter(Boolean))];
+      // Include the enriched mfr style (_ss_style) alongside raw SKUs: S&S lines carry S&S
+      // part numbers that never overlap SO skus, but their styles (9018/1717) do — this is
+      // what lets AI shortlist the RIGHT order for a bill whose PO number was typo'd.
+      const billSkus=[...new Set((p.items||[]).flatMap(it=>[it.sku,it._ss_style].map(s=>String(s||'').toUpperCase()).filter(Boolean)))];
       const vend=(p.vendor||p.supplier||'').toLowerCase().trim();
       const scored=all.map(c=>{
         const cs=new Set((c.items||[]).map(it=>(it.sku||'').toUpperCase()));
@@ -24927,7 +24961,8 @@ export default function App(){
       const p=bill?.parsed;
       if(!p)return{ok:false,error:'No bill'};
       if(!supabase)return{ok:false,error:'Supabase not configured'};
-      if(_billHasTarget(p))return{ok:false,error:'Already matched to a PO'};
+      // A core-match (tag differs) is tentative — AI may hunt for the RIGHT order for it.
+      if(_billHasTarget(p)&&!p._core_match)return{ok:false,error:'Already matched to a PO'};
       const cands=_billCandidateOrders(p);
       if(!cands.length){
         setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:'No open order shares a SKU with this bill'}:b)}));
@@ -25079,6 +25114,22 @@ export default function App(){
         .then(rs=>{const failed=rs.filter(r=>r&&r.ok===false&&!r.offline).length;if(failed)nf(failed+' bill(s) parked on this device only — server save failed; they may reappear on another machine’s pull','error')});
     };
 
+    // Retry the SO save for a bill whose apply ran locally but whose save didn't confirm
+    // (portalStatus 'error' from the save gate). The billed quantities are ALREADY in local
+    // state — re-applying would be wrong — so retry = re-save that SO, then mark applied +
+    // ledger only once the save confirms. Surfaced as ↻ Retry on the red failed rows.
+    const _retryBillSave=async(b)=>{
+      const p=b?.parsed||{};
+      const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;
+      const so=soId&&sos.find(s=>s.id===soId);
+      if(!so){nf('Can’t find the order to re-save — open the bill and re-check its match','error');return}
+      const r=await Promise.resolve(_dbSaveSO(so)).catch(()=>false);
+      if(r===false){nf('Save failed again — check your connection and retry','error');return}
+      setBillImport(x=>({...x,parsed:x.parsed.map(q=>q.id===b.id?{...q,portalStatus:'success',portalMsg:'Applied to SO (save retried)'}:q)}));
+      try{await _recordAppliedBills([{parsed:p}])}catch(e){/* ledger retried internally */}
+      nf('Saved — '+(p.doc_number||'bill')+' is now recorded as applied');
+    };
+
     // Push bills to Portal (apply to SOs). force=true skips the duplicate/over-billing gate.
     // When some selected bills have problems, open the styled review dialog instead of a
     // browser confirm so the user can push the clean ones and park the rest for later.
@@ -25117,10 +25168,12 @@ export default function App(){
       nf(applied+' bill(s) pushed to portal (override)');
     };
 
-    // Push bills to QuickBooks
+    // Push bills to QuickBooks — SAME pile as the Portal button (Matched = matched + clean),
+    // so the two buttons always show the same number. Bills already in QB are skipped.
     const pushBillsToQB=async()=>{
-      const selected=billImport.parsed.filter(b=>b.selected&&!b.reviewLater);
-      if(!selected.length){nf('No bills selected','error');return}
+      const selected=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!b.qbStatus);
+      if(!selected.length){nf('No matched bills to push','error');return}
+      const qbIds=new Set(selected.map(b=>b.id));
       setBillImport(x=>({...x,uploading:true}));
       // Look up QB expense accounts so AccountRef includes the required value (ID)
       let acctMap={};
@@ -25136,7 +25189,7 @@ export default function App(){
       let success=0,failed=0;
       const qbResults={};// Track QB status locally to avoid stale closure issue
       for(let bi=0;bi<billImport.parsed.length;bi++){
-        const b=billImport.parsed[bi];if(!b.selected)continue;
+        const b=billImport.parsed[bi];if(!qbIds.has(b.id))continue;
         const bill=b.parsed;
         // Find vendor
         const vendorName=bill.supplier||'Unknown Vendor';
@@ -26113,7 +26166,7 @@ export default function App(){
         return <div className="nsa-bills" style={{fontFamily:"'Source Sans 3','Segoe UI',system-ui,sans-serif",color:TXT}}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');.nsa-bills h2{font-family:${FD};font-weight:800;text-transform:uppercase;letter-spacing:.4px;color:${NAVY};}`}</style>
         {/* Sub-tabs: the import/review flow vs the built-out Look at Later workspace */}
-        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&r._t.bucket!=='captured').length;return<div style={{display:'flex',gap:10,marginBottom:22,flexWrap:'wrap'}}>
+        {(()=>{const parked=savedBills.filter(b=>b.reviewLater).length;const siOpen=siQueue.filter(r=>r._t&&(r._t.bucket==='grab'||r._t.bucket==='outside')).length;/* exceptions only — matchable docs ride ⚡ Pull bills */return<div style={{display:'flex',gap:10,marginBottom:22,flexWrap:'wrap'}}>
           {[['import','Import & Review'],['sportsinc','Sports Inc'],['later','Look at Later']].map(([id,label])=>{
             const n=id==='later'?parked:id==='sportsinc'?siOpen:0;
             return <button key={id} onClick={()=>setBillView(id)} style={swStyle(billView===id)}><span style={{display:'inline-flex',alignItems:'center',gap:8,transform:'skewX(6deg)'}}>{label}{n?<span style={{fontSize:12,opacity:.7}}>{n}</span>:null}</span></button>;})}
@@ -26279,71 +26332,34 @@ export default function App(){
 
         {/* Review parsed bills */}
         {billImport.step==='review'&&<>
-          {/* Live triage — surfaces issues the moment bills are parsed, with a one-click way to park
-              everything that doesn't match up perfectly under "Look at later". */}
+          {/* ONE header, TWO numbers. "Matched" = matched AND reconciles clean = exactly what
+              BOTH push buttons take (no checkboxes, no second count). "Needs review" = every
+              bill that needs a human. The old pink triage banner, filter chips, parsed-count
+              and checked/unchecked tiles are gone — the two sections below ARE the state. */}
           {(()=>{
-            const triaged=billImport.parsed.map(b=>({b,t:_billTriage(b)})).filter(x=>x.t);
-            const issues=triaged.filter(x=>x.t.issue).map(x=>x.b);
-            const clean=triaged.filter(x=>!x.t.issue).length;
-            const aiRunning=billImport.parsed.filter(b=>b._aiRunning).length;
-            const aiable=issues.filter(b=>!b._aiRunning&&_billNeedsAi(b.parsed));// matched + mismatched → AI can try
-            if(!triaged.length)return null;// all pushed/parked
-            if(!issues.length&&!aiRunning)return <div style={{display:'flex',alignItems:'center',gap:10,padding:'12px 16px',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderLeft:'4px solid '+GREEN,borderRadius:6,fontSize:13,fontWeight:600,color:NAVY}}>✅ All {clean} bill{clean===1?'':'s'} match up cleanly — ready to push.</div>;
-            return <div style={{display:'flex',alignItems:'center',gap:12,flexWrap:'wrap',padding:'13px 18px',marginBottom:14,background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6}}>
-              <span style={{fontSize:18}}>{aiRunning?'✨':'⚠️'}</span>
-              <div style={{flex:1,minWidth:200}}>
-                <div style={{fontSize:13,fontWeight:800,color:'#b45309'}}>{aiRunning>0&&issues.length===0?'AI is reconciling '+aiRunning+' bill'+(aiRunning===1?'':'s')+'…':issues.length+' of '+triaged.length+' bill'+(triaged.length===1?'':'s')+' don’t match up cleanly'}</div>
-                <div style={{fontSize:11,color:'#92400e',marginTop:2}}>{aiRunning>0?'✨ Checking matched bills against their orders — size/SKU label fixes apply automatically.':'No PO match, a duplicate doc #, or billing more than was ordered.'}{clean>0?' '+clean+' match cleanly and can still be pushed.':''}</div>
-              </div>
-              {aiable.length>0&&<button className="btn btn-primary" style={{background:NAVY,borderColor:NAVY,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:0.6}}
-                title="Ask AI to reconcile the bills that matched a PO but whose sizes/SKUs don't line up (vendor label quirks). It only touches matched, non-duplicate bills."
-                onClick={()=>{aiable.forEach(b=>_runAiBillMatch(b));nf('Running AI match on '+aiable.length+' bill'+(aiable.length===1?'':'s')+'…')}}>
-                ✨ AI-match {aiable.length}
-              </button>}
-              {issues.length>0&&<button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:700,textTransform:'uppercase',letterSpacing:0.6}}
-                title="Move every bill that doesn't match perfectly to Look at later, so you can push the clean ones now"
-                onClick={()=>{const n=issues.length;_parkBillsForLater(issues);nf(n+' bill'+(n===1?'':'s')+' moved to Look at Later — find them under the Look at Later tab')}}>
-                🕒 Move {issues.length} to Look at later
-              </button>}
-            </div>;
-          })()}
-          {/* Sticky action bar: stays pinned while scrolling a long pull, with a running $ total
-              of what the push will apply and filter chips to work the list as a queue. */}
-          {(()=>{
-            // ONE vocabulary, ONE set: "Matched" = matched AND reconciles clean (no duplicate /
-            // over-billing / size mismatch) AND checked — exactly what the red button pushes.
-            // The tile, the value, the chip badge and the button all read from it, so no two
-            // numbers on this bar can disagree. Bills needing work are "Review" — matched-but-
-            // flagged bills sit there (wizard / AI-match), never bulk-pushed.
             const ready=billImport.parsed.filter(b=>_billIsReadyToPush(b)&&!_billTriage(b)?.issue);
             const readyTotal=ready.reduce((a,b)=>a+safeNum(b.parsed?.doc_total),0);
-            const qbSel=billImport.parsed.filter(b=>b.selected&&!b.qbStatus&&!b.reviewLater);
-            const counts={all:0,ready:0,attention:0,done:0};
-            billImport.parsed.forEach(b=>{const t=_billTriage(b);counts.all++;if(!t)counts.done++;else if(t.issue)counts.attention++;else counts.ready++});
-            const unchecked=counts.ready-ready.length;// matched+clean but checkbox off — excluded from the push
-            const chips=[['all','All',counts.all,'#475569'],['ready','✓ Matched',counts.ready,'#166534'],['attention','⚠ Review',counts.attention,'#b45309'],['done','Pushed/parked',counts.done,'#64748b']];
+            const review=billImport.parsed.filter(b=>{if(b.portalStatus&&b.portalStatus!=='success')return false;const t=_billTriage(b);return t&&t.issue});
+            const done=billImport.parsed.filter(b=>!_billTriage(b)).length;
+            const failed=billImport.parsed.filter(b=>b.portalStatus&&b.portalStatus!=='success').length;
+            const aiRunning=billImport.parsed.filter(b=>b._aiRunning).length;
             return<div style={{marginBottom:16}}>
               <div style={{display:'flex',alignItems:'stretch',background:NAVY,backgroundImage:HASH,borderRadius:8,overflow:'hidden',flexWrap:'wrap'}}>
-                <div style={{display:'flex',gap:30,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
-                  {statTile(ready.length,'Matched — will push','#6FD59A')}
-                  {unchecked>0&&statTile(unchecked,'Matched, unchecked','#94a3b8')}
-                  {statTile(counts.attention,'To review',RED_LT)}
-                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(readyTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Matched value</div></div>
+                <div style={{display:'flex',gap:34,padding:'18px 26px',alignItems:'center',flexWrap:'wrap'}}>
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:30,color:'#6FD59A',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{ready.length}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.65)',marginTop:4}}>Matched · {nsaMoney(readyTotal)}</div></div>
+                  <div style={{width:1,alignSelf:'stretch',background:'rgba(255,255,255,.15)'}}/>
+                  <div><div style={{fontFamily:FD,fontWeight:800,fontSize:30,color:RED_LT,lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{review.length}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.65)',marginTop:4}}>Needs review{aiRunning?' · ✨ AI working on '+aiRunning:''}</div></div>
+                  {done>0&&<div style={{alignSelf:'center',fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1,textTransform:'uppercase',color:'rgba(255,255,255,.4)'}}>{done} done</div>}
                 </div>
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
-                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',disabled:billImport.uploading||!qbSel.length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+qbSel.length+' to QuickBooks'})}
+                  {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+ready.filter(b=>!b.qbStatus).length+' to QuickBooks'})}
                 </div>
               </div>
-              <div style={{display:'flex',gap:10,marginTop:12,alignItems:'center',flexWrap:'wrap'}}>
-                <button onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null);setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}} style={{background:'none',border:'none',color:TXTL,fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.6,textTransform:'uppercase',cursor:'pointer',padding:0}}>← Upload more</button>
-                <span style={{fontFamily:FD,fontWeight:700,color:NAVY,fontSize:14,textTransform:'uppercase',letterSpacing:.4}}>{billImport.parsed.length} Bill(s) parsed</span>
-                <div style={{marginLeft:'auto',display:'inline-flex',background:LGRAY,borderRadius:6,padding:3,gap:3,flexWrap:'wrap'}}>
-                  {chips.map(([id,label,n,color])=><button key={id} onClick={()=>setBillFilter(id)}
-                    style={{border:'none',padding:'7px 13px',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.4,textTransform:'uppercase',borderRadius:4,cursor:'pointer',transform:'skewX(-4deg)',background:billFilter===id?NAVY:'transparent',color:billFilter===id?'#fff':TXTL}}>
-                    <span style={{display:'inline-block',transform:'skewX(4deg)'}}>{label} ({n})</span></button>)}
-                </div>
-                {billFilter!=='all'&&<span style={{fontSize:11,color:TXTL,alignSelf:'center'}}>showing {billFilter==='ready'?'bills ready to push':billFilter==='attention'?'bills needing attention':'pushed & parked bills'}</span>}
+              {failed>0&&<div style={{marginTop:10,padding:'10px 14px',background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6,fontSize:12,fontWeight:700,color:'#991b1b'}}>
+                ⚠ {failed} bill{failed===1?'':'s'} failed on the last push (the order save didn’t confirm) — marked in red below with a Retry. Check your connection.</div>}
+              <div style={{display:'flex',gap:10,marginTop:10,alignItems:'center'}}>
+                <button onClick={()=>{try{localStorage.removeItem('nsa_bill_review_session')}catch(e){}setReviewSnap(null);setBillFilter('all');setBillImport({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}})}} style={{background:'none',border:'none',color:TXTL,fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.6,textTransform:'uppercase',cursor:'pointer',padding:0}}>← Pull more / upload</button>
               </div>
             </div>;
           })()}
@@ -26357,11 +26373,48 @@ export default function App(){
             const portalPushed=b.portalStatus==='success';
             const stripe=portalPushed?GREEN:b.reviewLater?GOLD:b.qbStatus==='error'?RED:tri&&tri.issue?RED:bucket==='ready'?GREEN:poMatch?NAVY:MGRAY;
             const hdrBg=portalPushed?'#F0F7F2':b.reviewLater?GOLD_BG:b.qbStatus==='error'?REDBG:tri&&tri.issue?REDBG:'#fff';
+            // Collapsed one-line row is the DEFAULT — the list stays scannable at 200+ bills.
+            // Each row carries its one status phrase and its one next action; the full card
+            // (items, wizard, write plan) renders only when the operator opens that bill.
+            const expanded=(billImport.expand||{})[b.id];
+            const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!(x.expand||{})[b.id]}}));
+            if(!expanded){
+              const soId=poMatch?.so_id||poMatch?.so?.id||'';
+              const failedPush=b.portalStatus&&b.portalStatus!=='success';
+              const errsJ=tri?tri.errs.join(' '):'';
+              const isLines=errsJ.indexOf('Use Match manually')>-1;
+              const isOver=errsJ.indexOf(' exceeds ')>-1;
+              const isDup=errsJ.indexOf('duplicate doc')>-1;
+              const short=failedPush?(b.portalMsg||'Push failed — retry')
+                :!tri?(portalPushed?('✓ Applied'+(soId?' to '+soId:'')):(b.reviewLater?'🕒 Set aside':'Done'))
+                :tri.issue?(!tri.matched?(b._aiRunning?'✨ AI is searching your open orders…':(b._aiFoundPO&&!b._aiFoundPO.none)?'✨ AI suggests: '+b._aiFoundPO.label+' — open to accept':'No order matched'+(bill.po_number?' for '+bill.po_number:''))
+                  :isDup?'Duplicate — already applied':isOver?'Over-billed vs the order — open to correct or accept'
+                  :isLines?('Matched '+(soId||'the order')+' — tie the lines to its items')
+                  :(tri.errs[0]||'Needs review'))
+                :('✓ Matched'+(soId?' → '+soId:'')+' — will push');
+              const dot=failedPush?'#dc2626':!tri?(portalPushed?GREEN:GOLD):tri.issue?(isDup?'#94a3b8':'#d97706'):GREEN;
+              const openWizardPre=()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(soId)):null;
+                setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:true},parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:{open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}}}}:p)}));};
+              return<div key={bi} onClick={toggleExpand} style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',marginBottom:6,background:failedPush?'#fef2f2':'#fff',border:'1px solid '+(failedPush?'#fecaca':LGRAY),borderLeft:'4px solid '+dot,borderRadius:6,cursor:'pointer',opacity:!tri&&!portalPushed?0.75:1}}>
+                <div style={{flex:'1 1 230px',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',color:NAVY}}>{bill.vendor||bill.supplier||b.file}</span>
+                  <span style={{fontSize:11.5,color:TXTL,marginLeft:8}}>{[bill.doc_number&&('Inv '+bill.doc_number),bill.po_number].filter(Boolean).join(' · ')}</span>
+                </div>
+                <div style={{flex:'2 1 240px',minWidth:0,fontSize:11.5,fontWeight:700,color:failedPush?'#b91c1c':!tri?'#64748b':tri.issue?'#b45309':'#166534',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={(tri&&tri.errs.length?tri.errs.join('\n'):short)}>{short}</div>
+                <div style={{fontFamily:FD,fontWeight:800,fontSize:16,color:NAVY,fontVariantNumeric:'tabular-nums',flex:'0 0 auto'}}>{nsaMoney(bill.doc_total||bill.merchandise_total)}</div>
+                <div style={{display:'flex',gap:6,flex:'0 0 auto'}} onClick={e=>e.stopPropagation()}>
+                  {failedPush&&<button onClick={()=>_retryBillSave(b)} style={{fontSize:10,padding:'4px 10px',borderRadius:4,cursor:'pointer',fontWeight:800,background:RED,border:'1px solid '+RED,color:'#fff'}}>↻ Retry save</button>}
+                  {tri&&tri.issue&&!tri.matched&&!b._aiRunning&&!b._aiFoundPO&&<button title="Let AI search your open orders for the one this bill belongs to" onClick={()=>_runAiBillFindPO(b)} style={{fontSize:10,padding:'4px 10px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#7c3aed',border:'1px solid #7c3aed',color:'#fff'}}>✨ Find order</button>}
+                  {tri&&tri.issue&&isLines&&<button title="Open this bill with the line-matcher pointed at its order" onClick={openWizardPre} style={{fontSize:10,padding:'4px 10px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#4f46e5',border:'1px solid #4f46e5',color:'#fff'}}>🧵 Tie lines</button>}
+                  {!b.qbStatus&&!portalPushed&&!b.reviewLater&&<button title="Set aside — moves to Look at Later and out of every push" onClick={()=>{_parkBillsForLater([b]);nf('Set aside — find it under Look at Later')}} style={{fontSize:10,padding:'4px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>🕒</button>}
+                  <button onClick={toggleExpand} style={{fontSize:10,padding:'4px 10px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:NAVY}}>Open ▸</button>
+                </div>
+              </div>;
+            }
             return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
               <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:stripe}}/>
               <div style={{padding:'16px 22px 6px 24px',background:hdrBg}}>
                 <div style={{display:'flex',alignItems:'flex-start',gap:12}}>
-                  {!b.qbStatus&&!b.reviewLater&&!portalPushed&&<input type="checkbox" checked={b.selected} onChange={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,selected:!p.selected}:p)}))} style={{width:18,height:18,marginTop:3,flex:'0 0 auto'}}/>}
                   {b.qbStatus==='success'&&<span style={{fontSize:16,color:GREEN,marginTop:2}}>&#10003;</span>}
                   {b.qbStatus==='error'&&<span style={{fontSize:16,color:RED,marginTop:2}}>&#10007;</span>}
                   <div style={{flex:1,minWidth:0}}>
@@ -26403,6 +26456,7 @@ export default function App(){
                   title='Move this bill to the Look at Later tab and out of this list (so it can&apos;t be pushed to QB by accident)'
                   style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>
                   🕒 Look at later</button>}
+                <button onClick={toggleExpand} title="Back to the one-line row" style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:NAVY,marginLeft:'auto'}}>▴ Collapse</button>
                 </div>
               </div>
               <div style={{padding:0}}>
@@ -26431,6 +26485,19 @@ export default function App(){
                     <div style={{fontSize:10,color:'#7c3aed',marginTop:3,opacity:0.8}}>Review and push as usual — AI never pushes on its own.</div>
                   </div>;
                 })()}
+                {/* Core-match gate — the match below is a NUMBER-ONLY guess (bill tag ≠ order tag).
+                    It stays out of the Matched pile until a human confirms or fixes the PO. */}
+                {poMatch&&bill._core_match&&!bill._core_confirmed&&!portalPushed&&<div style={{padding:'9px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                  <span style={{fontSize:14}}>⚠️</span>
+                  <div style={{flex:1,minWidth:220,fontSize:11.5,color:'#92400e'}}><b>Is this the right order?</b> The bill says <b>{bill._po_raw||'?'}</b> but it matched <b>{bill.po_number||'?'}</b> on the number alone. A one-digit typo lands on the wrong school — check the customer on the match line below.</div>
+                  <div style={{display:'flex',gap:6}}>
+                    <button onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_core_confirmed:true}}:p)}))}
+                      style={{fontSize:10,padding:'4px 11px',borderRadius:4,cursor:'pointer',fontWeight:800,background:'#16a34a',border:'1px solid #16a34a',color:'#fff'}}>✓ Right order — allow push</button>
+                    <button onClick={()=>_runAiBillFindPO(b)} disabled={b._aiRunning}
+                      title="Let AI check your open orders for a better home for this bill (its line styles are part of the search)"
+                      style={{fontSize:10,padding:'4px 11px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#7c3aed',border:'1px solid #7c3aed',color:'#fff'}}>{b._aiRunning?'✨ Checking…':'✨ Find the right order'}</button>
+                  </div>
+                </div>}
                 {/* PO Match banner */}
                 {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
                   <span style={{fontSize:14}}>&#128279;</span>
@@ -26682,7 +26749,7 @@ export default function App(){
                   const filtered=_filterMatchCandidates(candidates,w.query);
                   return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
-                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Match manually {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Reconcile {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
                     </div>
                     {!w.target&&<>
@@ -26704,44 +26771,120 @@ export default function App(){
                     {w.target&&(()=>{
                       const target=w.target;const mappings=w.mappings||{};
                       const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
-                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped).length;
+                      const _ns=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                      const _cz=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase().trim();
+                      // Best guesses for an untied line, scored on signals a human would use:
+                      // SKU variant (5162436D ⊇ 5162436 — vendors love suffix letters), exact
+                      // price, size, description tokens. Rendered as one-click picks with the
+                      // reason on them — suggestions, never auto-applied.
+                      const suggestFor=(bl)=>{
+                        const bsku=_ns(bl.sku);const price=safeNum(bl.unit_price);const bdesc=String(bl.desc||'').toUpperCase();
+                        const scored=target.items.map((it,ti)=>{
+                          const tsku=_ns(it.sku);let sc=0;const why=[];
+                          if(bsku&&tsku&&bsku.length>=5&&tsku.length>=5){
+                            if(bsku===tsku){sc+=100;why.push('exact SKU')}
+                            else if(bsku.startsWith(tsku)||tsku.startsWith(bsku)){sc+=60;why.push('SKU variant')}
+                            else if(bsku.includes(tsku)||tsku.includes(bsku)){sc+=40;why.push('SKU inside')}
+                          }
+                          if(price>0&&Math.abs(price-safeNum(it.unit_cost))<=0.02){sc+=25;why.push('$ match')}
+                          if(bl.size&&_cz(bl.size)===_cz(it.size)){sc+=15;why.push('size')}
+                          if(bdesc){const name=String(it.name||'').toUpperCase();const hits=bdesc.split(/[^A-Z0-9]+/).filter(t=>t.length>=4&&name.includes(t)).length;if(hits){sc+=Math.min(15,hits*5);why.push('name')}}
+                          return{ti,it,sc,why};
+                        }).filter(x=>x.sc>=25).sort((a,b)=>b.sc-a.sc);
+                        const out=[];const seen=new Set();
+                        for(const s of scored){const k=(s.it.item_id||s.it.sku)+'|'+(s.it.po_id||'')+'|'+_cz(s.it.size);if(seen.has(k))continue;seen.add(k);out.push(s);if(out.length>=3)break}
+                        return out;
+                      };
+                      // Dropdown grouped one <optgroup> per style+color so 50 size-buckets read
+                      // as 8 styles, not a wall.
+                      const optGroups=(()=>{const g={};target.items.forEach((it,ti)=>{const k=(it.sku||'?')+(it.color?' · '+it.color:'');(g[k]=g[k]||[]).push([it,ti])});return Object.entries(g);})();
+                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped&&mappings[i].target_idx!=null).length;
+                      const skipped=bill.items.filter((_,i)=>mappings[i]&&mappings[i].skipped).length;
                       const total=bill.items.length;
+                      const untied=total-matched-skipped;
+                      // Running money reconciliation: what S&S billed on the tied lines vs what those
+                      // lines will apply to the order (qty × the order's own unit cost). A gap is a real
+                      // price variance the operator should see BEFORE pushing, not after.
+                      let billSum=0,applySum=0;
+                      bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const q=safeNum(mm.allocated_qty);billSum+=safeNum(bl.extension)||safeNum(bl.unit_price)*q;applySum+=q*safeNum(tt&&tt.unit_cost);});
+                      const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
-                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>{matched} of {total} bill line(s) mapped. Auto-suggestions in green; pick a different target item or skip per row.</div>
-                        <div style={{maxHeight:260,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:4,background:'#fff'}}>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>Tie each bill line to the item on <b>{target.label}</b> it pays for. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null}. The badge shows why each matched — <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
+                        {/* One quiet line of context; the per-line SUGGESTIONS below do the real work */}
+                        {(()=>{const st=new Set(target.items.map(it=>_ns(it.sku)));const units=target.items.reduce((a,it)=>a+safeNum(it.qty),0);const val=target.items.reduce((a,it)=>a+safeNum(it.qty)*safeNum(it.unit_cost),0);
+                          return<div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{target.label}: <b>{st.size}</b> style(s) · <b>{units}</b> unit(s) open · <b>${val.toFixed(2)}</b> still to bill</div>;})()}
+                        <div style={{maxHeight:320,overflow:'auto',border:'1px solid #c7d2fe',borderRadius:6,background:'#fff'}}>
                           <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
-                            <thead style={{background:'#f8fafc',position:'sticky',top:0}}><tr>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Bill line</th>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Map to target item</th>
-                              <th style={{textAlign:'right',padding:'4px 8px'}}>Apply qty</th>
-                              <th style={{textAlign:'left',padding:'4px 8px'}}>Notes</th>
+                            <thead style={{background:'#f1f5f9',position:'sticky',top:0,zIndex:1}}><tr>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>BILL LINE — WHAT S&amp;S CHARGED</th>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>&rarr; TIE TO THIS ORDER ITEM</th>
+                              <th style={{textAlign:'right',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>APPLY</th>
+                              <th style={{textAlign:'left',padding:'6px 8px',fontSize:9,letterSpacing:.4,color:'#64748b',fontFamily:FD}}>MATCH</th>
                             </tr></thead>
                             <tbody>{bill.items.map((bl,bli)=>{
                               const m=mappings[bli]||{};
                               const tgt=m.target_idx!=null?target.items[m.target_idx]:null;
-                              const openQty=tgt?tgt.qty:0;
-                              const over=tgt&&m.allocated_qty>openQty;
-                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fef9c3':(tgt?'#f0fdf4':'#fff')}}>
-                                <td style={{padding:'4px 8px',fontFamily:'monospace'}}>{bl.sku} <span style={{color:'#64748b'}}>{bl.size}</span>{bl.color?<span style={{color:'#475569'}}> · {bl.color}</span>:null} · {bl.qty} @ ${bl.unit_price.toFixed(2)}</td>
-                                <td style={{padding:'4px 8px'}}>
-                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'2px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
-                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);const it=target.items[ti];setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
-                                    <option value="">— pick —</option>
-                                    <option value="__skip">Skip this line</option>
-                                    {target.items.map((it,ti)=><option key={ti} value={ti}>{it.sku} {it.size} ({it.qty} open){it.so_id?' · '+it.so_id:''}{it.color?' · '+it.color:''}</option>)}
-                                  </select>
+                              const openQty=tgt?safeNum(tgt.qty):0;
+                              const q=safeNum(m.allocated_qty);
+                              const over=tgt&&q>openQty;
+                              const billExt=safeNum(bl.extension)||safeNum(bl.unit_price)*safeNum(bl.qty);
+                              const applyCost=tgt?q*safeNum(tgt.unit_cost):0;
+                              const costGap=tgt&&Math.abs(billExt-applyCost)>0.02;
+                              // Why did it match? exact SKU beats a color+size guess beats size-only beats
+                              // a differ — surfaced so a near-miss auto-map (bill 5157175 → order 5157176)
+                              // can't hide behind a flat green "Mapped".
+                              const exact=tgt&&_ns(bl.sku)&&_ns(bl.sku)===_ns(tgt.sku);
+                              const sameSize=tgt&&_cz(bl.size)===_cz(tgt.size);
+                              const sameColor=tgt&&bl.color&&tgt.color&&_ns(bl.color)===_ns(tgt.color);
+                              const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
+                              return<tr key={bli} style={{borderBottom:'1px solid #f1f5f9',background:m.skipped?'#fefce8':(over?'#fef2f2':(tgt?'#f7fdf9':'#fff')),verticalAlign:'top'}}>
+                                <td style={{padding:'6px 8px'}}>
+                                  <div style={{fontFamily:'monospace',fontWeight:700,color:'#0f172a'}}>{bl.sku||'(no sku)'}</div>
+                                  <div style={{color:'#64748b',marginTop:1}}>{[bl.size,bl.color].filter(Boolean).join(' · ')||'—'} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${billExt.toFixed(2)}</b></div>
+                                  {bl.desc?<div style={{color:'#94a3b8',fontSize:9,marginTop:1,maxWidth:230,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={bl.desc}>{bl.desc}</div>:null}
                                 </td>
-                                <td style={{padding:'4px 8px',textAlign:'right'}}>
-                                  {!m.skipped&&tgt&&<input className="form-input" type="number" style={{width:60,fontSize:10,padding:'2px 4px',textAlign:'right'}} value={m.allocated_qty||0}
+                                <td style={{padding:'6px 8px'}}>
+                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'3px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
+                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
+                                    <option value="">— pick an order item —</option>
+                                    <option value="__skip">Skip this line (don’t bill it)</option>
+                                    {optGroups.map(([g,arr])=><optgroup key={g} label={g+' — $'+safeNum(arr[0][0].unit_cost).toFixed(2)}>
+                                      {arr.map(([it,ti])=><option key={ti} value={ti}>{(it.size||'one size')+' · '+safeNum(it.qty)+' open'+(Math.abs(safeNum(it.unit_cost)-safeNum(arr[0][0].unit_cost))>0.005?' @ $'+safeNum(it.unit_cost).toFixed(2):'')}</option>)}
+                                    </optgroup>)}
+                                  </select>
+                                  {tgt&&<div style={{color:costGap?'#b45309':'#94a3b8',fontSize:9,marginTop:2}}>order cost ${safeNum(tgt.unit_cost).toFixed(2)} · {openQty} open{costGap?' · bill ≠ order by $'+Math.abs(billExt-applyCost).toFixed(2):''}</div>}
+                                  {!tgt&&!m.skipped&&(()=>{const sug=suggestFor(bl);return sug.length?<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,alignItems:'center'}}>
+                                    <span style={{fontSize:9,color:'#64748b',fontWeight:700}}>Best guess:</span>
+                                    {sug.map(s=><button key={s.ti} onClick={()=>setMap(bli,{target_idx:s.ti,allocated_qty:bl.qty,ambiguous:false})} title={'Why: '+s.why.join(' + ')+' — click to tie'}
+                                      style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
+                                      {s.it.sku} {[s.it.color,s.it.size].filter(Boolean).join(' ')} @ ${safeNum(s.it.unit_cost).toFixed(2)} · {s.why[0]} →</button>)}
+                                  </div>:<div style={{fontSize:9,color:'#94a3b8',marginTop:3}}>No obvious counterpart on this order — pick from the list or skip.</div>})()}
+                                </td>
+                                <td style={{padding:'6px 8px',textAlign:'right'}}>
+                                  {!m.skipped&&tgt&&<input className="form-input" type="number" min="0" style={{width:56,fontSize:10,padding:'3px 4px',textAlign:'right'}} value={m.allocated_qty||0}
                                     onChange={e=>setMap(bli,{...m,allocated_qty:parseInt(e.target.value)||0})}/>}
                                 </td>
-                                <td style={{padding:'4px 8px',fontSize:10,color:over?'#dc2626':(m.ambiguous?'#d97706':(m.skipped?'#92400e':'#166534'))}}>
-                                  {m.skipped?'Skipped':over?`Over-receipt (${m.allocated_qty}>${openQty})`:m.ambiguous?'Ambiguous — verify':tgt?'Mapped':(bl.sku||'')+' not on target'}
+                                <td style={{padding:'6px 8px',fontSize:9}}>
+                                  {m.skipped?<span style={{color:'#92400e',fontWeight:700}}>Skipped</span>
+                                   :over?<span style={{color:'#dc2626',fontWeight:700}}>Over — {q}&gt;{openQty} open</span>
+                                   :basis?<span style={{fontWeight:700,color:basis.c,background:basis.bg,borderRadius:4,padding:'2px 6px',whiteSpace:'nowrap'}}>{basis.t}</span>
+                                   :<span style={{color:'#dc2626',fontWeight:700}}>Not tied yet</span>}
                                 </td>
                               </tr>;
                             })}</tbody>
                           </table>
                         </div>
+                        {matched>0&&<div style={{marginTop:8,padding:'7px 11px',background:reconciles?'#f0fdf4':'#fffbeb',border:'1px solid '+(reconciles?'#bbf7d0':'#fde68a'),borderRadius:6,fontSize:11,color:'#334155'}}>
+                          Tied total <b style={{color:'#0f172a'}}>${applySum.toFixed(2)}</b> vs bill <b style={{color:'#0f172a'}}>${billSum.toFixed(2)}</b> {reconciles?<span style={{color:'#166534',fontWeight:700}}>&#10003; reconciles</span>:<span style={{color:'#b45309',fontWeight:700}}>&#9888; ${Math.abs(applySum-billSum).toFixed(2)} variance</span>}
+                          {(()=>{
+                            // Price truth: where the bill's unit price differs from the order's cost,
+                            // pushing ADOPTS the billed price onto that PO line (audit note kept) —
+                            // order costing and commission margin then reflect what was actually paid.
+                            const fixes=[];const seen=new Set();
+                            bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const bu=safeNum(bl.unit_price);if(!tt||bu<=0||Math.abs(bu-safeNum(tt.unit_cost))<=0.02)return;const k=(tt.sku||'')+'|'+(tt.po_id||'');if(seen.has(k))return;seen.add(k);fixes.push(tt.sku+': order cost $'+safeNum(tt.unit_cost).toFixed(2)+' → billed $'+bu.toFixed(2));});
+                            return fixes.length?<div style={{marginTop:4,color:'#9a3412'}}>Pushing also updates the order&rsquo;s cost to the billed price: <b>{fixes.join(' · ')}</b> (audit note kept)</div>:null;
+                          })()}
+                        </div>}
                         <div style={{display:'flex',gap:8,justifyContent:'flex-end',marginTop:8}}>
                           <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setW({open:false})}>Cancel</button>
                           <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
@@ -26757,9 +26900,9 @@ export default function App(){
                                 const it=target.items[m.target_idx];
                                 const bl=bill.items[parseInt(bi2)]||{};
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
-                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_cost:Math.round(billCost*100)/100};
+                                return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
-                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_wizard:{open:false}}}:p)}));
                               nf('Bill manually matched to '+target.label);
                             }}>Confirm match</button>
                         </div>
@@ -26777,18 +26920,51 @@ export default function App(){
                 </div>
               </div>
             </div>;};
-            const _bk={ready:[],attention:[],done:[]};
-            billImport.parsed.forEach((b,bi)=>{const t=_billTriage(b);const k=!t?'done':t.issue?'attention':'ready';if(billFilter==='all'||k===billFilter)_bk[k].push([b,bi]);});
-            if(billFilter!=='all')return <div>{_bk[billFilter].map(([b,bi])=>renderBillCard(b,bi))}</div>;
+            // TWO buckets (+failed first, +done collapsed at the bottom). Needs-review is
+            // subgrouped BY THE FIX so the operator works like reasons, not like a grab bag.
+            const _bk={failed:[],ready:[],lines:[],no_order:[],over:[],dup:[],other:[],done:[]};
+            billImport.parsed.forEach((b,bi)=>{
+              const t=_billTriage(b);
+              let k;
+              if(b.portalStatus&&b.portalStatus!=='success')k='failed';// never hide a failed push inside "Matched"
+              else if(!t)k='done';
+              else if(!t.issue)k='ready';
+              else if(!t.matched)k='no_order';
+              else{const es=t.errs.join(' ');k=es.indexOf('duplicate doc')>-1?'dup':es.indexOf(' exceeds ')>-1?'over':es.indexOf('Use Match manually')>-1?'lines':'other'}
+              _bk[k].push([b,bi]);
+            });
             // Flat, keyed child list under ONE parent so a bill that changes bucket mid-edit (typing in
-            // the PO field re-runs the matcher and flips ready<->attention) MOVES rather than remounts —
+            // the PO field re-runs the matcher and flips buckets) MOVES rather than remounts —
             // preserving input focus, exactly like the old single flat map did.
             const _children=[];
-            [[GREEN,'Matched — ready to push','Push in one click','ready'],[RED,'Review','Tie each bill to its order','attention'],[MGRAY,'Pushed / parked',null,'done']].forEach(([dot,title,note,k])=>{
-              if(!_bk[k].length)return;
-              _children.push(<React.Fragment key={'h-'+k}>{secHead({dot,title,count:_bk[k].length,note,mt:_children.length>0})}</React.Fragment>);
-              _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
-            });
+            const reviewN=_bk.lines.length+_bk.no_order.length+_bk.over.length+_bk.dup.length+_bk.other.length;
+            if(_bk.failed.length){
+              _children.push(<React.Fragment key="h-failed">{secHead({dot:'#dc2626',title:'Push failed — retry',count:_bk.failed.length,note:'The order save didn’t confirm. ↻ Retry each row.',mt:false})}</React.Fragment>);
+              _bk.failed.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            }
+            if(_bk.ready.length){
+              _children.push(<React.Fragment key="h-ready">{secHead({dot:GREEN,title:'Matched',count:_bk.ready.length,note:'These reconcile cleanly — the red button pushes all of them',mt:_children.length>0})}</React.Fragment>);
+              _bk.ready.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            }
+            if(reviewN){
+              _children.push(<React.Fragment key="h-review">{secHead({dot:RED,title:'Needs review',count:reviewN,note:'Each row shows its one fix',mt:_children.length>0})}</React.Fragment>);
+              [['lines','🧵 Tie the lines — matched to an order, but the lines need connecting to its items'],
+               ['no_order','🔍 No order matched — accept the AI suggestion or find the order'],
+               ['over','⚖ Over-billed — open to correct the order from the bill, or accept the overage'],
+               ['dup','♻ Duplicates — already applied once; open to verify, then set aside'],
+               ['other','⚠ Check these']].forEach(([k,label])=>{
+                if(!_bk[k].length)return;
+                _children.push(<div key={'sh-'+k} style={{fontSize:11,fontWeight:800,color:'#92400e',margin:'10px 0 6px',letterSpacing:.3}}>{label} ({_bk[k].length})</div>);
+                _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+              });
+            }
+            if(_bk.done.length){
+              const open=!!billImport.showDone;
+              _children.push(<button key="h-done" onClick={()=>setBillImport(x=>({...x,showDone:!x.showDone}))} style={{display:'block',width:'100%',textAlign:'left',marginTop:14,padding:'9px 14px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:6,cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',color:'#64748b'}}>
+                ✓ Done — pushed & set aside ({_bk.done.length}) {open?'▴':'▾'}</button>);
+              if(open)_bk.done.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            }
+            if(!_children.length)_children.push(<div key="empty" style={{padding:'26px 18px',textAlign:'center',color:'#64748b',fontSize:14,fontWeight:600}}>Nothing here — pull bills or drop PDFs above.</div>);
             return <div>{_children}</div>;
           })()}
         </>}
@@ -26998,34 +27174,20 @@ export default function App(){
           const outBtn=(r,label)=>siBtn('out',label||'Outside','#fff',NAVY,()=>markSiStatus(r,'outside_portal','Marked Outside of Portal'),'Mark as billed outside the Portal','1.5px solid '+MGRAY);
           return <div>
             <div style={{background:NAVY,backgroundImage:HASH,borderRadius:8,padding:'20px 26px',marginBottom:20}}>
-              <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,flexWrap:'wrap',marginBottom:16}}>
-                <div>
-                  <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:RED_LT}}>Sports Inc · Invoice Center</div>
-                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{approve.length+review.length+grab.length+outside.length} <span style={{color:'rgba(255,255,255,.55)'}}>to work</span> <span style={{color:'rgba(255,255,255,.35)'}}>·</span> {captured.length} of {siQueue.length} <span style={{color:'rgba(255,255,255,.55)'}}>captured</span></div>
+              <div style={{display:'flex',alignItems:'flex-end',justifyContent:'space-between',gap:20,flexWrap:'wrap'}}>
+                <div style={{maxWidth:640}}>
+                  <div style={{fontFamily:FD,fontWeight:700,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:RED_LT}}>Sports Inc · exceptions</div>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:25,color:'#fff',textTransform:'uppercase',lineHeight:1.05,marginTop:4}}>{grab.length} <span style={{color:'rgba(255,255,255,.55)'}}>to grab</span> <span style={{color:'rgba(255,255,255,.35)'}}>·</span> {outside.length} <span style={{color:'rgba(255,255,255,.55)'}}>outside</span></div>
+                  <div style={{fontSize:11,color:'rgba(255,255,255,.6)',marginTop:6,lineHeight:1.5}}>Everything matchable flows into Import &amp; Review with <b>⚡ Pull bills</b>. This tab holds only what can&rsquo;t: scanned docs whose PDF must be grabbed from Sports Inc, and old-system docs billed outside the Portal.{(approve.length+review.length)>0?' ('+(approve.length+review.length)+' matchable doc(s) are waiting — send them over →)':''} {captured.length} of {siQueue.length} captured.</div>
                 </div>
                 <div style={{display:'flex',gap:10,flexWrap:'wrap'}}>
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh'})}
-                  {skBtn({bg:RED,fg:'#fff',fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:syncSiQueueNow,children:'⚡ Pull now'})}
-                  {approve.length>0&&skBtn({bg:'#fff',fg:NAVY,fs:12,pad:'9px 16px',title:'Load every matched document into Import & Review — one screen, one push, nothing applies from this tab',onClick:()=>_siSendToReview(approve),children:'→ Review all matched ('+approve.length+')'})}
+                  {(approve.length+review.length)>0&&skBtn({bg:'#fff',fg:NAVY,fs:12,pad:'9px 16px',title:'Load every matchable document into Import & Review — same as ⚡ Pull bills does; nothing applies from this tab',onClick:()=>_siSendToReview(approve.concat(review)),children:'→ Send '+(approve.length+review.length)+' to Import & Review'})}
                   {outside.length>1&&skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'9px 16px',title:'Old-system (no-space) POs are billed through NetSuite/QuickBooks — confirm and clear the whole bucket in one click; they stay auditable and count as captured',onClick:()=>markSiStatusBulk(outside,'outside_portal','Mark outside portal'),children:'✓ Mark all outside ('+outside.length+')'})}
                 </div>
               </div>
-              {siQueue.length>0&&<div style={{display:'flex',height:9,borderRadius:5,overflow:'hidden',background:'rgba(255,255,255,.14)'}}>
-                {[[captured.length,GREEN],[approve.length,'#6FD59A'],[review.length,RED],[grab.length,GOLD],[outside.length,'#8790a3']].map(([n,c],i)=>n>0&&<div key={i} style={{width:(n/siQueue.length*100)+'%',background:c}}/>)}
-              </div>}
-              {/* Legend spells out the arithmetic the header implies: done on the left; on the right,
-                  "to work" (the number on the Sports Inc tab badge) = the four open buckets. */}
-              <div style={{display:'flex',gap:14,marginTop:14,flexWrap:'wrap',alignItems:'center'}}>
-                <div style={{display:'flex',alignItems:'center',gap:7}}><span style={{width:9,height:9,borderRadius:2,background:GREEN}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{captured.length}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>captured · done</span></div>
-                <span style={{width:1,height:20,background:'rgba(255,255,255,.25)'}}/>
-                <span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{approve.length+review.length+grab.length+outside.length}</span>
-                <span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>to work =</span>
-                {[['ready to review',approve.length,'#6FD59A'],['needs you',review.length,RED_LT],['to grab',grab.length,GOLD],['outside',outside.length,'#8790a3']].map(([l,n,c],i)=><div key={i} style={{display:'flex',alignItems:'center',gap:7}}>{i>0&&<span style={{fontFamily:FD,fontWeight:700,fontSize:13,color:'rgba(255,255,255,.4)'}}>+</span>}<span style={{width:9,height:9,borderRadius:2,background:c}}/><span style={{fontFamily:FD,fontWeight:800,fontSize:16,color:'#fff'}}>{n}</span><span style={{fontFamily:FD,fontSize:11,letterSpacing:.8,textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>{l}</span></div>)}
-              </div>
             </div>
-            {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>Pull now</b> to fetch from the API (or <b>Refresh</b> to load what the daily sync has stored).</div>}
-            {Section(GREEN,'Matched — ready to review & push',approve,'Matched to a portal PO (PO# + customer tag + SKUs). “→ Review” loads them into Import & Review — the same screen as every other bill — where you can see exactly what a push will write before pushing. Nothing applies from this tab.',revBtn)}
-            {Section(RED,'Needs review',review,'No confident PO match (possible typo, or the PO was never entered in the portal). Send to Review to match manually or with AI, or mark Outside of Portal.',(r)=>[revBtn(r),outBtn(r)])}
+            {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>↻ Refresh</b> to load what the daily sync has stored (⚡ Pull bills on Import &amp; Review fetches fresh from the API).</div>}
             {Section(GOLD,'Grab from Sports Inc',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=>siBtn('g','Mark grabbed','#fff',NAVY,()=>markSiStatus(r,'manual_done','Marked grabbed'),null,'1.5px solid '+MGRAY),false)}
             {Section('#8790a3','Outside of Portal',outside,'Confirmed pre-portal — either a no-space “PO####” or a PO core matched in the NetSuite export. Billed through NetSuite/QuickBooks, not here; these never touch the Billed tracking. Confirm and clear.',(r)=>outBtn(r,'Mark outside'),false)}
             {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,cursor:'pointer',textTransform:'uppercase',letterSpacing:.4}}>Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:10}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false,stripe:GREEN}))}</div></details>}
