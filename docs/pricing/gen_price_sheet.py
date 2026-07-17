@@ -2,23 +2,22 @@
 """
 Generate the NSA decoration price sheet (Screen Print + Embroidery) as a PDF.
 
-Prices are 1.6x the portal's decoration COST. The cost tables AND the bracket
+SCREEN PRINT is 1.6x the portal's decoration COST. Its cost table and bracket
 boundaries are read straight out of ../../src/lib/decoPricing.js (the single
 source of truth used by both the webpack client and the Netlify functions), so
-this sheet can never drift from the real portal matrix -- re-run after any change
-and re-commit the PDF.
+the screen-print side can never drift from the real portal matrix.
 
-Pricing basis (shown in the sheet footnotes):
-  sell = 1.6 x cost, rounded to the nearest $0.10 (the same rounding the portal
-         applies to charged prices, decoPricing.rT).
-  Embroidery honors the portal's $8.00/piece minimum (EM.fl); floored cells are
-         flagged with *.
-  Under-12 screen print is a flat per-order charge (SP bracket 0), shown at 1.6x
-         its implied cost = (flat / SP.mk) x 1.6, rounded to the dollar.
+EMBROIDERY is a flat owner-set price by size category (Small / Standard / Large)
+and quantity — hand-set here in EM_CATEGORIES, not derived from cost. Cost is
+recorded for margin reference only; the customer sheet shows the sell price.
 
-NOTE: these are the committed DEFAULT cost tables. If deco pricing has been
-overridden under Settings in the portal, that override lives only in that
-browser's localStorage (nsa_settings) and is not visible here.
+Screen-print rounding: sell = 1.6 x cost, nearest $0.10 (decoPricing.rT).
+Under-12 screen print is a flat per-order charge (SP bracket 0), shown at 1.6x
+its implied cost = (flat / SP.mk) x 1.6, rounded to the dollar.
+
+NOTE: the screen-print costs are the committed DEFAULT tables. If deco pricing
+has been overridden under Settings in the portal, that override lives only in
+that browser's localStorage (nsa_settings) and is not visible here.
 
 Usage:  python3 gen_price_sheet.py
 Requires a Chromium/Chrome binary for HTML->PDF (auto-detected; override with
@@ -32,21 +31,24 @@ DECO_JS = os.path.join(REPO, "src", "lib", "decoPricing.js")
 LOGO = os.path.join(HERE, "nsa-logo.png")
 OUT_PDF = os.path.join(HERE, "NSA_Price_Sheet_1.6x.pdf")
 
-MARKUP = 1.6          # the one knob: this sheet is MARKUP x cost
+MARKUP = 1.6          # screen-print knob: SP sheet is MARKUP x cost
 OPEN = 99999          # a bracket bound >= OPEN means "and up" (open-ended)
 
-# Flat-priced "Small" embroidery category (owner-set; NOT the 1.6x-cost matrix).
-# Quantity break is at 12 pieces. Cost is recorded for margin reference only — the
-# customer sheet shows the sell price. bands = (heading, sell, cost).
-EM_SMALL = {
-    "label": "Small embroidery",
-    "bands": [
-        ("12 + pieces", 5.00, 3.00),
-        ("Under 12 pieces", 6.00, 4.00),
-    ],
-}
+# ── Embroidery pricing (owner-set flat rates by size category x quantity) ──
+# Hand-set price points — NOT 1.6x cost like screen print. `cost` is optional and
+# for margin reference only (not shown on the sheet). Quantity tiers and the per-
+# tier sell arrays must be the same length.
+EM_QTY_TIERS = ["1 – 11", "12 – 47", "48 +"]
+EM_CATEGORIES = [
+    {"label": "Small",    "desc": "Small logo or text · up to 5,000 stitches",
+     "sell": [6.00, 5.00, 5.00], "cost": [4.00, 3.00, 3.00]},
+    {"label": "Standard", "desc": "Standard logo · 5,001 – 20,000 stitches",
+     "sell": [9.00, 8.00, 7.00]},
+    {"label": "Large",    "desc": "Oversized / jacket back · over 20,000 stitches",
+     "sell": [12.00, 11.00, 10.00]},
+]
 
-# ── Read SP / EM tables from decoPricing.js (drift-free) ──
+# ── Read the screen-print cost table from decoPricing.js (drift-free) ──
 def _parse_literal(src, name):
     m = re.search(r'const\s+' + name + r'\s*=\s*(\{.*?\})\s*;', src)
     if not m:
@@ -60,28 +62,23 @@ def _parse_literal(src, name):
 
 _src = open(DECO_JS, encoding="utf-8").read()
 SP = _parse_literal(_src, "SP")
-EM = _parse_literal(_src, "EM")
 
 # Fail loudly if the source shape changed, rather than emit wrong prices.
 for _k in ("bk", "pr", "mk"):
     if _k not in SP:
         raise SystemExit(f"SP.{_k} missing — decoPricing.js shape changed; update this script.")
-for _k in ("sb", "qb", "pr"):
-    if _k not in EM:
-        raise SystemExit(f"EM.{_k} missing — decoPricing.js shape changed; update this script.")
 
 SP_PR = {int(k): v for k, v in SP["pr"].items()}   # {bracketIdx: [c1..cN cost]}
 SP_BK = [(b["min"], b["max"]) for b in SP["bk"]]    # [(min,max), ...]
 SP_MK = SP["mk"]
-EM_PR = EM["pr"]                                    # [stitchIdx][qtyIdx] cost
-EM_SB = EM["sb"]                                    # stitch upper bounds
-EM_QB = EM["qb"]                                    # qty upper bounds
-EM_FL = EM.get("fl", 0)
 N_SP_COLORS = max(len(v) for v in SP_PR.values())
 if len(SP_BK) != len(SP_PR):
     raise SystemExit("SP.bk / SP.pr length mismatch — decoPricing.js changed.")
-if len(EM_PR) != len(EM_SB) or any(len(r) != len(EM_QB) for r in EM_PR):
-    raise SystemExit("EM.pr / EM.sb / EM.qb shape mismatch — decoPricing.js changed.")
+
+# Embroidery config sanity
+for _c in EM_CATEGORIES:
+    if len(_c["sell"]) != len(EM_QTY_TIERS):
+        raise SystemExit(f"EM category {_c['label']} sell count != qty tiers.")
 
 # ── Pricing primitives (mirror decoPricing.js rounding exactly) ──
 def js_round(x):                     # JS Math.round: .5 rounds toward +inf (values here are positive)
@@ -96,27 +93,8 @@ def money(v):
 def is_open(bound):
     return bound is None or bound >= OPEN
 
-# ── Derive bracket labels from the parsed tables ──
 def sp_qty_label(mn, mx):
     return f"{mn} +" if is_open(mx) else f"{mn} – {mx}"
-
-def em_stitch_labels(sb):
-    out, prev = [], 0
-    for b in sb:
-        if is_open(b):   out.append(f"Over {prev:,}")
-        elif prev == 0:  out.append(f"Up to {b:,}")
-        else:            out.append(f"{prev + 1:,} – {b:,}")
-        prev = b
-    return out
-
-def em_qty_labels(qb):
-    out, prev = [], 0
-    for b in qb:
-        if is_open(b):   out.append(f"{prev + 1} +")
-        elif prev == 0:  out.append(f"1 – {b}")
-        else:            out.append(f"{prev + 1} – {b}")
-        prev = b
-    return out
 
 # ── Screen print: per-piece brackets 1..N (bracket 0 is a flat charge) ──
 sp_rows = []
@@ -130,20 +108,6 @@ for bi in range(1, len(SP_BK)):
 sp_flat = [(ci, js_round((SP_PR[0][ci] / SP_MK) * MARKUP))
            for ci in range(len(SP_PR[0])) if SP_PR[0][ci] is not None]
 
-# ── Embroidery: per piece, EM.fl floor ──
-em_labels = em_stitch_labels(EM_SB)
-em_rows, em_floored = [], set()
-for si in range(len(EM_PR)):
-    cells = []
-    for qi in range(len(EM_PR[si])):
-        raw = rT(EM_PR[si][qi] * MARKUP)
-        sell = max(raw, float(EM_FL))
-        if sell > raw:
-            em_floored.add((si, qi))
-        cells.append(sell)
-    em_rows.append((em_labels[si], cells))
-em_col_labels = em_qty_labels(EM_QB)
-
 # ── HTML ──
 logo_b64 = base64.b64encode(open(LOGO, "rb").read()).decode()
 eff = datetime.date(2026, 7, 1).strftime("%B %Y")
@@ -152,13 +116,8 @@ NAVY, RED, INK, MUT, LINE, ALT = "#1a2a56", "#9e2033", "#1f2937", "#6b7280", "#e
 def sp_cell(v):
     return '<td class="na">—</td>' if v is None else f'<td>{money(v)}</td>'
 
-def em_cell(v, floored):
-    star = '<span class="star">*</span>' if floored else ''
-    cls = ' class="fl"' if floored else ''
-    return f'<td{cls}>{money(v)}{star}</td>'
-
 sp_col_hdrs = "".join(f'<th>{i + 1} Color</th>' for i in range(N_SP_COLORS))
-em_col_hdrs = "".join(f'<th>{lbl}</th>' for lbl in em_col_labels)
+em_col_hdrs = "".join(f'<th>{lbl}</th>' for lbl in EM_QTY_TIERS)
 
 sp_body_parts = []
 for i, (label, cells) in enumerate(sp_rows):
@@ -168,19 +127,14 @@ for i, (label, cells) in enumerate(sp_rows):
 sp_body = "".join(sp_body_parts)
 
 em_body_parts = []
-for i, (label, cells) in enumerate(em_rows):
+for i, cat in enumerate(EM_CATEGORIES):
     alt = ' class="alt"' if i % 2 else ''
-    tds = "".join(em_cell(v, (i, qi) in em_floored) for qi, v in enumerate(cells))
-    em_body_parts.append(f'<tr{alt}><th scope="row">{label}</th>{tds}</tr>')
+    label = f'{cat["label"]}<span class="rowsub">{cat["desc"]}</span>'
+    tds = "".join(f'<td>{money(v)}</td>' for v in cat["sell"])
+    em_body_parts.append(f'<tr{alt}><th scope="row" class="typecell">{label}</th>{tds}</tr>')
 em_body = "".join(em_body_parts)
 
 flat_chips = "".join(f'<span class="chip">{ci + 1} color {money(val)}</span>' for ci, val in sp_flat)
-
-small_chips = "".join(f'<span class="chip">{head} &mdash; {money(sell)} ea</span>'
-                      for head, sell, cost in EM_SMALL["bands"])
-em_small_box = (f'<div class="flatbox"><b>{EM_SMALL["label"]}:</b>'
-                f'<span>flat rate, per piece</span>{small_chips}'
-                f'<span style="color:{MUT}">not priced by stitch count</span></div>')
 
 html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><style>
@@ -202,12 +156,12 @@ table {{ width:100%; border-collapse:collapse; }}
 thead th {{ background:{ALT}; color:{NAVY}; font-size:10px; text-transform:uppercase; letter-spacing:.5px; padding:7px 6px; border-bottom:2px solid {NAVY}; text-align:center; }}
 thead th.corner {{ text-align:left; background:#eef1f6; }}
 tbody th {{ text-align:left; font-weight:700; color:{NAVY}; padding:6px 10px; background:#eef1f6; white-space:nowrap; border-bottom:1px solid {LINE}; }}
+tbody th.typecell {{ white-space:normal; width:42%; }}
 tbody td {{ text-align:center; padding:6px 6px; border-bottom:1px solid {LINE}; font-variant-numeric:tabular-nums; }}
 tbody tr.alt th, tbody tr.alt td {{ background:{ALT}; }}
 tbody tr.alt th {{ background:#e8ebf2; }}
+.rowsub {{ display:block; font-size:8.5px; color:{MUT}; font-weight:400; text-transform:none; letter-spacing:0; margin-top:1px; }}
 td.na {{ color:#c3c7cf; }}
-td.fl {{ color:{RED}; font-weight:600; }}
-.star {{ color:{RED}; font-weight:700; }}
 .spanhdr {{ font-size:9px; color:{MUT}; text-align:center; padding:2px 0 0; font-weight:400; text-transform:none; letter-spacing:0; }}
 .notes {{ margin-top:13px; border-top:1px solid {LINE}; padding-top:9px; }}
 .notes .row {{ display:flex; gap:22px; }}
@@ -251,15 +205,14 @@ td.fl {{ color:{RED}; font-weight:600; }}
 
 <div class="section">
   <h2>Embroidery</h2>
-  <div class="cap">Price <b>per piece, per logo / location</b>, by stitch count and order quantity. A standard left-chest logo runs ~8,000 stitches.</div>
+  <div class="cap">Price <b>per piece, per logo / location</b>, by design size and quantity. Most logos (left chest, cap, sleeve) are <b>Standard</b>.</div>
   <table>
     <thead>
-      <tr><th class="corner" rowspan="2">Stitch Count</th><th colspan="{len(em_col_labels)}">Order Quantity<div class="spanhdr">price per piece</div></th></tr>
+      <tr><th class="corner" rowspan="2">Embroidery Type</th><th colspan="{len(EM_QTY_TIERS)}">Order Quantity<div class="spanhdr">price per piece</div></th></tr>
       <tr>{em_col_hdrs}</tr>
     </thead>
     <tbody>{em_body}</tbody>
   </table>
-  {em_small_box}
 </div>
 
 <div class="notes">
@@ -268,18 +221,18 @@ td.fl {{ color:{RED}; font-weight:600; }}
       <h3>How pricing works</h3>
       <ul>
         <li>Screen print is priced <b>per color, per location, per piece</b> — a 3-color left chest is 3 colors.</li>
-        <li>Embroidery is priced <b>per logo / location, per piece</b> by stitch count ({money(EM_FL)} minimum). <b>Small embroidery</b> is a flat rate — see below the table.</li>
+        <li>Embroidery is priced <b>per logo / location, per piece</b> by size category (Small / Standard / Large) and quantity.</li>
         <li>Add <b>15%</b> to screen print for an underbase / white base on dark garments.</li>
-        <li>Additional locations price at the same matrix for their own color / stitch count.</li>
+        <li>Additional locations price at the same rates for their own color / size.</li>
       </ul>
     </div>
     <div class="col">
       <h3>Notes</h3>
       <ul>
-        <li><span class="star">*</span> Embroidery cell is at the <b>{money(EM_FL)}/piece minimum</b>; the raw rate would be lower.</li>
         <li>&mdash; = not offered at that color count / quantity (quoted on request).</li>
         <li>Small-run screen print (under 12) is a <b>flat charge for the whole order</b>, not per piece.</li>
-        <li>Garment cost is separate. Art, digitizing, and rush fees quoted as applicable.</li>
+        <li>Embroidery has a one-time <b>digitizing fee</b> per new logo, quoted separately.</li>
+        <li>Garment cost is separate. Art and rush fees quoted as applicable.</li>
       </ul>
     </div>
   </div>
@@ -329,11 +282,13 @@ def main():
     for label, cells in sp_rows:
         print(f"{label:<10} " + "".join(f"{(money(v) if v is not None else chr(8212)):>9}" for v in cells))
     print("Under-12 flat/order: " + "  ".join(f"{ci + 1}c {money(val)}" for ci, val in sp_flat))
-    print("\n--- EMBROIDERY (per piece, %gx cost, %s floor) ---" % (MARKUP, money(EM_FL)))
-    for label, cells in em_rows:
-        print(f"{label:<16} " + "".join(f"{money(v):>9}" for v in cells))
-    print("Small embroidery (flat): " + "  ".join(
-        f"{h} sell {money(s)} / cost {money(c)}" for h, s, c in EM_SMALL["bands"]))
+    print("\n--- EMBROIDERY (per piece, flat owner-set rates) ---")
+    print(f"{'Type':<12}" + "".join(f"{lbl:>10}" for lbl in EM_QTY_TIERS))
+    for cat in EM_CATEGORIES:
+        line = f"{cat['label']:<12}" + "".join(f"{money(v):>10}" for v in cat["sell"])
+        if cat.get("cost"):
+            line += "    (cost " + " / ".join(money(c) for c in cat["cost"]) + ")"
+        print(line)
     return 0
 
 if __name__ == "__main__":
