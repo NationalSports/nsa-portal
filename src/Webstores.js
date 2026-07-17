@@ -760,10 +760,17 @@ function flyerHtml(store, items = []) {
   const visItems = (items || []).filter((i) => !i.is_bundle_parent && i.active !== false && i.kind !== 'bundle');
   // Image fills the whole card; the price floats as a pill badge (team accent color)
   // over the bottom-left corner so the product photo gets the maximum area.
-  // Garment photo cover-fills a 4:5 box (the storefront card's geometry) so the applied
-  // web-logo decorations land at the same % placements shoppers see in the store.
+  // A DECORATED garment renders RAW + object-fit:contain in a 4:5 box — exactly the
+  // storefront card + art-editor frame — so the web-logo decorations land at the same %
+  // placements shoppers see in the store. Undecorated garments keep normGarment's uniform
+  // cover fill (nothing to align).
   const decoImgs = (it) => _flyerDecos(it).map((d) => { const p = _decoPos(d); return `<img src="${_esc(d.art_url)}" alt="" style="position:absolute;left:${p.x}%;top:${p.y}%;width:${p.w}%;transform:translate(-50%,-50%);filter:drop-shadow(0 1px 2px rgba(0,0,0,.2));z-index:1"/>`; }).join('');
-  const itemCard = (it, h=150) => `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(normGarment(it.image_front_url))}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  const itemCard = (it, h=150) => {
+    const dec = _flyerDecos(it).length > 0;
+    const gsrc = dec ? it.image_front_url : normGarment(it.image_front_url);
+    const gfit = dec ? 'contain' : 'cover';
+    return `<div style="position:relative;border:1px solid ${line};border-radius:6px;overflow:hidden;background:#fff;height:${h}px">${it.image_front_url?`<div style="position:relative;height:100%;aspect-ratio:4/5;margin:0 auto"><img src="${_esc(gsrc)}" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:${gfit}"/>${decoImgs(it)}</div>`:`<div style="width:100%;height:100%;background:linear-gradient(150deg,#F4EFE6,#E8E0D0);display:grid;place-items:center"><span style="font-size:10px;color:#b0a898">No image</span></div>`}${it.retail_price?`<div style="position:absolute;left:8px;bottom:8px;background:${accent};color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:15px;line-height:1;padding:4px 11px;border-radius:20px;box-shadow:0 1px 4px rgba(0,0,0,.25)">$${Math.round(Number(it.retail_price))}</div>`:''}</div>`;
+  };
   // Render an item array as rows of 4.
   const grid = (arr, h) => { let o = ''; const rows = Math.ceil(arr.length / 4); for (let r = 0; r < rows; r++) { o += `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;${r > 0 ? 'margin-top:10px' : ''}">${arr.slice(r * 4, r * 4 + 4).map((it) => itemCard(it, h)).join('')}</div>`; } return o; };
   // Highlighted Player Pack band (only when the store has a bundle).
@@ -934,17 +941,23 @@ async function generateFlyerPdfBase64(store, items = []) {
     try { return await toB64('/.netlify/functions/image-proxy?url=' + encodeURIComponent(u)); }
     catch(_) { try { return await toB64(u); } catch(_) { return null; } }
   };
-  const urls = new Set();
-  [pkg, ...visItems, ...pkgImgs.map((u)=>({image_front_url: u}))].forEach((item) => {
+  // Match the storefront's garment framing so the flyer items look like the store: a
+  // DECORATED garment is fetched RAW (drawn object-fit:contain below, logos mapped onto it)
+  // exactly like the store's product card + art editor; an UNDECORATED garment keeps
+  // normGarment's uniform trim. Logo art passes through normGarment untouched (it's a no-op
+  // for non-SanMar hosts). Map key = raw url so addImg/drawDecos lookups still resolve.
+  const fetchOf = new Map();
+  const noteGarment = (item, decorated) => { if (item && item.image_front_url && !fetchOf.has(item.image_front_url)) fetchOf.set(item.image_front_url, decorated ? item.image_front_url : normGarment(item.image_front_url)); };
+  [pkg, ...visItems].forEach((item) => {
     if (!item) return;
-    if (item.image_front_url) urls.add(item.image_front_url);
-    _flyerDecos(item).forEach((d) => urls.add(d.art_url));
+    const decos = _flyerDecos(item);
+    noteGarment(item, decos.length > 0);
+    decos.forEach((d) => { if (!fetchOf.has(d.art_url)) fetchOf.set(d.art_url, d.art_url); });
   });
-  await Promise.all([...urls].map(async (u) => {
-    // Fetch the normalized garment (raw key preserved so addImg/drawDecos lookups
-    // by image_front_url still resolve); logo art passes through normGarment as-is.
-    const b64 = await _imgB64(normGarment(u));
-    if (b64) imgCache[u] = b64;
+  pkgImgs.forEach((u) => { if (u && !fetchOf.has(u)) fetchOf.set(u, normGarment(u)); });
+  await Promise.all([...fetchOf.entries()].map(async ([key, src]) => {
+    const b64 = await _imgB64(src);
+    if (b64) imgCache[key] = b64;
   }));
   // Contain-fit the image inside the (x,iy,w,h) box, centered — drawing at the raw box
   // size stretched photos to the card's aspect ratio and they came out scrunched.
@@ -955,15 +968,16 @@ async function generateFlyerPdfBase64(store, items = []) {
     doc.addImage(b64,fmt,dx,dy,dw,dh,'','FAST'); return {dx,dy,dw,dh};
   } catch(_) { return false; } };
   // Composite the item's applied web logos over its drawn garment photo, mirroring the
-  // storefront's DecoOverlay. Placements are % of a 4:5 card box the photo COVER-fills;
-  // the PDF CONTAIN-fits the photo instead, so map box-% → photo fractions → PDF points.
+  // storefront's DecoOverlay. Placements are % of a 4:5 card box that CONTAIN-fits the raw
+  // garment (matching the store card + the art editor); the PDF also contain-fits the photo,
+  // so map box-% → garment fractions → PDF points.
   const drawDecos = (item, rect) => {
     if (!rect || !item) return;
     const gb64 = imgCache[item.image_front_url]; if (!gb64) return;
     let gp; try { gp = doc.getImageProperties(gb64); } catch(_) { return; }
     if (!(gp && gp.width > 0 && gp.height > 0)) return;
     const cw = 0.8, ch = 1; // storefront card box aspect (4:5), arbitrary units
-    const s = Math.max(cw/gp.width, ch/gp.height);
+    const s = Math.min(cw/gp.width, ch/gp.height); // CONTAIN-fit — matches the store
     const ox = (cw - gp.width*s)/2, oy = (ch - gp.height*s)/2;
     _flyerDecos(item).forEach((d) => {
       const b = imgCache[d.art_url]; if (!b) return;
