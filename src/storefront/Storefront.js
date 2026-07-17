@@ -679,7 +679,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
             <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
-            {[['No', 'Minimums'], ['Ship', 'To home, or to coach'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
+            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
               <div key={l}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
                 <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
