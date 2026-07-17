@@ -4066,7 +4066,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span className="oe-num oe-dt" style={{fontSize:13,color:'#192853',background:'#EEF1F6',border:'1px solid #DCE2EE',padding:'3px 8px',borderRadius:5}}>{item.sku}</span>
                 <span style={{fontWeight:700,fontSize:15,color:'#2A2F3E'}}>{item.name}</span>
-                {item.color&&<span style={{fontSize:12,color:'#5A6075'}}>{item.color}</span>}
+                {item.color&&<span className="badge badge-gray" style={{fontSize:10}}>{item.color}</span>}
                 {item.brand&&<span style={{fontSize:12,color:'#9aa0ad'}}>{item.brand}</span>}
                 {(()=>{const _cs=Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).sort((a,b)=>{const ia=SZ_ORD.indexOf(a[0]),ib=SZ_ORD.indexOf(b[0]);return(ia<0?999:ia)-(ib<0?999:ib)});return _cs.map(([sz,v])=><span key={sz} className="oe-num" style={{fontSize:12,fontWeight:700,color:'#192853',background:'#F4F7FF',border:'1px solid #D7E0F2',padding:'2px 7px',borderRadius:4,whiteSpace:'nowrap'}}>{sz} · {v}</span>)})()}
               </div>

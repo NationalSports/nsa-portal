@@ -70,7 +70,7 @@
 .oe2 .badge-amber{ background:var(--oe-amber-bg); color:var(--oe-amber-tx); }
 .oe2 .badge-red{ background:#FDECEC; color:var(--oe-red); }
 .oe2 .badge-purple{ background:var(--oe-purple-bg); color:var(--oe-purple); }
-.oe2 .badge-gray{ background:var(--oe-alt); color:var(--oe-text-2); }
+.oe2 .badge-gray{ background:var(--oe-alt); color:var(--oe-text-2); border:1px solid var(--oe-bd); }
 
 /* Tabs */
 .oe2 .tabs{ border-bottom:2px solid var(--oe-bd-hair); gap:4px; }
