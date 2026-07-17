@@ -72,7 +72,7 @@ async function searchSanMar(query, vendorMap) {
     if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: it.colorProductImage || it.productImage || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
     const cEntry = styleMap[sid]._colors[cKey];
     const sz = normSzName(it.size || it.labelSize || it.sizeCode || 'OSFA');
-    const price = priceMap[color + '|' + sz] || parseFloat(it.piecePrice || 0) || 0;
+    const price = priceMap[color + '|' + sz] || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;
     const qty = invData[color + '|' + sz] || parseInt(it.inventoryQty || it.qty || 0) || 0;
     if (sz) cEntry._sizes[sz] = (cEntry._sizes[sz] || 0) + qty;
     cEntry.totalQty += qty;
