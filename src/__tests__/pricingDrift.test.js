@@ -14,7 +14,7 @@
 // ═══════════════════════════════════════════════
 import fs from 'fs';
 import path from 'path';
-import { SP as P_SP, EM as P_EM, NP as P_NP, DTF as P_DTF, spP as p_spP, emP as p_emP, npP as p_npP } from '../pricing';
+import { SP as P_SP, EM as P_EM, NP as P_NP, DTF as P_DTF, TWA as P_TWA, TWN as P_TWN, spP as p_spP, emP as p_emP, npP as p_npP, twaP as p_twaP, twnP as p_twnP } from '../pricing';
 
 const BL = require('../businessLogic');
 const DP = require('../lib/decoPricing');
@@ -37,6 +37,12 @@ describe('pricing tables agree between pricing.js and businessLogic.js', () => {
   });
   test('DTF tables are identical', () => {
     expect(BL.DTF).toEqual(P_DTF);
+  });
+  test('TWA (tackle-twill logos) tables are identical', () => {
+    expect(BL.TWA).toEqual(P_TWA);
+  });
+  test('TWN (tackle-twill numbers) tables are identical', () => {
+    expect(BL.TWN).toEqual(P_TWN);
   });
 });
 
@@ -75,6 +81,20 @@ describe('pricing primitives agree between pricing.js and businessLogic.js', () 
       }
     }
   });
+
+  test('twaP (tackle-twill logo) matches for every menu index x sell/cost', () => {
+    for (let i = 0; i < Math.max(BL.TWA.length, P_TWA.length) + 1; i++) {
+      for (const s of [true, false]) expect(BL.twaP(i, s)).toBe(p_twaP(i, s));
+    }
+  });
+
+  test('twnP (tackle-twill number) matches for every size x two-color x sell/cost', () => {
+    for (const r of BL.TWN) {
+      for (const tw of [true, false]) {
+        for (const s of [true, false]) expect(BL.twnP(r.size, tw, s)).toBe(p_twnP(r.size, tw, s));
+      }
+    }
+  });
 });
 
 describe('decoPricing.js (shared client/server source of truth) matches businessLogic.js', () => {
@@ -83,6 +103,8 @@ describe('decoPricing.js (shared client/server source of truth) matches business
     expect(stripV(BL.EM)).toEqual(stripV(DP.EM));
     expect(BL.NP).toEqual(DP.NP);
     expect(BL.DTF).toEqual(DP.DTF);
+    expect(BL.TWA).toEqual(DP.TWA);
+    expect(BL.TWN).toEqual(DP.TWN);
   });
 
   test('primitives agree at the defaults across all brackets', () => {
@@ -102,6 +124,14 @@ describe('decoPricing.js (shared client/server source of truth) matches business
         for (const s of [true, false]) expect(DP.npP(T, q, tw, s)).toBe(BL.npP(q, tw, s));
       }
     }
+    for (let i = 0; i < DP.TWA.length; i++) {
+      for (const s of [true, false]) expect(DP.twaP(T, i, s)).toBe(BL.twaP(i, s));
+    }
+    for (const r of DP.TWN) {
+      for (const tw of [true, false]) {
+        for (const s of [true, false]) expect(DP.twnP(T, r.size, tw, s)).toBe(BL.twnP(r.size, tw, s));
+      }
+    }
   });
 });
 
@@ -111,6 +141,8 @@ describe('pricing.js re-exports the decoPricing defaults (no overrides in test e
     expect(P_EM).toEqual(DP.EM);
     expect(P_NP).toEqual(DP.NP);
     expect(P_DTF).toEqual(DP.DTF);
+    expect(P_TWA).toEqual(DP.TWA);
+    expect(P_TWN).toEqual(DP.TWN);
   });
 });
 
@@ -140,5 +172,25 @@ describe('App.js local pricing tables match decoPricing.js', () => {
     expect(app).toBeTruthy();
     expect(deco).toBeTruthy();
     expect(app).toBe(deco);
+  });
+
+  // TWA/TWN are arrays, and App.js keeps them single-line while decoPricing.js pretty-prints
+  // them across lines — so a byte-for-byte source match is impossible. Compare parsed VALUES
+  // instead: extract App.js's `let TWA=[...];` literal, eval it, and check it equals the
+  // runtime source of truth (DP.TWA/DP.TWN). Guards the App.js copy from value drift.
+  const grabArr = (src, name) => { const m = src.match(new RegExp('^let ' + name + '=(\\[.*\\]);', 'm')); return m && m[1]; };
+  // eslint-disable-next-line no-eval
+  const evalArr = (lit) => (lit ? eval('(' + lit + ')') : null);
+
+  test('TWA literal values in App.js equal decoPricing.js TWA', () => {
+    const app = evalArr(grabArr(appSrc, 'TWA'));
+    expect(app).toBeTruthy();
+    expect(app).toEqual(DP.TWA);
+  });
+
+  test('TWN literal values in App.js equal decoPricing.js TWN', () => {
+    const app = evalArr(grabArr(appSrc, 'TWN'));
+    expect(app).toBeTruthy();
+    expect(app).toEqual(DP.TWN);
   });
 });

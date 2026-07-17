@@ -73,6 +73,8 @@ export let SP=DECO.SP;
 export let EM=DECO.EM;
 export let NP=DECO.NP;
 export let DTF=DECO.DTF;
+export let TWA=DECO.TWA;
+export let TWN=DECO.TWN;
 
 // ── Configurable lists ──
 export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
@@ -80,14 +82,14 @@ export let CONTACT_ROLES=['Primary','Billing','Shipping','Coach','Athletic Direc
 
 // ── Load settings overrides from localStorage ──
 // Only honor cached SP/EM if they match the current schema version (_v); otherwise use the new defaults.
-try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.TWA)TWA=_s.TWA;if(_s.TWN)TWN=_s.TWN;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 
 // ── Pricing calculators ──
 // Thin wrappers over the pure calculators in decoPricing.js. The tables object is
 // rebuilt on EVERY call (not captured at module load) so the localStorage-overridden
 // bindings above are always the ones that price — identical behavior to the old
 // inline calculators that closed over the mutable module bindings.
-const _tables=()=>({SP,EM,NP,DTF});
+const _tables=()=>({SP,EM,NP,DTF,TWA,TWN});
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 export function spP(q,c,s=true){return DECO.spP(_tables(),q,c,s)}
 // Under-12 screen print is an ALL-IN flat charge — see decoPricing.spFlatShare (EST-1308).
@@ -95,6 +97,9 @@ export function spFlatShare(q,c,u=1){return DECO.spFlatShare(_tables(),q,c,u)}
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}
 export function npP(q,tw=false,s=true){return DECO.npP(_tables(),q,tw,s)}
+// Tackle twill: chest/logo by TWA index; jersey number by TWN size × color. Wrap the pure calcs.
+export function twaP(idx,s=true){return DECO.twaP(_tables(),idx,s)}
+export function twnP(size,tw=false,s=true){return DECO.twnP(_tables(),size,tw,s)}
 // Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
 // null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
 export const decoSplitQty=DECO.decoSplitQty;

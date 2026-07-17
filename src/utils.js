@@ -1,5 +1,7 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+// Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
+import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
 import { supabase as _sbAuthClient } from './lib/supabase';
 // pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
@@ -914,6 +916,10 @@ export const pdfDecoLabel = (d, artF) => {
   }
   if (d.kind === 'outside_deco') {
     return (d.deco_type || 'Decoration').replace(/_/g,' ');
+  }
+  if (d.kind === 'twill') {
+    const t = (_TWA_TABLE || [])[d.dtf_size || 0] || (_TWA_TABLE || [])[0];
+    return 'Tackle Twill' + (t && t.label ? ' — ' + t.label : '');
   }
   // art (default)
   const namePart = artF && artF.name ? String(artF.name).trim() : '';
