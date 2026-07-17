@@ -23613,7 +23613,8 @@ export default function App(){
 
     // Re-run PO matching against current state (used after user edits the PO field in review).
     const rematchBill=(bill,opts)=>{
-      const updated={...bill,matchedPO:null,matchedPOSource:null};
+      // _core_match recomputes every run — a fixed PO (exact match) must clear the guess flag.
+      const updated={...bill,matchedPO:null,matchedPOSource:null,_core_match:false};
       if(!bill.po_number)return updated;
       const rawLc=bill.po_number.toLowerCase().replace(/\s+/g,'');
       // Hand-typed PO fields arrive with trailing punctuation ("P08689SBFBQ–", en-dash and all) —
@@ -24677,6 +24678,11 @@ export default function App(){
     const _validateBillForPush=(p)=>{
       const errs=[];
       if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      // A numeric-core match (bill tag ≠ order tag) is a GUESS about which order this is —
+      // proven capable of picking the wrong school (a typo'd "3132 TUH" bill core-matched
+      // Stockdale's 3132 STOV while the real order was 3131 TUH). It never pushes until a
+      // human confirms the order on the card, or fixes the PO.
+      if(p._core_match&&!p._core_confirmed)errs.push('Matched by PO number only — the bill says '+(p._po_raw||'?')+' but the order is '+(p.po_number||'?')+'. Open the bill and confirm it’s the right order (or fix the PO — a one-digit typo lands on the wrong school).');
       let autoMaps=null;
       if(p.matchedPOSource==='so_po'&&p.matchedPO&&p.kind!=='decoration'&&!(p._lineMappings||[]).length){
         if(safeNum(p.freight)<=0){
@@ -24859,7 +24865,10 @@ export default function App(){
       if(!p)return[];
       const all=_buildMatchCandidates();
       if(!all.length)return[];
-      const billSkus=[...new Set((p.items||[]).map(it=>(it.sku||'').toUpperCase()).filter(Boolean))];
+      // Include the enriched mfr style (_ss_style) alongside raw SKUs: S&S lines carry S&S
+      // part numbers that never overlap SO skus, but their styles (9018/1717) do — this is
+      // what lets AI shortlist the RIGHT order for a bill whose PO number was typo'd.
+      const billSkus=[...new Set((p.items||[]).flatMap(it=>[it.sku,it._ss_style].map(s=>String(s||'').toUpperCase()).filter(Boolean)))];
       const vend=(p.vendor||p.supplier||'').toLowerCase().trim();
       const scored=all.map(c=>{
         const cs=new Set((c.items||[]).map(it=>(it.sku||'').toUpperCase()));
@@ -24880,7 +24889,8 @@ export default function App(){
       const p=bill?.parsed;
       if(!p)return{ok:false,error:'No bill'};
       if(!supabase)return{ok:false,error:'Supabase not configured'};
-      if(_billHasTarget(p))return{ok:false,error:'Already matched to a PO'};
+      // A core-match (tag differs) is tentative — AI may hunt for the RIGHT order for it.
+      if(_billHasTarget(p)&&!p._core_match)return{ok:false,error:'Already matched to a PO'};
       const cands=_billCandidateOrders(p);
       if(!cands.length){
         setBillImport(x=>({...x,parsed:x.parsed.map(b=>b.id===bill.id?{...b,_aiRunning:false,_aiTried:true,_aiError:'No open order shares a SKU with this bill'}:b)}));
@@ -26403,6 +26413,19 @@ export default function App(){
                     <div style={{fontSize:10,color:'#7c3aed',marginTop:3,opacity:0.8}}>Review and push as usual — AI never pushes on its own.</div>
                   </div>;
                 })()}
+                {/* Core-match gate — the match below is a NUMBER-ONLY guess (bill tag ≠ order tag).
+                    It stays out of the Matched pile until a human confirms or fixes the PO. */}
+                {poMatch&&bill._core_match&&!bill._core_confirmed&&!portalPushed&&<div style={{padding:'9px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a',display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                  <span style={{fontSize:14}}>⚠️</span>
+                  <div style={{flex:1,minWidth:220,fontSize:11.5,color:'#92400e'}}><b>Is this the right order?</b> The bill says <b>{bill._po_raw||'?'}</b> but it matched <b>{bill.po_number||'?'}</b> on the number alone. A one-digit typo lands on the wrong school — check the customer on the match line below.</div>
+                  <div style={{display:'flex',gap:6}}>
+                    <button onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_core_confirmed:true}}:p)}))}
+                      style={{fontSize:10,padding:'4px 11px',borderRadius:4,cursor:'pointer',fontWeight:800,background:'#16a34a',border:'1px solid #16a34a',color:'#fff'}}>✓ Right order — allow push</button>
+                    <button onClick={()=>_runAiBillFindPO(b)} disabled={b._aiRunning}
+                      title="Let AI check your open orders for a better home for this bill (its line styles are part of the search)"
+                      style={{fontSize:10,padding:'4px 11px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#7c3aed',border:'1px solid #7c3aed',color:'#fff'}}>{b._aiRunning?'✨ Checking…':'✨ Find the right order'}</button>
+                  </div>
+                </div>}
                 {/* PO Match banner */}
                 {poMatch&&<div style={{padding:'8px 14px',background:'#eff6ff',borderBottom:'1px solid #bfdbfe',display:'flex',alignItems:'center',gap:12}}>
                   <span style={{fontSize:14}}>&#128279;</span>
@@ -26807,7 +26830,7 @@ export default function App(){
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
                                 return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
-                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_wizard:{open:false}}}:p)}));
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_wizard:{open:false}}}:p)}));
                               nf('Bill manually matched to '+target.label);
                             }}>Confirm match</button>
                         </div>
