@@ -14,6 +14,7 @@ import { normSzName } from './pricing';
 import { autoColorChoice, resolveItemPlacement, garmentTypeOf, garmentHex, hydrateStoreArt } from './lib/artGrid';
 import { buildTeamArtLibrary } from './lib/artIdentity';
 import { ColorWaysEditor } from './components';
+import { knockoutWhiteBackground } from './lib/imageKnockout';
 import QuickMockBuilder from './QuickMockBuilder';
 
 const SS_CARRIERS = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
@@ -10096,11 +10097,16 @@ const _fileToImage = (file) => new Promise((resolve, reject) => {
 async function _knockoutWhiteFile(file) {
   const { img, revoke } = await _fileToImage(file);
   try {
-    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    if (!iw || !ih) throw new Error('empty image');
+    // Bound the work — a web cutout is placed small on garments and never needs >2000px; a
+    // rep's full-res phone JPG would otherwise be 12M+ pixels to flood-fill.
+    const scale = Math.min(1, 2000 / Math.max(iw, ih));
+    const w = Math.max(1, Math.round(iw * scale)), h = Math.max(1, Math.round(ih * scale));
     const c = document.createElement('canvas'); c.width = w; c.height = h;
     const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(img, 0, 0, w, h);
-    const id = ctx.getImageData(0, 0, w, h); const d = id.data;
-    for (let i = 0; i < d.length; i += 4) { if (d[i] >= 240 && d[i + 1] >= 240 && d[i + 2] >= 240) d[i + 3] = 0; }
+    const id = ctx.getImageData(0, 0, w, h);
+    knockoutWhiteBackground(id.data, w, h); // edge flood-fill — see src/lib/imageKnockout.js
     ctx.putImageData(id, 0, 0);
     const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
     if (!blob) throw new Error('Could not process image');
@@ -10220,7 +10226,7 @@ function NewArtFolderModal({ seed, busy, onCreate, onClose }) {
                 {webs.map((w, i) => (
                   <div key={i} style={rowSt}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <div style={{ width: 34, height: 34, borderRadius: 6, background: '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
+                      <div title="Transparent areas show as a checker" style={{ width: 34, height: 34, borderRadius: 6, background: w.preview ? 'repeating-conic-gradient(#cbd5e1 0 25%, #f8fafc 0 50%) 50% / 10px 10px' : '#f1f5f9', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 }}>{w.preview ? <img src={w.preview} alt="" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }} /> : '🖼'}</div>
                       <span style={{ fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', flex: 1, minWidth: 0 }}>{w.file.name}</span>
                       {i === 0 && <span style={{ fontSize: 10.5, fontWeight: 800, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '3px 8px', whiteSpace: 'nowrap' }} title="Also used as the default cutout for all garments">Default</span>}
                       <input className="form-input" value={w.label} disabled={busy} onChange={(e) => setWebs((arr) => arr.map((x, j) => (j === i ? { ...x, label: e.target.value } : x)))} placeholder={webs.length > 1 ? `Color way: ${cwSuggestion(i)}` : 'Color way (optional)'} style={{ width: 150, fontSize: 12 }} title="Name this color way (e.g. White garments)" />
