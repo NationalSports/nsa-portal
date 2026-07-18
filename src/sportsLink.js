@@ -7,7 +7,15 @@
 //
 // Docs: https://api.sportsinc.com/  (REST/JSON, auth via X-API-KEY header)
 
-export const _siNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+// Tolerates formatted currency strings ("$1,234.56", "(100.50)" = negative) — a raw
+// parseFloat silently zeroed those, an under-billing path.
+export const _siNum = (v) => {
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  const s = String(v == null ? '' : v).trim();
+  const neg = /^\(.*\)$/.test(s);
+  const n = parseFloat(s.replace(/[($,)\s]/g, ''));
+  return isNaN(n) ? 0 : (neg ? -n : n);
+};
 
 // Format an API datetime to the MM/DD/YYYY the PDF parser emits. We take the literal
 // Y-M-D off the front of the ISO string rather than constructing a Date, so a

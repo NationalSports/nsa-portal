@@ -5,7 +5,7 @@
 // API documents with no downstream changes. These lock in the field mapping, the
 // EDI-vs-scanned distinction, and credit handling.
 const { mapSportsLinkDocToBill, buildSportsLinkDocsQuery, _siDate, siSupplierMethod,
-  parseSiPoString, scoreSiPoMatch, rankSiPoCandidates, siPoOrigin } = require('../sportsLink');
+  parseSiPoString, scoreSiPoMatch, rankSiPoCandidates, siPoOrigin, _siNum } = require('../sportsLink');
 
 const ediDoc = {
   poNumber: 'PO4133',
@@ -126,6 +126,25 @@ describe('mapSportsLinkDocToBill', () => {
   });
 });
 
+describe('_siNum', () => {
+  test('parses formatted currency strings, tolerating parens and minus for negatives', () => {
+    expect(_siNum('$1,234.56')).toBe(1234.56);
+    expect(_siNum('(100.50)')).toBe(-100.5);
+    expect(_siNum('-100.50')).toBe(-100.5);
+  });
+  test('leaves plain numbers and numeric strings unchanged', () => {
+    expect(_siNum(42)).toBe(42);
+    expect(_siNum('42')).toBe(42);
+    expect(_siNum('42.5')).toBe(42.5);
+  });
+  test('garbage input returns 0', () => {
+    expect(_siNum('garbage')).toBe(0);
+    expect(_siNum(null)).toBe(0);
+    expect(_siNum(undefined)).toBe(0);
+    expect(_siNum('')).toBe(0);
+  });
+});
+
 describe('_siDate', () => {
   test('formats an ISO date to MM/DD/YYYY without timezone drift', () => {
     expect(_siDate('2026-03-14T00:00:00.000Z')).toBe('03/14/2026');
@@ -228,5 +247,41 @@ describe('scoreSiPoMatch / rankSiPoCandidates', () => {
     const unrelated = { po_id: 'PO1', po_core: '1', vendor: 'SANMAR', customer_alpha_tag: 'XYZ', skus: ['ZZZ'] };
     expect(scoreSiPoMatch(bill, unrelated).confidence).toBe('none');
     expect(rankSiPoCandidates(bill, [unrelated])).toHaveLength(0);
+  });
+
+  // CHARACTERIZATION — pins current behavior, not a spec. A 2-char customer alpha tag plus a
+  // supplier-name match, with the wrong po_core and zero SKU overlap, still reaches score 50 /
+  // 'medium'. Flag for review: this is enough for the matcher to attach a bill to the wrong
+  // Sales Order if two customers happen to share (or collide on) a short alpha tag with the
+  // same supplier — there is no corroborating PO number or line-item evidence at all here.
+  test('CHARACTERIZATION: alpha tag + supplier alone (wrong po_core, no SKU overlap) reaches medium confidence', () => {
+    const wrongCoreBill = { po_number: 'PO 9999 AB', supplier: 'SANMAR', items: [{ sku: 'ZZZZ' }] };
+    const candidate = { po_id: 'PO1111', po_core: '1111', vendor: 'SANMAR', customer_alpha_tag: 'AB', skus: ['QQQQ'] };
+    const r = scoreSiPoMatch(wrongCoreBill, candidate);
+    expect(r.score).toBe(50); // alpha_tag(35) + supplier(15), no po_core hit, no SKU hit
+    expect(r.confidence).toBe('medium');
+    expect(r.method).toBe('alpha_tag');
+  });
+});
+
+// CHARACTERIZATION — pins current behavior, not a spec.
+describe('mapSportsLinkDocToBill isCredit (characterization)', () => {
+  test('is_credit is set but item qty/extension and merchandise_total stay positive — downstream must sign-flip', () => {
+    const b = mapSportsLinkDocToBill({ ...ediDoc, isCredit: true });
+    expect(b.is_credit).toBe(true);
+    expect(b.items[0].qty).toBeGreaterThan(0);
+    expect(b.items[0].extension).toBeGreaterThan(0);
+    expect(b.merchandise_total).toBeGreaterThan(0);
+  });
+});
+
+// CHARACTERIZATION — pins current behavior, not a spec.
+describe('parseSiPoString stopword collision (characterization)', () => {
+  test('a customer alpha tag colliding with the "SO" stopword never contributes to matching', () => {
+    // 'SO' is in _SI_PO_STOPWORDS (treated as PO-noise), so a customer whose real alpha tag is
+    // "SO" is silently dropped here — it will never be picked up as a matching tag.
+    const r = parseSiPoString('PO 4519 SO');
+    expect(r.core).toBe('4519');
+    expect(r.tags).toEqual([]);
   });
 });

@@ -95,13 +95,16 @@ const parseNetSuitePdf = (text, docType, products) => {
 
   // ── Extract totals ──
   // Look for totals that appear after the items section (tab-separated label + value)
-  const pN = s => { const m = s.match(/\$?\s*([\d,]+\.?\d*)/); return m ? parseFloat(m[1].replace(/,/g, '')) : 0 };
+  // Negative amounts appear on credit/return docs as "($40.00)" or "-$40.00" —
+  // the sign must survive parsing or a credit imports as a positive sale.
+  const _negParen = s => String(s || '').replace(/\(\s*(\$?\s*[\d,]+\.?\d*)\s*\)/g, '-$1');
+  const pN = s => { const str = _negParen(s); const m = str.match(/(-?)\s*\$?\s*([\d,]+\.?\d*)/); return m ? parseFloat((m[1] || '') + m[2].replace(/,/g, '')) : 0 };
   const pNfromLine = line => {
     // Extract the last dollar amount from a line (handles tab-separated totals)
-    const parts = line.split('\t');
+    const parts = _negParen(line).split('\t');
     for (let k = parts.length - 1; k >= 0; k--) {
       const v = parts[k].trim().replace(/[$,]/g, '');
-      if (/^\d+\.?\d*$/.test(v) && parseFloat(v) > 0) return parseFloat(v);
+      if (/^-?\d+\.?\d*$/.test(v) && parseFloat(v) !== 0) return parseFloat(v);
     }
     return pN(line);
   };
@@ -134,7 +137,9 @@ const parseNetSuitePdf = (text, docType, products) => {
   // Check if a line starts with a quantity number (item data line vs description line)
   const isItemLine = line => {
     const p = line.split('\t')[0]?.trim();
-    return /^\d+$/.test(p);
+    // Negative quantities are real data lines on credit/return docs — without the
+    // sign here, a "-2" return line was swallowed into the prior item's description.
+    return /^-?\d+$/.test(p);
   };
 
   // Collect 2-line item pairs from after the header
@@ -201,8 +206,9 @@ const parseNetSuitePdf = (text, docType, products) => {
     let rate = 0, amount = 0;
     const nums = [];
     for (let k = parts.length - 1; k >= 2; k--) {
-      const v = parts[k].replace(/[$,]/g, '').trim();
-      if (/^\d+\.?\d*$/.test(v)) nums.unshift(parseFloat(v));
+      // "(40.00)" is a parenthesized negative (credit/return line) — keep the sign.
+      const v = parts[k].replace(/\(\s*(\$?\s*[\d,.]+)\s*\)/g, '-$1').replace(/[$,]/g, '').trim();
+      if (/^-?\d+\.?\d*$/.test(v)) nums.unshift(parseFloat(v));
       else if (nums.length >= 2) break;// stop once we have rate+amount
     }
     if (nums.length >= 2) { rate = nums[nums.length - 2]; amount = nums[nums.length - 1] }
