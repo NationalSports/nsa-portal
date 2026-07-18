@@ -113,3 +113,38 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged[1].id).toBe('a');
   });
 });
+
+// ── Adversarial-input regressions (2026-07-18 sweep) ──
+describe('numeric-string doc_total coercion', () => {
+  it('buildAppliedBillRows keeps a doc_total that round-tripped as a numeric string', () => {
+    // Regression: safeNum is number-typed only — "412.50" used to become null.
+    const rows = buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: '412.50' } }], 'Sam');
+    expect(rows[0].doc_total).toBe(412.5);
+  });
+  it('buildAppliedBillRows maps garbage and empty doc_total to null, not NaN', () => {
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: 'abc' } }], 'S')[0].doc_total).toBeNull();
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: '' } }], 'S')[0].doc_total).toBeNull();
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1' } }], 'S')[0].doc_total).toBeNull();
+  });
+  it('mergeServerBills fallback row keeps a string doc_total from the server', () => {
+    const merged = mergeServerBills([], [{ id: 3, doc_norm: 'inv-3', doc_number: 'INV-3', doc_total: '99.95', raw_meta: null, applied_at: '2026-07-01T10:00:00Z' }]);
+    expect(merged[0].parsed.doc_total).toBe(99.95);
+  });
+  it('mergeServerBills tolerates an unparseable applied_at (sorts last, blank uploadedAt, no crash)', () => {
+    const merged = mergeServerBills([], [
+      { id: 1, doc_norm: 'inv-a', doc_number: 'INV-A', applied_at: 'not-a-date' },
+      { id: 2, doc_norm: 'inv-b', doc_number: 'INV-B', applied_at: '2026-07-06T00:00:00Z' },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].id).toBe('srv-2');
+    expect(merged[1].id).toBe('srv-1');
+    expect(merged[1].uploadedAt).toBe('');
+    expect(merged[1].uploadedTs).toBe(0);
+  });
+  it('buildAppliedBillRows is not idempotent — same bill twice yields two identical-key rows (caller/DB dedups)', () => {
+    const b = { parsed: { doc_number: 'INV-1', doc_total: 10 } };
+    const rows = buildAppliedBillRows([b, b], 'S');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].doc_norm).toBe(rows[1].doc_norm);
+  });
+});

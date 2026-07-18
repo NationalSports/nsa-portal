@@ -51,6 +51,10 @@ function twaP(idx, s = true) { const t = TWA[idx || 0] || TWA[0]; if (!t) return
 function twnP(size, tw = false, s = true) { const r = TWN.find(x => x.size === size) || TWN[0]; if (!r) return 0; return s ? safeNum(tw ? r.sell2 : r.sell1) : safeNum(tw ? r.cost2 : r.cost1) }
 
 function dP(d, q, artFiles, cq) {
+  // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
+  // must not NaN the SO totals — treat it as absent so the computed price applies.
+  // Numeric strings ('12.5') still pass through. Synced with App.js dP / decoPricing.js _dPInner.
+  if (d && d.sell_override != null && !Number.isFinite(Number(d.sell_override))) d = { ...d, sell_override: null };
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
@@ -765,7 +769,10 @@ const PROMO_SHIP_MULT = 1.25;
 
 function calcPromoItemSell(item) {
   if (safeNum(item.retail_price) > 0) return safeNum(item.retail_price);
-  return safeNum(item.nsa_cost) * 2.0;
+  // Same >0 guard as retail_price: a negative nsa_cost (cost-correction typo) must not
+  // produce a negative sell price flowing into promoRev/customerPays.
+  const c = safeNum(item.nsa_cost);
+  return c > 0 ? c * 2.0 : 0;
 }
 
 // Calculate promo-adjusted totals for an order

@@ -19,8 +19,10 @@ export const BOX_STATUS_META = {
 };
 
 // Total units across a contents array ([ {sku,name,color,so_id,if_id,sizes:{S:3}} ]).
+// Non-positive cells are dropped, matching sumBoxContents — a corrupted negative size
+// cell must not shrink the unit count printed on a physical box label.
 export const boxUnits = (contents) =>
-  (contents || []).reduce((a, e) => a + Object.values(e?.sizes || {}).reduce((b, v) => b + (+v || 0), 0), 0);
+  (contents || []).reduce((a, e) => a + Object.values(e?.sizes || {}).reduce((b, v) => b + (+v > 0 ? +v : 0), 0), 0);
 
 const _entryKey = (e) => [e?.sku || '', e?.color || '', e?.so_id || '', e?.if_id || ''].join('|');
 

@@ -1486,6 +1486,10 @@ function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return
 function twaP(idx,s=true){const t=TWA[idx||0]||TWA[0];if(!t)return 0;return s?safeNum(t.sell):safeNum(t.cost)}
 function twnP(size,tw=false,s=true){const r=TWN.find(x=>x.size===size)||TWN[0];if(!r)return 0;return s?safeNum(tw?r.sell2:r.sell1):safeNum(tw?r.cost2:r.cost1)}
 function dP(d,q,artFiles,cq){
+  // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
+  // must not NaN the totals — treat it as absent so the computed price applies.
+  // Synced with businessLogic.js dP / decoPricing.js _dPInner.
+  if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d={...d,sell_override:null};
   const pq=cq||q;
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD

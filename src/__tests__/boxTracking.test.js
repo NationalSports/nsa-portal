@@ -181,3 +181,13 @@ describe('buildBoxLabel', () => {
     expect(BOX_STATUS_META.weird).toBeUndefined();
   });
 });
+
+// ── Adversarial-input regressions (2026-07-18 sweep) ──
+describe('boxUnits negative-cell hardening', () => {
+  it('ignores negative size cells instead of subtracting them (label unit counts)', () => {
+    // Regression: a corrupted contents row { S: -3 } used to shrink the printed count.
+    expect(boxUnits([{ sku: 'A', sizes: { S: -3, M: 5 } }])).toBe(5);
+    expect(boxUnits([{ sku: 'A', sizes: { S: '-2', M: '4' } }])).toBe(4);
+    expect(boxUnits([{ sku: 'A', sizes: { S: 'abc', M: 2 } }])).toBe(2);
+  });
+});

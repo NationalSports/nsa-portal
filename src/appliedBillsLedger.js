@@ -5,6 +5,11 @@ import { safeNum } from './safeHelpers';
 
 const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
+// Bill totals normally arrive as numbers, but can round-trip as numeric strings
+// (JSON re-parse / Postgres numeric). safeNum is number-typed only and would silently
+// null a string total — coerce here instead. Garbage still maps to 0.
+const _total = (v) => { const n = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(v)); return Number.isFinite(n) ? n : 0; };
+
 // Shape ledger rows (full, post-00184 column set) from pushed bills. One row per
 // keyable bill — a bill with neither a doc # nor an SI/S&S order # can't be keyed
 // and stays guarded by the client-side SO _bill_details scan.
@@ -24,7 +29,7 @@ export const buildAppliedBillRows = (bills, appliedBy) => {
       is_credit: !!p.is_credit,
       vendor: p.vendor || p.supplier || null,
       po_number: p.po_number || null,
-      doc_total: safeNum(p.doc_total) || null,
+      doc_total: _total(p.doc_total) || null,
       source: p.source || null,
       applied_by: appliedBy || null,
       status: 'pushed',
@@ -83,7 +88,7 @@ export const mergeServerBills = (savedBills, serverRows) => {
       is_credit: !!r.is_credit,
       vendor: r.vendor || undefined,
       po_number: r.po_number || undefined,
-      doc_total: safeNum(r.doc_total) || undefined,
+      doc_total: _total(r.doc_total) || undefined,
       source: r.source || undefined,
     };
     const ts = r.applied_at ? Date.parse(r.applied_at) : 0;
