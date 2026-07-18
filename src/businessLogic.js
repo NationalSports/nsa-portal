@@ -54,7 +54,8 @@ function dP(d, q, artFiles, cq) {
   // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
   // must not NaN the SO totals — treat it as absent so the computed price applies.
   // Numeric strings ('12.5') still pass through. Synced with App.js dP / decoPricing.js _dPInner.
-  if (d && d.sell_override != null && !Number.isFinite(Number(d.sell_override))) d = { ...d, sell_override: null };
+  // (Object.assign, not spread — see the no-spread NOTE above recalcJobFulfillment.)
+  if (d && d.sell_override != null && !Number.isFinite(Number(d.sell_override))) d = Object.assign({}, d, { sell_override: null });
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';

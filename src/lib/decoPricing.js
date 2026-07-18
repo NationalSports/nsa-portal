@@ -104,7 +104,8 @@ function _dPInner(T,d,q,artFiles,cq){
   // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
   // must not NaN the totals — treat it as absent so the computed price applies.
   // Synced with App.js dP / businessLogic.js dP.
-  if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d={...d,sell_override:null};
+  // (Object.assign, not object spread — this file is CJS; see the NOTE at the top.)
+  if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d=Object.assign({},d,{sell_override:null});
   const SP=T.SP,EM=T.EM,DTF=T.DTF;
   const _revMult=d.reversible?2:1;
   // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback

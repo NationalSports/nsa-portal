@@ -7,6 +7,13 @@
  * a mocked stripe module, and spies on the reused webstore-checkout helpers.
  */
 process.env.STRIPE_SECRET_KEY = 'sk_test_123';
+process.env.REACT_APP_SUPABASE_URL = 'https://test.supabase.co';
+process.env.SUPABASE_SERVICE_ROLE_KEY = 'service-key';
+
+// Only exercised by the `handler` describe block below (auth/body-parsing
+// gate) — every other describe in this file drives the exported action
+// functions directly with a fake supabase client, never through getSupabaseAdmin().
+jest.mock('@supabase/supabase-js', () => ({ createClient: jest.fn() }));
 
 jest.mock('stripe', () => {
   const paymentIntents = { create: jest.fn(), retrieve: jest.fn() };
@@ -25,6 +32,7 @@ jest.mock('../../netlify/functions/_webstoreEmail', () => ({
 }));
 
 const stripeMock = require('stripe');
+const { createClient } = require('@supabase/supabase-js');
 const emailMock = require('../../netlify/functions/_webstoreEmail');
 const ts = require('../../netlify/functions/teamshop-checkout');
 const qq = require('../../netlify/functions/quickorder-quote');
@@ -471,6 +479,31 @@ describe('place_order_po', () => {
   });
 });
 
+// decodePoPdf's size cap — the 10MB bucket limit (00201) mirrored in the
+// function so an over-cap upload 400s before ever touching storage. Exercised
+// directly (not through placeOrderPo) to pin the exact byte boundary; the
+// "over-10MB all 400" case above only proves comfortably-over-cap rejects.
+describe('decodePoPdf — size boundary', () => {
+  const PO_MAX_PDF_BYTES = 10 * 1024 * 1024; // must track the source's PO_MAX_PDF_BYTES
+  const pdfOfSize = (n) => Buffer.concat([Buffer.from('%PDF-'), Buffer.alloc(n - 5)]);
+
+  test('a PDF at exactly the 10MB limit passes', () => {
+    const buf = pdfOfSize(PO_MAX_PDF_BYTES);
+    expect(buf.length).toBe(PO_MAX_PDF_BYTES);
+    const res = ts.decodePoPdf(buf.toString('base64'));
+    expect(res.error).toBeUndefined();
+    expect(res.buf.length).toBe(PO_MAX_PDF_BYTES);
+  });
+
+  test('a PDF one byte over the limit is rejected', () => {
+    const buf = pdfOfSize(PO_MAX_PDF_BYTES + 1);
+    expect(buf.length).toBe(PO_MAX_PDF_BYTES + 1);
+    const res = ts.decodePoPdf(buf.toString('base64'));
+    expect(res.error).toMatch(/too large/i);
+    expect(res.buf).toBeUndefined();
+  });
+});
+
 // Stage 7 — convert_order → create_teamshop_sales_order RPC (migration 00196).
 // The RPC re-guards everything inside its transaction; these tests pin the
 // function-level pre-guards (paid + teamshop + replay) and the retry contract.
@@ -534,5 +567,36 @@ describe('convert_order', () => {
     const sb = fakeSb({ 'webstore_orders.select': [{ data: [], error: null }] });
     const res = await ts.convertOrder(sb, { order_id: 'nope' });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+// exports.handler — the Netlify entrypoint's own auth + body-parsing gate,
+// ahead of everything the describes above drive directly (quoteTotals/
+// placeOrder/... take a pre-built sb and coach, bypassing verifyCoach and
+// JSON.parse entirely). Uses the mocked @supabase/supabase-js createClient
+// so getSupabaseAdmin() never touches a real network.
+describe('handler — auth and body-parsing gate', () => {
+  const post = (body, headers) => ({ httpMethod: 'POST', headers: headers || {}, body: typeof body === 'string' ? body : JSON.stringify(body || {}) });
+  let sb;
+  beforeEach(() => {
+    sb = fakeSb({}); // any call here would show up in sb.calls — proof "nothing written"
+    createClient.mockReturnValue(sb);
+  });
+
+  test('missing Authorization header → 401, nothing written', async () => {
+    const res = await ts.handler(post({ action: 'quote_totals', customer_id: 'custA', lines: LINES }));
+    expect(res.statusCode).toBe(401);
+    expect(sb.calls).toHaveLength(0);
+  });
+
+  test('non-Bearer Authorization → 401, nothing written', async () => {
+    const res = await ts.handler(post({ action: 'quote_totals', customer_id: 'custA', lines: LINES }, { authorization: 'Basic dXNlcjpwYXNz' }));
+    expect(res.statusCode).toBe(401);
+    expect(sb.calls).toHaveLength(0);
+  });
+
+  test('malformed JSON body → 400', async () => {
+    const res = await ts.handler(post('{not valid json', { authorization: 'Bearer sometoken' }));
+    expect(res.statusCode).toBe(400);
   });
 });
