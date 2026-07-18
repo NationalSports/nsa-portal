@@ -19,7 +19,7 @@ import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoI
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
-import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
+import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
 
@@ -8342,7 +8342,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {onAssignTodo&&isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&batchReadyPopup.vendorKey==='adidas'&&<button className="btn btn-secondary" style={{color:'#0f766e',borderColor:'#5eead4'}} title="Assign this batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, then stops before submit for your review" onClick={()=>{
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
             if(!bot){nf('No bot user found — apply the bot migration first','error');return}
-            const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id});
+            const{title,description,bot_payload}=buildBotCartPayload({poNumber:batchPONum||'',vendorName:batchReadyPopup.vendorName,batches:liveBatches,soId:o.id,shipTo:resolveShipToClient(o.id,[o],allCustomers)});
             onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:1,bot_payload});
             setBatchReadyPopup(null);
           }}>🤖 Assign to Claude</button>}

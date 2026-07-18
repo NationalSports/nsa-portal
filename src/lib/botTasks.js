@@ -49,6 +49,7 @@ function batchesToLines(batches) {
         qty: it.qty || 0,
         unit_cost: it.unit_cost || 0,
         sizes: it.sizes || {},
+        drop_ship: it.drop_ship === true,
         source_batch_id: bp.id || null,
         source_po_id: bp.po_id || null,
         so_id: bp.so_id || null,
@@ -59,19 +60,39 @@ function batchesToLines(batches) {
   return lines;
 }
 
+// Client-side mirror of the worker's resolveShipTo: for a drop-ship order,
+// the delivery address is the SO's ship-to customer (ship_to_id, or the SO's
+// own customer when unset/'default'). Returns {name,line1,city,state,zip} or
+// null when the SO/customer has no usable shipping address.
+export function resolveShipToClient(soId, allOrders, customers) {
+  const so = (allOrders || []).find((s) => s.id === soId);
+  if (!so) return null;
+  const addrCustId = (so.ship_to_id && so.ship_to_id !== 'default') ? so.ship_to_id : so.customer_id;
+  const c = (customers || []).find((x) => x.id === addrCustId);
+  if (!c || !(c.shipping_address_line1 || c.shipping_city)) return null;
+  return {
+    name: c.name || c.alpha_tag || '',
+    line1: c.shipping_address_line1 || '',
+    city: c.shipping_city || '',
+    state: c.shipping_state || '',
+    zip: c.shipping_zip || '',
+  };
+}
+
 // Build the title/description/bot_payload for an "add all items to the vendor
 // cart" task from a ready batch. The caller hands the result to onAssignTodo,
 // which opens the standard Assign Task modal pre-filled for the Claude bot.
-export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null }) {
+export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null, shipTo = null }) {
   const target = botTargetForVendor(vendorName);
   const lines = batchesToLines(batches);
   const totalQty = lines.reduce((a, l) => a + (l.qty || 0), 0);
   const totalCost = lines.reduce((a, l) => a + (l.qty || 0) * (l.unit_cost || 0), 0);
   const label = vendorName || target;
+  const dropShip = lines.some((l) => l.drop_ship);
 
   return {
     title: `Add ${lines.length} item${lines.length === 1 ? '' : 's'} (${totalQty} pcs) to ${label} cart · PO ${poNumber || '—'}`,
-    description: `Log in to ${label}, add every line in the attached list to the cart at the given sizes/quantities, then enter PO# ${poNumber || '(none)'} on the cart. STOP before submitting — set bot_status to needs_review and comment here for approval.`,
+    description: `Log in to ${label}, add every line in the attached list to the cart at the given sizes/quantities, then enter PO# ${poNumber || '(none)'} on the cart.${dropShip ? ' DROP SHIP — set the delivery location to the program address, not the NSA warehouse.' : ''} STOP before submitting — set bot_status to needs_review and comment here for approval.`,
     so_id: soId,
     bot_payload: {
       task_type: 'add_to_cart',
@@ -79,6 +100,8 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
       vendor_name: vendorName || null,
       po_number: poNumber || null,
       lines,
+      drop_ship: dropShip,
+      ship_to: dropShip ? (shipTo || null) : null,
       totals: { line_count: lines.length, qty: totalQty, cost: Number(totalCost.toFixed(2)) },
     },
   };
