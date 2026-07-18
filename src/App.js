@@ -19,7 +19,7 @@ import * as fabric from 'fabric';
 // are instead loaded via dynamic import() at their call sites (spreadsheet upload, PDF/SVG
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
-import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
+import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, scanTokenOf, artProdFilesReady, artProdFilesConfirmed, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
@@ -1062,7 +1062,11 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
   const _itemSectionsHtml=itemSectionHtmls.map((s,i)=>
     '<div style="'+(i<itemSectionHtmls.length-1?'page-break-after:always':'')+'">'+s+'</div>'
   ).join('');
-  // Embroidery: machine-design barcodes block (sync — async PDF appendix handled by caller)
+  // Embroidery: machine-design barcodes block (sync — async PDF appendix handled by caller).
+  // Rows are grouped by scan token: two DSTs from one digitizer project (…_FRONT/_BACK share a
+  // DG number) would otherwise print two IDENTICAL barcodes as if they were distinct — the
+  // machine's substring search matches both, so the sheet prints ONE barcode for the group and
+  // lists every design under it (scan → the panel shows the matching files → operator picks).
   const isEmb=j.deco_type==='embroidery';
   const embDesigns=[];
   if(isEmb){const _seen=new Set();
@@ -1070,12 +1074,26 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
       if(!isDstFile(f))return;
       const base=fileDisplayName(f).replace(/\.[^.]+$/,'');const k=base.toUpperCase();
       if(!base||_seen.has(k))return;_seen.add(k);
-      embDesigns.push({base,dg:dgCodeOf(base),art:a?.name||''});
+      embDesigns.push({base,dg:dgCodeOf(base),scan:scanTokenOf(base),art:a?.name||''});
     })});
   }
+  const embScanGroups=[];
+  {const _byTok=new Map();
+    embDesigns.forEach(d=>{
+      if(!d.scan){embScanGroups.push({scan:null,designs:[d]});return}
+      if(!_byTok.has(d.scan)){const g={scan:d.scan,designs:[]};_byTok.set(d.scan,g);embScanGroups.push(g)}
+      _byTok.get(d.scan).designs.push(d);
+    });}
   const _bcHtml=!isEmb?'':embDesigns.length
-    ?'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">Barcode = DST file name. Scan at the machine to pull the design from the design server.</div><div style="display:flex;gap:18px;flex-wrap:wrap">'
-      +embDesigns.map(d=>'<div style="text-align:center"><div style="display:inline-block;background:#fff">'+(barcodeSvg(d.base)||'<div style="font-size:12px;font-weight:700;padding:8px">'+d.base+'</div>')+'</div>'+((d.dg||d.art)?'<div style="font-size:10px;font-weight:700;color:#334155">'+[d.dg,d.art].filter(Boolean).join(' · ')+'</div>':'')+'</div>').join('')
+    ?'<div style="margin:8px 0 12px;padding:12px;background:#fff;border:2px solid #1e293b;border-radius:8px;page-break-inside:avoid"><div style="font-size:13px;font-weight:800;color:#1e293b">🧵 MACHINE DESIGNS — SCAN TO LOAD</div><div style="font-size:9px;color:#64748b;margin-bottom:8px">At the machine: scan USB-Search, then a barcode below, then OK — the drive search finds the design (if several match, pick from the panel\'s list). Rows without a barcode: search the drive by the file name shown.</div><div style="display:flex;gap:18px;flex-wrap:wrap">'
+      +embScanGroups.map(g=>{
+        const label=g.designs.map(d=>[d.dg,d.art].filter(Boolean).join(' · ')||d.base).filter((v,i,a)=>a.indexOf(v)===i).join('<br/>');
+        const svg=g.scan?barcodeSvg(g.scan,{format:'CODE39'}):'';
+        return '<div style="text-align:center;max-width:280px">'+(svg
+          ?'<div style="display:inline-block;background:#fff">'+svg+'</div>'
+          :'<div style="font-size:12px;font-weight:700;padding:8px;border:1px dashed #cbd5e1;border-radius:6px">'+g.designs[0].base+'<div style="font-size:9px;font-weight:600;color:#b91c1c">no scannable code — search by name</div></div>')
+          +(label?'<div style="font-size:10px;font-weight:700;color:#334155">'+label+'</div>':'')+'</div>';
+      }).join('')
       +'</div></div>'
     :'<div style="margin:8px 0 12px;padding:10px 12px;background:#fef2f2;border:2px solid #fecaca;border-radius:8px;font-size:12px;font-weight:800;color:#b91c1c">⚠ NO DST FILE ATTACHED — upload the digitizer\'s .DST to this job\'s art files to print machine barcodes.</div>';
   // Non-embroidery jobs (DTF / screen print / vinyl) have no DST/DG to scan, so the

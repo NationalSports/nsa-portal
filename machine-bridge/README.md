@@ -18,7 +18,17 @@ Do this once you have a shell on the Pi (`ssh nsa@raspberrypi.local`).
 sudo dd if=/dev/zero of=/piusb.bin bs=1M count=1024
 sudo mkdosfs /piusb.bin -F 32 -I
 sudo mkdir -p /mnt/usbdrive
-sudo mount -o loop /piusb.bin /mnt/usbdrive
+sudo mount -o loop,uid=$(id -u nsa),gid=$(id -g nsa) /piusb.bin /mnt/usbdrive
+```
+
+**Add it to `/etc/fstab` too** — without this, the mount does not survive a
+reboot. `g_mass_storage` needs a reboot to take effect (step 2), and
+`emb_bridge.py` has no way to tell that `/mnt/usbdrive` silently reverted to
+a plain empty folder — it will keep "successfully" syncing files into that
+folder while the machine's actual USB image stays stale or blank:
+
+```bash
+echo "/piusb.bin /mnt/usbdrive vfat loop,uid=$(id -u nsa),gid=$(id -g nsa),nofail 0 0" | sudo tee -a /etc/fstab
 ```
 
 **2. Enable the mass-storage gadget.** In `/boot/firmware/config.txt`:
@@ -75,16 +85,18 @@ sync, and some machines cache their file listing until the drive is
 re-inserted.
 
 The standard fix, once we're on-site and can test against the actual
-Barudan's tolerance for it: briefly unbind the gadget's UDC before each sync
-and rebind after, so only one side has the file open at a time. From the
+Barudan's tolerance for it: briefly drop the gadget before each sync and
+bring it back after, so only one side has the file open at a time. From the
 Barudan's side this looks like a ~1-2 second drive removal/re-insertion per
-sync cycle:
+sync cycle. This setup loads the mass-storage gadget as a kernel module (see
+step 2 — `modules-load=dwc2,g_mass_storage` in `cmdline.txt`), so it's a
+module reload rather than a configfs UDC unbind:
 
 ```bash
-# unbind (before sync)
-echo "" | sudo tee /sys/kernel/config/usb_gadget/*/UDC
-# rebind (after sync)
-echo "$(ls /sys/class/udc)" | sudo tee /sys/kernel/config/usb_gadget/*/UDC
+# drop (before sync)
+sudo modprobe -r g_mass_storage
+# bring back (after sync)
+sudo modprobe g_mass_storage file=/piusb.bin stall=0 removable=1
 ```
 
 Not wired into `emb_bridge.py` yet — deliberately, since the right blip

@@ -349,9 +349,33 @@ export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))
 // and keep the file-based fallbacks below.
 export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
 // Digitizer design code — the digitizing house stamps a "DG" number into every delivered
-// file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
-// "DG648617"; null when the name carries no DG number.
-export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i);return m?'DG'+m[1]:null};
+// file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). ONE regex feeds all
+// the DG helpers below (dgCodeOf/dgScanOf/scanTokenOf) so the pattern can never drift between
+// them; a hand-synced CommonJS mirror of dgCodeOf also lives in
+// netlify/functions/emb-machine-manifest.js — keep that one in step too.
+const _DG_RE=/DG[-_ ]?(\d{4,})/i;
+// Normalized display/dedup form: always "DG<digits>"; null when no DG number.
+export const dgCodeOf=name=>{const m=String(name||'').match(_DG_RE);return m?'DG'+m[1]:null};
+// DG token EXACTLY as it appears in the file name (separator preserved), uppercased for the
+// machine barcode. The Barudan "USB Flash Drive Search" substring-matches the scanned value
+// against the .DST file names on the drive, so it must be a literal substring — dgCodeOf
+// strips the dash for display/dedup and would NOT match "DG-619597_DONS_SB_Football.DST".
+export const dgScanOf=name=>{const m=String(name||'').match(_DG_RE);return m?m[0].toUpperCase():null};
+// Best machine-scannable token for a DST base name, or null. Constraints (Barudan): the
+// scanned value must be a VERBATIM substring of the file name (search is a substring match;
+// no case-folding is assumed) AND encodable in CODE39 (A–Z 0–9 - . space $ / + % — notably
+// NO underscore, no lowercase), AND ≤30 chars (the panel's scan limit). Preference order:
+//   1. the full base name (unique per file) when it is verbatim-CODE39-safe;
+//   2. the DG token as written (e.g. "DG-619597") when the separator is safe;
+//   3. the bare digits ("619597") — always safe and still a verbatim substring — when the
+//      token has an unsafe separator (DG_619597) or lowercase "dg";
+//   4. null (no scannable token; the sheet prints a text tile instead).
+const _CODE39_SAFE=/^[A-Z0-9\-. $/+%]+$/;
+export const scanTokenOf=name=>{const base=String(name||'');
+  if(base&&base.length<=30&&_CODE39_SAFE.test(base))return base;
+  const m=base.match(_DG_RE);if(!m)return null;
+  if(_CODE39_SAFE.test(m[0]))return m[0];
+  return m[1]};
 // Explicit confirmation that production files are done: the per-design checkbox (prod_files_attached),
 // or, for embroidery, a .dst attached to an art file whose CURRENT art is signed off
 // (status==='approved') — the .dst IS the production file, so a legit one confirms even when the

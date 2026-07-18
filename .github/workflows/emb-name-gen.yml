@@ -1,0 +1,82 @@
+name: emb-name-gen
+
+# Generates per-piece embroidery DSTs (player names & numbers) from a job's
+# roster plan via Ink/Stitch, headless. Trigger with a payload built by
+# src/embNameGen.js buildEmbNameGen() (see scripts/emb-name-gen/README.md), or
+# with no payload to run the built-in SELFTEST (one name + one number).
+#
+# Output: workflow artifact "emb-name-dsts" containing NNN-SIZE-KIND-IDENT.DST
+# files in sew order plus manifest.json. The portal-side attach/upload step is
+# the next increment; this workflow is deliberately self-contained (no secrets).
+
+on:
+  workflow_dispatch:
+    inputs:
+      payload:
+        description: 'JSON plan: {"job_id","fingerprint","pieces":[{seq,size,kind,text,font,heightIn,filename}]} — leave empty for selftest'
+        required: false
+        default: ''
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # wx/GTK are imported at Ink/Stitch startup even for headless extensions,
+      # so the GTK3 runtime + a virtual display are required (verified against
+      # v3.2.2 source: lib/extensions/__init__.py imports the wx-based Lettering).
+      - name: Install system libraries
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q xvfb libgtk-3-0 libglib2.0-0 libgdk-pixbuf-2.0-0 \
+            libpango-1.0-0 libpangocairo-1.0-0 libcairo2 libsm6 libxtst6 libnotify4 libxxf86vm1 \
+            libwayland-server0 libwayland-client0 libwayland-cursor0 libwayland-egl1 \
+            libegl1 libgl1 libgbm1
+
+      - name: Cache Ink/Stitch bundle
+        uses: actions/cache@v4
+        with:
+          path: inkstitch/
+          key: inkstitch-3.2.2-linux-x86_64-v1
+
+      - name: Install Ink/Stitch (standalone bundle, pinned)
+        run: |
+          set -euo pipefail
+          if [ ! -f inkstitch/bin/inkstitch ]; then
+            wget -q https://github.com/inkstitch/inkstitch/releases/download/v3.2.2/inkstitch-3.2.2-linux-x86_64.tar.xz
+            tar -xf inkstitch-3.2.2-linux-x86_64.tar.xz
+          fi
+          # Discover the binary rather than hardcoding the archive layout.
+          BIN="$(find . -maxdepth 3 -type f -name inkstitch | head -1)"
+          test -n "$BIN" || { echo "inkstitch binary not found in archive"; tar -tf inkstitch-3.2.2-linux-x86_64.tar.xz | head -40; exit 1; }
+          chmod +x "$BIN"
+          echo "INKSTITCH_BIN=$(readlink -f "$BIN")" >> "$GITHUB_ENV"
+          # Fonts live at inkstitch/fonts while the binary is at inkstitch/bin/inkstitch —
+          # discover the dir instead of assuming it sits next to the binary.
+          FONTS_DIR="$(find . -maxdepth 3 -type d -name fonts -path '*inkstitch*' | head -1)"
+          test -n "$FONTS_DIR" || { echo "fonts dir not found in archive"; find . -maxdepth 2 -type d | head -20; exit 1; }
+          echo "EMB_FONTS_DIR=$(readlink -f "$FONTS_DIR")" >> "$GITHUB_ENV"
+          echo "Bundled fonts:"; ls "$FONTS_DIR" | head -30
+
+      - name: Write payload
+        env:
+          PAYLOAD: ${{ inputs.payload }}
+        run: printf '%s' "$PAYLOAD" > payload.json
+
+      - name: Generate DSTs
+        run: python3 scripts/emb-name-gen/generate.py payload.json
+
+      - name: Diagnostics on failure
+        if: failure()
+        run: |
+          echo "--- out/ contents ---"; ls -laR out || true
+          echo "--- manifest ---"; cat out/manifest.json || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: emb-name-dsts
+          path: out/
+          if-no-files-found: warn

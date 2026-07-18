@@ -2,8 +2,11 @@
 // loaded on the machine right now. The shop-floor "machine bridge" (a Raspberry
 // Pi in USB-gadget mode, see /machine-bridge) polls this, downloads any DST it
 // doesn't already have onto its virtual USB drive, and drops designs that are no
-// longer here. The DST file name is the source of truth: it's what the
-// production-sheet barcode encodes and what the machine's USB search matches.
+// longer here. The DST file name is what the machine's USB search matches. The
+// production sheet's machine barcode now encodes a CODE39-safe scan token (the
+// full file base name when it's CODE39-safe, else the DG token/digits — see
+// scanTokenOf in src/constants.js); this manifest still matches/dedupes designs
+// by the literal DST file name.
 //
 // Auth: a single shared token (EMB_MACHINE_TOKEN) sent as the x-machine-token
 // header or ?token=. It's a shop device, not a user — a static token is the
@@ -28,6 +31,9 @@ function cors() {
 
 // Mirror of dgCodeOf / isDstFile from src/constants.js — duplicated because the
 // functions runtime is CommonJS and can't import the ESM constants module.
+// constants.js now also has dgScanOf/scanTokenOf built on the same DG pattern —
+// if scan-token logic is ever needed server-side, mirror those rather than
+// adapting dgCodeOf (which strips the dash and would NOT match filenames).
 const dgCodeOf = (name) => {
   const m = String(name || '').match(/DG[-_ ]?(\d{4,})/i);
   return m ? 'DG' + m[1] : null;
