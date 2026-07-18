@@ -29,7 +29,9 @@ export function canSnapshotLine(line) {
 // owed; the raw override value is kept alongside for display and later edits.
 export function snapshotRowFromLine(line, snappedBy) {
   const d = line.paidDate;
-  const paid_date = d
+  // Guard Invalid Date (a failed upstream parse) — otherwise the row literally writes
+  // "NaN-NaN-NaN" into paid_date.
+  const paid_date = d && !isNaN(d.getTime())
     ? d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
     : null;
   const ovr = line.ovrRaw;
@@ -85,7 +87,9 @@ export function overrideSnapshotPatch(snap, ovr, basis, baseRate) {
   const revBasis = basis === 'revenue';
   const late = snap && snap.days_to_pay != null && snap.days_to_pay > COMM_LATE_DAYS;
   const base = revBasis ? (baseRate != null ? baseRate : 0.01) : (late ? COMM_RATE_LATE : COMM_RATE_STANDARD);
-  const cleared = ovr == null || ovr === false;
+  // NaN (a blanked admin input parsed with parseFloat) counts as clearing the override —
+  // typeof NaN === 'number', so without this it would write rate: NaN / amount: NaN.
+  const cleared = ovr == null || ovr === false || (typeof ovr === 'number' && !Number.isFinite(ovr));
   const rate = cleared ? base : (typeof ovr === 'number' ? ovr : (revBasis ? base : COMM_RATE_STANDARD));
   return {
     rate,

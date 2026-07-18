@@ -1479,13 +1479,19 @@ function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0
 // Under-12 screen print is an ALL-IN flat charge (mirrors src/pricing.js spFlatShare — keep in sync).
 function spFlatShare(q,c,u=1){const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))return null;const v=SP.pr[0]?.[c-1];if(v==null||!(q>0))return null;const fs=v*u;return{sell:fs/q,cost:rQ(fs/SP.mk)/q}}
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
-function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
-function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+// Non-positive stitch counts / quantities are invalid input, not the smallest tier —
+// return 0 like spP does. Synced with businessLogic.js / decoPricing.js copies.
+function emP(st,q,s=true){if(!(st>0)||!(q>0))return 0;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
+function npP(q,tw=false,s=true){if(!(q>0))return 0;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 // Tackle twill (mirror of src/lib/decoPricing.js twaP/twnP). twaP: chest/logo by TWA index (d.dtf_size).
 // twnP: jersey number by TWN size (d.num_size) × color (d.two_color). sell (s=true) or cost.
 function twaP(idx,s=true){const t=TWA[idx||0]||TWA[0];if(!t)return 0;return s?safeNum(t.sell):safeNum(t.cost)}
 function twnP(size,tw=false,s=true){const r=TWN.find(x=>x.size===size)||TWN[0];if(!r)return 0;return s?safeNum(tw?r.sell2:r.sell1):safeNum(tw?r.cost2:r.cost1)}
 function dP(d,q,artFiles,cq){
+  // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
+  // must not NaN the totals — treat it as absent so the computed price applies.
+  // Synced with businessLogic.js dP / decoPricing.js _dPInner.
+  if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d={...d,sell_override:null};
   const pq=cq||q;
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
@@ -1509,10 +1515,10 @@ function dP(d,q,artFiles,cq){
   // Numbers
   if(d.kind==='numbers'||d.type==='number_press'){
     // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
-    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
-    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
+    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:twnP(d.num_size,d.two_color,true)),cost:twnP(d.num_size,d.two_color,false),_nq:fnq}}
+    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_suppressed?0:(d.sell_override!=null?d.sell_override:npP(useQty||1,d.two_color,true)),cost:npP(useQty||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
-  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
+  if(d.kind==='names'){const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:d.sell_suppressed?0:(useNc>0?rQ(useNc*se/q):se),cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
   if(d.kind==='twill')return{sell:d.sell_override!=null?d.sell_override:twaP(d.dtf_size,true),cost:twaP(d.dtf_size,false)};

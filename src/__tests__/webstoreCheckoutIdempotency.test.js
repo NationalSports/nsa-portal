@@ -270,3 +270,69 @@ describe('place_order idempotency + legacy fallback (pre-00171 DBs)', () => {
     expect(sb.calls.filter((c) => c.table === 'webstore_orders' && c.op === 'select')).toHaveLength(0);
   });
 });
+
+// placeOrder's money/gating checks between pricing and the write — a stale
+// client total, an over-generous coupon, and the payMode↔store.payment_mode
+// gates. All run BEFORE any order/item/RPC write, so every case here asserts
+// nothing was written in addition to the status code.
+describe('placeOrder — drift guard, coupon clamp, and payment-mode gates', () => {
+  test('stale expectedTotalCents → 409 totals_changed, with the fresh totals payload, nothing written', async () => {
+    const sb = fakeSb({ ...happyTables() });
+    const res = await checkout.placeOrder(sb, body({ expectedTotalCents: 999 })); // real total is 2000 (¢)
+    expect(res.statusCode).toBe(409);
+    const out = JSON.parse(res.body);
+    expect(out.code).toBe('totals_changed');
+    expect(out.totals.subtotal).toBe(20);
+    expect(out.totals.total).toBe(20);
+    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('a coupon discount exceeding cartTotal+shipping clamps the charged total to 0, never negative', async () => {
+    const sb = fakeSb({
+      ...happyTables(),
+      'webstore_coupons.select': [{ data: [{ code: 'BIG', active: true, kind: 'percent', value: 500, cover_shipping: true, expires_at: null, max_uses: null, used_count: 0 }], error: null }],
+      'rpc.place_webstore_order': [{ data: { order: NEW_ORDER }, error: null }],
+    });
+    // 500% "off" on a $20 cart would math out to -$80 pre-tax if unclamped.
+    const res = await checkout.placeOrder(sb, body({ couponCode: 'BIG' }));
+    expect(res.statusCode).toBe(200);
+    const out = JSON.parse(res.body);
+    expect(out.totals.total).toBe(0);
+    expect(out.totals.total).toBeGreaterThanOrEqual(0);
+  });
+
+  test('payMode "paid" on a store that only accepts unpaid → 409, nothing written', async () => {
+    const sb = fakeSb({ ...happyTables() }); // STORE.payment_mode === 'unpaid'
+    const res = await checkout.placeOrder(sb, body({ payMode: 'paid' }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/card payment isn.t enabled/i);
+    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('unpaid submission with total>0 on a paid-only store → 409, nothing written', async () => {
+    const paidOnlyStore = { ...STORE, payment_mode: 'paid' };
+    const sb = fakeSb({
+      ...happyTables(),
+      'webstores.select': [{ data: [paidOnlyStore], error: null }], // override happyTables' unpaid-only STORE
+    });
+    const res = await checkout.placeOrder(sb, body({ payMode: 'unpaid' }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/requires card payment/i);
+    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+  });
+
+  test('card total under $0.50 after a near-total coupon discount is rejected', async () => {
+    const eitherStore = { ...STORE, payment_mode: 'either' };
+    const sb = fakeSb({
+      'webstores.select': [{ data: [eitherStore], error: null }],
+      'webstore_products.select': [{ data: [WP], error: null }],
+      'webstore_storefront_products.select': [{ data: [], error: null }, { data: [SF_ROW], error: null }],
+      'webstore_coupons.select': [{ data: [{ code: 'CHEAP', active: true, kind: 'percent', value: 99, cover_shipping: true, expires_at: null, max_uses: null, used_count: 0 }], error: null }],
+    });
+    // $20 cart, 99% off → $0.20 pre-tax, well under the $0.50 Stripe minimum.
+    const res = await checkout.placeOrder(sb, body({ payMode: 'paid', couponCode: 'CHEAP' }));
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/\$0\.50/);
+    expect(sb.calls.filter((c) => c.op === 'insert' || c.op === 'rpc')).toHaveLength(0);
+  });
+});

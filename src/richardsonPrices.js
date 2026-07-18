@@ -75,8 +75,10 @@ const RICHARDSON_LEVEL4_PRICES = {
 // PTS20M + PTS20S), so exact-match falls back to prefix match (lowest price
 // wins — the "from $X.XX" semantic) and finally to longest-prefix-of-style.
 export const getRichardsonLevel4Price = (style) => {
-  if (!style) return 0;
-  const s = String(style).toUpperCase().trim();
+  const s = String(style == null ? '' : style).toUpperCase().trim();
+  // Empty AFTER trimming — a whitespace-only style must not prefix-match every key
+  // (''.startsWith('') is true for all) and return the cheapest price in the table.
+  if (!s) return 0;
   if (RICHARDSON_LEVEL4_PRICES[s] != null) return RICHARDSON_LEVEL4_PRICES[s];
   const startsWithStyle = Object.entries(RICHARDSON_LEVEL4_PRICES).filter(([k]) => k.startsWith(s));
   if (startsWithStyle.length) return Math.min(...startsWithStyle.map(([, v]) => v));

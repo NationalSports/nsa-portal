@@ -131,7 +131,9 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
     const lines = safeArr(inv?.line_items);
     lines.forEach(li => {
       const q = safeNum(li?.qty);
-      if (!q) return;
+      // Non-positive line quantities are invalid, not credits — a negative entry here
+      // would inflate "remaining to invoice" and enable over-invoicing.
+      if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
         return;

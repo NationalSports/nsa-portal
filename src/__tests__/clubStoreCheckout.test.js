@@ -225,3 +225,58 @@ describe('finalize — post-payment club conversion trigger', () => {
     expect(sb.calls.some((c) => c.op === 'rpc' && c.table === 'create_club_sales_order')).toBe(false);
   });
 });
+
+// finalize's double-charge integrity guards — every field a hostile or buggy
+// client could get wrong between "PaymentIntent confirmed in the browser" and
+// "the server flips the order to paid" must independently 409 and leave the
+// order alone. Reuses this file's fakeSb/stripeMock scaffolding; no conversion
+// RPC involved since every case here returns before that point.
+describe('finalize — double-charge integrity guards', () => {
+  const PI_ID = 'pi_123';
+  const order = () => ({ id: 'ord-guard-1', store_id: 'st-team', stripe_pi_id: PI_ID, order_source: null, so_id: null, total: 20, buyer_email: null });
+
+  beforeEach(() => {
+    stripeMock.__pi.retrieve.mockReset();
+    stripeMock.__pi.create.mockReset();
+  });
+
+  test('PI amount ≠ order total*100 → 409, order NOT flipped to paid', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 999, metadata: {} }); // order.total=20 → expects 2000
+    const ord = order();
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [ord], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: ord.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/amount does not match/i);
+    expect(sb.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+
+  test('PI status not "succeeded" → 409, order NOT flipped to paid', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'requires_action', amount: 2000, metadata: {} });
+    const ord = order();
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [ord], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: ord.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/has not completed/i);
+    expect(sb.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+
+  test('a stripePiId that does not match the order\'s own stripe_pi_id → 409, Stripe never even consulted', async () => {
+    const ord = order(); // stripe_pi_id: PI_ID
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [ord], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: ord.id, stripePiId: 'pi_attacker_supplied' });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/does not match this order/i);
+    expect(stripeMock.__pi.retrieve).not.toHaveBeenCalled();
+    expect(sb.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+
+  test('PI metadata.webstore_order_id pointing at a different order → 409, order NOT flipped to paid', async () => {
+    stripeMock.__pi.retrieve.mockResolvedValue({ id: PI_ID, status: 'succeeded', amount: 2000, metadata: { webstore_order_id: 'ord-someone-elses' } });
+    const ord = order();
+    const sb = fakeSb({ 'webstore_orders.select': [{ data: [ord], error: null }] });
+    const res = await checkout.finalize(sb, { orderId: ord.id, stripePiId: PI_ID });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body).error).toMatch(/does not belong to this order/i);
+    expect(sb.calls.some((c) => c.op === 'update')).toBe(false);
+  });
+});

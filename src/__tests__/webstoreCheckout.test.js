@@ -82,6 +82,31 @@ describe('_availForSize — on-hand + vendor + tall twin', () => {
   });
 });
 
+describe('checkStock — demand for the same product+size is summed across cart lines', () => {
+  const store = { id: 's1' };
+  const sfRow = (over) => ({ webstore_product_id: 'wp1', name: 'Tee', size_stock: { M: 5 }, vendor_size_stock: {}, on_order_qty: 0, earliest_eta: null, vendor_eta: null, track_inventory: true, inventory_source: 'adidas', ...over });
+  const sb = (row) => fakeSb({ webstore_storefront_products: { data: [row], error: null } });
+
+  test('two lines that individually fit but sum past availability are rejected as sold out', async () => {
+    const lines = [
+      { kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 3 },
+      { kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 3 },
+    ];
+    // Each line alone (3) is well under the 5 in stock — only the combined
+    // demand (6) oversells. A per-line check would wrongly let this through.
+    const r = await checkout.checkStock(sb(sfRow()), store, lines);
+    expect(r.error).toMatch(/sold out/i);
+    expect(r.error).toContain('Tee (size M)');
+    expect(r.holds).toEqual([]);
+  });
+
+  test('sanity check: the same total (5) as a single line passes and produces one merged hold', async () => {
+    const r = await checkout.checkStock(sb(sfRow()), store, [{ kind: 'single', size: 'M', wp: { id: 'wp1' }, qty: 5 }]);
+    expect(r.error).toBeNull();
+    expect(r.holds).toEqual([{ webstore_product_id: 'wp1', size: 'M', qty: 5, max_avail: 5, label: 'Tee (size M)' }]);
+  });
+});
+
 describe('checkSizesRequired — a sized item must carry a size', () => {
   const store = { id: 's1' };
   const viewRow = (over) => ({ webstore_product_id: 'wp1', name: 'Team Tee', available_sizes: ['S', 'M', 'L'], sizes_offered: null, ...over });
@@ -265,5 +290,46 @@ describe('priceCart — bundle component qty is catalog-authoritative (fulfillme
     });
     const r = await checkout.priceCart(sb, store, [{ webstore_product_id: 'wpB', qty: 1, components: [{ product_id: 'c1', size: 'M' }] }]);
     expect(r.lines[0].components[0].qty).toBe(1);
+  });
+});
+
+describe('priceCart — cart-size cap and qty tampering', () => {
+  const store = { id: 's1', fundraise_enabled: false };
+  const wpTee = { id: 'wp1', store_id: 's1', kind: 'single', retail_price: 20, active: true, takes_name: false, takes_number: false, name_upcharge: 0, display_name: 'Tee', variant_label: null, image_url: null };
+  const sb = () => fakeSb({
+    webstore_products: { data: [wpTee], error: null },
+    webstore_storefront_products: { data: [], error: null },
+    webstore_bundle_items: { data: [], error: null },
+  });
+  const line = (over) => ({ webstore_product_id: 'wp1', size: 'M', qty: 1, ...over });
+
+  test('a 61-line cart is rejected as too large', async () => {
+    const cart = Array.from({ length: 61 }, () => line());
+    const r = await checkout.priceCart(sb(), store, cart);
+    expect(r.error).toMatch(/cart too large/i);
+    expect(r.lines).toBeUndefined();
+  });
+
+  test('a 60-line cart (the boundary) is accepted', async () => {
+    const cart = Array.from({ length: 60 }, () => line());
+    const r = await checkout.priceCart(sb(), store, cart);
+    expect(r.error).toBeUndefined();
+    expect(r.lines).toHaveLength(60);
+    expect(r.subtotal).toBe(1200); // 60 * $20
+  });
+
+  test('qty tampering clamps into [1, 100] with truncation, never trusting the raw client value', async () => {
+    const cases = [
+      [-5, 1],      // negative → floor of 1
+      [0, 1],       // zero is falsy in the `|| 1` fallback → floor of 1
+      ['abc', 1],   // non-numeric → NaN → floor of 1
+      [2.9, 2],     // fractional → parseInt truncates, no rounding up
+      [99999, 100], // absurd qty → ceiling of 100
+    ];
+    for (const [raw, expected] of cases) {
+      const r = await checkout.priceCart(sb(), store, [line({ qty: raw })]);
+      expect(r.error).toBeUndefined();
+      expect(r.lines[0].qty).toBe(expected);
+    }
   });
 });

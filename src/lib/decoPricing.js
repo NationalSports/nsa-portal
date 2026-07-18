@@ -78,8 +78,10 @@ function spP(T,q,c,s=true){const SP=T.SP;const bi=SP.bk.findIndex(b=>q>=b.min&&q
 // lines); null outside bracket 0. Underbase scales the flat charge like it scales the tiers.
 function spFlatShare(T,q,c,u=1){const SP=T.SP;const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))return null;const v=SP.pr[0]?.[c-1];if(v==null||!(q>0))return null;const fs=v*u;return{sell:fs/q,cost:rQ(fs/SP.mk)/q}}
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
-function emP(T,st,q,s=true){const EM=T.EM;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
-function npP(T,q,tw=false,s=true){const NP=T.NP;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+// Non-positive stitch counts / quantities are invalid input, not the smallest tier —
+// return 0 like spP does. Synced with businessLogic.js and App.js copies.
+function emP(T,st,q,s=true){if(!(st>0)||!(q>0))return 0;const EM=T.EM;const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
+function npP(T,q,tw=false,s=true){if(!(q>0))return 0;const NP=T.NP;const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
 // Tackle-twill chest/logo: flat per-application price from the TWA menu by index (stored on the
 // deco's dtf_size field — reused as the twill menu index; kind:'twill' disambiguates, so no new
 // column). Returns sell (s=true) or cost. Falls back to the first row if the index is out of range.
@@ -101,6 +103,11 @@ function dP(T,d,q,artFiles,cq){
   return _r;
 }
 function _dPInner(T,d,q,artFiles,cq){
+  // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
+  // must not NaN the totals — treat it as absent so the computed price applies.
+  // Synced with App.js dP / businessLogic.js dP.
+  // (Object.assign, not object spread — this file is CJS; see the NOTE at the top.)
+  if(d&&d.sell_override!=null&&!Number.isFinite(Number(d.sell_override)))d=Object.assign({},d,{sell_override:null});
   const SP=T.SP,EM=T.EM,DTF=T.DTF;
   const _revMult=d.reversible?2:1;
   // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback
@@ -129,15 +136,15 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='art'&&!d.art_file_id&&d.cost_each!=null)return{sell:safeNum(d.sell_override)||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
   if(d.type==='embroidery'){const c=emP(T,d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
+  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||Math.max(0,safeNum(d.num_qty))||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}
     // Tackle twill numbers: flat per-application price from TWN (by num_size × two_color), NOT the
     // qty-tiered npP table. _nq (application count) still doubles for front+back and reversible.
-    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
-    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
+    if(d.num_method==='tackle_twill'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq>0?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:twnP(T,d.num_size,d.two_color,true),cost:twnP(T,d.num_size,d.two_color,false),_nq:fnq}}
+    const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:Math.max(0,safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(T,fnq||1,d.two_color,true),cost:npP(T,fnq||1,d.two_color,false),_nq:fnq}};
   // sell_override honors an explicit 0 (nullish check, matching the screen_print/embroidery
   // branches) — the falsy-|| form silently re-added the $6 default over a deliberate zero
   // (club conversion writes sell_override=0: names revenue is already inside unit_sell).
-  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
+  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||Math.max(0,safeNum(d.name_qty))||0;const se=safeNum(d.sell_override!=null?d.sell_override:(d.sell_each||6));const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
   if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}}
   // sell_override honors an explicit 0 (nullish, not falsy-||) — synced with the App.js /
   // businessLogic.js / pricing.js copies so a deliberate $0 override isn't overwritten.

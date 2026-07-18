@@ -117,3 +117,33 @@ describe('overrideSnapshotPatch', () => {
     expect(overrideSnapshotPatch({ gp: { gp: 200 }, days_to_pay: 10 }, null)).toEqual({ rate: COMM_RATE_STANDARD, amount: 60, override: null });
   });
 });
+
+// ── Adversarial-input regressions (2026-07-18 sweep) ──
+describe('malformed-input hardening', () => {
+  test('snapshotRowFromLine: an Invalid Date paidDate writes null, not "NaN-NaN-NaN"', () => {
+    const line = paidLine();
+    line.paidDate = new Date('garbage');
+    expect(snapshotRowFromLine(line, 'Sam').paid_date).toBeNull();
+  });
+  test('overrideSnapshotPatch: NaN override (blanked admin input) clears instead of writing NaN money', () => {
+    const patch = overrideSnapshotPatch({ gp: { gp: 200 }, days_to_pay: 120 }, NaN);
+    expect(patch).toEqual({ rate: COMM_RATE_LATE, amount: 30, override: null });
+    const patch2 = overrideSnapshotPatch({ gp: { gp: 200 }, days_to_pay: 10 }, Infinity);
+    expect(patch2).toEqual({ rate: COMM_RATE_STANDARD, amount: 60, override: null });
+  });
+  // Characterizations: pinned so these can't drift silently.
+  test('canSnapshotLine: hydration flags simply ABSENT (unknown, not false) still allow freezing — optimistic by design', () => {
+    const line = paidLine();
+    delete line.so._itemsHydrated;
+    delete line.so._posHydrated;
+    delete line.inv._paymentsHydrated;
+    expect(canSnapshotLine(line)).toBe(true);
+  });
+  test('applySnapshotToLine: legacy snapshot with no gp falls back to LIVE gp while commAmt stays frozen (documented mixed-era display)', () => {
+    const line = paidLine();
+    const out = applySnapshotToLine(line, { rate: 0.3, amount: 60, paid_date: '2026-06-10', days_to_pay: 12 }, parseDate);
+    expect(out.gp).toBe(line.gp); // live fallback — snapshot rows written before GP capture
+    expect(out.commAmt).toBe(60);
+    expect(out.snapped).toBe(true);
+  });
+});
