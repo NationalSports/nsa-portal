@@ -48,7 +48,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -1430,6 +1430,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return;}
     setWhSaving(true);
     try{
+      // Summary toast fires FIRST: nf replaces the current toast, so firing it after the
+      // receive handlers was clobbering the "🎽 Ready for decoration" notice they raise.
+      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
       // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
       // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
       // clobber each other. Inventory POs each target a distinct record, so they fire directly.
@@ -1438,8 +1441,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
         else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
       });
-      Object.entries(soLines).forEach(([soId,lines])=>{if(lines.length>0)onReceiveSOPO&&onReceiveSOPO(soId,lines)});
-      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
+      // Batch handler applies all SOs then prints ONE combined job — separate per-SO calls
+      // each open a print window, and iPad Safari blocks every pop-up after the first.
+      const entries=Object.entries(soLines).filter(([,lines])=>lines.length>0).map(([soId,lines])=>({soId,lines}));
+      if(entries.length>0){
+        if(onReceiveSOPOBatch)onReceiveSOPOBatch(entries);
+        else entries.forEach(e=>onReceiveSOPO&&onReceiveSOPO(e.soId,e.lines));
+      }
       setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
     }finally{setWhSaving(false);}
   };
