@@ -113,10 +113,20 @@ NOT start at XS; they run **2XS, XS, S, M, L, XL, ...**. Read the header above
 a cell before typing.
 - Example "XS:2 S:11 M:8 L:2": put 2 under **XS** (the 2nd column, not 2XS),
   11 under **S**, 8 under **M**, 2 under **L**; leave all other columns blank.
-- After entering a row, re-read it and confirm each qty sits under the right
-  header and the row total matches the line's total. Fix any mismatch.
+- Enter ONE product row at a time. A multi-cell fill can silently miss a cell.
+- **A size cell only SAVES when focus leaves it.** After typing the LAST cell
+  of each row — and especially the last cell overall — press Tab or click a
+  neutral spot on the page so it commits. A value that is typed but never
+  blurred looks correct on screen yet is silently lost.
 - If you changed the delivery date AFTER entering quantities, re-check the
   rows — a date change can clear cells; re-enter anything that vanished.
+
+**Mandatory read-back:** after ALL rows are entered and blurred, RELOAD the
+cart page (navigate to it again), then check every needed size cell's value
+against the order from the RELOADED page — a reload shows only what actually
+saved, catching typed-but-uncommitted cells that a simple snapshot misses.
+Any cell blank or wrong: re-enter it, blur it, reload, and check again. Only
+proceed once every cell survives the reload.
 
 ## Step 7 — Verify and report
 Take a screenshot of the final cart. Then verify ALL of:

@@ -1,0 +1,22 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - link "CLICK â€” adidas B2B" [ref=f2e3] [cursor=pointer]:
+      - /url: /catalog
+    - link "cart" [ref=f2e4] [cursor=pointer]:
+      - /url: /cart
+      - text: ðŸ›’ Cart (0)
+  - main [ref=f2e5]:
+    - generic [ref=f2e7]:
+      - searchbox [ref=f2e8]: JW6608 JW6600 KB5529
+      - button "SEARCH" [ref=f2e9] [cursor=pointer]
+    - heading "3 result(s)" [level=3] [ref=f2e10]
+    - button "ADD ALL TO CART (3)" [ref=f2e12] [cursor=pointer]
+    - generic [ref=f2e13]:
+      - text: "Team Issue Polo â€” Black Article: JW6608 | MSRP $55.00"
+      - button "ADD TO CART" [ref=f2e15] [cursor=pointer]
+    - generic [ref=f2e16]:
+      - text: "Tiro25 Jacket â€” Team Royal Article: JW6600 | MSRP $55.00"
+      - button "ADD TO CART" [ref=f2e18] [cursor=pointer]
+    - generic [ref=f2e19]:
+      - text: "Icon Pro Pant â€” White Article: KB5529 | MSRP $55.00"
+      - button "ADD TO CART" [ref=f2e21] [cursor=pointer]
