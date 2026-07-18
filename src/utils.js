@@ -591,7 +591,8 @@ export const validateShipAddress = (a = {}) => {
 // deterministic): hoodie ≈ 18oz, tee ≈ 6oz, shorts ≈ 7oz, etc. Used to weigh
 // shipping labels when a catalog weight isn't set on the product.
 export function estimateWeightOz(text) {
-  const t = (text || '').toLowerCase();
+  // String() first — a numeric SKU (truthy non-string) used to throw TypeError here.
+  const t = String(text || '').toLowerCase();
   const rules = [
     [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
     [/tote|sackpack|cinch|drawstring|bag/, 10],
@@ -616,8 +617,14 @@ export function estimateWeightOz(text) {
 export function labelWeightLbs(items, store = {}, weightByPid = {}) {
   let oz = 0, any = false;
   (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
-    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
-    oz += w * (i.qty || 1); any = true;
+    // != null (not ||) so a legitimately-cataloged 0oz override is honored instead of
+    // silently replaced by the text estimate.
+    const ov = weightByPid ? Number(weightByPid[i.product_id]) : NaN;
+    const w = weightByPid && weightByPid[i.product_id] != null && Number.isFinite(ov) ? ov : estimateWeightOz(i.sku || i.name);
+    // Missing qty means 1 (legacy rows), but an explicit 0 (cancelled line) is 0 —
+    // it used to weigh in as a full unit. Negative/garbage counts as 0.
+    const q = i.qty == null ? 1 : Math.max(0, Number(i.qty) || 0);
+    oz += w * q; any = true;
   });
   if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
   return Number(store && store.label_weight_lbs) || 1;

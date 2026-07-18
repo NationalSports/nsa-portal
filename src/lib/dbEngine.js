@@ -1705,7 +1705,17 @@ const _dbSaveSOInner = async (so) => {
         else{insertedItems=retry.data;console.warn('[DB] so items saved with core columns only')}
       }
     }
-    if(insertedItems?.length){
+    // SAFETY: the parent insert must return one id per row. An under-returned .select('id')
+    // (e.g. RLS SELECT narrower than INSERT) used to silently drop the tail items' children
+    // AND — when it returned zero ids — skip the commit/rollback block entirely, so the save
+    // reported success while old rows were never deleted (the orphan-duplicate generator the
+    // loader dedups around). Same contract _countInsertedChildRows enforces for children.
+    if(!saveFailed&&(insertedItems?.length||0)<allItemRows.length){
+      saveFailed=true;_failMsg=_failMsg||('so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids');
+      console.error('[DB] SAFETY: so_items insert under-returned —',insertedItems?.length||0,'of',allItemRows.length,'ids');
+      if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:allItemRows.length,got:insertedItems?.length||0,reason:'so_items: insert returned '+(insertedItems?.length||0)+' of '+allItemRows.length+' ids — save queued for retry'});
+    }
+    if(!saveFailed&&insertedItems?.length){
       // Build all child rows referencing their parent item IDs
       const allDecoRows=[],allPickRows=[],allPoRows=[];
       items.forEach((item,idx)=>{
@@ -1958,10 +1968,34 @@ const _dbSaveInvoiceInner = async (inv) => {
         _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items hydration safety: client '+_clientItemCount+' < DB '+_dbItemCount);_persistFailedIds();return false;
       }
       if(items?.length){
-        await supabase.from('invoice_items').delete().eq('invoice_id',inv.id);
+        // DATA-LOSS FIX (mirrors _dbSaveSOInner's insert-first swap): the old delete-then-insert
+        // order left the invoice with ZERO items in the DB whenever the insert failed after the
+        // delete succeeded. Now: read old ids → insert new rows → verify → only then delete old.
+        const{data:_oldInvItems,error:_oldInvReadErr}=await supabase.from('invoice_items').select('id').eq('invoice_id',inv.id);
+        if(_oldInvReadErr){
+          console.error('[DB] SAFETY: Blocking invoice save — failed to read existing item ids for',inv.id,':',_oldInvReadErr.message);
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items id read: '+_oldInvReadErr.message);_persistFailedIds();return false;
+        }
         const _itemRows=items.map(i=>({sku:i.sku,name:i.name,qty:i.qty,unit_price:i.unit_price,total:i.total,description:i.description,invoice_id:inv.id}));
-        const{error:_itemInsErr}=await supabase.from('invoice_items').insert(_itemRows);
-        if(_itemInsErr){console.error('[DB] invoice_items insert failed:',_itemInsErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: '+_itemInsErr.message);_persistFailedIds();return false}
+        const{data:_newInvItems,error:_itemInsErr}=await supabase.from('invoice_items').insert(_itemRows).select('id');
+        if(_itemInsErr){console.error('[DB] invoice_items insert failed (old rows left intact):',_itemInsErr.message);_dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: '+_itemInsErr.message);_persistFailedIds();return false}
+        const _newInvIds=(_newInvItems||[]).map(r=>r.id).filter(Boolean);
+        if(_newInvIds.length<_itemRows.length){
+          // Under-returned insert — roll the new rows back so the old ones stay canonical.
+          console.error('[DB] SAFETY: invoice item insert under-returned —',_newInvIds.length,'of',_itemRows.length,'ids; rolling back');
+          if(_newInvIds.length)await supabase.from('invoice_items').delete().in('id',_newInvIds);
+          _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items: insert returned '+_newInvIds.length+' of '+_itemRows.length+' ids');_persistFailedIds();return false;
+        }
+        const _oldInvIds=(_oldInvItems||[]).map(r=>r.id).filter(Boolean);
+        if(_oldInvIds.length){
+          const{error:_oldDelErr}=await supabase.from('invoice_items').delete().in('id',_oldInvIds);
+          if(_oldDelErr){
+            // New rows are in and verified; old ones linger as temporary duplicates. Fail the
+            // save so the retry re-runs the swap (next pass treats the leftovers as "old").
+            console.error('[DB] invoice_items old-row cleanup failed (duplicates until retry):',_oldDelErr.message);
+            _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoice_items cleanup: '+_oldDelErr.message);_persistFailedIds();return false;
+          }
+        }
         const{count:_verifyItemCount}=await supabase.from('invoice_items').select('id',{count:'exact',head:true}).eq('invoice_id',inv.id);
         if((_verifyItemCount||0)<_itemRows.length){
           console.error('[DB] SAFETY: invoice item insert verification failed — expected',_itemRows.length,'got',_verifyItemCount);
@@ -2500,7 +2534,9 @@ const _lsSet=(key,value)=>{try{
 try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','nsa_inv_adj_log','nsa_cust','nsa_ests','nsa_sos','nsa_invs','nsa_msgs','nsa_prod','nsa_vend'].forEach(k=>localStorage.removeItem(k));const _snapKeys=[];for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i);if(k&&k.startsWith('nsa_snap_'))_snapKeys.push(k)}_snapKeys.forEach(k=>localStorage.removeItem(k))}catch{}
 // Track IDs of estimates/SOs whose save failed — prevents reload/poll from overwriting local state
 // Persisted to localStorage so protection survives page refresh
-const _dbSaveFailedIds=new Set(JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]'));
+// Guarded parse (same as _dbSaveFailedErrors below): a corrupted value here used to throw
+// at module load and crash the entire dbEngine import.
+const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]');return new Set(Array.isArray(v)?v:[])}catch{return new Set()}})();
 // Track WHY each save failed — surfaced in the banner so the team can see real DB errors
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
@@ -2649,7 +2685,9 @@ const _dbStaleCooldown=new Map();// {estimateId: epoch-ms until which to skip sa
 const _STALE_COOLDOWN_MS=10000;
 // Retry a network-flaky upsert/select promise factory. Only retries transport errors (TypeError: Failed to fetch),
 // not real server-side errors. Backoff: 400ms, 1.2s.
-const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')};
+// CLIENT_THROTTLED is requestBreaker's synthetic rejection — transient by construction
+// (the breaker self-clears), so it must be classified retryable, not a hard save failure.
+const _isNetErr=(e)=>{const m=(e?.message||e?.error?.message||String(e||'')).toLowerCase();return m.includes('failed to fetch')||m.includes('network')||m.includes('err_ssl')||m.includes('load failed')||m.includes('circuit breaker')||(e?.code||e?.error?.code)==='CLIENT_THROTTLED'};
 const _retryNet=async(fn,tries=3)=>{let last;for(let i=0;i<tries;i++){try{const r=await fn();if(r&&r.error&&_isNetErr(r.error)){last={error:r.error};if(i<tries-1){await new Promise(res=>setTimeout(res,400*Math.pow(3,i)));continue}}return r}catch(e){last=e;if(!_isNetErr(e)||i===tries-1)throw e;await new Promise(res=>setTimeout(res,400*Math.pow(3,i)))}}throw last};
 // Legacy compat — keep old _dbSave for team_members and other simple tables. Retries transient network errors.
 const _dbSave = (table, data) => { if(supabase && data) return _retryNet(()=>supabase.from(table).upsert(Array.isArray(data)?data:[data], {onConflict:'id'})).then(r=>{if(r&&r.error)console.error('[DB] save '+table+':', r.error.message)}).catch(e=>{console.error('[DB] save '+table+':', e.message||e)}) };
