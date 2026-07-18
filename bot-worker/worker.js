@@ -197,10 +197,12 @@ function buildPrompt(task, p = {}, conversation = []) {
       + `- State: ${s.state}\n`
       + `- ZIP code: ${s.zip}\n`
       + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
-    : `Not a drop ship — leave the default delivery location as-is.`;
+    : `Not a drop ship — the order ships to National Sports' warehouse, which is the portal's DEFAULT delivery location.\n`
+      + `Verify the cart's Delivery Location shows the default National Sports address. If it shows a leftover one-time\n`
+      + `address from a previous order, switch it back to the default National Sports location before continuing.`;
   const deliveryDate = p.delivery_date
     ? `Set the order's DELIVERY DATE to ${p.delivery_date}. In the cart, under the "Delivery Dates" heading, there's a date chip showing the current date (e.g. "Jun 2, 2026"). CLICK that date chip — a calendar opens — then pick ${p.delivery_date}. Confirm the chip now shows ${p.delivery_date}. (This is the ship/deliver date — you are still ordering now, not later.)`
-    : `No specific delivery date requested — leave the default delivery date, UNLESS a backorder rule below changes it.`;
+    : `No specific delivery date requested — leave the default delivery date (the short-backorder rule above is the only reason to change it).`;
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
@@ -273,7 +275,10 @@ function runClaude(prompt) {
     let done = false;
     const finish = (r) => { if (!done) { done = true; resolve(r); } };
     // Safety net: kill + report a stuck run instead of hanging forever.
-    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '600000', 10);
+    // 20 min. The historical 10-min cap killed nearly every cart run mid-flight
+    // (agent never reached the PO/address/sizes steps); the add-all search flow
+    // is much faster, but give real orders room to finish.
+    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '1200000', 10);
     const killer = setTimeout(() => {
       log(`run exceeded ${timeoutMs}ms — terminating`);
       try { child.kill('SIGKILL'); } catch {}
@@ -416,6 +421,18 @@ async function processOne() {
   const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed', 'queued'];
   let status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
 
+  // Sanity-check: skipped SKUs (out of stock beyond the 14-day window) always
+  // need a rep decision — never let them slide through as needs_review.
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  if (status === 'needs_review' && skipped.length) {
+    status = 'needs_input';
+    if (!result.question) {
+      result.question = 'These SKUs were skipped (sizes unavailable now and not restocking within 14 days): '
+        + skipped.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')
+        + '. Wait for restock, substitute, or drop them?';
+    }
+  }
+
   // Sanity-check: if the agent says needs_review but reports 0 total qty across
   // all lines, the cart wasn't actually filled — downgrade to blocked so a human
   // investigates rather than assuming the order is ready to submit.
@@ -442,6 +459,8 @@ async function processOne() {
     result.question ? `**Question:** ${result.question}` : '',
     result.cart_url ? `Cart: ${result.cart_url}` : '',
     result.po_entered ? `PO entered: yes` : '',
+    result.address_set ? `Delivery address set: yes` : '',
+    skipped.length ? `⏭️ Skipped (rep decision needed): ${skipped.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')}` : '',
     (result.backordered && result.backordered.length) ? `⏳ Backordered: ${result.backordered.join('; ')}` : '',
     (result.issues && result.issues.length) ? `Issues: ${result.issues.join('; ')}` : '',
     status === 'needs_review' ? `Review the cart and submit it if it looks right, then close this task.` : '',
