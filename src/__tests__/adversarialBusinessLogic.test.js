@@ -33,63 +33,61 @@ const makeSO = (overrides = {}) => ({
 });
 
 // ─────────────────────────────────────────────
-// 1. Negative sizes: calcTotals vs calcSOStatus diverge
+// 1. Negative sizes are invalid data, not credits (regression)
 // ─────────────────────────────────────────────
-describe('Gap 1: negative size quantities diverge between calcTotals and calcSOStatus', () => {
-  test('calcTotals treats a negative size as a real (credit) quantity — rev/cost/grand go negative', () => {
+describe('Gap 1 (regression): negative size quantities are ignored consistently', () => {
+  test('calcTotals ignores a negative size cell — rev/cost/grand stay at 0, never negative', () => {
+    // Regression: -5 * $25 used to bill -$125 of revenue. Negative quantities
+    // are invalid data (confirmed: not used as credit lines), so calcTotals now
+    // applies the same positivity filter calcSOStatus always had.
     const so = makeSO({ items: [makeSOItem({ sizes: { S: -5 }, unit_sell: 25, nsa_cost: 12 })] });
     const totals = calcTotals(so, {});
-    // PINNED: -5 * 25 = -125 revenue, -5 * 12 = -60 cost. calcTotals sums raw
-    // safeNum(size) with no positivity guard, so a negative line acts as a
-    // credit against the order's totals.
-    expect(totals.rev).toBe(-125);
-    expect(totals.cost).toBe(-60);
-    expect(totals.grand).toBe(-125);
+    expect(totals.rev).toBe(0);
+    expect(totals.cost).toBe(0);
+    expect(totals.grand).toBe(0);
   });
 
-  test('calcSOStatus ignores the same negative size entirely (filters v > 0) — order reads as need_order', () => {
+  test('a mixed line only counts the positive cells', () => {
+    const so = makeSO({ items: [makeSOItem({ sizes: { S: -3, M: 4 }, unit_sell: 25, nsa_cost: 12 })] });
+    const totals = calcTotals(so, {});
+    expect(totals.rev).toBe(100);
+    expect(totals.cost).toBe(48);
+  });
+
+  test('calcSOStatus agrees: a negative-only size line reads as need_order', () => {
     const so = makeSO({ items: [makeSOItem({ sizes: { S: -5 } })] });
-    // PINNED DIVERGENCE: calcSOStatus filters entries to `safeNum(v) > 0`, so a
-    // negative-size line contributes NOTHING to totalSz — the order looks like
-    // it has zero units ordered (need_order), even though calcTotals just
-    // billed it as -$125 of revenue above. Same order, two functions,
-    // contradictory reads of the same negative line. Left unchanged because
-    // negative sizes are meant to be used as credit lines that shouldn't
-    // affect fulfillment status — but this test exists so nobody "fixes" one
-    // side without noticing the other silently disagrees.
     expect(calcSOStatus(so)).toBe('need_order');
   });
 });
 
 // ─────────────────────────────────────────────
-// 2. poCommitted: cancelled > ordered goes negative
+// 2. poCommitted floors at 0 per line (regression)
 // ─────────────────────────────────────────────
-describe('Gap 2: poCommitted goes negative when cancelled exceeds ordered', () => {
-  test('cancelled > ordered on a PO line returns a negative committed quantity', () => {
-    const poLines = [{ S: 5, cancelled: { S: 10 } }];
-    // PINNED: poCommitted does `ordered - cancelled` with no floor at 0. A data
-    // entry mistake (cancelling more than was ever ordered) silently produces
-    // a negative "committed" number, which callers summing this into coverage
-    // math would need to handle carefully.
-    expect(poCommitted(poLines, 'S')).toBe(-5);
+describe('Gap 2 (regression): poCommitted floors at 0 when cancelled exceeds ordered', () => {
+  test('cancelled > ordered on a PO line clamps that line to 0 committed', () => {
+    // Regression: used to return -5. An over-cancellation is a data-entry slip,
+    // not negative commitment — and it must not eat commitment from other lines.
+    expect(poCommitted([{ S: 5, cancelled: { S: 10 } }], 'S')).toBe(0);
+    expect(poCommitted([{ S: 5, cancelled: { S: 10 } }, { S: 7 }], 'S')).toBe(7);
   });
 });
 
 // ─────────────────────────────────────────────
-// 3. emP / npP: negative inputs land in the smallest bracket
+// 3. emP / npP reject non-positive inputs (regression)
 // ─────────────────────────────────────────────
-describe('Gap 3: emP/npP silently bracket negative inputs into the lowest tier', () => {
-  test('emP(-100, 6) prices as if stitch count and qty were the smallest legit values', () => {
-    // PINNED: EM.sb.findIndex(b => st <= b) matches the FIRST bracket boundary
-    // a value is <=, so a negative stitch count (-100) matches bracket 0 the
-    // same as a real low stitch count would. No lower bound is enforced.
-    expect(emP(-100, 6)).toBe(8);
+describe('Gap 3 (regression): emP/npP return 0 for non-positive inputs instead of the lowest tier', () => {
+  test('emP with a negative stitch count or qty returns 0, not the smallest-bracket price', () => {
+    // Regression: emP(-100, 6) used to return 8 (bracket 0). Invalid input now
+    // prices at 0 — the same contract spP always had.
+    expect(emP(-100, 6)).toBe(0);
+    expect(emP(8000, -6)).toBe(0);
+    expect(emP(8000, 6)).toBeGreaterThan(0); // valid input unaffected
   });
 
-  test('npP(-5) prices as the smallest quantity bracket', () => {
-    // PINNED: same pattern — NP.bk.findIndex(b => q <= b) matches bracket 0 for
-    // any q <= 10, including negative quantities.
-    expect(npP(-5)).toBe(7);
+  test('npP with a non-positive qty returns 0', () => {
+    expect(npP(-5)).toBe(0);
+    expect(npP(0)).toBe(0);
+    expect(npP(5)).toBeGreaterThan(0); // valid input unaffected
   });
 });
 

@@ -163,15 +163,15 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   // Aggregate art quantities so volume-priced art uses the combined qty
   const artQty={};
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
   let rev=0;
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(!it.is_free_promo){
       if(it._sizeSells&&sq>0){
@@ -204,7 +204,7 @@ export const calcOrderMargin=(o,allOrders)=>{
   if(!o)return{rev:0,cost:0,margin:0,pct:0};
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
-  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
+  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
   // Combined deco-cost tier qty for manually-linked jobs sharing a screen across orders. Empty
   // (no combine) when allOrders is omitted, so existing single-arg callers are unchanged.
   const comb=linkedArtCostQty(o,artQty,allOrders);
@@ -212,8 +212,8 @@ export const calcOrderMargin=(o,allOrders)=>{
   const outByItem=outsourcedDecoTypes(o);
   let rev=0,cost=0;
   items.forEach((it,ii)=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(!it.is_free_promo){
       if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))})}
@@ -249,8 +249,8 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
@@ -260,8 +260,8 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   let total=0;
   items.forEach((it,ii)=>{
     if(it.is_free_promo)return;
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     let rev=0,cost=0;
     if(it._sizeSells&&sq>0){
@@ -333,8 +333,8 @@ export const calcAdidasItemSpend=(o)=>{
   items.forEach(it=>{
     if(it.is_free_promo)return;
     if(!isAdidasPriced(it.brand))return;
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)total+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});}
     else{total+=q*_sNum(it.unit_sell);}

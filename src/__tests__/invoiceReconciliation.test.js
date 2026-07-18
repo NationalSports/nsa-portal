@@ -41,20 +41,18 @@ describe('Gap 11: buildInvoicedQtyMap happy path sums qty across multiple invoic
 // ─────────────────────────────────────────────
 // 12. buildInvoicedQtyMap with a negative line qty
 // ─────────────────────────────────────────────
-describe('Gap 12: buildInvoicedQtyMap sums a negative line qty as-is (credit-memo semantics)', () => {
-  test('a negative qty line item reduces the invoiced total for that key below zero', () => {
+describe('Gap 12 (regression): buildInvoicedQtyMap ignores negative line quantities', () => {
+  test('a negative qty line item contributes nothing — no negative invoiced totals', () => {
     const so = makeSO();
     const key0 = soLineKey(so.items[0], 0);
+    // Regression: a negative qty used to sum straight in, deflating the invoiced
+    // total and inflating "remaining to invoice" (over-invoice risk). Negative
+    // quantities are invalid data, not credit memos — they're skipped now.
     const invoices = [{ inv_type: 'final', line_items: [{ _so_line_key: key0, qty: -2 }] }];
-    // PINNED: buildInvoicedQtyMap does `map.get(k) + q` with no floor at 0 and
-    // no sign check — `if (!q) return` only skips a falsy (zero) qty, so a
-    // negative line (e.g. a credit memo represented as a negative-qty line
-    // item) is summed straight in, producing a negative "invoiced qty" for
-    // that SO line. OVER-INVOICE RISK: any caller treating a negative result
-    // as "line not yet fully invoiced" (e.g. `invoicedQty < orderedQty`)
-    // would let the line be invoiced again on top of the credit, rather than
-    // reading it as already netted down.
-    expect(buildInvoicedQtyMap(so, invoices).get(key0)).toBe(-2);
+    expect(buildInvoicedQtyMap(so, invoices).get(key0) || 0).toBe(0);
+    // A mixed invoice still counts its valid lines.
+    const mixed = [{ inv_type: 'final', line_items: [{ _so_line_key: key0, qty: -2 }, { _so_line_key: key0, qty: 3 }] }];
+    expect(buildInvoicedQtyMap(so, mixed).get(key0)).toBe(3);
   });
 });
 

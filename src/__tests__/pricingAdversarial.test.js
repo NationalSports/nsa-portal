@@ -110,37 +110,46 @@ describe('dP — sell_override coercion fix (regression)', () => {
 // CHARACTERIZATION — everything below pins CURRENT behavior
 // ─────────────────────────────────────────────────────────────────────────────
 
-// 4. Negative qty on the numbers branch flows straight through as a negative _nq;
-//    calcOrderTotals then treats a negative est_qty numbers line as a revenue credit.
-// Pinned so this can't drift silently — negative lines acting as implicit credits
-// is surprising behavior with no explicit guard against it in the code.
-describe('dP numbers branch — negative qty characterization', () => {
-  test('negative num_qty flows through to _nq unchanged (non-reversible)', () => {
+// 4. REGRESSION — negative quantities are invalid data, not credits. A negative
+//    num_qty used to flow straight through to _nq (and a negative est_qty numbers
+//    line used to subtract revenue in calcOrderTotals). Both are now clamped.
+describe('dP numbers branch — negative qty regression', () => {
+  test('negative num_qty clamps _nq to the garment-qty fallback path, never negative (non-reversible)', () => {
     const d = { kind: 'numbers', num_qty: -10 };
     const r = DP.dP(T, d, 5);
-    expect(r._nq).toBe(-10);
+    // Math.max(0, num_qty || q): -10 is truthy so the || short-circuits, then the
+    // clamp floors it at 0 — an invalid negative count prices as zero applications.
+    expect(r._nq).toBe(0);
   });
 
-  test('negative num_qty doubles into _nq when reversible', () => {
+  test('negative num_qty stays clamped at 0 when reversible (no -20 doubling)', () => {
     const d = { kind: 'numbers', num_qty: -10, reversible: true };
     const r = DP.dP(T, d, 5);
-    expect(r._nq).toBe(-20);
+    expect(r._nq).toBe(0);
   });
 
-  test('calcOrderTotals subtracts revenue for a negative est_qty numbers line', () => {
+  test('positive num_qty is unaffected by the clamp', () => {
+    expect(DP.dP(T, { kind: 'numbers', num_qty: 10 }, 5)._nq).toBe(10);
+    expect(DP.dP(T, { kind: 'numbers', num_qty: 10, reversible: true }, 5)._nq).toBe(20);
+  });
+
+  test('calcOrderTotals skips a negative est_qty line entirely — revenue never goes negative', () => {
     const order = {
       items: [
         {
           unit_sell: 20,
-          est_qty: -5, // no sizes -> falls back to est_qty, which is negative here
-          decorations: [{ kind: 'numbers' }], // no roster/num_qty -> useQty falls back to q (-5)
+          est_qty: -5, // no sizes -> est_qty fallback is now floored at 0, so the line is skipped
+          decorations: [{ kind: 'numbers' }],
         },
       ],
     };
     const totals = calcOrderTotals(order);
-    // product rev: -5 * 20 = -100; deco rev: eq(-5) * npP sell(7, bracket-0 since -5<=10) = -35
-    expect(totals.rev).toBe(-100 + -5 * 7);
-    expect(totals.rev).toBeLessThan(0);
+    expect(totals.rev).toBe(0);
+  });
+
+  test('calcOrderTotals ignores negative size cells but keeps the positive ones', () => {
+    const order = { items: [{ unit_sell: 20, sizes: { S: -3, M: 4 } }] };
+    expect(calcOrderTotals(order).rev).toBe(80);
   });
 });
 
