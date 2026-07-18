@@ -1799,19 +1799,31 @@ const _dbSaveSOInner = async (so) => {
       if(!saveFailed){
         // New items + children verified — now safe to remove the old rows (delete by id so the new rows survive).
         if(oldItemIds.length){
-          await supabase.from('so_item_decorations').delete().in('so_item_id',oldItemIds);
-          await supabase.from('so_item_pick_lines').delete().in('so_item_id',oldItemIds);
-          await supabase.from('so_item_po_lines').delete().in('so_item_id',oldItemIds);
-          await supabase.from('so_items').delete().in('id',oldItemIds);
+          // A failed cleanup delete leaves stale duplicate rows next to the verified new ones —
+          // not silent data loss, but it must be LOUD so the duplicates get traced here instead
+          // of surfacing as mystery orphans in the loader's dedup.
+          const _cleanupErrs=[];
+          for(const[tbl,col]of[['so_item_decorations','so_item_id'],['so_item_pick_lines','so_item_id'],['so_item_po_lines','so_item_id'],['so_items','id']]){
+            const{error:_ce}=await supabase.from(tbl).delete().in(col,oldItemIds);
+            if(_ce)_cleanupErrs.push(tbl+': '+_ce.message);
+          }
+          if(_cleanupErrs.length){
+            console.error('[DB] SO old-row cleanup failed (stale duplicates until retry):',_cleanupErrs.join('; '));
+            if(_dataLossAlert)_dataLossAlert({kind:'verify_fail',soId:so.id,expected:0,got:oldItemIds.length,reason:'old-row cleanup failed — '+_cleanupErrs.join('; ')+' — stale duplicate rows until a later save succeeds'});
+          }
         }
       }else{
         // New rows did not fully persist — roll them back so the old data stays canonical and the retry starts clean.
         const _newIds=insertedItems.map(i=>i.id).filter(Boolean);
         if(_newIds.length){
-          await supabase.from('so_item_decorations').delete().in('so_item_id',_newIds);
-          await supabase.from('so_item_pick_lines').delete().in('so_item_id',_newIds);
-          await supabase.from('so_item_po_lines').delete().in('so_item_id',_newIds);
-          await supabase.from('so_items').delete().in('id',_newIds);
+          // Same loudness rule for a rollback delete failing mid-way: partial new rows would
+          // linger beside the still-canonical old rows.
+          const _rbErrs=[];
+          for(const[tbl,col]of[['so_item_decorations','so_item_id'],['so_item_pick_lines','so_item_id'],['so_item_po_lines','so_item_id'],['so_items','id']]){
+            const{error:_re}=await supabase.from(tbl).delete().in(col,_newIds);
+            if(_re)_rbErrs.push(tbl+': '+_re.message);
+          }
+          if(_rbErrs.length)console.error('[DB] SO rollback delete failed mid-way (partial new rows linger, retried on next save):',_rbErrs.join('; '));
         }
       }
     }

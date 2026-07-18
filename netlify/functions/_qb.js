@@ -79,7 +79,23 @@ async function getValidAccessToken(admin) {
   let row = await getStoredTokens(admin);
   if (!row) { const e = new Error('QuickBooks not connected'); e.code = 'NOT_CONNECTED'; throw e; }
   if (Date.now() - (Number(row.token_created_at) || 0) > ACCESS_TTL_MS) {
-    row = await refreshStoredTokens(admin, row);
+    try {
+      row = await refreshStoredTokens(admin, row);
+    } catch (e) {
+      // Refresh race: two concurrent calls can both see a stale row and race the rotating
+      // refresh token — the loser's exchange fails at Intuit even though the winner already
+      // stored a fresh pair. Re-read before surfacing REFRESH_FAILED; if another caller
+      // refreshed while we were in flight, use its tokens instead of forcing a spurious
+      // "reconnect QuickBooks" on staff.
+      if (e && e.code === 'REFRESH_FAILED') {
+        const latest = await getStoredTokens(admin);
+        if (latest && latest.access_token && latest.access_token !== row.access_token &&
+            Date.now() - (Number(latest.token_created_at) || 0) <= ACCESS_TTL_MS) {
+          return { access_token: latest.access_token, realm_id: latest.realm_id };
+        }
+      }
+      throw e;
+    }
   }
   return { access_token: row.access_token, realm_id: row.realm_id };
 }
