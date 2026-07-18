@@ -35,8 +35,11 @@ const daysFromNow = (n) => { const d = new Date(); d.setDate(d.getDate() + n); r
 //   onesize             — single SKU with exactly one size on a short (7-day) backorder
 // Mock fixtures: JW6608 all in stock · JW6600 only L restocks +7d · KB5529 only M
 // restocks +30d · KE9493 permanently unavailable (all hatched, no date).
-const SCENARIO = ['dropship', 'oos', 'multi', 'onesize'].includes(process.argv[2]) ? process.argv[2] : 'warehouse';
-const SHIP_TO = { name: 'Fresno Pacific Tennis', line1: '1717 S Chestnut Ave', city: 'Fresno', state: 'CA', zip: '93702' };
+const SCENARIO = ['dropship', 'oos', 'multi', 'onesize', 'deco'].includes(process.argv[2]) ? process.argv[2] : 'warehouse';
+const SHIP_TO = SCENARIO === 'deco'
+  // Decorator-bound blanks: deliver to the decorator, DPO reference on the attention line
+  ? { name: 'Big League Screen Printing', attention: 'DPO 3081', line1: '450 Industrial Ave', city: 'Fresno', state: 'CA', zip: '93706' }
+  : { name: 'Fresno Pacific Tennis', line1: '1717 S Chestnut Ave', city: 'Fresno', state: 'CA', zip: '93702' };
 const LINES = {
   warehouse: [
     { sku: 'JW6608', name: 'Team Issue Polo', color: 'Black', qty: 23, sizes: { XS: 2, S: 11, M: 8, L: 2 } },
@@ -57,13 +60,14 @@ const LINES = {
   ],
 };
 LINES.dropship = LINES.warehouse;
+LINES.deco = LINES.multi; // all-in-stock lines; the deco scenario tests the address+attention path
 const task = { id: 'todo-test', title: `Order PO PO 9999 TEST — fake-order dress rehearsal (${SCENARIO})` };
 const order = {
   target: 'adidas_click',
   vendor_name: 'Adidas (MOCK)',
   po_number: 'PO 9999 TEST',
-  drop_ship: SCENARIO === 'dropship',
-  ship_to: SCENARIO === 'dropship' ? SHIP_TO : null,
+  drop_ship: SCENARIO === 'dropship' || SCENARIO === 'deco',
+  ship_to: (SCENARIO === 'dropship' || SCENARIO === 'deco') ? SHIP_TO : null,
   lines: LINES[SCENARIO],
 };
 const credsForTarget = () => ({ url: BASE, user: 'testrep', pass: 'test123' });
@@ -153,6 +157,10 @@ const EXPECT = {
     enter: { JW6600: { S: 5, L: 5 } },
     skip: [], date: daysFromNow(7), status: 'needs_review',
   },
+  deco: {
+    enter: { JW6608: { XS: 2, S: 11, M: 8, L: 2 }, JW6600: { S: 6, M: 6 }, KB5529: { S: 5, L: 5 } },
+    skip: [], date: daysFromNow(0), status: 'needs_review',
+  },
 }[SCENARIO];
 const orderSkus = order.lines.map((l) => l.sku);
 
@@ -163,10 +171,14 @@ check(`all ${orderSkus.length} SKU(s) reached the cart`, orderSkus.every((k) => 
 check('used add-all (single search), not per-SKU adds', s.log.some((l) => l.action === 'add_all' && l.skus.length === orderSkus.length),
   JSON.stringify(s.log.filter((l) => l.action === 'add_all' || l.action === 'add_one')));
 check('PO replaced (not the pre-filled account name)', s.po === 'PO 9999 TEST', s.po);
-if (SCENARIO === 'dropship') {
+if (SCENARIO === 'dropship' || SCENARIO === 'deco') {
   check('one-time drop-ship address entered exactly', s.address.type === 'one_time'
     && s.address.line1 === SHIP_TO.line1 && s.address.city === SHIP_TO.city
     && s.address.state === SHIP_TO.state && s.address.zip === SHIP_TO.zip, JSON.stringify(s.address));
+  if (SCENARIO === 'deco') {
+    check('DPO reference on the attention line', String(s.address.name || '').includes(SHIP_TO.attention)
+      && String(s.address.name || '').includes(SHIP_TO.name), s.address.name);
+  }
 } else {
   check('delivery address left as default warehouse', s.address.type === 'default', JSON.stringify(s.address));
 }

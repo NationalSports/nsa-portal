@@ -5,7 +5,7 @@ import './portal.css';
 import MobilePortal from './MobilePortal';
 import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -11858,7 +11858,12 @@ export default function App(){
                 {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
                   const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
-                  const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:resolveShipToClient(_botSoId,sos,cust)});
+                  // Decorator-bound group (vendor:decoId): deliver to the decorator with the
+                  // DPO on the attention line; otherwise resolve the program's drop-ship address.
+                  const _botShipTo=vg.ship_to_deco_id
+                    ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_botSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
+                    :resolveShipToClient(_botSoId,sos,cust);
+                  const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
                   assignBotTask({title,description,priority:1,bot_payload});
                 }}>🤖 Assign to Claude</button>}
               </div>
@@ -31450,10 +31455,10 @@ export default function App(){
             </div>
             {dropShip
               ?<div style={{padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
-                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>📦 Drop ship — deliver to</div>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>{shipTo?.attention?'🎨 Drop ship to decorator — deliver to':'📦 Drop ship — deliver to'}</div>
                 {shipTo?<div style={{fontSize:13,color:'#0f172a',lineHeight:1.5}}>
-                  <b>{shipTo.name}</b><br/>{shipTo.line1}<br/>{shipTo.city}{shipTo.city&&shipTo.state?', ':''}{shipTo.state} {shipTo.zip}
-                </div>:<div style={{fontSize:12,color:'#b91c1c',fontWeight:600}}>⚠ No shipping address on the SO's ship-to customer — Claude can't set the delivery location. Add the address on the customer before assigning.</div>}
+                  <b>{shipTo.name}</b>{shipTo.attention?<span style={{marginLeft:6,color:'#7c3aed',fontWeight:700}}>· Attn: {shipTo.attention}</span>:null}<br/>{shipTo.line1}<br/>{shipTo.city}{shipTo.city&&shipTo.state?', ':''}{shipTo.state} {shipTo.zip}
+                </div>:<div style={{fontSize:12,color:'#b91c1c',fontWeight:600}}>⚠ No delivery address on file{lines.some(l=>l.ship_to_deco_id)?' for this decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" on the SO's ship-to customer"} — Claude can't set the delivery location. Add the address before assigning.</div>}
               </div>
               :<div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',fontSize:12,color:'#64748b'}}>🏭 Ships to the <b style={{color:'#334155'}}>National Sports warehouse</b> (vendor default delivery location)</div>}
             <div style={{maxHeight:200,overflowY:'auto'}}>

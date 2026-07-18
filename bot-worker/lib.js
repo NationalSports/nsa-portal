@@ -52,9 +52,10 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     : '(none)';
   const s = p.ship_to;
   const delivery = (p.drop_ship && s && (s.line1 || s.city))
-    ? `THIS IS A DROP SHIP — the order must deliver directly to the program below, NOT National Sports' default address.\n`
+    ? `THIS IS A DROP SHIP — the order must deliver directly to the ${s.attention ? 'decorator' : 'program'} below, NOT National Sports' default address.\n`
       + `On the cart's Delivery Location, click it and choose "Add one-time delivery location", then fill the form exactly:\n`
-      + `- Attention 1: ${s.name}\n`
+      + `- Attention 1: ${s.attention ? `${s.name} — ${s.attention}` : s.name}\n`
+      + (s.attention ? `  (If the form has a separate "Attention 2" line, put "${s.name}" in Attention 1 and "${s.attention}" in Attention 2 instead. The "${s.attention}" reference MUST appear on an attention line either way — the decorator uses it to match the incoming blanks to their job.)\n` : '')
       + `- Street Address: ${s.line1}\n`
       + `- City/Town: ${s.city}\n`
       + `- State: ${s.state}\n`
