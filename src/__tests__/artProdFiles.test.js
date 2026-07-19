@@ -24,7 +24,7 @@
  * SAFE: pure functions from constants.js — no Supabase, no UI, no network.
  */
 
-const { artProdFilesReady, artProdFilesConfirmed } = require('../constants');
+const { artProdFilesReady, artProdFilesConfirmed, artDstOnFile, markDstsStale } = require('../constants');
 
 describe('artProdFilesConfirmed — explicit gate for skipping the separations stage', () => {
   test('a stray PDF in prod_files is NOT confirmation (the reported bug)', () => {
@@ -89,5 +89,48 @@ describe('artProdFilesConfirmed — explicit gate for skipping the separations s
     expect(artProdFilesConfirmed(null)).toBe(false);
     expect(artProdFilesConfirmed({})).toBe(false);
     expect(artProdFilesConfirmed({ deco_type: 'screen_print', prod_files: [] })).toBe(false);
+  });
+
+  test('a stale-tagged .dst never confirms, even on approved art', () => {
+    expect(artProdFilesConfirmed({ deco_type: 'embroidery', status: 'approved', prod_files: [{ name: 'DG-1.DST', stale: true }] })).toBe(false);
+    expect(artProdFilesReady({ deco_type: 'embroidery', files: [{ name: 'logo.dst', stale: true }] })).toBe(false);
+  });
+});
+
+describe('artDstOnFile — approve-time DST auto-detection (status-independent)', () => {
+  test('embroidery with a live .dst detects regardless of art status or the checkbox', () => {
+    expect(artDstOnFile({ deco_type: 'embroidery', status: 'needs_approval', prod_files_attached: false, prod_files: [{ name: 'DG-696437_WVC_Viking.DST' }] })).toBe(true);
+    expect(artDstOnFile({ deco_type: 'embroidery', status: 'waiting_for_art', files: [{ name: 'logo.dst' }] })).toBe(true);
+  });
+
+  test('stale-tagged .dst (recalled design) does NOT detect', () => {
+    expect(artDstOnFile({ deco_type: 'embroidery', status: 'needs_approval', prod_files: [{ name: 'DG-1.DST', stale: true }] })).toBe(false);
+  });
+
+  test('non-embroidery art, or embroidery with no .dst, does not detect', () => {
+    expect(artDstOnFile({ deco_type: 'screen_print', prod_files: [{ name: 'logo.dst' }] })).toBe(false);
+    expect(artDstOnFile({ deco_type: 'embroidery', prod_files: [{ name: 'sew-out.pdf' }] })).toBe(false);
+    expect(artDstOnFile(null)).toBe(false);
+  });
+});
+
+describe('markDstsStale — pull-back paths retire the old stitch file', () => {
+  test('tags .dst entries stale (objects and bare strings), leaves other files alone', () => {
+    const out = markDstsStale([{ name: 'DG-1.DST', url: 'http://x/DG-1.DST' }, 'http://x/logo.dst', { name: 'sew.pdf' }]);
+    expect(out[0]).toEqual({ name: 'DG-1.DST', url: 'http://x/DG-1.DST', stale: true });
+    expect(out[1]).toEqual({ url: 'http://x/logo.dst', stale: true });
+    expect(out[2]).toEqual({ name: 'sew.pdf' });
+  });
+
+  test('round-trip: recall tags the DST, so approve-time detection and confirmation both refuse it', () => {
+    const af = { deco_type: 'embroidery', status: 'approved', prod_files: [{ name: 'DG-1.DST' }] };
+    const recalled = { ...af, status: 'waiting_for_art', prod_files_attached: false, prod_files: markDstsStale(af.prod_files) };
+    expect(artDstOnFile(recalled)).toBe(false);
+    expect(artProdFilesConfirmed({ ...recalled, status: 'approved' })).toBe(false);
+  });
+
+  test('handles empty/missing lists', () => {
+    expect(markDstsStale(undefined)).toEqual([]);
+    expect(markDstsStale([])).toEqual([]);
   });
 });
