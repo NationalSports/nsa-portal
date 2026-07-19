@@ -50,6 +50,8 @@ function batchesToLines(batches) {
         unit_cost: it.unit_cost || 0,
         sizes: it.sizes || {},
         drop_ship: it.drop_ship === true,
+        ship_to: it.ship_to || null,           // write-in "new address" from the PO form
+        attention: it.attention || null,       // write-in attention line (e.g. existing DPO)
         ship_to_deco_id: it.ship_to_deco_id || bp.ship_to_deco_id || null,
         item_idx: it.item_idx != null ? it.item_idx : null,
         source_batch_id: bp.id || null,
@@ -121,7 +123,11 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
   const totalCost = lines.reduce((a, l) => a + (l.qty || 0) * (l.unit_cost || 0), 0);
   const label = vendorName || target;
   const decoBound = lines.some((l) => l.ship_to_deco_id);
-  const dropShip = lines.some((l) => l.drop_ship) || decoBound;
+  const lineShipTo = lines.find((l) => l.ship_to)?.ship_to || null;   // write-in address wins
+  const lineAttention = lines.find((l) => l.attention)?.attention || null; // write-in DPO/attention wins
+  const dropShip = lines.some((l) => l.drop_ship) || decoBound || !!lineShipTo;
+  let resolvedShipTo = dropShip ? (lineShipTo || shipTo || null) : null;
+  if (resolvedShipTo && lineAttention) resolvedShipTo = { ...resolvedShipTo, attention: lineAttention };
 
   return {
     title: `Add ${lines.length} item${lines.length === 1 ? '' : 's'} (${totalQty} pcs) to ${label} cart · PO ${poNumber || '—'}`,
@@ -134,7 +140,7 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
       po_number: poNumber || null,
       lines,
       drop_ship: dropShip,
-      ship_to: dropShip ? (shipTo || null) : null,
+      ship_to: resolvedShipTo,
       totals: { line_count: lines.length, qty: totalQty, cost: Number(totalCost.toFixed(2)) },
     },
   };

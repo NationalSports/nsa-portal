@@ -115,14 +115,20 @@ async function resolveOrderFromDb(task) {
 
   const vendorName = lines.find((l) => l.vendor)?.vendor
     || (lines.find((l) => /adidas/i.test(l.name)) ? 'Adidas' : (lines[0].name || ''));
-  const drop_ship = lines.some((l) => l.drop_ship);
+  // A write-in address / attention line saved on the PO (sizes jsonb meta) wins
+  // over the SO's resolved ship-to — the rep set it on purpose.
+  const shipToMeta = pls.map((p) => (p.sizes || {}).ship_to).find((v) => v && typeof v === 'object') || null;
+  const attention = pls.map((p) => (p.sizes || {}).attention).find((v) => typeof v === 'string' && v.trim()) || null;
+  const drop_ship = lines.some((l) => l.drop_ship) || !!shipToMeta;
+  let ship_to = drop_ship ? (shipToMeta || await resolveShipTo(task.so_id)) : null;
+  if (ship_to && attention) ship_to = { ...ship_to, attention };
   return {
     target: botTargetForVendor(vendorName),
     vendor_name: vendorName || null,
     po_number: poId,
     lines,
     drop_ship,
-    ship_to: drop_ship ? await resolveShipTo(task.so_id) : null,
+    ship_to,
   };
 }
 
