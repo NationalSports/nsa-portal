@@ -352,9 +352,9 @@ import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
-import { isPrePortalNetsuitePo } from './netsuiteOldPos';
+import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, looksPrePortalGlued } from './billResolve';
+import { proposeResolutions, looksPrePortalGlued, poParts } from './billResolve';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -21719,20 +21719,63 @@ export default function App(){
     // Weak/no match. A spaced PO is a portal PO → keep for review (likely a PO line never entered —
     // the Reedley PO 3281 case). For non-spaced/unknown formats, confirm against the NetSuite export.
     const core=parseSiPoString(row.po_number).core;
-    if(origin!=='portal'&&isPrePortalNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches pre-portal NetSuite PO #'+core+' — bill via NetSuite/QuickBooks.'};
+    if(origin!=='portal'&&_isNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches NetSuite PO #'+core+' — the order is handled from NetSuite; billed outside the portal.'};
     const reason=origin==='portal'
       ?(best?'Weak match — verify the order before approving.':'Portal PO (spaced) not found — the PO line may need to be created.')
       :(best?'Weak match, and no NetSuite record — verify.':'No portal match and not in the NetSuite export — verify (may be old or a data gap).');
     return{bucket:'review',parsed,match:best,reason};
   };
+  // ── NetSuite PO ignore list (owner decision 2026-07-19: the portal frankly ignores
+  // NetSuite POs — those orders are brought in from NetSuite and billed there). Backed by
+  // the refreshable netsuite_pos table; the bundled 4,092-core export is the offline
+  // fallback AND the one-time seed (exact data ships in the bundle — nothing hand-copied).
+  const _nsPoCores=React.useRef(null);// Set of cores from netsuite_pos, null until loaded
+  const _isNetsuitePo=(core)=>{
+    const c=String(core||'').trim();
+    if(!c)return false;
+    return (_nsPoCores.current&&_nsPoCores.current.has(c))||isPrePortalNetsuitePo(c);
+  };
+  const loadNetsuitePos=async()=>{
+    if(!supabase||_nsPoCores.current)return;
+    try{
+      const{data,error}=await supabase.from('netsuite_pos').select('core');
+      if(error)throw error;
+      if(data&&data.length){_nsPoCores.current=new Set(data.map(r=>String(r.core)));return}
+      // Empty table → first run: seed from the bundled export, then use it.
+      const cores=[...NETSUITE_OLD_PO_CORES];
+      for(let i=0;i<cores.length;i+=500)
+        await supabase.from('netsuite_pos').upsert(cores.slice(i,i+500).map(c=>({core:String(c)})),{onConflict:'core',ignoreDuplicates:true});
+      _nsPoCores.current=new Set(cores.map(String));
+      console.log('[NetSuite] seeded ignore list:',cores.length,'cores');
+    }catch(e){/* fallback set still active via _isNetsuitePo */}
+  };
+  // Auto-capture: every triaged 'outside' row (old-system / glued / NetSuite PO with no
+  // confident match) is written outside_portal WITHOUT a human click — these are not
+  // portal work by definition. Reversible (it's a status update, resolved_by says 'auto'),
+  // idempotent (captured rows triage straight to captured next load).
+  const _autoCaptureOutside=async(rows)=>{
+    const targets=(rows||[]).filter(r=>r._t&&r._t.bucket==='outside'&&!['approved','manual_done','outside_portal','ignored'].includes(r.status||''));
+    if(!targets.length||!supabase)return rows;
+    const ids=targets.map(r=>r.si_doc_number);
+    const upd={status:'outside_portal',resolved_by:'auto: NetSuite/old-system PO',resolved_at:new Date().toISOString(),updated_at:new Date().toISOString()};
+    try{
+      for(let i=0;i<ids.length;i+=200){const{error}=await supabase.from('si_documents').update(upd).in('si_doc_number',ids.slice(i,i+200));if(error)throw error}
+      nf(targets.length+' NetSuite/old-system doc(s) auto-captured — not portal work','success');
+      const idSet=new Set(ids);
+      return rows.map(r=>idSet.has(r.si_doc_number)?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r);
+    }catch(e){return rows}// next load retries; triage still hides them from real work
+  };
   const loadSiQueue=async()=>{
     if(!supabase){nf('Database not connected','error');return}
     setSiQueueLoading(true);
     try{
+      await loadNetsuitePos();// ignore-list must be live before triage classifies
       const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
       if(error)throw error;
       const cands=_siBuildCandidates();
-      setSiQueue((data||[]).map(row=>({...row,_t:_siTriage(row,cands)})));
+      let rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+      rows=await _autoCaptureOutside(rows);
+      setSiQueue(rows);
     }catch(e){nf('Failed to load Sports Inc queue: '+(e.message||e),'error')}
     setSiQueueLoading(false);
   };
@@ -21802,7 +21845,7 @@ export default function App(){
   // Loads once per session when the import page is first opened (a full reload re-syncs). Fires well
   // before any manual pull, so the dedup sees server holds; a teammate's mid-session hold is picked
   // up on the next reload. Best-effort — localStorage still backs the queue if this can't reach the DB.
-  useEffect(()=>{if(supabase&&pg==='import'){loadBillHolds();loadAppliedLedger();}},[pg]);// eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{if(supabase&&pg==='import'){loadBillHolds();loadAppliedLedger();loadNetsuitePos();}},[pg]);// eslint-disable-line react-hooks/exhaustive-deps
   const[invUpload,setInvUpload]=useState({step:'upload',parsed:[],matched:[],unmatched:[],fileName:'',uploading:false});
   const SZ_ORD_I=['XXS','XS','YXS','YS','YM','YL','YXL','S','M','L','XL','2XL','3XL','4XL','5XL','OSFA'];
 
@@ -23521,10 +23564,12 @@ export default function App(){
         // what's already queued — then re-read + re-triage fresh rows (NOT stale state).
         try{const docs=await sportsLinkGetDocuments({active:true,lines:true,siDocStartDate:'2026-04-01'});await _siUpsertDocs(docs)}
         catch(e){nf('SportsLink refresh failed ('+(e.message||e)+') — using the queue as of the last sync','error')}
+        await loadNetsuitePos();// ignore-list live before triage
         const{data,error}=await supabase.from('si_documents').select('*').order('si_doc_date',{ascending:false}).limit(3000);
         if(error)throw error;
         const cands=_siBuildCandidates();
-        const rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+        let rows=(data||[]).map(row=>({...row,_t:_siTriage(row,cands)}));
+        rows=await _autoCaptureOutside(rows);
         setSiQueue(rows);
         // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
         // they can be tied to their order right here. Grab (PDF-only) and Outside are not
@@ -27296,6 +27341,34 @@ export default function App(){
               </div>
             </div>
             {!siQueue.length&&!siQueueLoading&&<div style={{textAlign:'center',padding:40,color:TXTL,fontSize:13}}>No Sports Inc documents loaded yet. Click <b>↻ Refresh</b> to load what the daily sync has stored (⚡ Pull bills on Import &amp; Review fetches fresh from the API).</div>}
+            {/* NetSuite PO ignore-list refresh — keeps the auto-capture wall current without a
+                deploy. Re-run the NetSuite PO saved search, export CSV, drop it (or paste) here;
+                every numeric PO core in it joins netsuite_pos. Add-only and idempotent. */}
+            {(cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm')&&(()=>{
+              const parseCores=(text)=>{const out=new Set();String(text||'').split(/[\r\n,;\t]+/).forEach(tok=>{const c=poParts(tok).core;if(c&&c.length>=3)out.add(c)});return[...out]};
+              const addCores=async(cores)=>{
+                if(!cores.length){nf('No PO numbers found in that file/paste','error');return}
+                const have=_nsPoCores.current||new Set();
+                const fresh=cores.filter(c=>!have.has(c));
+                try{
+                  for(let i=0;i<fresh.length;i+=500)
+                    await supabase.from('netsuite_pos').upsert(fresh.slice(i,i+500).map(c=>({core:c,added_by:(cu?.name||cu?.email||'')})),{onConflict:'core',ignoreDuplicates:true});
+                  fresh.forEach(c=>have.add(c));_nsPoCores.current=have;
+                  nf(fresh.length+' new NetSuite PO(s) added to the ignore list ('+cores.length+' in the file, '+have.size+' total) — matching docs auto-capture on the next refresh/pull','success');
+                  loadSiQueue();// re-triage + sweep with the new wall immediately
+                }catch(e){nf('Ignore-list update failed: '+(e.message||e),'error')}
+              };
+              return<div className="card" style={{marginBottom:18,borderColor:'#c7d2fe',background:'#f8faff'}}>
+                <div className="card-body" style={{padding:'10px 14px',display:'flex',alignItems:'center',gap:12,flexWrap:'wrap'}}>
+                  <div style={{flex:1,minWidth:260}}>
+                    <div style={{fontSize:12.5,fontWeight:800,color:NAVY}}>NetSuite PO ignore list <span style={{fontSize:10,fontWeight:700,color:'#4f46e5',background:'#e0e7ff',borderRadius:8,padding:'1px 7px'}}>admin</span></div>
+                    <div style={{fontSize:11,color:'#475569',marginTop:2}}>Bills whose PO is on this list are auto-captured — NetSuite orders aren&rsquo;t portal work. Re-run the NetSuite PO saved search and drop the CSV here (or paste PO numbers) to keep the wall current. Add-only.</div>
+                  </div>
+                  <input type="file" accept=".csv,.txt,.tsv" style={{fontSize:11}} onChange={e=>{const f=e.target.files&&e.target.files[0];if(!f)return;const rd=new FileReader();rd.onload=()=>addCores(parseCores(rd.result));rd.readAsText(f);e.target.value=''}}/>
+                  <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>{const txt=window.prompt('Paste PO numbers (any format — "PO6591 NSA", "6591", one per line or comma-separated):');if(txt!=null)addCores(parseCores(txt))}}>Paste instead</button>
+                </div>
+              </div>;
+            })()}
             {Section(GOLD,'Grab from Sports Inc',grab,'Scanned/OCR — no itemized data or PDF over the API. Pull the PDF from the SI Invoice Center and run it through Upload Supplier Bills; mark grabbed once handled.',(r)=>siBtn('g','Mark grabbed','#fff',NAVY,()=>markSiStatus(r,'manual_done','Marked grabbed'),null,'1.5px solid '+MGRAY),false)}
             {Section('#8790a3','Outside of Portal',outside,'Confirmed pre-portal — either a no-space “PO####” or a PO core matched in the NetSuite export. Billed through NetSuite/QuickBooks, not here; these never touch the Billed tracking. Confirm and clear.',(r)=>outBtn(r,'Mark outside'),false)}
             {captured.length>0&&<details style={{marginTop:8}}><summary style={{fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,cursor:'pointer',textTransform:'uppercase',letterSpacing:.4}}>Captured ({captured.length} · {money(sumD(captured))})</summary><div style={{marginTop:10}}>{captured.slice(0,100).map(r=>Row(r,{showConf:false,stripe:GREEN}))}</div></details>}
