@@ -110,6 +110,59 @@ export default function MarketingPage() {
   const [reviewBusy, setReviewBusy] = useState({});
   const [reviewErrors, setReviewErrors] = useState({});
 
+  // Review-request sender (the "ask a happy customer" email)
+  const [rrForm, setRrForm] = useState(() => {
+    let repName = '';
+    try { repName = JSON.parse(localStorage.getItem('nsa_user'))?.name || ''; } catch { /* ignore */ }
+    return { to: '', coachName: '', orderRef: '', repName };
+  });
+  const [rrBusy, setRrBusy] = useState(false);
+  const [rrError, setRrError] = useState(null);
+  const [rrNotice, setRrNotice] = useState(null);
+  const [rrRecentBlock, setRrRecentBlock] = useState(null); // set when the 90-day guard fires
+  const [rrLog, setRrLog] = useState([]);
+
+  const loadRrLog = useCallback(async () => {
+    if (!supabase) return;
+    const { data } = await supabase
+      .from('marketing_history')
+      .select('id,data,fetched_at')
+      .eq('source', 'review_request')
+      .order('fetched_at', { ascending: false })
+      .limit(8);
+    setRrLog(data || []);
+  }, []);
+
+  useEffect(() => { loadRrLog(); }, [loadRrLog]);
+
+  const sendReviewRequest = useCallback(async (force) => {
+    setRrBusy(true);
+    setRrError(null);
+    setRrNotice(null);
+    if (force !== true) setRrRecentBlock(null);
+    try {
+      const res = await authFetch('/.netlify/functions/review-request-send', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...rrForm, force: force === true }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok && json.ok) {
+        setRrNotice(`Review request sent to ${rrForm.to}.`);
+        setRrForm((f) => ({ ...f, to: '', coachName: '', orderRef: '' }));
+        setRrRecentBlock(null);
+        loadRrLog();
+      } else if (json.reason === 'recently_sent') {
+        setRrRecentBlock(json.lastSent || true);
+      } else {
+        setRrError(json.error || json.reason || `Send failed (HTTP ${res.status})`);
+      }
+    } catch (e) {
+      setRrError(e.message || String(e));
+    } finally {
+      setRrBusy(false);
+    }
+  }, [rrForm, loadRrLog]);
+
   const loadData = useCallback(async () => {
     if (!supabase) { setErr('No DB connection'); setLoading(false); setRefreshing(false); return; }
     setErr(null);
@@ -394,6 +447,69 @@ export default function MarketingPage() {
                 </ReviewEntry>
               ))}
             </>
+          )}
+        </div>
+      </div>
+
+      {/* Review requests — the "ask a happy customer" sender */}
+      <div className="card" style={{ marginTop: 12 }}>
+        <div className="card-header"><h2>Request a review</h2></div>
+        <div className="card-body">
+          <div style={{ fontSize: 13, color: '#64748b', marginBottom: 12 }}>
+            Send a branded email asking a happy customer for a Google review — best sent right as their order ships.
+            Same address won't be asked twice within 90 days.
+          </div>
+          <div className="form-row-2" style={{ marginBottom: 8 }}>
+            <div className="form-group">
+              <label className="form-label">Coach / customer name</label>
+              <input className="form-input" value={rrForm.coachName} onChange={(e) => setRrForm((f) => ({ ...f, coachName: e.target.value }))} placeholder="Coach Rivera" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">Email</label>
+              <input className="form-input" type="email" value={rrForm.to} onChange={(e) => setRrForm((f) => ({ ...f, to: e.target.value }))} placeholder="coach@school.org" />
+            </div>
+          </div>
+          <div className="form-row-2" style={{ marginBottom: 12 }}>
+            <div className="form-group">
+              <label className="form-label">Order ref (optional)</label>
+              <input className="form-input" value={rrForm.orderRef} onChange={(e) => setRrForm((f) => ({ ...f, orderRef: e.target.value }))} placeholder="SO-1234" />
+            </div>
+            <div className="form-group">
+              <label className="form-label">From (rep name on the email)</label>
+              <input className="form-input" value={rrForm.repName} onChange={(e) => setRrForm((f) => ({ ...f, repName: e.target.value }))} />
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn btn-primary btn-sm" disabled={rrBusy || !rrForm.to.trim()} onClick={() => sendReviewRequest()}>
+              {rrBusy ? 'Sending…' : 'Send review request'}
+            </button>
+            {rrNotice && <span style={{ color: '#16a34a', fontSize: 13 }}>{rrNotice}</span>}
+            {rrError && <span style={{ color: '#dc2626', fontSize: 13 }}>{rrError}</span>}
+          </div>
+          {rrRecentBlock && (
+            <div style={{ marginTop: 10, fontSize: 13, color: '#92400e', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <span>This address was already asked{typeof rrRecentBlock === 'string' ? ` on ${fmtDateShort(rrRecentBlock)}` : ' recently'} (90-day guard).</span>
+              <button className="btn btn-secondary btn-sm" disabled={rrBusy} onClick={() => sendReviewRequest(true)}>Send anyway</button>
+            </div>
+          )}
+          {rrLog.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '.5px', marginBottom: 6 }}>Recent requests</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                <TableHead cols={[{ l: 'Sent' }, { l: 'To' }, { l: 'Customer' }, { l: 'Order' }, { l: 'By' }]} />
+                <tbody>
+                  {rrLog.map((r) => (
+                    <tr key={r.id} style={trBorder}>
+                      <td style={{ ...td, whiteSpace: 'nowrap' }}>{fmtDateShort(r.fetched_at)}</td>
+                      <td style={td}>{r.data?.to}</td>
+                      <td style={td}>{r.data?.coachName || '—'}</td>
+                      <td style={td}>{r.data?.orderRef || '—'}</td>
+                      <td style={td}>{r.data?.sentBy || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       </div>
