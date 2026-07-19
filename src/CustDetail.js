@@ -1,6 +1,6 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
+import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
@@ -1872,7 +1872,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 const _rejAt=new Date().toISOString();
                 const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
                 const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
-                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(af3.files),prod_files:markDstsStale(af3.prod_files),notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
                 onSaveSO(updatedSO);
                 setPortalComment('');setPortalJobView(null)
               }}>❌ Request Changes</button>

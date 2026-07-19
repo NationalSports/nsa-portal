@@ -343,11 +343,25 @@ export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
+// Recall/update-request paths tag the old DSTs {stale:true} instead of deleting them (history stays
+// downloadable) — a stale stitch file belongs to the superseded design and must never satisfy any gate.
+export const isStaleFile=(f)=>!!(f&&typeof f==='object'&&f.stale);
+export const artLiveDsts=(af)=>[...(af?.files||[]),...(af?.prod_files||[])].filter(f=>isDstFile(f)&&!isStaleFile(f));
+// Approve-time DST detection: at the moment an approval is being granted (rep's Approve Artwork, the
+// coach's portal approve, a workboard move to complete) the art file's status hasn't flipped to
+// 'approved' yet, so artProdFilesConfirmed's status-gated .dst branch can't see the DST and the UI
+// used to ask "is the production file attached?" with the DST in plain sight. The approval action
+// itself is the sign-off on the CURRENT art, and stale DSTs from a recalled design are tagged out by
+// markDstsStale — so a live .dst is trustworthy here without the status gate.
+export const artDstOnFile=(af)=>!!af&&(af.deco_type||'')==='embroidery'&&artLiveDsts(af).length>0;
+// Tag every DST in a file list stale — called by the pull-back paths (recall, update request, coach
+// send-back) alongside prod_files_attached:false, so the old stitch file can't auto-release the redo.
+export const markDstsStale=(list)=>(list||[]).map(f=>isDstFile(f)&&!isStaleFile(f)?(typeof f==='string'?{url:f,stale:true}:{...f,stale:true}):f);
 // prod_files_attached===false is an explicit invalidation (art recalled/updated for a design change,
 // or cloned prior art whose inherited files are unreviewed) — the OLD files still sitting on the row
 // must not satisfy either gate until someone re-confirms them. Legacy rows leave the flag undefined
 // and keep the file-based fallbacks below.
-export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(f=>isDstFile(f)&&!isStaleFile(f));return false};
 // Digitizer design code — the digitizing house stamps a "DG" number into every delivered
 // file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
 // "DG648617"; null when the name carries no DG number.
@@ -364,7 +378,7 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // A file merely sitting in prod_files (e.g. an order PDF) is not enough; artProdFilesReady stays the
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
-export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
+export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
 // 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
 // dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.

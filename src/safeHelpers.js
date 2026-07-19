@@ -473,6 +473,17 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
+    // Reused/pre-digitized art with no mockups anywhere: the digitizer's sew-out proof (a
+    // displayable image/PDF sitting in prod_files) is what the approval views now show, so it
+    // satisfies the gate the same way — matches the prod-files display fallback in
+    // OrderEditor/CoachPortal. Non-displayable production files (.dst/.emb/.ai) never count.
+    const _displayableProof = f => /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
+    const prodProof = artFiles.flatMap(a => {
+      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+      if (hasPerItem) return [];
+      return safeArr(a?.prod_files).filter(_displayableProof);
+    });
+    if (prodProof.length > 0) return;
     if (mSku) missing.push(mSku);
   });
   return missing;
