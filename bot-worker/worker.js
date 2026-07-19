@@ -346,6 +346,15 @@ async function processOne() {
   const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed', 'queued'];
   let status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
 
+  // The Claude CLI's own login (not the vendor portal's) has expired — the agent
+  // never ran. Say exactly what to do on the worker box; the vendor cart is untouched.
+  if (/OAuth|access token|401.*authenticat|authenticat.*401|re-?authenticate/i.test(result.summary || '')) {
+    status = 'blocked';
+    result.summary = 'The worker machine\'s Claude login expired (this is the bot\'s own Claude account, NOT the vendor site). '
+      + 'On the worker box run `claude` and log in again (or `claude setup-token`), then reply here to re-queue this task. '
+      + 'Original error: ' + (result.summary || '');
+  }
+
   // Sanity-check: skipped SKUs (out of stock beyond the 14-day window) always
   // need a rep decision — never let them slide through as needs_review.
   const skipped = Array.isArray(result.skipped) ? result.skipped : [];
