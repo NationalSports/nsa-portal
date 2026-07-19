@@ -354,6 +354,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
+import { proposeResolutions, looksPrePortalGlued } from './billResolve';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -21709,6 +21710,10 @@ export default function App(){
     if(best&&best.confidence==='high')return{bucket:isEdi?'approve':'grab',parsed,match:best};
     const origin=siPoOrigin(row.po_number);// portal (spaced) | old (no space) | unknown (no "PO")
     if(origin==='old')return{bucket:'outside',parsed,match:null,reason:'No space after “PO” and no confident portal match — pre-portal (NetSuite/QuickBooks).'};
+    // Prefix-less old-system POs ("8379SAVFBJH" — 4+ digit core glued to a tag, no "PO" at
+    // all): the audit found ~41 of these polluting the review bucket as fake work. Same
+    // outside disposition as the no-space class, but only when nothing better matched.
+    if(looksPrePortalGlued(row.po_number)&&(!best||best.confidence==='low'))return{bucket:'outside',parsed,match:null,reason:'Old-system PO format (number glued to tag, no “PO”) and no confident portal match — bill via NetSuite/QuickBooks.'};
     if(!isEdi)return{bucket:'grab',parsed,match:best};// scanned/OCR → grab the PDF
     if(best&&best.confidence==='medium')return{bucket:'approve',parsed,match:best};
     // Weak/no match. A spaced PO is a portal PO → keep for review (likely a PO line never entered —
@@ -26769,7 +26774,57 @@ export default function App(){
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
                     const fp=b._aiFoundPO;
+                    // ── Resolution proposal — "here's what we think happened, and the proof" ──
+                    // Deterministic engine (billResolve.js): line-tie ladder + qty fingerprint +
+                    // PO tag/edit-distance. The human JUDGES a complete answer instead of
+                    // constructing one. Computed only for the expanded card (cheap: one bill ×
+                    // open candidates). Accept writes the exact wizard-confirm shape — one money path.
+                    const _props=proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3});
+                    const _pi=Math.min(b._propIdx||0,Math.max(0,_props.length-1));
+                    const prop=_props[_pi];
+                    const _accept=(pr)=>{
+                      const target=pr.target;
+                      let matchedPO,matchedPOSource;
+                      if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
+                      else{matchedPO={so_id:target.id,po_id:(target.raw&&target.raw.po_number)||target.id,so:target.raw};matchedPOSource='so_po'}
+                      const lineMappings=pr.ties.map(t=>{const it=target.items[t.target_idx];const bl=bill.items[t.bill_idx]||{};
+                        const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*t.allocated_qty;
+                        return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
+                      // Canonical PO = the tied lines' own po_id (mode), so downstream raw-string compares agree.
+                      const _pc={};lineMappings.forEach(m=>{if(m.po_id)_pc[m.po_id]=(_pc[m.po_id]||0)+1});
+                      const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
+                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==poCanon?p.parsed.po_number:undefined),po_number:poCanon,_wizard:{open:false}}}:p)}));
+                      nf(pr.overageUnits?('Tied '+lineMappings.length+' line(s) to '+target.label+' — over-billed units flagged, reconcile the overage next'):('Tied '+lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
+                    };
                     return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
+                      {prop&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:8}}>
+                        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                          <span style={{fontSize:12,fontWeight:800,color:NAVY}}>Best answer{_props.length>1?' ('+(_pi+1)+' of '+_props.length+')':''}:</span>
+                          <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>{prop.target.label}</span>
+                          <span style={{fontSize:11,color:'#64748b'}}>{prop.target.sub}</span>
+                          <span style={{fontSize:9,padding:'2px 8px',borderRadius:10,fontWeight:800,background:prop.confidence==='high'?'#dcfce7':prop.confidence==='medium'?'#fef9c3':'#f1f5f9',color:prop.confidence==='high'?'#166534':prop.confidence==='medium'?'#854d0e':'#475569'}}>{prop.confidence} confidence</span>
+                        </div>
+                        <ul style={{margin:'6px 0 8px',paddingLeft:18,fontSize:11,color:'#334155'}}>
+                          {prop.evidence.map((e,ei)=><li key={ei}>{e}</li>)}
+                        </ul>
+                        <div style={{maxHeight:150,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8}}>
+                          <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}>
+                            <tbody>{prop.ties.map((t,ti2)=>{const bl=bill.items[t.bill_idx]||{};const it=prop.target.items[t.target_idx]||{};
+                              return<tr key={ti2} style={{borderBottom:'1px solid #f1f5f9',background:t.overage?'#fff7ed':'#f7fdf9'}}>
+                                <td style={{padding:'3px 8px',fontFamily:'monospace'}}>{bl.sku} {bl.size} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)}</td>
+                                <td style={{padding:'3px 4px',color:'#94a3b8'}}>→</td>
+                                <td style={{padding:'3px 8px',fontFamily:'monospace',color:'#166534'}}>✓ {it.sku} {it.size} ({t.open_qty} open) @ ${safeNum(it.unit_cost).toFixed(2)}</td>
+                                <td style={{padding:'3px 8px',fontSize:9,color:t.overage?'#c2410c':'#94a3b8'}}>{t.overage?'+'+t.overage+' over':t.basis.replace(/_/g,' ')}</td>
+                              </tr>;})}</tbody>
+                          </table>
+                        </div>
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#16a34a',color:'#fff',border:'none',fontWeight:800}} onClick={()=>_accept(prop)}>✓ Accept — tie {prop.ties.length} line{prop.ties.length===1?'':'s'}</button>
+                          {_props.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_propIdx:(_pi+1)%_props.length}:pp)}))}>Not this ▸ next</button>}
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} title="Open the manual line-matcher seeded with this proposal — adjust any tie before confirming"
+                            onClick={()=>setW({open:true,query:bill.po_number||'',target:prop.target,mappings:Object.fromEntries(prop.ties.map(t=>[t.bill_idx,{target_idx:t.target_idx,allocated_qty:t.allocated_qty,ambiguous:false}]))})}>Adjust ties…</button>
+                        </div>
+                      </div>}
                       {/* AI "find the PO" suggestion — Claude picked an open order this bill likely
                           belongs to. "Review & apply" opens the manual wizard pre-filled; nothing is
                           written until the human confirms there. */}
@@ -27318,6 +27373,17 @@ export default function App(){
                 <div><div style={{fontFamily:FD,fontWeight:800,fontSize:26,color:'#fff',lineHeight:1,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(grandTotal)}</div><div style={{fontFamily:FD,fontWeight:600,fontSize:11,letterSpacing:1.5,textTransform:'uppercase',color:'rgba(255,255,255,.55)',marginTop:4}}>Parked value</div></div>
                 {overBills.length>0&&statTile(overBills.length,'Over-billed',RED_LT)}
                 {oldestDays!=null&&statTile(oldestDays===0?'today':oldestDays+'d','Oldest')}
+                {(()=>{
+                  // Drain the parked mountain through the proposal engine: every no-match /
+                  // won't-apply bill goes back to Review where the "Best answer" panel works
+                  // them. Over-billed stays here — its correct/accept tools live on this tab.
+                  const rematchable=enrichedAll.filter(e=>e.bucket==='nomatch'||e.bucket==='noapply');
+                  if(!rematchable.length)return null;
+                  return <button onClick={()=>{rematchable.forEach(e=>_moveBackToReview(e.sb));nf(rematchable.length+' bill(s) moved to Review — open each one for its Best answer')}}
+                    title="Send every no-match / won't-apply parked bill back to Import & Review, where the new matcher proposes its best answer with evidence"
+                    style={{fontSize:12,padding:'9px 16px',borderRadius:5,cursor:'pointer',fontWeight:800,fontFamily:FD,letterSpacing:.5,textTransform:'uppercase',background:'#fff',border:'none',color:NAVY}}>
+                    🧵 Re-match {rematchable.length} through Review</button>;
+                })()}
               </div>
               <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,padding:'18px 24px',flexWrap:'wrap'}}>
                 <select value={billHistVendor} onChange={e=>setBillHistVendor(e.target.value)} style={selDark} title="Filter by vendor">
