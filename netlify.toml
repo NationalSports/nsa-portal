@@ -142,6 +142,16 @@
 [functions."rep-ar-digest"]
   schedule = "0 16 * * 5"
 
+# Marketing Command Center sync — daily at 13:00 UTC (~6am PT). The cron fn
+# fires marketing-sync, which pulls each online-presence source (SEO data.json,
+# Brevo campaigns, Yelp, Google reviews) into marketing_data/marketing_history
+# for the portal /marketing page. Sources without credentials skip gracefully.
+[functions."marketing-sync"]
+  timeout = 26
+
+[functions."marketing-sync-cron"]
+  schedule = "0 13 * * *"
+
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
 # style from the S&S API into products + adidas_inventory for /adidas.
