@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -661,5 +661,127 @@ describe('desc-derived style hint (SanMar 2649531-class SKUs — style leads the
     const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
     expect(p.poAnchored).toBe(true);
     expect(p.unresolved).toEqual([0]); // never guesses between duplicate lines
+  });
+});
+
+// ── Learned vendor-number aliases (bill_sku_aliases → bl._alias_sku) ──────────
+// The UA/Seton case: "Under Armour puts on their invoice a different number than
+// we order with." Once a pushed bill teaches B199E2655 → 1390159-410, the next
+// bill with that number ties at exact grade.
+describe('learned vendor-number aliases', () => {
+  const uaCand = {
+    kind: 'so', id: 'SO-1527', label: 'SO-1527', sub: 'Sales Order · Seton Track', raw: { id: 'SO-1527' },
+    items: [
+      { sku: '1390159-410', name: 'UA Rival Stretch Woven Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' },
+      { sku: '1390160-001', name: 'UA Rival Pant', color: 'Black', size: 'L', qty: 4, unit_cost: 30, so_id: 'SO-1527', item_id: 'a2', po_id: 'PO 13553 STCC' },
+    ],
+  };
+  test('a line with _alias_sku ties to its portal SKU (basis alias), even with no PO anchor', () => {
+    const bill = { po_number: 'PO 99999 ZZZ', items: [
+      { sku: 'B199E2655', _alias_sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+    ] };
+    const p = proposeResolutions(bill, [uaCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.length).toBe(1);
+    expect(p.ties[0].basis).toBe('alias');
+    expect(uaCand.items[p.ties[0].target_idx].sku).toBe('1390159-410');
+  });
+  test('alias ties are strong bases: full-coverage alias bill reads high with alias evidence', () => {
+    const bill = { po_number: 'PO 13553 STCC', items: [
+      { sku: 'B199E2655', _alias_sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+      { sku: 'B199E7777', _alias_sku: '1390160-001', size: 'L', qty: 4, unit_price: 30 },
+    ] };
+    const p = proposeResolutions(bill, [uaCand], { canonSize: canon })[0];
+    expect(p.ties.every((t) => t.basis === 'alias')).toBe(true);
+    expect(p.confidence).toBe('high');
+    expect(p.evidence.join(' ')).toMatch(/alias/);
+  });
+});
+
+// ── cleanAutoAccept — "PO matches and the cost matches perfectly → go to match" ──
+describe('cleanAutoAccept auto-match gate', () => {
+  const cand = {
+    kind: 'so', id: 'SO-1527', label: 'SO-1527', sub: 'Sales Order · Seton Track', raw: { id: 'SO-1527' },
+    items: [
+      { sku: '1390159-410', name: 'UA Rival Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' },
+      { sku: '1390160-001', name: 'UA Rival Pant', color: 'Black', size: 'L', qty: 4, unit_cost: 30, so_id: 'SO-1527', item_id: 'a2', po_id: 'PO 13553 STCC' },
+    ],
+  };
+  const cleanBill = { po_number: 'PO 13553 STCC', items: [
+    { sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+    { sku: '1390160-001', size: 'L', qty: 4, unit_price: 30 },
+  ] };
+  test('fires on the clean class: PO exact, all lines tied, costs equal to the penny', () => {
+    const p = proposeResolutions(cleanBill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.confidence).toBe('high');
+    expect(cleanAutoAccept(p, cleanBill.items)).toBe(true);
+  });
+  test('refuses when any billed price differs from the order cost', () => {
+    const bill = { ...cleanBill, items: cleanBill.items.map((l, i) => (i === 0 ? { ...l, unit_price: 45.0 } : l)) };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses when a line is left unresolved', () => {
+    const bill = { ...cleanBill, items: [...cleanBill.items, { sku: 'UNKNOWN999', size: 'M', qty: 2, unit_price: 10 }] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.unresolved.length).toBe(1);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses on bucket overage — the 9-billed-into-5-open bulk wrinkle', () => {
+    const bulkCand = {
+      kind: 'so', id: 'SO-1527', label: 'SO-1527', raw: { id: 'SO-1527' },
+      items: [{ sku: '1390159-410', name: 'UA Rival Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' }],
+    };
+    const bill = { po_number: 'PO 13553 STCC', items: [
+      { sku: 'B199E2655', size: 'L', qty: 5, unit_price: 42.25 },
+      { sku: 'B196E2652', size: 'XS', qty: 1, unit_price: 42.25 },
+      { sku: 'B196E2653', size: 'S', qty: 3, unit_price: 42.25 },
+    ] };
+    const p = proposeResolutions(bill, [bulkCand], { canonSize: canon })[0];
+    expect(p.overageUnits).toBe(4);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses without an exact PO anchor, even when every SKU ties', () => {
+    const bill = { ...cleanBill, po_number: 'PO 13554 STCC' };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(false);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+});
+
+// ── Money honesty: a sharp price gap must not read "Strong match" ─────────────
+// The Adidas F50 case: right ORDER (PO exact) but $111.37 lines landing on $41.25
+// siblings by size alone — accepting would rewrite order costs by 170%.
+describe('sharp price gap demotes confidence', () => {
+  const cand = {
+    kind: 'so', id: 'SO-1367', label: 'SO-1367', sub: 'Sales Order · Fresno Pacific', raw: { id: 'SO-1367' },
+    items: [
+      { sku: 'JH8559', name: 'Predator Elite FG', color: 'White/Black', size: '8', qty: 4, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+      { sku: 'JH8559', name: 'Predator Elite FG', color: 'White/Black', size: '11', qty: 3, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    ],
+  };
+  const bill = { po_number: 'PO 3460 FPUSOC', items: [
+    { sku: 'JR5386', size: '8', qty: 3, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE SOLTUR/CBL' },
+    { sku: 'JR5386', size: '11', qty: 1, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE SOLTUR/CBL' },
+  ] };
+  test('PO-anchored full coverage with a 170% cost rewrite reads medium, says why, and never auto-matches', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.priceChanges.length).toBeGreaterThan(0);
+    expect(p.confidence).toBe('medium');
+    expect(p.evidence.join(' ')).toMatch(/differs sharply/);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('a modest, plausible price update (under 25%) does NOT demote', () => {
+    const b2 = { po_number: 'PO 3460 FPUSOC', items: [
+      { sku: 'JH8559', size: '8', qty: 4, unit_price: 44.5 },
+      { sku: 'JH8559', size: '11', qty: 3, unit_price: 44.5 },
+    ] };
+    const p = proposeResolutions(b2, [cand], { canonSize: canon })[0];
+    expect(p.priceChanges.length).toBe(1);
+    expect(p.confidence).toBe('high');
+    expect(cleanAutoAccept(p, b2.items)).toBe(false); // price change still blocks AUTO — humans confirm money
   });
 });

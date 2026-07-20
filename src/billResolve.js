@@ -76,6 +76,9 @@ export const looksPrePortalGlued = (po) => {
 // ({sku,name,color,size,qty(open),unit_cost,...}); qty>0 assumed (builder filters).
 const tieLine = (bl, items, canon) => {
   const sku = _ns(bl.sku); const size = canon(bl.size); const color = _ns(bl.color);
+  // _alias_sku: a learned vendor-number → portal-SKU mapping (bill_sku_aliases, written
+  // every time a pushed bill taught us the vendor's numbering). Trusted like an exact SKU.
+  const asku = _ns(bl._alias_sku);
   const style = _ns(bl._ss_style) || descStyleToken(bl.desc); const price = _num(bl.unit_price);
   const sizeOk = (it) => !size || canon(it.size) === size;
   const only = (list) => {
@@ -87,6 +90,7 @@ const tieLine = (bl, items, canon) => {
   const idx = items.map((it, i) => ({ it, i }));
   const tiers = [
     ['exact', idx.filter(({ it }) => sku && _ns(it.sku) === sku && sizeOk(it))],
+    ['alias', asku ? idx.filter(({ it }) => _ns(it.sku) === asku && sizeOk(it)) : []],
     ['variant', idx.filter(({ it }) => { const t = _ns(it.sku); return sku.length >= 5 && t.length >= 5 && t !== sku && (sku.startsWith(t) || t.startsWith(sku) || sku.includes(t) || t.includes(sku)) && sizeOk(it); })],
     ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
     ['color_size', color && size ? idx.filter(({ it }) => _ns(it.color) === color && canon(it.size) === size) : []],
@@ -198,7 +202,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const candPo = poParts(((ties.length ? cand.items[ties[0].target_idx] : cand.items.find((it) => poParts(it.po_id).flat === billPo.flat)) || {}).po_id || (cand.raw && cand.raw.po_number) || cand.label);
     const tagMatch = !!(billPo.tag && candPo.tag && billPo.tag === candPo.tag);
     const coreDistance = billPo.core && candPo.core ? editDistance(billPo.core, candPo.core) : 9;
-    const strongBases = ties.filter((t) => /^(exact|variant|style|bulk)/.test(t.basis)).length;
+    const strongBases = ties.filter((t) => /^(exact|alias|variant|style|bulk)/.test(t.basis)).length;
     const overageUnits = bucketOver;
     // Price changes an accept would sync (per po_line, consistent-only mirrors the apply rule).
     const priceChanges = [];
@@ -213,15 +217,23 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       const to = [...g.bills][0] / 100;
       if (to > 0 && Math.abs(to - g.order) > 0.02) priceChanges.push({ sku: g.sku, po_id: g.po_id, from: g.order, to });
     });
-    const confidence =
+    let confidence =
       coverage === 1 && (qtyMirror || strongBases === ties.length || (tagMatch && coreDistance <= 1) || poAnchored) ? 'high'
       : poAnchored ? 'medium'
       : coverage >= 0.7 || (coverage >= 0.5 && tagMatch) ? 'medium' : 'low';
+    // Money honesty: a "sure" match that would rewrite an order cost by >25% needs eyes —
+    // the right ORDER can still have the wrong LINES tied (weak-basis tie + big price gap,
+    // e.g. $111.37 F50s landing on a $41.25 sibling line by size alone).
+    const sharpPrice = priceChanges.some((pc) => Math.abs(pc.to - pc.from) > Math.max(0.02, 0.25 * Math.max(pc.from, 0.01)));
+    if (sharpPrice && confidence === 'high') confidence = 'medium';
     const evidence = [];
     if (poAnchored) evidence.push('PO number matches this order EXACTLY — near-certain this is the right order (owner rule)');
     evidence.push(ties.length + ' of ' + usable.length + ' bill line(s) tie to this order' + (poAnchored && ties.length < usable.length ? ' — link the rest below' : ''));
     if (qtyMirror) evidence.push('quantities mirror the order’s open amounts exactly');
     if (strongBases) evidence.push(strongBases + ' line(s) tie by SKU/style, not guesswork');
+    const aliasTies = ties.filter((t) => t.basis.startsWith('alias')).length;
+    if (aliasTies) evidence.push(aliasTies + ' line(s) tie by a learned vendor-number alias (from your past accepts)');
+    if (sharpPrice) evidence.push('billed price differs sharply from the order cost — confirm the tied lines before accepting');
     if (tagMatch) evidence.push('the bill’s tag “' + billPo.tag + '” matches this order');
     if (coreDistance === 1) evidence.push('the PO number is one digit off (' + billPo.core + ' → ' + candPo.core + ')');
     if (coreDistance === 0 && billPo.tag !== candPo.tag) evidence.push('same PO number, different tag');
@@ -241,4 +253,23 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     out[0].evidence.push('another order fits almost as well (' + (out[1].target.label || '') + ') — compare before accepting');
   }
   return out.slice(0, opts.maxProposals || 3);
+};
+
+// ── Auto-accept gate ─────────────────────────────────────────────────────────
+// The class the owner named ("PO matches and the cost matches perfectly — go to match
+// automatically"): true only when NOTHING is left to judge. Exact-PO anchor, every bill
+// line tied, no ambiguity demotion (confidence stayed high), no overage, no price sync,
+// and every tie's billed unit price equals the order's cost within 2¢. Push — the actual
+// money write — stays a human action; this only stages what Accept would stage.
+export const cleanAutoAccept = (prop, billItems) => {
+  if (!prop || prop.confidence !== 'high' || !prop.poAnchored) return false;
+  if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;
+  if (prop.coverage < 1 || prop.overageUnits) return false;
+  if ((prop.priceChanges || []).length) return false;
+  return prop.ties.every((t) => {
+    const bl = (billItems || [])[t.bill_idx] || {};
+    const it = ((prop.target || {}).items || [])[t.target_idx] || {};
+    const bp = _num(bl.unit_price); const oc = _num(it.unit_cost);
+    return bp > 0 && Math.abs(bp - oc) <= 0.02;
+  });
 };
