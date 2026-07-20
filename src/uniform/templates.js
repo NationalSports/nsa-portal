@@ -296,10 +296,7 @@ const TEMPLATES = {
         w: 500, h: 580, viewBox: '0 0 500 580',
         zones: [
           { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
-          { id: 'aysonInk2', label: 'Pattern Ink 1', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
-          { id: 'aysonInk3', label: 'Pattern Ink 2', maskColor: '#0000ff', sourceId: 'body', colorField: 'color3' },
-          { id: 'aysonInk4', label: 'Pattern Ink 3', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color4' },
-          { id: 'aysonInk5', label: 'Pattern Ink 4', maskColor: '#ff8000', sourceId: 'body', colorField: 'color5' },
+          { id: 'aysonInk2', label: 'Artwork', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
           { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
         ], seams: [],
         anchors: { number: { x: 0.5, y: 0.27, size: 86 }, name: { x: 0.5, y: 0.3, size: 58 } },
@@ -309,10 +306,7 @@ const TEMPLATES = {
         w: 500, h: 580, viewBox: '0 0 500 580',
         zones: [
           { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
-          { id: 'aysonInk2', label: 'Pattern Ink 1', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
-          { id: 'aysonInk3', label: 'Pattern Ink 2', maskColor: '#0000ff', sourceId: 'body', colorField: 'color3' },
-          { id: 'aysonInk4', label: 'Pattern Ink 3', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color4' },
-          { id: 'aysonInk5', label: 'Pattern Ink 4', maskColor: '#ff8000', sourceId: 'body', colorField: 'color5' },
+          { id: 'aysonInk2', label: 'Artwork', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
           { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
         ], seams: [],
         anchors: { number: { x: 0.5, y: 0.46, size: 205 }, name: { x: 0.5, y: 0.2, size: 70 } },

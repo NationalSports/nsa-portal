@@ -49,8 +49,8 @@ export const DEFAULT_PRESETS = [
     config: {
       neckStyle: 'ayson', numberColor: '#FFFFFF',
       sections: {
-        body: { color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5 },
-        sleeves: { color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5 },
+        body: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
+        sleeves: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
         collar: sec('#870064'),
       },
     },

@@ -520,16 +520,16 @@ function agi1011PreviewConfig() {
 
 function aysonPreviewConfig() {
   const artwork = {
-    color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C',
+    color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064',
     pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
-    patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5,
+    patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2,
   };
   return {
     ...DEFAULT_CONFIG,
     sport: 'soccer', designId: 'AYSONSA', neckStyle: 'ayson',
     teamName: 'AYSONSA', playerNumber: '', frontNumber: 'none',
     numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
-    teamPalette: ['#31132A', '#870064', '#83276B', '#76236C', '#68246C'],
+    teamPalette: ['#31132A', '#870064'],
     sections: {
       body: { ...artwork },
       sleeveL: { ...artwork }, sleeveR: { ...artwork },
@@ -894,7 +894,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && value.patternTintMode !== 'duotone' && (
               <>
                 {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 2) && <>
-                  <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 1' : 'Print · Secondary'}</div>
+                  <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? (value.patternName === 'AYSONSA Layout' ? 'Artwork Color' : 'Accent 1') : 'Print · Secondary'}</div>
                   <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-1-${def.key}` : undefined} />
                 </>}
                 {value.patternTintMode !== 'blend' && (

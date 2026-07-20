@@ -257,7 +257,10 @@ function designMaskPatternTexture(url, patternCanvas, patternKey, accentHex, rep
 // over the actual AGI-1012 surface. This preserves the artist's rising hem and
 // underarm pattern while the original PBR fabric, folds and seams stay intact.
 function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
-  const colors = [zone.color, zone.color2, zone.color3, zone.color4, zone.color5].map((c) => ds.toHex(c, '#ffffff'));
+  // The SVG's four magenta shades are one production artwork ink. Keep them
+  // visually unified and expose body, artwork, and collar/cuffs as the three
+  // real color decisions in the builder.
+  const colors = [zone.color, zone.color2, zone.color2, zone.color2, zone.color2].map((c) => ds.toHex(c, '#ffffff'));
   const key = [frontUrl, backUrl, ...colors].join('|');
   if (_aysonProjectionTextures[key]) { onReady(_aysonProjectionTextures[key]); return; }
   const load = (url) => new Promise((resolve) => {
