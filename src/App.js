@@ -355,6 +355,7 @@ import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, cleanAutoAccept, looksPrePortalGlued, poParts } from './billResolve';
+import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
 import {
@@ -1943,7 +1944,7 @@ export default function App(){
     syncLog:[],pendingSync:{sos:[],pos:[],invoices:[]}});
   const[qbTab,setQbTab]=useState('overview');
   const[qbSyncing,setQbSyncing]=useState(false);
-  const qbSyncAllRef=React.useRef(null);
+  const _qbSyncCtxRef=React.useRef(null);// fresh state snapshot for the QB auto-sync engine, refreshed every render
   const[qbBillFile,setQbBillFile]=useState(null);
   const[qbBillVendor,setQbBillVendor]=useState('');
   const[qbBillAmount,setQbBillAmount]=useState('');
@@ -3871,16 +3872,20 @@ export default function App(){
     }
   },[ests,estHistory]);
   React.useEffect(()=>{_saveAppState('qb_config',qbConfig)},[qbConfig]);
-  // QB background auto-sync — runs even when not on QB page, using ref set by QBPage
+  // QB background auto-sync — self-contained: builds the sync engine from CURRENT
+  // state at fire time. The old wiring called a ref only a mounted QBPage assigned,
+  // so hourly/daily auto-sync silently did nothing until someone opened the QB page
+  // that session — and afterwards synced the stale snapshot from the last render.
+  React.useEffect(()=>{_qbSyncCtxRef.current={cust,sos,invs,prod,vend,invPOs,submittedBatches,qbApi,qbConfig,nf,dP,setQBConfig,setQbSyncing,setInvs,setInvPOs,setSOs,setSubmittedBatches,setVend}});
   React.useEffect(()=>{
     if(!qbConfig.connected||qbConfig.autoSync==='manual')return;
     const intervals={hourly:3600000,daily:86400000,realtime:300000};
     const ms=intervals[qbConfig.autoSync];
     if(!ms)return;
     const id=setInterval(()=>{
-      if(qbSyncing||!qbSyncAllRef.current)return;
+      if(qbSyncing||!_qbSyncCtxRef.current)return;
       const last=qbConfig.lastSync?new Date(qbConfig.lastSync).getTime():0;
-      if(Date.now()-last>=ms)qbSyncAllRef.current();
+      if(Date.now()-last>=ms)createQBSyncEngine(_qbSyncCtxRef.current).syncAll();
     },60000);// check every 60s
     return()=>clearInterval(id);
   },[qbConfig.connected,qbConfig.autoSync,qbSyncing]);
@@ -31726,7 +31731,7 @@ export default function App(){
     // session / navigation / notify
     cu,nf,pg,setPg,setESO,setESOC,setESOTab,
     // QuickBooks page state + handlers
-    connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncAllRef,qbSyncing,setQbSyncing,qbTab,setQbTab,
+    connectQB,disconnectQB,qbApi,qbConfig,setQBConfig,qbSyncing,setQbSyncing,qbTab,setQbTab,
     qbBillAmount,setQbBillAmount,qbBillDate,setQbBillDate,qbBillFile,setQbBillFile,qbBillMemo,setQbBillMemo,
     qbBillUploading,setQbBillUploading,qbBillVendor,setQbBillVendor,
     invAdjLog,invPOs,setInvPOs,submittedBatches,setSubmittedBatches,
