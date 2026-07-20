@@ -23636,7 +23636,7 @@ export default function App(){
         if(i%40===39)await new Promise(res=>setTimeout(res,1100));// stay under S&S's 60 req/min
       }
       setSsXref(x=>({...x,step:'done',result:{ok,created,updated,failed,errs,aborted}}));
-      nf(aborted?'CrossRef aborted — first mapping failed verification, nothing else written':(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
+      nf(aborted?('CrossRef aborted on the first write — '+(errs[0]&&/500|server|exception/i.test(errs[0])?'S&S\u2019s API errored server-side (their bug, not your data)':'it failed verification')+' — nothing written. Bill pulls are unaffected.'):(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
     };
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
@@ -25388,9 +25388,15 @@ export default function App(){
         siPushed.forEach(b=>{
           _siMarkDoc(b.parsed.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()});
         });
-        sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false)
+        // One PATCH carries the whole batch, so a single hiccup failed ALL of them and the
+        // error was swallowed. Retry once after a pause; if it still fails, say WHAT failed.
+        // Money is already safe either way — the applied-bills dedup skips them next pull.
+        const _markImported=()=>sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false);
+        _markImported()
           .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
-          .catch(()=>nf('Bills applied, but marking '+siPushed.length+' Sports Inc doc(s) as imported failed — they\'ll be skipped as duplicates on the next pull','error'));
+          .catch(()=>new Promise(r=>setTimeout(r,2500)).then(_markImported)
+            .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported, on retry)'))
+            .catch(e=>nf('Bills applied, but marking '+siPushed.length+' Sports Inc doc(s) as imported failed after a retry ('+(((e&&e.message)||String(e)).slice(0,80))+') — they\'ll be skipped as duplicates on the next pull','error')));
       }
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
@@ -26582,7 +26588,7 @@ export default function App(){
                   {ssXref.plan.conflicts.length>0&&<div style={{marginTop:6,color:'#b45309'}}>⚠️ Skipped (one S&amp;S sku resolved to two styles — check the order data): {ssXref.plan.conflicts.slice(0,8).map(c=>c.ssSku).join(', ')}</div>}
                 </div>}
                 {ssXref.step==='done'&&ssXref.result&&<div style={{marginTop:10,fontSize:11,padding:'8px 10px',borderRadius:6,background:ssXref.result.aborted||ssXref.result.failed?'#fef2f2':'#f0fdf4',border:'1px solid '+(ssXref.result.aborted||ssXref.result.failed?'#fecaca':'#bbf7d0')}}>
-                  <div style={{fontWeight:700,color:ssXref.result.aborted||ssXref.result.failed?'#b91c1c':'#166534'}}>{ssXref.result.aborted?'Aborted after the first mapping failed verification — nothing else written.':('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
+                  <div style={{fontWeight:700,color:ssXref.result.aborted||ssXref.result.failed?'#b91c1c':'#166534'}}>{ssXref.result.aborted?((ssXref.result.errs&&ssXref.result.errs[0]&&/500|server|exception/i.test(ssXref.result.errs[0])?'Aborted on the first write — S&S\u2019s API is erroring server-side (a fault on their end, not your data). Nothing was written; bill pulls are unaffected. Retry later or send S&S the support ticket.':'Aborted after the first mapping failed verification — nothing else written.')):('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
                   {(ssXref.result.errs||[]).slice(0,6).map((e,i)=><div key={i} style={{color:'#b91c1c',fontFamily:'monospace',fontSize:10,marginTop:2}}>{e}</div>)}
                   <button className="btn btn-sm" style={{fontSize:10,marginTop:6,background:'#fff',border:'1px solid #cbd5e1'}} onClick={_ssPlanCrossRef}>Re-plan (check what's left)</button>
                 </div>}
