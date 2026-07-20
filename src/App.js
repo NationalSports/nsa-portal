@@ -26901,10 +26901,33 @@ export default function App(){
                                 <span style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#0f172a',flex:'0 0 auto'}}>{bl.sku} {bl.size} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)}</span>
                                 {linked?<><span style={{fontSize:10,color:'#166534',fontWeight:700}}>→ {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''} ✓ linked</span>
                                   <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 6px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c'}}>✕</button></>
-                                :prop.target.items.map((it2,ti2)=>{if(takenTi.has(ti2))return null;const pp2=poParts(it2.po_id);const bp2=poParts(bill._po_raw||bill.po_number);if(bp2.flat&&pp2.flat!==bp2.flat)return null;
-                                  return<button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
-                                    style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
-                                    {it2.sku} {[it2.color,it2.size].filter(Boolean).join(' ')} · {safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)} →</button>;})}
+                                :(()=>{
+                                  // Ranked, not exhaustive (the chip wall was bad UI): same cost and same
+                                  // size float to the top — the operator's own heuristic. Top 6 visible,
+                                  // the rest behind one click.
+                                  const bp2=poParts(bill._po_raw||bill.po_number);
+                                  const cz2=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase();
+                                  const nr2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                                  const dst=nr2(String(bl.desc||'').trim().split(/[.\s]/)[0]||'');
+                                  const scored=prop.target.items.map((it2,ti2)=>{
+                                    if(takenTi.has(ti2))return null;
+                                    const pp2=poParts(it2.po_id);
+                                    if(bp2.flat&&pp2.flat!==bp2.flat)return null;
+                                    let sc=0;
+                                    if(bl.size&&cz2(it2.size)===cz2(bl.size))sc+=4;
+                                    if(safeNum(bl.unit_price)>0&&Math.abs(safeNum(it2.unit_cost)-safeNum(bl.unit_price))<=0.02)sc+=3;
+                                    if(bl.color&&it2.color&&nr2(it2.color)===nr2(bl.color))sc+=2;
+                                    if(dst.length>=3&&(nr2(it2.sku).includes(dst)||dst.includes(nr2(it2.sku))))sc+=3;
+                                    return{it2,ti2,sc};
+                                  }).filter(Boolean).sort((a2,z2)=>z2.sc-a2.sc);
+                                  const mkChip=({it2,ti2,sc})=><button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)+(sc>=6?' — same cost + size':'')}
+                                    style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid '+(sc>=6?'#16a34a':'#86efac'),background:sc>=6?'#dcfce7':'#f0fdf4',color:'#166534',fontWeight:sc>=6?800:700}}>
+                                    {it2.sku} {[it2.color,it2.size].filter(Boolean).join(' ')} · {safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)} →</button>;
+                                  const top=scored.slice(0,6);const rest=scored.slice(6);
+                                  return<>{top.map(mkChip)}
+                                    {rest.length>0&&<details style={{display:'inline-block'}}><summary style={{fontSize:9,color:'#92400e',cursor:'pointer',fontWeight:700,padding:'2px 6px'}}>+{rest.length} more…</summary>
+                                      <div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:4}}>{rest.map(mkChip)}</div></details>}</>;
+                                })()}
                               </div>;})}
                           </div>;})()}
                         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
