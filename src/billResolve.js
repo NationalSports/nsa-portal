@@ -95,7 +95,10 @@ const tieLine = (bl, items, canon) => {
     ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
     ['color_size', color && size ? idx.filter(({ it }) => _ns(it.color) === color && canon(it.size) === size) : []],
     ['size_price', size && price > 0 ? idx.filter(({ it }) => canon(it.size) === size && Math.abs(_num(it.unit_cost) - price) <= 0.02) : []],
-    ['size_only', size ? idx.filter(({ it }) => canon(it.size) === size) : []],
+    // size_only carries a price sanity check: same size but a >50% price gap is almost
+    // certainly a DIFFERENT product (a $115.50 Predator cleat is not a $41.25 Supernova
+    // in the same size) — leave it for the name/PO tiers or the human instead of guessing.
+    ['size_only', size ? idx.filter(({ it }) => { const oc = _num(it.unit_cost); return canon(it.size) === size && !(price > 0 && oc > 0 && (price > oc * 1.5 || price < oc * 0.5)); }) : []],
   ];
   for (const [basis, list] of tiers) {
     if (!list.length) continue;
@@ -173,17 +176,27 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
         .filter(({ it, ti }) => poParts(it.po_id).flat === billPo.flat && !ties.some((t) => t.target_idx === ti && t.basis !== 'bulk'));
       const still = () => usable.filter(({ bl, i }) => !ties.some((t) => t.bill_idx === i) && !noMoney(bl));
       const tieTo = (i, bl, b2, basis) => ties.push({ bill_idx: i, target_idx: b2.ti, basis, allocated_qty: _num(bl.qty), open_qty: _num(b2.it.qty), overage: 0 });
-      // qty-unique: the line's qty equals exactly one remaining bucket's open qty
-      still().forEach(({ bl, i }) => {
-        const hits = remainingBuckets().filter(({ it }) => _num(it.qty) === _num(bl.qty));
-        if (hits.length === 1) tieTo(i, bl, hits[0], 'po_qty');
-      });
-      // name-token: a ≥4-char word from the bill line's description appears in exactly one bucket's name
+      // NAME FIRST (production lesson: PREDATOR ELITE cleats got qty-coincidence-tied to a
+      // Supernova running shoe while "Adidas Soccer Cleats F50 / Predator" sat unmatched —
+      // a product-name hit is real evidence; a quantity equality is a coin flip).
+      // name-token: a ≥4-char word from the bill line's description appears in exactly one
+      // bucket's name. Name ties do NOT consume the bucket for FURTHER name ties — custom/
+      // bulk lines legitimately absorb several sized bill lines ("billed by size, bought in
+      // bulk"); the bucket-cumulative accounting below keeps the quantities honest.
+      const nameBuckets = () => cand.items.map((it, ti) => ({ it, ti }))
+        .filter(({ it, ti }) => poParts(it.po_id).flat === billPo.flat && !ties.some((t) => t.target_idx === ti && t.basis !== 'bulk' && t.basis !== 'po_name'));
       still().forEach(({ bl, i }) => {
         const toks = String(bl.desc || '').toUpperCase().split(/[^A-Z0-9]+/).filter((x) => x.length >= 4);
         if (!toks.length) return;
-        const hits = remainingBuckets().filter(({ it }) => { const nm = String(it.name || '').toUpperCase(); return toks.some((x) => nm.includes(x)); });
+        const hits = nameBuckets().filter(({ it }) => { const nm = String(it.name || '').toUpperCase(); return toks.some((x) => nm.includes(x)); });
         if (hits.length === 1) tieTo(i, bl, hits[0], 'po_name');
+      });
+      // qty-unique: the line's qty equals exactly one remaining bucket's open qty.
+      // qty >= 2 only — "1 billed, one bucket happens to have 1 open" is pure coincidence.
+      still().forEach(({ bl, i }) => {
+        if (_num(bl.qty) < 2) return;
+        const hits = remainingBuckets().filter(({ it }) => _num(it.qty) === _num(bl.qty));
+        if (hits.length === 1) tieTo(i, bl, hits[0], 'po_qty');
       });
       // price-unique: exactly one remaining bucket at the billed unit price
       still().forEach(({ bl, i }) => {

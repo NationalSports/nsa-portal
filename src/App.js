@@ -27116,7 +27116,7 @@ export default function App(){
                         {prop.poAnchored&&prop.unresolved.length>0&&(()=>{
                           const xt=b._extraTies||{};
                           const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
-                          const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk').map(t2=>t2.target_idx),...Object.values(xt)]);
+                          const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk'&&t2.basis!=='po_name').map(t2=>t2.target_idx),...Object.values(xt)]);
                           return<div style={{marginTop:8,padding:'9px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
                             <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
                             <div style={{fontSize:10,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
@@ -27145,6 +27145,9 @@ export default function App(){
                                     if(safeNum(bl.unit_price)>0&&Math.abs(safeNum(it2.unit_cost)-safeNum(bl.unit_price))<=0.02)sc+=3;
                                     if(bl.color&&it2.color&&nr2(it2.color)===nr2(bl.color))sc+=2;
                                     if(dst.length>=3&&(nr2(it2.sku).includes(dst)||dst.includes(nr2(it2.sku))))sc+=3;
+                                    // Owner ask: match by the item NAME too ("PREDATOR ELITE…" → "…F50 / Predator")
+                                    {const nmz=String(it2.name||'').toUpperCase();
+                                     if(nmz&&String(bl.desc||'').toUpperCase().split(/[^A-Z0-9]+/).some(t=>t.length>=4&&nmz.includes(t)))sc+=3;}
                                     return{it2,ti2,sc};
                                   }).filter(Boolean).sort((a2,z2)=>z2.sc-a2.sc);
                                   const mkCard=({it2,ti2,sc},best)=><button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
@@ -27229,9 +27232,13 @@ export default function App(){
                       // SKU variant (5162436D ⊇ 5162436 — vendors love suffix letters), exact
                       // price, size, description tokens. Rendered as one-click picks with the
                       // reason on them — suggestions, never auto-applied.
-                      const suggestFor=(bl)=>{
+                      // Rank EVERY order bucket for a bill line, on the signals a human uses:
+                      // SKU variants, exact price, size, and the item NAME (owner ask — a
+                      // "PREDATOR ELITE" bill line should surface "…F50 / Predator" on sight).
+                      // Feeds both the 3-chip suggestions and the row picker's ranked list.
+                      const scoreAll=(bl)=>{
                         const bsku=_ns(bl.sku);const price=safeNum(bl.unit_price);const bdesc=String(bl.desc||'').toUpperCase();
-                        const scored=target.items.map((it,ti)=>{
+                        return target.items.map((it,ti)=>{
                           const tsku=_ns(it.sku);let sc=0;const why=[];
                           if(bsku&&tsku&&bsku.length>=5&&tsku.length>=5){
                             if(bsku===tsku){sc+=100;why.push('exact SKU')}
@@ -27242,14 +27249,13 @@ export default function App(){
                           if(bl.size&&_cz(bl.size)===_cz(it.size)){sc+=15;why.push('size')}
                           if(bdesc){const name=String(it.name||'').toUpperCase();const hits=bdesc.split(/[^A-Z0-9]+/).filter(t=>t.length>=4&&name.includes(t)).length;if(hits){sc+=Math.min(15,hits*5);why.push('name')}}
                           return{ti,it,sc,why};
-                        }).filter(x=>x.sc>=25).sort((a,b)=>b.sc-a.sc);
+                        }).sort((a,b)=>b.sc-a.sc);
+                      };
+                      const suggestFor=(bl)=>{
                         const out=[];const seen=new Set();
-                        for(const s of scored){const k=(s.it.item_id||s.it.sku)+'|'+(s.it.po_id||'')+'|'+_cz(s.it.size);if(seen.has(k))continue;seen.add(k);out.push(s);if(out.length>=3)break}
+                        for(const s of scoreAll(bl)){if(s.sc<25)break;const k=(s.it.item_id||s.it.sku)+'|'+(s.it.po_id||'')+'|'+_cz(s.it.size);if(seen.has(k))continue;seen.add(k);out.push(s);if(out.length>=3)break}
                         return out;
                       };
-                      // Dropdown grouped one <optgroup> per style+color so 50 size-buckets read
-                      // as 8 styles, not a wall.
-                      const optGroups=(()=>{const g={};target.items.forEach((it,ti)=>{const k=(it.sku||'?')+(it.color?' · '+it.color:'');(g[k]=g[k]||[]).push([it,ti])});return Object.entries(g);})();
                       const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped&&mappings[i].target_idx!=null).length;
                       const skipped=bill.items.filter((_,i)=>mappings[i]&&mappings[i].skipped).length;
                       const total=bill.items.length;
@@ -27295,15 +27301,41 @@ export default function App(){
                                   <div style={{color:'#64748b',marginTop:1}}>{[bl.size,bl.color].filter(Boolean).join(' · ')||'—'} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${billExt.toFixed(2)}</b></div>
                                   {bl.desc?<div style={{color:'#94a3b8',fontSize:9,marginTop:1,maxWidth:230,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={bl.desc}>{bl.desc}</div>:null}
                                 </td>
-                                <td style={{padding:'6px 8px'}}>
-                                  <select className="form-input" style={{width:'100%',fontSize:10,padding:'3px 4px'}} value={m.skipped?'__skip':(m.target_idx!=null?String(m.target_idx):'')}
-                                    onChange={e=>{const v=e.target.value;if(v==='__skip')setMap(bli,{skipped:true});else if(v==='')setMap(bli,{});else{const ti=parseInt(v);setMap(bli,{target_idx:ti,allocated_qty:bl.qty,ambiguous:false})}}}>
-                                    <option value="">— pick an order item —</option>
-                                    <option value="__skip">Skip this line (don’t bill it)</option>
-                                    {optGroups.map(([g,arr])=><optgroup key={g} label={g+' — $'+safeNum(arr[0][0].unit_cost).toFixed(2)}>
-                                      {arr.map(([it,ti])=><option key={ti} value={ti}>{(it.size||'one size')+' · '+safeNum(it.qty)+' open'+(Math.abs(safeNum(it.unit_cost)-safeNum(arr[0][0].unit_cost))>0.005?' @ $'+safeNum(it.unit_cost).toFixed(2):'')}</option>)}
-                                    </optgroup>)}
-                                  </select>
+                                <td style={{padding:'6px 8px',position:'relative'}}>
+                                  {/* Ranked picker, not a 60-option native select: best matches first
+                                      (SKU/price/size/NAME), full item names visible, search for the rest. */}
+                                  {(()=>{const pkOpen=w._pk===bli;const pq=String(w._pkq||'').toUpperCase();
+                                    const ranked=pkOpen?scoreAll(bl):[];
+                                    const list=pq?ranked.filter(s=>((s.it.sku||'')+' '+(s.it.name||'')+' '+(s.it.color||'')+' '+(s.it.size||'')).toUpperCase().includes(pq)):ranked;
+                                    const topPk=list.slice(0,8);const restPk=list.length-topPk.length;
+                                    return<>
+                                      <button onClick={()=>setW({...w,_pk:pkOpen?null:bli,_pkq:''})} style={{width:'100%',textAlign:'left',fontSize:10,padding:'4px 8px',borderRadius:6,cursor:'pointer',border:'1px solid '+(m.skipped?'#fbbf24':tgt?'#86efac':'#cbd5e1'),background:m.skipped?'#fffbeb':tgt?'#f0fdf4':'#fff',color:'#0f172a'}}>
+                                        {m.skipped?<span style={{color:'#92400e',fontWeight:700}}>Skipped — this line won’t bill</span>
+                                         :tgt?<><b style={{fontFamily:'monospace'}}>{tgt.sku}</b> <span style={{color:'#64748b'}}>{[tgt.color,tgt.size].filter(Boolean).join(' · ')} · {openQty} open @ ${safeNum(tgt.unit_cost).toFixed(2)}</span>{tgt.name?<span style={{color:'#94a3b8'}}> — {tgt.name}</span>:null}</>
+                                         :<span style={{color:'#64748b'}}>Pick the order item this pays for… ▾</span>}
+                                      </button>
+                                      {pkOpen&&<div style={{position:'absolute',zIndex:60,left:8,right:8,top:'100%',marginTop:2,background:'#fff',border:'1px solid #c7d2fe',borderRadius:8,boxShadow:'0 8px 30px rgba(15,23,42,.18)',padding:8}}>
+                                        <input autoFocus className="form-input" placeholder="Search sku, name, color, size…" value={w._pkq||''} onChange={e=>setW({...w,_pkq:e.target.value})} style={{width:'100%',fontSize:10,padding:'4px 8px',marginBottom:6}}/>
+                                        <div style={{maxHeight:230,overflow:'auto',display:'flex',flexDirection:'column',gap:3}}>
+                                          {topPk.map((s,si)=>{const best=si===0&&!pq&&s.sc>=25;return<button key={s.ti} onClick={()=>setW({...w,mappings:{...mappings,[bli]:{target_idx:s.ti,allocated_qty:bl.qty,ambiguous:false}},_pk:null,_pkq:''})}
+                                            style={{textAlign:'left',display:'flex',gap:8,alignItems:'center',padding:'5px 8px',borderRadius:6,cursor:'pointer',border:'1.5px solid '+(best?'#16a34a':'#e2e8f0'),background:best?'#f0fdf4':'#fff'}}>
+                                            <span style={{fontFamily:'monospace',fontWeight:800,fontSize:10,flex:'0 0 auto'}}>{s.it.sku}</span>
+                                            <span style={{fontSize:9.5,color:'#334155',flex:'1 1 auto',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={s.it.name||''}>{s.it.name||'—'}{s.it.color?' · '+s.it.color:''}</span>
+                                            <span style={{fontSize:9.5,color:'#64748b',flex:'0 0 auto',whiteSpace:'nowrap'}}>{s.it.size||'one size'} · {safeNum(s.it.qty)} open @ <b style={{color:Math.abs(safeNum(s.it.unit_cost)-safeNum(bl.unit_price))<=0.02?'#166534':'#334155'}}>${safeNum(s.it.unit_cost).toFixed(2)}</b></span>
+                                            {s.why.length>0&&<span style={{fontSize:8,fontWeight:800,color:best?'#fff':'#166534',background:best?'#16a34a':'#dcfce7',borderRadius:6,padding:'1px 6px',flex:'0 0 auto',whiteSpace:'nowrap'}}>{s.why.join(' + ')}</span>}
+                                          </button>;})}
+                                          {restPk>0&&<div style={{fontSize:9,color:'#64748b',padding:'2px 6px'}}>+{restPk} more — type to search</div>}
+                                          {!topPk.length&&<div style={{fontSize:10,color:'#94a3b8',padding:'4px 6px'}}>Nothing matches “{w._pkq}”.</div>}
+                                        </div>
+                                        <div style={{display:'flex',gap:6,marginTop:6,justifyContent:'space-between'}}>
+                                          <button onClick={()=>setW({...w,mappings:{...mappings,[bli]:{skipped:true}},_pk:null,_pkq:''})} style={{fontSize:9,padding:'3px 9px',borderRadius:6,cursor:'pointer',border:'1px solid #fbbf24',background:'#fffbeb',color:'#92400e',fontWeight:700}}>Skip — don’t bill this line</button>
+                                          <div style={{display:'flex',gap:6}}>
+                                            {(tgt||m.skipped)&&<button onClick={()=>setW({...w,mappings:{...mappings,[bli]:{}},_pk:null,_pkq:''})} style={{fontSize:9,padding:'3px 9px',borderRadius:6,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>Clear</button>}
+                                            <button onClick={()=>setW({...w,_pk:null,_pkq:''})} style={{fontSize:9,padding:'3px 9px',borderRadius:6,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>Close</button>
+                                          </div>
+                                        </div>
+                                      </div>}
+                                    </>;})()}
                                   {tgt&&<div style={{color:costGap?'#b45309':'#94a3b8',fontSize:9,marginTop:2}}>order cost ${safeNum(tgt.unit_cost).toFixed(2)} · {openQty} open{costGap?' · bill ≠ order by $'+Math.abs(billExt-applyCost).toFixed(2):''}</div>}
                                   {!tgt&&!m.skipped&&(()=>{const sug=suggestFor(bl);return sug.length?<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,alignItems:'center'}}>
                                     <span style={{fontSize:9,color:'#64748b',fontWeight:700}}>Best guess:</span>
