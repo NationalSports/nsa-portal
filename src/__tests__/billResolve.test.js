@@ -153,8 +153,10 @@ describe('tieLine ladder — exact beats variant, ambiguity, price refinement', 
   test('ambiguous exact tier (same sku+size, different item_id) ties nothing for that line — coverage drops', () => {
     const bill = {
       items: [
-        { sku: 'DUPSKU1', size: 'M', qty: 1, unit_price: 0 }, // ambiguous
-        { sku: 'UNIQSKU', size: 'L', qty: 1, unit_price: 0 }, // unambiguous
+        // Priced lines (a $0 line is a no-money memo with its own semantics — see the
+        // zero-dollar describe block): this test is about exact-tier ambiguity only.
+        { sku: 'DUPSKU1', size: 'M', qty: 1, unit_price: 10 }, // ambiguous
+        { sku: 'UNIQSKU', size: 'L', qty: 1, unit_price: 10 }, // unambiguous
       ],
     };
     const cand = {
@@ -783,5 +785,30 @@ describe('sharp price gap demotes confidence', () => {
     expect(p.priceChanges.length).toBe(1);
     expect(p.confidence).toBe('high');
     expect(cleanAutoAccept(p, b2.items)).toBe(false); // price change still blocks AUTO — humans confirm money
+  });
+});
+
+// ── $0 service lines (embroidery memo) never consume order quantity ───────────
+// The real Richardson bill (Inv 4670528, PO 3318 LLBB): 48 caps billed by size plus a
+// "91-T1 Direct Embroidery · 48 @ $0.00" service line. Rolled into the cap bucket, that
+// $0 line fabricated 96-vs-16 phantom overage. $0 lines carry no money — ignore them.
+describe('zero-dollar service lines are ignored', () => {
+  const cand = { kind: 'so', id: 'SO-1275', label: 'SO-1275', raw: { id: 'SO-1275' }, items: [
+    { sku: 'PTS20', name: 'PTS20 Richardson Cap', color: 'Gold/Navy', size: 'LG-XL', qty: 16, unit_cost: 13, so_id: 'SO-1275', item_id: 'p1', po_id: 'PO 3318 LLBB' },
+  ] };
+  const bill = { po_number: 'PO 3318 LLBB', items: [
+    { sku: 'PTS20S2-GN-XS', size: '', qty: 8, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy XS-S' },
+    { sku: 'PTS20S2-GN-SM', size: '', qty: 24, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy SM-M' },
+    { sku: 'PTS20S2-GN-ML', size: '', qty: 16, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy LG-X' },
+    { sku: '91-T1', size: '', qty: 48, unit_price: 0, desc: 'Direct Embroidery - Team Custom' },
+  ] };
+  test('the 48-unit $0 embroidery line neither ties nor counts: real overage is 32, not 80', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.some((t) => bill.items[t.bill_idx].sku === '91-T1')).toBe(false);
+    expect(p.unresolved.includes(3)).toBe(false); // not even "needs a match" — it needs nothing
+    expect(p.ties.length).toBe(3);
+    expect(p.overageUnits).toBe(32); // 48 caps billed vs 16 ordered — the REAL discrepancy
+    expect(cleanAutoAccept(p, bill.items)).toBe(false); // overage + price change still get a human
   });
 });

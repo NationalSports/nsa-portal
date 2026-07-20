@@ -24383,6 +24383,18 @@ export default function App(){
               if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
               const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
               lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
+              // Approved overage → the bill is the truth about what was bought: raise this
+              // line's ordered qty to the billed total (only sizes THIS bill touched, only
+              // when the human accepted the flagged overage). Audit in _qty_corrections; the
+              // extra units then count in order costing and commissions like any others.
+              let qtyFix={};
+              if(bill._overage_ok){
+                const fixes=[];
+                Object.keys(sizesAdded).forEach(sz=>{const ord=safeNum(po[sz]);
+                  if(newBilled[sz]>ord){fixes.push({size:sz,from:ord,to:newBilled[sz]});qtyFix[sz]=newBilled[sz]}});
+                if(fixes.length)qtyFix={...qtyFix,_qty_corrections:[...(po._qty_corrections||[]),
+                  ...fixes.map(f=>({doc:bill.doc_number||'',date:new Date().toISOString().slice(0,10),size:f.size,from:f.from,to:f.to,by:(cu?.name||cu?.email||'')}))]};
+              }
               const trackNums=[...(po.tracking_numbers||[])];
               if(bill.tracking&&!trackNums.includes(bill.tracking))trackNums.push(bill.tracking);
               // Auto price-sync: the bill is the source of truth for COST as well as quantity.
@@ -24397,7 +24409,7 @@ export default function App(){
                 if(Math.abs(nu-safeNum(po.unit_cost))>0.02)priceSync={unit_cost:nu,
                   _cost_corrections:[...(po._cost_corrections||[]),{doc:bill.doc_number||'',date:new Date().toISOString().slice(0,10),from:safeNum(po.unit_cost),to:nu,by:(cu?.name||cu?.email||'')}]};
               }
-              return{...po,...priceSync,billed:newBilled,tracking_numbers:trackNums,
+              return{...po,...qtyFix,...priceSync,billed:newBilled,tracking_numbers:trackNums,
                 _bill_cost:Math.round((safeNum(po._bill_cost||0)+addedCost)*100)/100,
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
             })};
@@ -24982,7 +24994,10 @@ export default function App(){
             errs.push('Billed quantities would not update — none of the bill\'s line SKUs match this PO\'s items. Use Match manually or Find PO with AI');
         }
       }
-      errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
+      // Owner rule ("my approval should do all this"): once a human accepted a proposal
+      // that flagged the overage (_overage_ok), over-billing stops blocking — the push
+      // corrects the order line up to what was billed, with an audit entry.
+      if(!(p._overage_ok&&(p._lineMappings||[]).length))errs.push(..._billOverBillingErrors(p,autoMaps||undefined));
       return errs;
     };
 
@@ -26638,8 +26653,10 @@ export default function App(){
                       const _xt=b._extraTies||{};
                       pr={...pr,ties:[...pr.ties,...Object.entries(_xt).filter(([bi2])=>!pr.ties.some(t2=>t2.bill_idx===parseInt(bi2))).map(([bi2,ti2])=>({bill_idx:parseInt(bi2),target_idx:ti2,basis:'manual',allocated_qty:safeNum((bill.items[parseInt(bi2)]||{}).qty),open_qty:safeNum((target.items[ti2]||{}).qty),overage:0}))]};
                       const acc=_propToAccept(bill,pr);
-                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,_extraTies:undefined,parsed:{...p.parsed,matchedPO:acc.matchedPO,matchedPOSource:acc.matchedPOSource,_lineMappings:acc.lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==acc.poCanon?p.parsed.po_number:undefined),po_number:acc.poCanon,_wizard:{open:false}}}:p)}));
-                      nf(pr.overageUnits?('Tied '+acc.lineMappings.length+' line(s) to '+target.label+' — over-billed units flagged, reconcile the overage next'):('Tied '+acc.lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
+                      // Approval covers the overage: the human just accepted a panel that FLAGGED
+                      // the over-billed units, so push is allowed to correct the order to match.
+                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,_extraTies:undefined,parsed:{...p.parsed,matchedPO:acc.matchedPO,matchedPOSource:acc.matchedPOSource,_lineMappings:acc.lineMappings,_core_match:false,_overage_ok:pr.overageUnits>0||undefined,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==acc.poCanon?p.parsed.po_number:undefined),po_number:acc.poCanon,_wizard:{open:false}}}:p)}));
+                      nf(pr.overageUnits?('Tied '+acc.lineMappings.length+' line(s) to '+target.label+' — overage approved; pushing will raise the order to what was billed (audit kept)'):('Tied '+acc.lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
             };
             // Visual-check popup (owner ask): full item names on BOTH sides so a human can
             // confirm by eye. Payload is a plain snapshot {label,sub,rows,note}.
@@ -27085,7 +27102,7 @@ export default function App(){
                               <span>order cost <b>${safeNum(pc.from).toFixed(2)}</b> → billed <b style={{color:pct>25?'#b91c1c':'#b45309'}}>${safeNum(pc.to).toFixed(2)}</b> ({d>0?'+':'−'}${Math.abs(d).toFixed(2)}/unit{pct?' · '+pct+'%':''})</span>
                               {pct>25&&<span style={{fontSize:9,fontWeight:800,background:'#fee2e2',color:'#b91c1c',borderRadius:8,padding:'1px 7px'}}>BIG GAP — right lines?</span>}
                             </div>;})}
-                          {prop.overageUnits>0&&<div style={{padding:'2px 0'}}>⚠ <b>{prop.overageUnits}</b> unit(s) billed beyond the order’s open quantity — accepting flags them; the order needs correcting.</div>}
+                          {prop.overageUnits>0&&<div style={{padding:'2px 0'}}>⚠ <b>{prop.overageUnits}</b> unit(s) billed beyond the order’s open quantity — accepting approves them, and pushing raises the order to what was billed (audit kept).</div>}
                           <div style={{fontSize:10,color:'#a16207',marginTop:3}}>On push, these land on the sales order’s costing — and commissions. An audit trail is kept.</div>
                         </div>}
                         {/* Owner rule: exact PO match ⇒ right order. Unresolved lines get the order's
@@ -27331,8 +27348,13 @@ export default function App(){
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
                                 return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
-                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_wizard:{open:false}}}:p)}));
-                              nf('Bill manually matched to '+target.label);
+                              // Approval covers the overage here too: the wizard rows show each
+                              // target's open count, so a confirmed over-allocation was seen —
+                              // push may correct the order (audit kept) instead of blocking.
+                              const _bk2={};Object.values(w.mappings||{}).forEach(m2=>{if(m2.skipped||m2.target_idx==null)return;_bk2[m2.target_idx]=(_bk2[m2.target_idx]||0)+safeNum(m2.allocated_qty)});
+                              const _ovr=Object.entries(_bk2).some(([ti2,al])=>al>safeNum((target.items[ti2]||{}).qty));
+                              setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_overage_ok:_ovr||undefined,_wizard:{open:false}}}:p)}));
+                              nf('Bill manually matched to '+target.label+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
                             }}>Confirm match</button>
                         </div>
                       </>;

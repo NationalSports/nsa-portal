@@ -121,6 +121,12 @@ const tieLine = (bl, items, canon) => {
 export const proposeResolutions = (bill, candidates, opts = {}) => {
   const canon = opts.canonSize || ((s) => String(s || '').toUpperCase().trim());
   const usable = (bill.items || []).map((bl, i) => ({ bl, i })).filter(({ bl }) => bl && _num(bl.qty) > 0);
+  // No-money lines ($0 service memos like "91-T1 Direct Embroidery · 48 @ $0.00") may
+  // still tie by SKU EVIDENCE (a real item whose price just didn't parse), but they are
+  // never guessed into a bucket: no bulk absorption, no PO-anchored fallback tiers —
+  // rolled into a garment bucket they fabricate phantom overage (a 48-cap bill read as
+  // 96-vs-16). Untied, they also don't count as "needs a match": there's nothing to pay.
+  const noMoney = (bl) => _num(bl.unit_price) <= 0 && _num(bl.extension) <= 0;
   if (!usable.length) return [];
   const billPo = poParts(bill._po_raw || bill.po_number);
   const out = [];
@@ -150,6 +156,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       if (lineKeys.length === 1 && poBuckets.length >= 1) {
         const anchor = poBuckets[0];
         untied.forEach(({ bl, i }) => {
+          if (noMoney(bl)) return; // service memos never absorb into a product bucket
           ties.push({ bill_idx: i, target_idx: anchor.ti, basis: 'bulk', allocated_qty: _num(bl.qty), open_qty: _num(anchor.it.qty), overage: 0 });
         });
       }
@@ -164,7 +171,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (poAnchored) {
       const remainingBuckets = () => cand.items.map((it, ti) => ({ it, ti }))
         .filter(({ it, ti }) => poParts(it.po_id).flat === billPo.flat && !ties.some((t) => t.target_idx === ti && t.basis !== 'bulk'));
-      const still = () => usable.filter(({ i }) => !ties.some((t) => t.bill_idx === i));
+      const still = () => usable.filter(({ bl, i }) => !ties.some((t) => t.bill_idx === i) && !noMoney(bl));
       const tieTo = (i, bl, b2, basis) => ties.push({ bill_idx: i, target_idx: b2.ti, basis, allocated_qty: _num(bl.qty), open_qty: _num(b2.it.qty), overage: 0 });
       // qty-unique: the line's qty equals exactly one remaining bucket's open qty
       still().forEach(({ bl, i }) => {
@@ -191,7 +198,10 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // PO-anchored proposals ALWAYS surface — even with zero auto-ties the panel must show
     // the order and its open items for click-linking. Unanchored candidates keep the floor.
     if (!ties.length && !poAnchored) return;
-    const coverage = usable.length ? ties.length / usable.length : 0;
+    // Coverage counts PAYABLE lines: an untied no-money memo line owes nothing, so it
+    // neither drags coverage nor shows up as "still needs a match".
+    const payable = usable.filter(({ bl, i }) => !noMoney(bl) || ties.some((t) => t.bill_idx === i));
+    const coverage = payable.length ? ties.length / payable.length : 0;
     if (coverage < 0.5 && !poAnchored) return;
     // Quantity accounting is BUCKET-CUMULATIVE (bulk ties share a bucket): overage and the
     // qty-mirror both compare each distinct bucket's summed allocation to its open qty.
@@ -228,7 +238,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (sharpPrice && confidence === 'high') confidence = 'medium';
     const evidence = [];
     if (poAnchored) evidence.push('PO number matches this order EXACTLY — near-certain this is the right order (owner rule)');
-    evidence.push(ties.length + ' of ' + usable.length + ' bill line(s) tie to this order' + (poAnchored && ties.length < usable.length ? ' — link the rest below' : ''));
+    evidence.push(ties.length + ' of ' + payable.length + ' bill line(s) tie to this order' + (poAnchored && ties.length < usable.length ? ' — link the rest below' : ''));
     if (qtyMirror) evidence.push('quantities mirror the order’s open amounts exactly');
     if (strongBases) evidence.push(strongBases + ' line(s) tie by SKU/style, not guesswork');
     const aliasTies = ties.filter((t) => t.basis.startsWith('alias')).length;
@@ -239,10 +249,10 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (coreDistance === 0 && billPo.tag !== candPo.tag) evidence.push('same PO number, different tag');
     const bulkTies = ties.filter((t) => t.basis === 'bulk').length;
     if (bulkTies) evidence.push(bulkTies + ' sized bill line(s) roll up to the PO’s single bulk line — bought in bulk, billed by size');
-    if (overageUnits) evidence.push('⚠ ' + overageUnits + ' unit(s) exceed the order’s open quantity — accepting flags them for a corrected order');
+    if (overageUnits) evidence.push('⚠ ' + overageUnits + ' unit(s) exceed the order’s open quantity — accept to approve them; push then corrects the order (audit kept)');
     if (priceChanges.length) evidence.push('accepting updates ' + priceChanges.length + ' order cost(s) to the billed price (audit kept)');
     const score = coverage * 60 + (poAnchored ? 30 : 0) + (qtyMirror ? 20 : 0) + (tagMatch ? 10 : 0) + (coreDistance <= 1 ? 8 : 0) + strongBases * 2 - (overageUnits ? 4 : 0);
-    const unresolved = usable.filter(({ i }) => !ties.some((t) => t.bill_idx === i)).map(({ i }) => i);
+    const unresolved = payable.filter(({ i }) => !ties.some((t) => t.bill_idx === i)).map(({ i }) => i);
     out.push({ target: cand, coverage, ties, unresolved, poAnchored, qtyMirror, tagMatch, coreDistance, priceChanges, overageUnits, confidence, evidence, score });
   });
   out.sort((a, b) => b.score - a.score);
