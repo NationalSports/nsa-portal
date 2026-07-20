@@ -7815,6 +7815,21 @@ export default function App(){
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
+    {/* Claude needs you — loud banner when a bot task is waiting on a human
+        (a question, a cart ready to submit, or a blocker). The row pill alone
+        is easy to miss; this sits at the top of the dashboard until acted on. */}
+    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_input','needs_review','blocked'].includes(t.bot_status));
+      if(_need.length===0)return null;
+      return<div className="card" style={{marginBottom:16,border:'2px solid #fb7185',background:'#fff1f2'}}>
+        <div className="card-body" style={{padding:'12px 16px'}}>
+          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 Claude is waiting on you ({_need.length})</div>
+          {_need.map(t=>{const _b=botRowUI(t.bot_status);return<div key={t.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #fecdd3'}}>
+            <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b?.pillBg,color:_b?.pillFg,whiteSpace:'nowrap',flexShrink:0}}>{_b?.label||t.bot_status}</span>
+            <span style={{fontSize:12,fontWeight:600,color:'#334155',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
+            <button className="btn btn-sm btn-primary" style={{flexShrink:0}} onClick={()=>setTodoDetailId(t.id)}>{t.bot_status==='needs_input'?'Answer':t.bot_status==='needs_review'?'Review cart':'View'}</button>
+          </div>})}
+        </div>
+      </div>})()}
     {/* Assigned Tasks for Admin */}
     {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
