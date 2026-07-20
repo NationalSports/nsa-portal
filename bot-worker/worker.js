@@ -115,12 +115,14 @@ async function resolveOrderFromDb(task) {
 
   const vendorName = lines.find((l) => l.vendor)?.vendor
     || (lines.find((l) => /adidas/i.test(l.name)) ? 'Adidas' : (lines[0].name || ''));
-  // A write-in address / attention line saved on the PO (sizes jsonb meta) wins
-  // over the SO's resolved ship-to — the rep set it on purpose.
+  // A write-in address / decorator / attention saved on the PO (sizes jsonb meta)
+  // wins over the SO's resolved ship-to — the rep set it on purpose. Precedence:
+  // explicit ship_to > decorator (ship_to_deco_id) > program address.
   const shipToMeta = pls.map((p) => (p.sizes || {}).ship_to).find((v) => v && typeof v === 'object') || null;
+  const decoIdMeta = pls.map((p) => (p.sizes || {}).ship_to_deco_id).find((v) => typeof v === 'string' && v.trim()) || null;
   const attention = pls.map((p) => (p.sizes || {}).attention).find((v) => typeof v === 'string' && v.trim()) || null;
-  const drop_ship = lines.some((l) => l.drop_ship) || !!shipToMeta;
-  let ship_to = drop_ship ? (shipToMeta || await resolveShipTo(task.so_id)) : null;
+  const drop_ship = lines.some((l) => l.drop_ship) || !!shipToMeta || !!decoIdMeta;
+  let ship_to = drop_ship ? (shipToMeta || (decoIdMeta ? await resolveDecoShipTo(decoIdMeta) : null) || await resolveShipTo(task.so_id)) : null;
   if (ship_to && attention) ship_to = { ...ship_to, attention };
   return {
     target: botTargetForVendor(vendorName),
@@ -129,6 +131,34 @@ async function resolveOrderFromDb(task) {
     lines,
     drop_ship,
     ship_to,
+  };
+}
+
+// Decorator-bound blanks: resolve the DECORATOR's delivery address (its own
+// saved address, falling back to its linked Vendor record) — server-side mirror
+// of the portal's resolveDecoShipToClient. Returns {name,line1,city,state,zip}
+// or null when no usable address exists.
+async function resolveDecoShipTo(decoId) {
+  if (!decoId) return null;
+  const { data: dv } = await supabase
+    .from('deco_vendors')
+    .select('id,name,vendor_id,address_line1,city,state,zip')
+    .eq('id', decoId).maybeSingle();
+  if (!dv) return null;
+  let src = (dv.address_line1 || dv.city) ? dv : null;
+  if (!src && dv.vendor_id) {
+    const { data: lv } = await supabase
+      .from('vendors').select('name,address_line1,city,state,zip')
+      .eq('id', dv.vendor_id).maybeSingle();
+    if (lv && (lv.address_line1 || lv.city)) src = lv;
+  }
+  if (!src) return null;
+  return {
+    name: dv.name || '',
+    line1: src.address_line1 || '',
+    city: src.city || '',
+    state: src.state || '',
+    zip: src.zip || '',
   };
 }
 
