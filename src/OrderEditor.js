@@ -36,6 +36,26 @@ const nameWithBrand=(name,brand)=>{
   return b+' '+n;
 };
 
+// Size run to seed on an ORDER LINE from a catalog product's available_sizes. Many Adidas /
+// Under Armour catalog rows carry the vendor's ENTIRE run — XS, 3XL–5XL, and the tall block
+// (ST/MT/LT/XLT/2XLT…) — because the B2B feed lists every size the style is made in. A normal
+// team order only fills S–2XL, so dropping that whole run onto a fresh line (add-from-catalog,
+// SKU change, NetSuite import) turns the grid into a wall of empty columns. For a standard
+// adult-apparel run we seed just the core S–2XL; a rep adds outliers with +Size. Non-standard
+// runs (youth, OSFA, numeric, footwear, tall-only) have no core overlap and pass through
+// untouched. Any size that already carries a quantity is always kept so entered qtys never drop.
+const CORE_APPAREL_SIZES=['S','M','L','XL','2XL'];
+const orderLineSizes=(catalogSizes,qtySizes=[])=>{
+  const all=(Array.isArray(catalogSizes)?catalogSizes:[]).filter(Boolean);
+  const core=all.filter(s=>CORE_APPAREL_SIZES.includes(s));
+  // Narrow to the core run only when the product also offers sizes beyond it (a standard adult
+  // run padded with extras). If the run IS already the core — or has no core overlap at all
+  // (youth/OSFA/numeric/footwear) — keep it verbatim.
+  const base=(core.length&&all.some(s=>!CORE_APPAREL_SIZES.includes(s)))?core:all;
+  return [...new Set([...base,...(Array.isArray(qtySizes)?qtySizes:[]).filter(Boolean)])]
+    .sort((a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b)));
+};
+
 // Line items rendered on a printed / emailed estimate or SO PDF. This used to drop
 // any line whose total quantity was 0, which silently hid legitimately-quoted items
 // that just don't have a committed quantity yet — e.g. a price-per-unit add-on on an
@@ -1886,7 +1906,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // grid is usable out of the box; trust the catalog only when it already carries half
     // sizes (a curated run). Staff can +Size for outliers either way.
     const fwCatHasHalves=isFw&&(p.available_sizes||[]).some(s=>String(s).includes('.5'));
-    const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?[...p.available_sizes]:['S','M','L','XL','2XL']);
+    const avail=isFw?(fwCatHasHalves?[...p.available_sizes]:[...FOOTWEAR_DEFAULT_SIZES]):((p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes):['S','M','L','XL','2XL']);
     sv('items',[...o.items,{product_id:p.id,sku:p.sku,name:nameWithBrand(p.name,p.brand),brand:p.brand,vendor_id:p.vendor_id||null,pricing_group:p.pricing_group||null,color:p.color,nsa_cost:p.nsa_cost,retail_price:p.retail_price,unit_sell:sell,available_sizes:avail,_colors:au?null:(p._colors||null),...(p._sizeCosts&&Object.keys(p._sizeCosts).length>1?{_sizeCosts:p._sizeCosts,...(au?{}:{_sizeSells:Object.fromEntries(Object.entries(p._sizeCosts).map(([sz,c])=>[sz,rQ(safeNum(c)*(o.default_markup||1.65))]))})}:{}),sizes:{},qty_only:false,decorations:[],no_deco:true,is_footwear:isFw}]);setShowAdd(false);setPS('')};
   // Apply a reordering of line items. Jobs (jobs[].items[].item_idx) and decoration POs
   // (deco_pos[].item_idxs) reference items by array position, so remap every such reference to
@@ -1980,8 +2000,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const copyI=(i)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];sv('items',[...o.items,clone]);nf('📋 Copied '+it.sku+' with all sizes & decorations')};
   const copyIWithSku=(i,p)=>{const it=o.items[i];const clone=JSON.parse(JSON.stringify(it));clone.pick_lines=[];clone.po_lines=[];_restampMt(clone);clone.product_id=p.id;clone.sku=p.sku;clone.name=nameWithBrand(p.name,p.brand);clone.brand=p.brand;clone.color=p.color;clone.nsa_cost=p.nsa_cost;clone.retail_price=p.retail_price;clone.vendor_id=p.vendor_id||null;clone.pricing_group=p.pricing_group||null;
-    // Preserve source's available_sizes (union with new product's) so manually-added sizes survive the swap
-    const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];const newSizes=Array.isArray(p.available_sizes)?p.available_sizes:[];clone.available_sizes=[...new Set([...srcSizes,...newSizes])];
+    // Seed the new SKU's core run and keep every size the source line actually has a quantity in,
+    // so filled sizes survive the swap without dragging over the catalog's full padded run.
+    const srcSizes=Array.isArray(it.available_sizes)?it.available_sizes:[];
+    const _srcQty=Object.keys(safeSizes(it)).filter(sz=>safeNum(safeSizes(it)[sz])>0);
+    clone.available_sizes=orderLineSizes((Array.isArray(p.available_sizes)&&p.available_sizes.length)?p.available_sizes:srcSizes,_srcQty);
     const isFw=(p.category||'').toLowerCase()==='footwear';clone.is_footwear=isFw;const au=isAU(p.brand);clone._colors=au?null:(p._colors||null);clone.unit_sell=au?rQ(p.retail_price*(1-auDisc(isFw,p.pricing_group))):rQ(p.nsa_cost*(o.default_markup||1.65));
     // The clone carried the OLD SKU's per-size maps — rebuild them from the new product (or clear
     // them) so cost/sell don't stay pinned to the swapped-out item's sizes.
@@ -2083,7 +2106,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       next.product_id=p.id;next.sku=p.sku;next.name=nameWithBrand(p.name,p.brand);next.brand=p.brand;
       next.vendor_id=p.vendor_id||null;next.pricing_group=p.pricing_group||null;next.color=p.color;
       next.nsa_cost=p.nsa_cost;next.retail_price=p.retail_price;next.unit_sell=sell;
-      next.available_sizes=[...(p.available_sizes||['S','M','L','XL','2XL'])];
+      next.available_sizes=(p.available_sizes&&p.available_sizes.length)?orderLineSizes(p.available_sizes,Object.keys(safeSizes(x)).filter(sz=>safeNum(safeSizes(x)[sz])>0)):['S','M','L','XL','2XL'];
       // Drop quantities for sizes the new SKU doesn't carry, so an orphaned size from the old
       // SKU (e.g. OSFA) can't linger hidden in the grid and inflate the line total.
       next.sizes=Object.fromEntries(Object.entries(safeSizes(x)).filter(([sz])=>next.available_sizes.includes(sz)));
@@ -4025,9 +4048,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>))}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
-    <div style={{display:'flex',justifyContent:'flex-end',marginBottom:8}}>
-      <button onClick={()=>setShowUniformBuilder(true)} className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#192853',color:'#fff',border:'none',fontWeight:800}} title="Open the custom Uniform Builder">🎽 Design Uniform</button>
-    </div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>

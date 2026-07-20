@@ -26216,7 +26216,12 @@ export default function App(){
                   } else if(hasApparel||(szKeys.length===0&&!hasNumeric)){
                     STD_SZ.forEach(s=>{if(!(s in mergedSizes))mergedSizes[s]=0})
                   }
-                  const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys,...(it.catMatch?.available_sizes||[])])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
+                  // Columns = the core run (S–2XL for apparel / real shoe sizes for footwear) plus
+                  // whatever the order actually has quantities in. The catalog product's full
+                  // available_sizes is intentionally NOT merged in — Adidas/UA rows carry the vendor's
+                  // entire padded run (XS, 3XL–5XL, tall ST/MT/LT/XLT…) and dumping it here filled the
+                  // grid with empty columns on every NetSuite import.
+                  const mergedAvail=[...new Set([...(isFootwear?catalogShoeSizes:(hasApparel?STD_SZ:[])),...szKeys])].sort((a,b)=>{const ai=SZ_ORD_I.indexOf(a),bi=SZ_ORD_I.indexOf(b);if(ai<0&&bi<0)return parseFloat(a)-parseFloat(b);if(ai<0)return 1;if(bi<0)return -1;return ai-bi});
                   return{product_id:it.catMatch?.id||null,sku:it.sku,name:itemName,brand:it.brand||it.catMatch?.brand||'',
                     color:itemColor,nsa_cost:it.catMatch?.nsa_cost||cost,retail_price:it.catMatch?.retail_price||retail,unit_sell:sell,
                     available_sizes:mergedAvail.length>0?mergedAvail:['S','M','L','XL','2XL'],
