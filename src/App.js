@@ -5,7 +5,7 @@ import './portal.css';
 import MobilePortal from './MobilePortal';
 import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, botProgress } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -2218,6 +2218,24 @@ export default function App(){
   // nothing is missed or double-paid. Durable in app_state like omgFirstSeen.
   const[omgTaxRemit,setOmgTaxRemit]=useState(()=>loadState('omg_tax_remit',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
+  // Portal-side Adidas availability for the Assign Task bot card: the portal
+  // already syncs per-size stock + restock dates (adidas_inventory), so show
+  // them at assign time and ship the snapshot in the payload — the bot starts
+  // informed instead of discovering everything by hovering the vendor site.
+  const[botAvail,setBotAvail]=useState(null);// {map:{sku:{size:{stock,date,fqty}}},synced}
+  React.useEffect(()=>{
+    if(!todoModal.open||!supabase){setBotAvail(null);return}
+    const skus=[...new Set((todoModal.bot_payload?.lines||[]).map(l=>l.sku).filter(Boolean))];
+    if(!skus.length){setBotAvail(null);return}
+    let dead=false;
+    supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus).then(r=>{
+      if(dead||r.error||!r.data||!r.data.length){if(!dead)setBotAvail(null);return}
+      const map={};let synced=null;
+      r.data.forEach(row=>{(map[row.sku]=map[row.sku]||{})[row.size]={stock:row.stock_qty??0,date:row.future_delivery_date||null,fqty:row.future_delivery_qty??null};if(row.last_synced&&(!synced||row.last_synced>synced))synced=row.last_synced});
+      setBotAvail({map,synced});
+    });
+    return()=>{dead=true};
+  },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -7815,6 +7833,21 @@ export default function App(){
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
+    {/* Claude needs you — loud banner when a bot task is waiting on a human
+        (a question, a cart ready to submit, or a blocker). The row pill alone
+        is easy to miss; this sits at the top of the dashboard until acted on. */}
+    {isBotOwner(cu)&&(()=>{const _need=assignedTodos.filter(t=>t.status==='open'&&t.assigned_to==='bot-claude'&&['needs_input','needs_review','blocked'].includes(t.bot_status));
+      if(_need.length===0)return null;
+      return<div className="card" style={{marginBottom:16,border:'2px solid #fb7185',background:'#fff1f2'}}>
+        <div className="card-body" style={{padding:'12px 16px'}}>
+          <div style={{fontSize:14,fontWeight:800,color:'#be123c',marginBottom:8}}>🤖 Claude is waiting on you ({_need.length})</div>
+          {_need.map(t=>{const _b=botRowUI(t.bot_status);return<div key={t.id} style={{display:'flex',alignItems:'center',gap:8,padding:'6px 0',borderTop:'1px solid #fecdd3'}}>
+            <span style={{fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b?.pillBg,color:_b?.pillFg,whiteSpace:'nowrap',flexShrink:0}}>{_b?.label||t.bot_status}</span>
+            <span style={{fontSize:12,fontWeight:600,color:'#334155',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</span>
+            <button className="btn btn-sm btn-primary" style={{flexShrink:0}} onClick={()=>setTodoDetailId(t.id)}>{t.bot_status==='needs_input'?'Answer':t.bot_status==='needs_review'?'Review cart':'View'}</button>
+          </div>})}
+        </div>
+      </div>})()}
     {/* Assigned Tasks for Admin */}
     {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
       <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
@@ -7827,7 +7860,7 @@ export default function App(){
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);return _b?<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_b.label}</span>:null})()}</div>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
@@ -7938,7 +7971,7 @@ export default function App(){
           return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
             <div style={{display:'flex',alignItems:'center',gap:8}}>
               <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);return _b?<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_b.label}</span>:null})()}</div>
+                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
                 <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
               </div>
               {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
@@ -8007,7 +8040,7 @@ export default function App(){
         return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:t.due_date&&String(t.due_date).slice(0,10)<=_todayStr?'#fffbeb':'white'}} onClick={()=>setTodoDetailId(t.id)}>
           <div style={{display:'flex',alignItems:'center',gap:8}}>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);return _b?<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_b.label}</span>:null})()}</div>
+              <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
               <div style={{fontSize:11,color:'#64748b'}}>{mine?'From: '+(creator?.name||'—'):'Assigned to: '+(assignee?.name||'—')}{t.so_id?' · '+t.so_id:''}</div>
             </div>
             {t.due_date&&<span style={{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:8,whiteSpace:'nowrap',color:_todoDueColor(t.due_date),background:'#f1f5f9'}}>📅 {_fmtDueDate(t.due_date)}</span>}
@@ -8367,6 +8400,15 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {/* Live bot progress — the worker relays the agent's PROGRESS narration in
+              realtime while the run is active; cleared automatically when it finishes. */}
+          {td.assigned_to==='bot-claude'&&td.bot_status==='in_progress'&&(()=>{const _p=botProgress(td);const _pct=_p?Math.min(100,Math.round(_p.step/_p.total*100)):5;return<div style={{marginBottom:12,padding:'10px 12px',background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:8}}>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',gap:8,marginBottom:6}}>
+              <div style={{fontSize:12,fontWeight:700,color:'#1e40af'}}>🤖 {_p?`Step ${_p.step} of ${_p.total} — ${_p.label}`:'Bot working…'}</div>
+              {_p?.at&&<div style={{fontSize:10,color:'#64748b',whiteSpace:'nowrap'}}>{new Date(_p.at).toLocaleTimeString()}</div>}
+            </div>
+            <div style={{height:6,background:'#dbeafe',borderRadius:999,overflow:'hidden'}}><div style={{height:'100%',width:_pct+'%',background:'linear-gradient(90deg,#3b82f6,#1d4ed8)',borderRadius:999,transition:'width .4s'}}/></div>
+          </div>})()}
           {/* Bot retry — failed/blocked/needs_input tasks never ran to completion; requeue
               instead of forcing a manual comment. needs_input also has this via replying, but
               the button makes it discoverable without knowing that trick. */}
@@ -32133,6 +32175,17 @@ export default function App(){
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
           const shipTo=bp.ship_to||(dropShip?resolveShipToClient(todoModal.so_id,sos,cust):null);
           const szStr=l=>Object.entries(l.sizes||{}).filter(([,v])=>Number(v)>0).map(([s,v])=>s+':'+v).join('  ');
+          // Per-size availability chips from the portal's own inventory sync:
+          // green = enough stock, amber = short with a restock date, red = short
+          // with no data. Falls back to the plain size string when no snapshot.
+          const _in14=d=>{if(!d)return false;const dt=new Date(d+'T12:00:00Z');return(dt-new Date())/864e5<=14};
+          const szChips=l=>{const a=botAvail?.map?.[l.sku];if(!a)return null;
+            return<div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:2}}>{Object.entries(l.sizes||{}).filter(([,v])=>Number(v)>0).map(([sz,q])=>{
+              const r=a[sz];const ok=r&&(r.stock||0)>=Number(q);
+              const bg=ok?'#dcfce7':(r&&r.date?'#fef3c7':'#fee2e2');const fg=ok?'#166534':(r&&r.date?'#92400e':'#b91c1c');
+              return<span key={sz} style={{fontSize:10,fontFamily:'ui-monospace,monospace',padding:'1px 6px',borderRadius:6,background:bg,color:fg}} title={r?`portal stock ${r.stock}${r.date?' · restock '+r.date:''}${r.fqty!=null?' · ~'+r.fqty+' coming':''}`:'no portal data'}>
+                {sz}:{q} {ok?'✓':(r&&r.date?'⏳'+r.date.slice(5):'?')}</span>;
+            })}</div>};
           return<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
             <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
               <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>🤖 Claude · Add to cart</span>
@@ -32154,12 +32207,31 @@ export default function App(){
                 <div style={{minWidth:0}}>
                   <div style={{fontSize:13,color:'#0f172a'}}><b style={{fontFamily:'ui-monospace,monospace'}}>{l.sku}</b>{l.color?<span style={{color:'#64748b'}}> · {l.color}</span>:null}</div>
                   {l.name?<div style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>:null}
-                  {szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null}
+                  {szChips(l)||(szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null)}
                 </div>
-                <div style={{fontSize:13,fontWeight:700,color:'#0f172a',flexShrink:0}}>{l.qty||0} pcs</div>
+                <div style={{flexShrink:0,textAlign:'right'}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{l.qty||0} pcs</div>
+                  {/* Per-item order timing — the portal knows this SKU's restock dates, so
+                      the rep can pin WHEN it gets ordered right here. Overrides the rules. */}
+                  {(()=>{const a=botAvail?.map?.[l.sku];if(!a||!l.sku)return null;
+                    const shortDates=Object.entries(l.sizes||{}).filter(([sz,q])=>{const r=a[sz];return r&&(r.stock||0)<Number(q)}).map(([sz])=>a[sz]?.date).filter(Boolean).sort();
+                    const restockDate=shortDates.length?shortDates[shortDates.length-1]:null;
+                    const cur=todoModal.bot_line_sched?.[l.sku]||{mode:'auto'};
+                    const setSch=(sch)=>setTodoModal(m=>({...m,bot_line_sched:{...(m.bot_line_sched||{}),[l.sku]:sch}}));
+                    return<div style={{marginTop:4}}>
+                      <select className="form-select" style={{fontSize:10,padding:'2px 4px',width:150}} value={cur.mode==='date'?(cur.date===restockDate?'restock':'custom'):cur.mode}
+                        onChange={e=>{const v=e.target.value;setSch(v==='restock'?{mode:'date',date:restockDate}:v==='custom'?{mode:'date',date:cur.date||restockDate||''}:{mode:v})}}>
+                        <option value="auto">Auto (rules below)</option>
+                        <option value="now">Order in-stock only</option>
+                        {restockDate&&<option value="restock">All on {restockDate}</option>}
+                        <option value="custom">Pick date…</option>
+                      </select>
+                      {cur.mode==='date'&&cur.date!==restockDate&&<input type="date" className="form-input" style={{fontSize:10,padding:'2px 4px',width:150,marginTop:2}} value={cur.date||''} onChange={e=>setSch({mode:'date',date:e.target.value})}/>}
+                    </div>})()}
+                </div>
               </div>)}
             </div>
-            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.</div>
+            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
         {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<>
@@ -32182,6 +32254,21 @@ export default function App(){
             </select>
             <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{(todoModal.bot_strategy||'complete')==='complete'?'One delivery — everything waits for the latest restock.':todoModal.bot_strategy==='per_sku'?'In-stock SKUs ship now; backordered SKUs ship later. A SKU is never split across dates.':'Fastest — available sizes ship now, backordered sizes follow. A SKU may split across dates.'}</div>
           </div>
+          {/* The portal's inventory snapshot already knows which sizes restock beyond the
+              2-week window — let the rep decide NOW instead of the bot asking mid-run. */}
+          {(()=>{if(!botAvail?.map)return null;
+            const _in14=d=>{if(!d)return false;return(new Date(d+'T12:00:00Z')-new Date())/864e5<=14};
+            const _long=[];(todoModal.bot_payload?.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;Object.entries(l.sizes||{}).forEach(([sz,q])=>{const r=a[sz];if(r&&(r.stock||0)<Number(q)&&!_in14(r.date))_long.push(l.sku+' '+sz+(r.date?' (restock '+r.date+')':' (no date)'))})});
+            if(_long.length===0)return null;
+            return<div style={{marginBottom:12}}>
+              <label className="form-label">⏳ {_long.length} size{_long.length===1?'':'s'} restock beyond 2 weeks — what should Claude do?</label>
+              <select className="form-select" value={todoModal.bot_backorder||'ask'} onChange={e=>setTodoModal(m=>({...m,bot_backorder:e.target.value}))}>
+                <option value="ask">Ask me — pause with a question (default)</option>
+                <option value="order">Order everything anyway — schedule under restock dates</option>
+                <option value="drop">Drop unavailable sizes — order the rest now</option>
+              </select>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{_long.slice(0,4).join(' · ')}{_long.length>4?' · +'+(_long.length-4)+' more':''}</div>
+            </div>})()}
           {/* Attention line 2 — only meaningful for a drop-ship (one-time) address. Prefills
               from the resolved DPO for decorator orders; editable for any reference. */}
           {(todoModal.bot_payload?.ship_to||todoModal.bot_payload?.drop_ship)&&(()=>{const _attVal=todoModal.bot_attention!==undefined?todoModal.bot_attention:(todoModal.bot_payload?.ship_to?.attention||'');return<div style={{marginBottom:12}}>
@@ -32264,6 +32351,18 @@ export default function App(){
             const _bp={...(todoModal.bot_payload||{})};
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
             _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
+            // Ship the portal's availability snapshot (needed sizes only) + the rep's
+            // long-backorder decision so the bot starts informed and doesn't round-trip.
+            if(botAvail?.map){
+              const _avNeeded={};
+              (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
+              if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+            }
+            if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
+            // Per-item schedule: only ship real decisions ('auto' rows follow the rules;
+            // a date pick without a date is meaningless and dropped).
+            const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
+            if(Object.keys(_ls).length)_bp.line_schedule=_ls;
             // Drop ship: make sure the delivery address travels with the payload so the
             // worker never has to guess where the order actually goes.
             const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
@@ -32273,7 +32372,7 @@ export default function App(){
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

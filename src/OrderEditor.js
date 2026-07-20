@@ -2666,13 +2666,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!(dp.item_idxs||[]).some(i=>idxs.includes(i)))continue;
       const dv=decoVendors.find(v=>v.id===dp.deco_vendor_id||v.name===dp.vendor);
       // Decorator address is stored as STRUCTURED fields (migration 00141: address_line1/city/...);
-      // assemble a single ship-to line. Fall back to any ship_address stamped on the PO itself.
-      const structured=dv?[dv.address_line1,dv.address_line2,[dv.city,dv.state].filter(Boolean).join(', '),dv.zip].filter(Boolean).join(', '):'';
+      // assemble a single ship-to line. Many decorators keep their address on the LINKED Vendor
+      // record instead (e.g. Olympic) — fall back there, then to any ship_address on the PO.
+      const _asrc=dv&&(dv.address_line1||dv.city)?dv:(dv?.vendor_id?vendorList.find(v2=>v2.id===dv.vendor_id):null);
+      const structured=_asrc?[_asrc.address_line1,_asrc.address_line2,[_asrc.city,_asrc.state].filter(Boolean).join(', '),_asrc.zip].filter(Boolean).join(', '):'';
       const addr=String(structured||dp.ship_address||'').trim();
       if(addr)return{name:dp.vendor||dv?.name||'Decorator',addr,id:dv?.id||null};
     }
     return null;
-  },[o,decoVendors]);
+  },[o,decoVendors,vendorList]);
   const artQty=useMemo(()=>{const m={};safeItems(o).forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){m[d.art_file_id]=(m[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});return m},[o]);
   // Combined deco COST tier qty for manually-linked jobs that share a screen across orders
   // (so_jobs.link_group). Lowers the rep's cost/margin so one shared setup isn't paid twice;
@@ -7976,6 +7978,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(a1)return{name:poDecoInline.vendor,addr:a1,id:dv?.id||null}}
         return decoShipForItems(_poSelIdxs);
       })();
+      // The decorator this PO ships to, whether auto-detected ('deco') or hand-picked from
+      // the Ship To dropdown ('deco:<id>'). Persisted onto the created PO lines so the bot
+      // task later knows to deliver to the decorator — a drop_ship flag alone loses that.
+      const _poShipDecoId=poShipTo==='deco'?(_decoForPo?.id||null):(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')?poShipTo.slice(5):null);
+      const _poShipDecoInfo=(typeof poShipTo==='string'&&poShipTo.startsWith('deco:')&&_poShipDecoId)?resolveDecoShipToClient({decoId:_poShipDecoId,so:o,decoVendors,vendors:vendorList,itemIdxs:_poSelIdxs}):null;
       return<div className="modal-overlay" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:800,maxHeight:'90vh',overflow:'auto'}}>
         <div className="modal-header"><h2>New PO — {vn}</h2><button className="modal-close" onClick={()=>{setShowPO(null);setPoDecoInline(null)}}>x</button></div>
         <div className="modal-body">
@@ -7989,7 +7996,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <option value="" disabled>Outside Decoration PO…</option>
               {DECO_VENDORS.filter(dv=>dv!=='Other').map(dv=><option key={dv} value={dv}>{dv}</option>)}
             </select>
-            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&String(_dv?.address||'').trim())setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
+            <button type="button" className="btn btn-sm" style={{background:'#7c3aed',color:'white',border:'none',whiteSpace:'nowrap'}} onClick={()=>{const sel=document.getElementById('po-deco-jump')?.value;if(!sel){nf('Pick a decorator first','error');return}if(poItems.length===0){setDpoDropShip(true);setShowPO('deco:'+sel)}else{setPoDecoInline({vendor:sel});setPodOverrides({});setPodType('embroidery');setPodCost(null);setPodDropShip(true);const _dv=decoVendors.find(v=>v.name===sel);if(poDropShip===true&&_dv?.id&&resolveDecoShipToClient({decoId:_dv.id,so:o,decoVendors,vendors:vendorList}))setPoShipTo('deco')}}}>{poItems.length===0?'Create Deco PO →':'+ Add Deco PO'}</button>
           </div>
           :<div style={{border:'1px solid #ddd6fe',borderRadius:8,marginBottom:12,background:'#faf5ff'}}>
             <div style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderBottom:'1px solid #ede9fe'}}>
@@ -8057,9 +8064,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
             <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO2453 OLUF" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<div style={{display:'flex',alignItems:'stretch',border:'1px solid #d1d5db',borderRadius:6,overflow:'hidden',flex:1}}><span style={{padding:'6px 8px',background:'#f1f5f9',borderRight:'1px solid #d1d5db',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,whiteSpace:'nowrap',display:'flex',alignItems:'center'}}>PO {poCounter}</span><input value={poAlphaSuffix} onChange={e=>setPoAlphaSuffix(e.target.value)} placeholder={cust?.alpha_tag||'suffix'} style={{border:'none',outline:'none',padding:'6px 8px',fontWeight:700,color:'#1e40af',fontFamily:'monospace',fontSize:13,flex:1,minWidth:60,background:'white'}}/></div>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{_decoForPo&&<option value="deco">🎨 {_decoForPo.name} (decorator)</option>}{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}{poDropShip===true&&<option value="custom">✏️ New address (write-in)…</option>}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='deco'?(_decoForPo?.addr||''):poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
+            <div><label className="form-label">Ship To</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}><select className="form-select" value={poShipTo} onChange={e=>setPoShipTo(e.target.value)} style={{flex:1}}><option value="warehouse">NSA Warehouse — Emerson</option>{_decoForPo&&<option value="deco">🎨 {_decoForPo.name} (decorator)</option>}{addrs.map((a,ai)=><option key={a.id+'-'+ai} value={a.id}>{a.label}</option>)}{poDropShip===true&&(()=>{const _dvOpts=decoVendors.filter(dv=>dv.id&&dv.id!==_decoForPo?.id&&resolveDecoShipToClient({decoId:dv.id,so:o,decoVendors,vendors:vendorList}));return _dvOpts.length>0&&<optgroup label="🎨 Ship to decorator">{_dvOpts.map(dv=><option key={dv.id} value={'deco:'+dv.id}>{dv.name}</option>)}</optgroup>})()}{poDropShip===true&&<option value="custom">✏️ New address (write-in)…</option>}</select><button type="button" className="btn btn-sm btn-secondary" title="Copy ship-to address" onClick={()=>{const v=poShipTo==='deco'?(_decoForPo?.addr||''):poShipTo==='warehouse'?'NSA Warehouse — Emerson':(addrs.find(a=>a.id===poShipTo)?.addr||'');if(!v)return;navigator.clipboard?.writeText(v).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
             <div><label className="form-label">Expected Date</label><input className="form-input" type="date" id={'po-date-'+(preexistingPO?'preexisting':autoPoId)}/></div></div>
           {_decoForPo&&poShipTo==='deco'&&<div style={{marginTop:-8,marginBottom:12,fontSize:11,color:'#7c3aed',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'6px 10px'}}>🎨 Drop-shipping blanks to <strong>{_decoForPo.name}</strong>: {_decoForPo.addr}</div>}
+          {_poShipDecoInfo&&<div style={{marginTop:-8,marginBottom:12,fontSize:11,color:'#7c3aed',background:'#faf5ff',border:'1px solid #ede9fe',borderRadius:6,padding:'6px 10px'}}>🎨 Drop-shipping blanks to <strong>{_poShipDecoInfo.name}</strong>: {[_poShipDecoInfo.line1,_poShipDecoInfo.city,_poShipDecoInfo.state,_poShipDecoInfo.zip].filter(Boolean).join(', ')}{_poShipDecoInfo.attention?' · Attn: '+_poShipDecoInfo.attention:''}</div>}
           {poDropShip===true&&poShipTo==='custom'&&<div style={{marginTop:-4,marginBottom:12,padding:'10px 12px',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:8}}>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:0.5,marginBottom:6}}>✏️ Write-in delivery address</div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}}>
@@ -8162,7 +8170,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   ...(member._mt_skus?{_mt_style:member._mt_style,_mt_color:member._mt_color,_mt_sku:member._mt_sku,_mt_skus:member._mt_skus}:{})};
                 if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)bItem._size_costs=sizeCosts;
                 if(batchDecoId)bItem.ship_to_deco_id=batchDecoId;
-                else if(isDropShip)bItem.drop_ship=true;
+                else if(isDropShip){bItem.drop_ship=true;if(_poShipDecoId)bItem.ship_to_deco_id=_poShipDecoId}
                 if(isDropShip&&!batchDecoId&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))bItem.ship_to={...poShipCustom};
                 if((isDropShip||batchDecoId)&&poAttention.trim())bItem.attention=poAttention.trim();
                 batchItems.push(bItem);
@@ -8180,6 +8188,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(bit._size_costs)poLine._size_costs=bit._size_costs;
               if(bit.drop_ship)poLine.drop_ship=true;
               if(bit.ship_to)poLine.ship_to=bit.ship_to;
+              if(bit.ship_to_deco_id)poLine.ship_to_deco_id=bit.ship_to_deco_id;
               if(bit.attention)poLine.attention=bit.attention;
               Object.entries(bit.sizes).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
               const hasQty=Object.entries(poLine).some(([k,v])=>k!=='po_id'&&k!=='status'&&typeof v==='number'&&v>0);
@@ -8244,6 +8253,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               if(hasSizePrices&&new Set(Object.values(sizeCosts).map(v=>v.toFixed(2))).size>1)poLine._size_costs=sizeCosts;
               if(preexistingPO)poLine.preexisting=true;
               if(isDropShip)poLine.drop_ship=true;
+              if(isDropShip&&_poShipDecoId)poLine.ship_to_deco_id=_poShipDecoId;
               if(isDropShip&&poShipTo==='custom'&&(poShipCustom.line1||poShipCustom.city))poLine.ship_to={...poShipCustom};
               if(isDropShip&&poAttention.trim())poLine.attention=poAttention.trim();
               Object.entries(lineSizes).forEach(([sz,v])=>{poLine[sz]=v});
@@ -12174,12 +12184,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const sizes={};Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&!k.startsWith('_')&&typeof v==='number'&&v>0)sizes[k]=v});
                 const qty=Object.values(sizes).reduce((a,v)=>a+v,0);if(!qty)return null;
                 return{sku:it2.sku,name:it2.name||'',color:it2.color||'',qty,sizes,unit_cost:safeNum(pl.unit_cost),
-                  drop_ship:pl.drop_ship===true,ship_to:pl.ship_to||null,attention:pl.attention||null,item_idx:lineIdx};
+                  drop_ship:pl.drop_ship===true,ship_to:pl.ship_to||null,attention:pl.attention||null,
+                  ship_to_deco_id:pl.ship_to_deco_id||null,item_idx:lineIdx};
               }).filter(Boolean);
-              const _ds=_plItems.some(l=>l.drop_ship||l.ship_to);
-              const _dpRel=_ds?(o.deco_pos||[]).find(dp=>dp.deco_vendor_id&&(dp.item_idxs||[]).some(ix=>_plItems.some(l=>l.item_idx===ix))):null;
-              const _shipTo=_dpRel
-                ?resolveDecoShipToClient({decoId:_dpRel.deco_vendor_id,so:o,decoVendors,vendors:vendorList,itemIdxs:_plItems.map(l=>l.item_idx)})
+              const _ds=_plItems.some(l=>l.drop_ship||l.ship_to||l.ship_to_deco_id);
+              // Decorator resolution: the PO line's own ship_to_deco_id (stamped when the rep
+              // picked a decorator as Ship To on the PO) is authoritative; fall back to a deco
+              // PO on the SO covering these items; only then the program's own address.
+              const _lineDecoId=_plItems.find(l=>l.ship_to_deco_id)?.ship_to_deco_id||null;
+              const _dpRel=(!_lineDecoId&&_ds)?(o.deco_pos||[]).find(dp=>dp.deco_vendor_id&&(dp.item_idxs||[]).some(ix=>_plItems.some(l=>l.item_idx===ix))):null;
+              const _decoIdFinal=_lineDecoId||_dpRel?.deco_vendor_id||null;
+              const _shipTo=_decoIdFinal
+                ?resolveDecoShipToClient({decoId:_decoIdFinal,so:o,decoVendors,vendors:vendorList,itemIdxs:_plItems.map(l=>l.item_idx)})
                 :(_ds?resolveShipToClient(o.id,[o],allCustomers):null);
               const{description,bot_payload}=buildBotCartPayload({poNumber:po.po_id||'',vendorName:po.vendor||'',
                 batches:[{id:po.po_id||'',po_id:po.po_id||'',so_id:isSO?o.id:null,customer:cust?.alpha_tag||cust?.name||'',items:_plItems}],

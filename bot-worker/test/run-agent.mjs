@@ -35,7 +35,7 @@ const daysFromNow = (n) => { const d = new Date(); d.setDate(d.getDate() + n); r
 //   onesize             — single SKU with exactly one size on a short (7-day) backorder
 // Mock fixtures: JW6608 all in stock · JW6600 only L restocks +7d · KB5529 only M
 // restocks +30d · KE9493 permanently unavailable (all hatched, no date).
-const SCENARIO = ['dropship', 'oos', 'multi', 'onesize', 'deco'].includes(process.argv[2]) ? process.argv[2] : 'warehouse';
+const SCENARIO = ['dropship', 'oos', 'multi', 'onesize', 'deco', 'orderlater'].includes(process.argv[2]) ? process.argv[2] : 'warehouse';
 const SHIP_TO = SCENARIO === 'deco'
   // Decorator-bound blanks: deliver to the decorator, DPO reference on the attention line
   ? { name: 'Big League Screen Printing', attention: 'DPO 3081', line1: '450 Industrial Ave', city: 'Fresno', state: 'CA', zip: '93706' }
@@ -61,6 +61,9 @@ const LINES = {
 };
 LINES.dropship = LINES.warehouse;
 LINES.deco = LINES.multi; // all-in-stock lines; the deco scenario tests the address+attention path
+// orderlater: KB5529's M restocks +30d (beyond the 14-day window) but the rep's
+// standing decision is "order everything anyway" with the portal snapshot attached.
+LINES.orderlater = [{ sku: 'KB5529', name: 'Icon Pro Pant', color: 'White', qty: 15, sizes: { M: 10, L: 5 } }];
 const task = { id: 'todo-test', title: `Order PO PO 9999 TEST — fake-order dress rehearsal (${SCENARIO})` };
 const order = {
   target: 'adidas_click',
@@ -69,6 +72,12 @@ const order = {
   drop_ship: SCENARIO === 'dropship' || SCENARIO === 'deco',
   ship_to: (SCENARIO === 'dropship' || SCENARIO === 'deco') ? SHIP_TO : null,
   lines: LINES[SCENARIO],
+  ...(SCENARIO === 'orderlater' ? {
+    availability: { KB5529: { M: { stock: 0, date: daysFromNow(30), fqty: 150 }, L: { stock: 40, date: null, fqty: null } } },
+    availability_synced: 'today',
+    backorder_action: 'order',
+    delivery_strategy: 'complete',
+  } : {}),
 };
 const credsForTarget = () => ({ url: BASE, user: 'testrep', pass: 'test123' });
 const prompt = buildPrompt(task, order, [], { credsForTarget });
@@ -161,6 +170,12 @@ const EXPECT = {
     enter: { JW6608: { XS: 2, S: 11, M: 8, L: 2 }, JW6600: { S: 6, M: 6 }, KB5529: { S: 5, L: 5 } },
     skip: [], date: daysFromNow(0), status: 'needs_review',
   },
+  orderlater: {
+    // Rep pre-decided "order anyway": the >14-day M restock is scheduled, not skipped —
+    // ship-complete moves the whole order to the +30d restock date, and no question is asked.
+    enter: { KB5529: { M: 10, L: 5 } },
+    skip: [], date: daysFromNow(30), status: 'needs_review',
+  },
 }[SCENARIO];
 const orderSkus = order.lines.map((l) => l.sku);
 
@@ -193,6 +208,16 @@ for (const sku of EXPECT.skip) {
     JSON.stringify(s.quantities[sku]));
   check(`agent surfaced skipped SKU ${sku} to the rep`,
     JSON.stringify([result.skipped, result.question, result.issues] || '').includes(sku), JSON.stringify(result.skipped));
+}
+// Restock dates only exist behind the calendar-icon hover (like the real
+// portal) — a run that touches backordered sizes must prove it hovered, and a
+// skip with a known date must carry that date, never "no date".
+if (SCENARIO === 'warehouse') {
+  check('bot hovered calendar icons to learn restock dates', s.log.some((l) => l.action === 'hover_cal'),
+    JSON.stringify(s.log.filter((l) => l.action === 'hover_cal')));
+  const _sk = (result.skipped || []).find((x) => x.sku === 'KB5529') || {};
+  check('skipped KB5529 reports its actual restock date (not "no date")',
+    /(20\d\d|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(String(_sk.restock || '')), JSON.stringify(_sk));
 }
 check('order NOT submitted', s.submitted === false);
 check(`agent status is ${EXPECT.status}`, result.status === EXPECT.status, result.status);

@@ -36,6 +36,17 @@ The portal URL above is correct. If the page is slow or a navigation times out,
 WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
 adidas domains. Only that URL is valid.
 
+# Narrate your progress (the portal shows it live)
+At the START of each stage, output ONE plain-text line (not a tool call),
+exactly in this form, alone on its line:
+PROGRESS <k>/8 — <label>
+The stages, in order: 0/8 Logging in · 1/8 Searching all SKUs · 2/8 Adding all
+to cart · 3/8 Opening the cart · 4/8 Entering PO number · 5/8 Setting delivery
+address · 6/8 Checking availability & entering sizes · 7/8 Verifying the cart ·
+8/8 Writing the report. Emit each marker once, in order, right before you start
+that stage. If you must loop back (e.g. re-entering sizes after a date change),
+do NOT emit another marker — the marker marks first entry into the stage.
+
 # The workflow — ONE search, add-all, then finish the cart
 Adding items is the EASY part; past runs died of slowness before ever entering
 the PO, address, or sizes. Add everything in one shot, then spend your time on
@@ -92,14 +103,31 @@ quantities. Today's date matters here — compute "two weeks from today" first.
 
 **Availability rule (per SKU):**
 - A needed size that accepts quantity normally → available.
-- A needed size showing 0 / hatched / disabled → hover it for a restock note
-  (e.g. "Re-stock in Jul 7, 2026").
+- A needed size showing 0 / hatched / disabled → find its restock date. The
+  date is NOT on the cell itself — it's revealed by **hovering the SMALL
+  CALENDAR ICON (📅) that sits right next to that size's cell / stock
+  number**. Hover the icon and a tooltip appears like "Re-stock in Aug 21,
+  2026". Hovering the cell shows nothing — that does NOT mean there's no
+  date. Nearly every out-of-stock size has this calendar icon; you MUST
+  hover it before deciding anything about that size.
   - Restock date WITHIN 14 days of today → treat the SKU as orderable
     (short backorder).
-  - Restock date MORE than 14 days out, or no date at all → **SKIP THE ENTIRE
-    SKU**: enter NO quantities on any of its sizes, add it to `skipped` with
-    the size(s), the restock date (or "no date"), and move on. The rep decides
-    what to do with it.
+  - Restock date MORE than 14 days out → **SKIP THE ENTIRE SKU**: enter NO
+    quantities on any of its sizes, add it to `skipped` WITH the date you
+    found (the rep decides with real information), and move on.
+  - Only report "no date" when the size truly has NO calendar icon and
+    hovering the icon location shows no tooltip — that means genuinely
+    unavailable. Never report "no date" for a size whose calendar icon you
+    did not hover.
+
+**Portal inventory snapshot (your starting expectation):**
+{{PORTAL_AVAILABILITY}}
+
+**The rep's standing decision on long backorders:**
+{{BACKORDER_ACTION}}
+
+**The rep's per-item schedule (overrides everything above for these items):**
+{{LINE_SCHEDULE}}
 
 **If any orderable SKU has a short backorder (restock ≤ 14 days)**, follow the
 delivery-date strategy the rep chose for this order:
