@@ -161,6 +161,13 @@ the problem in `issues`, and move on to the next step.
    Leave the filled cart exactly at the review step. A human approves the submit.
 
 # Output
+The portal builds the human-facing report from these fields, so keep them
+tidy: `summary` is 1–2 plain sentences ONLY (the headline). Put every
+per-line detail in the arrays — one item per element — NOT crammed into the
+summary: backordered lines in `backordered`, skipped SKUs in `skipped`,
+anything else noteworthy (e.g. an auto-created overflow cart to empty) in
+`issues`. Don't repeat the same detail in both `summary` and an array.
+
 When done (or blocked), end your reply with a single fenced ```json block and
 nothing after it, matching this shape:
 

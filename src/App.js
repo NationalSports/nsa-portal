@@ -8397,11 +8397,25 @@ export default function App(){
           {/* Comments */}
           <div style={{marginBottom:12}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:6}}>Comments ({(td.comments||[]).length})</div>
-            {(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===(c.author_id||c.user_id));
+            {/* Light markdown so the bot's structured reports render as sections/bullets/links
+                instead of a wall of text: preserves line breaks, **bold**, "- " bullets, and URLs. */}
+            {(()=>{const _richText=(text)=>String(text||'').split('\n').map((ln,li)=>{
+              if(!ln.trim())return<div key={li} style={{height:6}}/>;
+              const isBullet=/^\s*[-•]\s+/.test(ln);
+              const body=isBullet?ln.replace(/^\s*[-•]\s+/,''):ln;
+              const seg=body.split(/(\*\*[^*]+\*\*|https?:\/\/[^\s]+)/g).filter(s=>s!=='').map((s,si)=>{
+                if(/^\*\*[^*]+\*\*$/.test(s))return<strong key={si}>{s.slice(2,-2)}</strong>;
+                if(/^https?:\/\//.test(s))return<a key={si} href={s} target="_blank" rel="noreferrer" style={{color:'#2563eb',wordBreak:'break-all'}}>{s}</a>;
+                return<span key={si}>{s}</span>;
+              });
+              return<div key={li} style={isBullet?{display:'flex',gap:6,paddingLeft:6,margin:'1px 0'}:{margin:'1px 0'}}>{isBullet?<span style={{color:'#94a3b8'}}>•</span>:null}<span>{seg}</span></div>;
+            });
+            return(td.comments||[]).map(c=>{const auth=REPS.find(r=>r.id===(c.author_id||c.user_id));
               return<div key={c.id} style={{padding:'8px 10px',marginBottom:4,background:c.author_id===cu.id?'#dbeafe':'#f1f5f9',borderRadius:6,fontSize:12}}>
                 <div style={{fontWeight:600,marginBottom:2}}>{auth?.name||'Unknown'} <span style={{fontWeight:400,color:'#94a3b8',fontSize:10}}>{c.created_at?new Date(c.created_at).toLocaleString():''}</span></div>
-                <div>{c.text}</div>
-              </div>})}
+                <div style={{lineHeight:1.5}}>{_richText(c.text)}</div>
+              </div>});
+            })()}
             {td.status==='open'&&<div style={{display:'flex',gap:6,marginTop:8}}>
               <input className="form-input" placeholder="Add a comment or question..." style={{flex:1,fontSize:12}} id="_todo_comment_input"
                 onKeyDown={e=>{if(e.key==='Enter'&&e.target.value.trim()){

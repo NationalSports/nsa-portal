@@ -387,20 +387,33 @@ async function processOne() {
   // If reset to queued (e.g. Claude binary not found), skip the comment — it'll retry silently.
   if (status === 'queued') { log('task', task.id, 'reset to queued for retry:', result.summary); await heartbeat('idle', null); return true; }
 
+  // Structured report — sections separated by blank lines, bullets per line item.
+  // The portal renders **bold**, "- " bullets, and URLs, so this reads as a tidy
+  // report instead of one run-on paragraph.
   const emoji = status === 'needs_review' ? '🛒' : status === 'needs_input' ? '❓' : status === 'blocked' ? '🚧' : '❌';
-  const reportLines = [
-    `${emoji} **Bot ${status}** — ${result.summary || ''}`,
-    result.question ? `**Question:** ${result.question}` : '',
-    result.cart_url ? `Cart: ${result.cart_url}` : '',
-    result.po_entered ? `PO entered: yes` : '',
-    result.address_set ? `Delivery address set: yes` : '',
-    skipped.length ? `⏭️ Skipped (rep decision needed): ${skipped.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')}` : '',
-    (result.backordered && result.backordered.length) ? `⏳ Backordered: ${result.backordered.join('; ')}` : '',
-    (result.issues && result.issues.length) ? `Issues: ${result.issues.join('; ')}` : '',
-    status === 'needs_review' ? `Review the cart and submit it if it looks right, then close this task.` : '',
-    status === 'needs_input' ? `Reply on this task to tell Claude how to proceed — it will resume automatically.` : '',
-  ].filter(Boolean).join('\n');
-  await comment(task.id, reportLines);
+  const STATUS_LABEL = { needs_review: 'Ready to review & order', needs_input: 'Needs your answer', blocked: 'Blocked', failed: 'Failed' };
+  const sections = [`${emoji} **Bot ${STATUS_LABEL[status] || status}**`];
+  if (result.summary) sections.push(String(result.summary).trim());
+  // Progress checklist — always show PO + address state so the rep can eyeball it fast.
+  const checklist = [
+    `- ${result.po_entered === true ? '✅' : '⬜'} PO number entered`,
+    `- ${result.address_set === true ? '✅' : '⬜'} Delivery address set`,
+  ];
+  if (result.cart_url) checklist.push(`- 🛒 Cart: ${result.cart_url}`);
+  sections.push('**Checklist**\n' + checklist.join('\n'));
+  if (result.question) sections.push('**Question**\n' + String(result.question).trim());
+  if (skipped.length) sections.push('**Skipped — need your call**\n'
+    + skipped.map((s) => `- ${s.sku} (${s.sizes || '?'}) — restock ${s.restock || 'no date'}`).join('\n'));
+  if (Array.isArray(result.backordered) && result.backordered.length) sections.push('**Backordered — ordered anyway (restock ≤ 14 days)**\n'
+    + result.backordered.map((b) => `- ${b}`).join('\n'));
+  if (Array.isArray(result.issues) && result.issues.length) sections.push('**Issues**\n'
+    + result.issues.map((i) => `- ${i}`).join('\n'));
+  const nextStep = status === 'needs_review' ? 'Review the cart and submit it if it looks right, then close this task.'
+    : status === 'needs_input' ? 'Reply on this task to tell Claude how to proceed — it will resume automatically.'
+    : status === 'blocked' ? 'Fix the blocker described above, then hit Retry on the task.'
+    : 'The run did not complete — hit Retry on the task to run it again.';
+  sections.push('**Next step:** ' + nextStep);
+  await comment(task.id, sections.join('\n\n'));
   await heartbeat('idle', null);
 
   log('finished task', task.id, '→', status);
