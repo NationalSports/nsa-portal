@@ -36,6 +36,17 @@ The portal URL above is correct. If the page is slow or a navigation times out,
 WAIT and retry the SAME url (it can take 30–60s) — do NOT guess or try other
 adidas domains. Only that URL is valid.
 
+# Narrate your progress (the portal shows it live)
+At the START of each stage, output ONE plain-text line (not a tool call),
+exactly in this form, alone on its line:
+PROGRESS <k>/8 — <label>
+The stages, in order: 0/8 Logging in · 1/8 Searching all SKUs · 2/8 Adding all
+to cart · 3/8 Opening the cart · 4/8 Entering PO number · 5/8 Setting delivery
+address · 6/8 Checking availability & entering sizes · 7/8 Verifying the cart ·
+8/8 Writing the report. Emit each marker once, in order, right before you start
+that stage. If you must loop back (e.g. re-entering sizes after a date change),
+do NOT emit another marker — the marker marks first entry into the stage.
+
 # The workflow — ONE search, add-all, then finish the cart
 Adding items is the EASY part; past runs died of slowness before ever entering
 the PO, address, or sizes. Add everything in one shot, then spend your time on

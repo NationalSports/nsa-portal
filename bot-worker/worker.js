@@ -191,15 +191,17 @@ function buildPrompt(task, p = {}, conversation = []) {
 
 // Run Claude Code headlessly with the Playwright MCP. Returns the parsed
 // {status, summary, ...} the agent emits in its final ```json block.
-function runClaude(prompt) {
+// Always streams (stream-json) so PROGRESS markers the agent narrates can be
+// forwarded live via onProgress({step,total,label}); WORKER_DEBUG=1 adds
+// per-action console logging on top.
+const PROGRESS_RE = /^PROGRESS\s+(\d+)\s*\/\s*(\d+)\s*[—–-]+\s*(.+?)\s*$/m;
+function runClaude(prompt, onProgress = null) {
   return new Promise((resolve) => {
-    // WORKER_DEBUG=1 streams each agent step (navigate/click/type) to the
-    // terminal so a run isn't a black box.
     const debug = !!process.env.WORKER_DEBUG;
     const args = [
       '-p', prompt,
-      '--output-format', debug ? 'stream-json' : 'json',
-      ...(debug ? ['--verbose'] : []),
+      '--output-format', 'stream-json',
+      '--verbose',
       ...(WORKER_MODEL ? ['--model', WORKER_MODEL] : []),
       '--mcp-config', join(__dirname, 'mcp.json'),
       // The agent must drive the browser without interactive approval on a
@@ -212,10 +214,10 @@ function runClaude(prompt) {
     ];
     // Close stdin (no piped input) to avoid the "no stdin data received" wait.
     const child = spawn(CLAUDE_BIN, args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
     let err = '';
     let streamResult = null;
-    if (debug) {
+    let lastText = '';
+    {
       let buf = '';
       child.stdout.on('data', (d) => {
         buf += d;
@@ -227,12 +229,17 @@ function runClaude(prompt) {
             const ev = JSON.parse(line);
             if (ev.type === 'assistant' && ev.message?.content) {
               for (const c of ev.message.content) {
-                if (c.type === 'text' && c.text?.trim()) log('🗣 ', c.text.trim().slice(0, 200));
-                if (c.type === 'tool_use') log('🔧', c.name, JSON.stringify(c.input).slice(0, 200));
+                if (c.type === 'text' && c.text?.trim()) {
+                  lastText = c.text;
+                  if (debug) log('🗣 ', c.text.trim().slice(0, 200));
+                  const m = c.text.match(PROGRESS_RE);
+                  if (m && onProgress) onProgress({ step: parseInt(m[1], 10), total: parseInt(m[2], 10) || 8, label: m[3].slice(0, 80) });
+                }
+                if (c.type === 'tool_use' && debug) log('🔧', c.name, JSON.stringify(c.input).slice(0, 200));
               }
             } else if (ev.type === 'result') {
               streamResult = ev.result || '';
-              log('✅ result:', streamResult.slice(0, 200));
+              if (debug) log('✅ result:', streamResult.slice(0, 200));
             }
           } catch { /* non-JSON line */ }
         }
@@ -251,17 +258,15 @@ function runClaude(prompt) {
       try { child.kill('SIGKILL'); } catch {}
       finish({ status: 'queued', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — resetting to queued for retry.` });
     }, timeoutMs);
-    child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('error', (e) => { clearTimeout(killer); finish({ status: 'queued', summary: 'Could not launch Claude: ' + e.message }); });
     child.on('close', (code) => {
       clearTimeout(killer);
       if (done) return;
       if (err.trim()) log('claude stderr:', err.trim().slice(0, 500));
-      // --output-format json wraps the run; the agent's text is in `.result`.
-      // In debug (stream-json) mode the result text came from the result event.
-      let resultText = (debug && streamResult != null) ? streamResult : out;
-      try { resultText = JSON.parse(resultText).result ?? resultText; } catch { /* not JSON-wrapped */ }
+      // The agent's final text arrives in the stream's `result` event; fall back
+      // to the last assistant text if the stream ended without one.
+      const resultText = streamResult != null ? streamResult : lastText;
       const parsed = extractJsonBlock(resultText);
       if (parsed) return finish(parsed);
       finish({
@@ -366,7 +371,24 @@ async function processOne() {
     }
     if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}${order.drop_ship ? ' · DROP SHIP' + (order.ship_to ? ' → ' + order.ship_to.name : ' (no address!)') : ''} · model ${WORKER_MODEL || 'default'}`);
     else log('no structured order — running from task notes');
-    result = await runClaude(buildPrompt(task, order || {}, conversation));
+    // Live progress: the agent narrates "PROGRESS k/8 — label" markers; write
+    // each one onto the task row so the portal's realtime feed shows the step.
+    // Fire-and-forget, deduped by step; the final status update below rewrites
+    // bot_payload without `progress`, clearing it when the run ends.
+    let _lastKey = '';
+    const onProgress = (p) => {
+      const key = p && p.step + '|' + p.label;
+      if (!p || key === _lastKey) return;
+      _lastKey = key;
+      const payload = { ...(task.bot_payload || {}), ...(order || {}), progress: { ...p, at: new Date().toISOString() } };
+      supabase.from('assigned_todos')
+        .update({ bot_payload: payload, updated_at: new Date().toISOString() })
+        .eq('id', task.id)
+        .then((r) => { if (r.error) log('progress update failed:', r.error.message); });
+      log(`progress ${p.step}/${p.total} — ${p.label}`);
+    };
+    onProgress({ step: 0, total: 8, label: 'Starting up' });
+    result = await runClaude(buildPrompt(task, order || {}, conversation), onProgress);
   } catch (e) {
     result = { status: 'failed', summary: 'Worker exception: ' + (e?.message || e) };
   }

@@ -147,6 +147,15 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
   };
 }
 
+// Live step info for a running bot task ({step,total,label,at}) — written by
+// the worker as the agent narrates PROGRESS markers; cleared when the run ends.
+// Returns null unless the task is actively in_progress with a reported step.
+export function botProgress(t) {
+  const p = t && t.bot_status === 'in_progress' && t.bot_payload && t.bot_payload.progress;
+  if (!p || p.step == null) return null;
+  return { step: p.step, total: p.total || 8, label: p.label || '', at: p.at || null };
+}
+
 // Visual styling for a task row by the bot's progress. Returns null for non-bot
 // tasks (render normally). The amber 'needs_review' is the human's cue that
 // Claude finished and the order just needs reviewing/submitting.
