@@ -24035,6 +24035,9 @@ export default function App(){
       const mappings={};
       if(!target||!Array.isArray(target.items))return mappings;
       (bill.items||[]).forEach((bl,bi)=>{
+        // $0 lines bill nothing — never auto-tie them to a product bucket (the 91-T1
+        // embroidery memo). The wizard shows them as "$0 — auto-skipped".
+        if(safeNum(bl.unit_price)<=0&&safeNum(bl.extension)<=0)return;
         const hit=_matchLineToItems(bl,target.items);
         // No hit → leave the line UNTIED (empty), never auto-"skipped": skipped means "don't
         // bill this line", and silently defaulting money to that hid real lines (the 5162436D
@@ -26963,6 +26966,8 @@ export default function App(){
                               ?<span style={{color:'#d97706',fontWeight:600}} title="Couldn't pin the exact style line (two styles share this size/color) — the qty still lands on the batch's size total. Use Match manually to pin styles.">◦ lands by size · {it.size}</span>
                               :<span style={{color:'#dc2626',fontWeight:600}}>✗ size not on batch</span>;
                           })()
+                          :(safeNum(it.unit_price)<=0&&safeNum(it.extension)<=0)
+                          ?<span style={{color:'#94a3b8',fontWeight:600}} title="A $0 line bills nothing — it doesn't need a match and never blocks the push">— $0 · nothing to apply</span>
                           :<span style={{color:'#dc2626',fontWeight:600}}>{'✗'} no match</span>}</td>}
                         <td style={{maxWidth:180,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',color:'#64748b',fontSize:10}}>{it.desc||'—'}</td>
                       </tr>;})}</tbody>
@@ -27256,10 +27261,15 @@ export default function App(){
                         for(const s of scoreAll(bl)){if(s.sc<25)break;const k=(s.it.item_id||s.it.sku)+'|'+(s.it.po_id||'')+'|'+_cz(s.it.size);if(seen.has(k))continue;seen.add(k);out.push(s);if(out.length>=3)break}
                         return out;
                       };
-                      const matched=bill.items.filter((_,i)=>mappings[i]&&!mappings[i].skipped&&mappings[i].target_idx!=null).length;
-                      const skipped=bill.items.filter((_,i)=>mappings[i]&&mappings[i].skipped).length;
-                      const total=bill.items.length;
-                      const untied=total-matched-skipped;
+                      // $0 lines (service memos) bill nothing — they never count as "still to tie"
+                      // and are auto-treated as skipped unless the operator ties one on purpose.
+                      const _zeroLn=(bl)=>safeNum(bl.unit_price)<=0&&safeNum(bl.extension)<=0;
+                      let matched=0,skipped=0,zeroAuto=0,untied=0;
+                      bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};
+                        if(mm.skipped){skipped++;return}
+                        if(mm.target_idx!=null){matched++;return}
+                        if(_zeroLn(bl)){zeroAuto++;return}
+                        untied++;});
                       // Running money reconciliation: what S&S billed on the tied lines vs what those
                       // lines will apply to the order (qty × the order's own unit cost). A gap is a real
                       // price variance the operator should see BEFORE pushing, not after.
@@ -27267,7 +27277,7 @@ export default function App(){
                       bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const q=safeNum(mm.allocated_qty);billSum+=safeNum(bl.extension)||safeNum(bl.unit_price)*q;applySum+=q*safeNum(tt&&tt.unit_cost);});
                       const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
-                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>Tie each bill line to the item on <b>{target.label}</b> it pays for. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null}. The badge shows why each matched — <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
+                        <div style={{fontSize:10,color:'#475569',marginBottom:6}}>Tie each bill line to the item on <b>{target.label}</b> it pays for. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{zeroAuto?<> · <span style={{color:'#64748b'}}>{zeroAuto} × $0 — nothing to apply</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null}. The badge shows why each matched — <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
                         {/* One quiet line of context; the per-line SUGGESTIONS below do the real work */}
                         {(()=>{const st=new Set(target.items.map(it=>_ns(it.sku)));const units=target.items.reduce((a,it)=>a+safeNum(it.qty),0);const val=target.items.reduce((a,it)=>a+safeNum(it.qty)*safeNum(it.unit_cost),0);
                           return<div style={{fontSize:10,color:'#64748b',marginBottom:6}}>{target.label}: <b>{st.size}</b> style(s) · <b>{units}</b> unit(s) open · <b>${val.toFixed(2)}</b> still to bill</div>;})()}
@@ -27312,6 +27322,7 @@ export default function App(){
                                       <button onClick={()=>setW({...w,_pk:pkOpen?null:bli,_pkq:''})} style={{width:'100%',textAlign:'left',fontSize:10,padding:'4px 8px',borderRadius:6,cursor:'pointer',border:'1px solid '+(m.skipped?'#fbbf24':tgt?'#86efac':'#cbd5e1'),background:m.skipped?'#fffbeb':tgt?'#f0fdf4':'#fff',color:'#0f172a'}}>
                                         {m.skipped?<span style={{color:'#92400e',fontWeight:700}}>Skipped — this line won’t bill</span>
                                          :tgt?<><b style={{fontFamily:'monospace'}}>{tgt.sku}</b> <span style={{color:'#64748b'}}>{[tgt.color,tgt.size].filter(Boolean).join(' · ')} · {openQty} open @ ${safeNum(tgt.unit_cost).toFixed(2)}</span>{tgt.name?<span style={{color:'#94a3b8'}}> — {tgt.name}</span>:null}</>
+                                         :_zeroLn(bl)?<span style={{color:'#94a3b8'}}>$0 line — nothing to apply (click only if it should tie)</span>
                                          :<span style={{color:'#64748b'}}>Pick the order item this pays for… ▾</span>}
                                       </button>
                                       {pkOpen&&<div style={{position:'absolute',zIndex:60,left:8,right:8,top:'100%',marginTop:2,background:'#fff',border:'1px solid #c7d2fe',borderRadius:8,boxShadow:'0 8px 30px rgba(15,23,42,.18)',padding:8}}>
@@ -27337,7 +27348,7 @@ export default function App(){
                                       </div>}
                                     </>;})()}
                                   {tgt&&<div style={{color:costGap?'#b45309':'#94a3b8',fontSize:9,marginTop:2}}>order cost ${safeNum(tgt.unit_cost).toFixed(2)} · {openQty} open{costGap?' · bill ≠ order by $'+Math.abs(billExt-applyCost).toFixed(2):''}</div>}
-                                  {!tgt&&!m.skipped&&(()=>{const sug=suggestFor(bl);return sug.length?<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,alignItems:'center'}}>
+                                  {!tgt&&!m.skipped&&!_zeroLn(bl)&&(()=>{const sug=suggestFor(bl);return sug.length?<div style={{display:'flex',gap:4,flexWrap:'wrap',marginTop:3,alignItems:'center'}}>
                                     <span style={{fontSize:9,color:'#64748b',fontWeight:700}}>Best guess:</span>
                                     {sug.map(s=><button key={s.ti} onClick={()=>setMap(bli,{target_idx:s.ti,allocated_qty:bl.qty,ambiguous:false})} title={'Why: '+s.why.join(' + ')+' — click to tie'}
                                       style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
@@ -27352,6 +27363,7 @@ export default function App(){
                                   {m.skipped?<span style={{color:'#92400e',fontWeight:700}}>Skipped</span>
                                    :over?<span style={{color:'#dc2626',fontWeight:700}}>Over — {q}&gt;{openQty} open</span>
                                    :basis?<span style={{fontWeight:700,color:basis.c,background:basis.bg,borderRadius:4,padding:'2px 6px',whiteSpace:'nowrap'}}>{basis.t}</span>
+                                   :_zeroLn(bl)?<span style={{color:'#94a3b8',fontWeight:700}}>$0 — auto-skipped</span>
                                    :<span style={{color:'#dc2626',fontWeight:700}}>Not tied yet</span>}
                                 </td>
                               </tr>;
