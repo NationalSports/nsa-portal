@@ -52,10 +52,11 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     : '(none)';
   const s = p.ship_to;
   const delivery = (p.drop_ship && s && (s.line1 || s.city))
-    ? `THIS IS A DROP SHIP — the order must deliver directly to the ${s.attention ? 'decorator' : 'program'} below, NOT National Sports' default address.\n`
+    ? `THIS IS A DROP SHIP — the order must deliver directly to the address below, NOT National Sports' default address.\n`
       + `On the cart's Delivery Location, click it and choose "Add one-time delivery location", then fill the form exactly:\n`
-      + `- Attention 1: ${s.attention ? `${s.name} — ${s.attention}` : s.name}\n`
-      + (s.attention ? `  (If the form has a separate "Attention 2" line, put "${s.name}" in Attention 1 and "${s.attention}" in Attention 2 instead. The "${s.attention}" reference MUST appear on an attention line either way — the decorator uses it to match the incoming blanks to their job.)\n` : '')
+      + `- Attention 1 (first line): ${s.name}\n`
+      + (s.attention ? `- Attention 2 (SECOND line): ${s.attention}\n`
+        + `  Put "${s.attention}" on the form's SECOND line — its "Attention 2" field, or "Address Line 2" if that's what the form has. It MUST sit on its own second line, never merged into line 1. The receiver (often a decorator) uses this reference to match the incoming shipment to their job.\n` : '')
       + `- Street Address: ${s.line1}\n`
       + `- City/Town: ${s.city}\n`
       + `- State: ${s.state}\n`
@@ -67,6 +68,14 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
   const deliveryDate = p.delivery_date
     ? `Set the order's DELIVERY DATE to ${p.delivery_date}. In the cart, under the "Delivery Dates" heading, there's a date chip showing the current date (e.g. "Jun 2, 2026"). CLICK that date chip — a calendar opens — then pick ${p.delivery_date}. Confirm the chip now shows ${p.delivery_date}. (This is the ship/deliver date — you are still ordering now, not later.)`
     : `No specific delivery date requested — leave the default delivery date (the short-backorder rule above is the only reason to change it).`;
+  // How to group the cart's delivery dates when ordered sizes have different
+  // restock dates. The rep picks this per task (default 'complete').
+  const _strat = p.delivery_strategy || 'complete';
+  const deliveryStrategy = _strat === 'per_sku'
+    ? `Strategy: EACH SKU TOGETHER. Keep every SKU on ONE date so it arrives complete. For a SKU with any short-backordered size, set that WHOLE SKU's sizes to that SKU's LATEST needed restock date; SKUs fully in stock stay on today. Use "Add more dates" so each SKU's quantities sit under its own single date. NEVER split one SKU across two dates — in-stock SKUs ship now, backordered SKUs ship later, each arriving complete.`
+    : _strat === 'as_available'
+    ? `Strategy: SHIP AS AVAILABLE. Ship each SIZE the moment it's ready: put in-stock sizes on today's date and each short-backordered size under its own restock date via "Add more dates". A single SKU MAY span two dates — that's expected and fine; the goal is the fastest partial shipments.`
+    : `Strategy: SHIP COMPLETE. Set the cart's ONE delivery date to the LATEST restock date among all ordered short-backordered sizes, so the WHOLE order ships together in a single delivery. Click the "Delivery Dates" chip, pick that date, and confirm the chip shows it. (If the portal auto-splits into extra date columns you can't merge, note it in issues.)`;
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
@@ -83,6 +92,7 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     .replaceAll('{{LINES}}', lines)
     .replaceAll('{{TASK_NOTES}}', notes)
     .replaceAll('{{DELIVERY}}', delivery)
+    .replaceAll('{{DELIVERY_STRATEGY}}', deliveryStrategy)
     .replaceAll('{{DELIVERY_DATE}}', deliveryDate);
 }
 

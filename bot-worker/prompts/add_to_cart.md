@@ -101,10 +101,10 @@ quantities. Today's date matters here — compute "two weeks from today" first.
     the size(s), the restock date (or "no date"), and move on. The rep decides
     what to do with it.
 
-**If any orderable SKU has a short backorder (restock ≤ 14 days):** set the
-cart's DELIVERY DATE to the LATEST such restock date so the whole order ships
-complete — under "Delivery Dates" click the date chip, pick the date in the
-calendar, and confirm the chip shows the new date. Otherwise:
+**If any orderable SKU has a short backorder (restock ≤ 14 days)**, follow the
+delivery-date strategy the rep chose for this order:
+{{DELIVERY_STRATEGY}}
+If nothing is backordered (everything in stock):
 {{DELIVERY_DATE}}
 
 **Then enter quantities** for every SKU you are NOT skipping — type each qty

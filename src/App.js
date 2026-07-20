@@ -32162,14 +32162,34 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<div style={{marginBottom:12}}>
-          <label className="form-label">📅 Requested delivery date (optional)</label>
-          <div style={{display:'flex',gap:6,alignItems:'center'}}>
-            <input type="date" className="form-input" value={todoModal.bot_delivery||''} onChange={e=>setTodoModal(m=>({...m,bot_delivery:e.target.value}))} style={{flex:1}}/>
-            {todoModal.bot_delivery&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_delivery:''}))}>Clear</button>}
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<>
+          <div style={{marginBottom:12}}>
+            <label className="form-label">📅 Requested delivery date (optional)</label>
+            <div style={{display:'flex',gap:6,alignItems:'center'}}>
+              <input type="date" className="form-input" value={todoModal.bot_delivery||''} onChange={e=>setTodoModal(m=>({...m,bot_delivery:e.target.value}))} style={{flex:1}}/>
+              {todoModal.bot_delivery&&<button type="button" className="btn btn-sm btn-secondary" onClick={()=>setTodoModal(m=>({...m,bot_delivery:''}))}>Clear</button>}
+            </div>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Claude orders <strong>now</strong> and sets this as the delivery date in Adidas CLICK. Leave blank for the default.</div>
           </div>
-          <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Claude orders <strong>now</strong> and sets this as the delivery date in Adidas CLICK. Leave blank for the default.</div>
-        </div>}
+          {/* When sizes have different restock dates, let the rep choose how Claude groups
+              the cart's delivery dates. Default 'complete' = the prior behavior. */}
+          <div style={{marginBottom:12}}>
+            <label className="form-label">🚚 If restock dates differ</label>
+            <select className="form-select" value={todoModal.bot_strategy||'complete'} onChange={e=>setTodoModal(m=>({...m,bot_strategy:e.target.value}))}>
+              <option value="complete">Ship complete — whole order on one date (latest)</option>
+              <option value="per_sku">Each SKU together — each SKU on its own date</option>
+              <option value="as_available">Ship as available — each size as soon as it's ready</option>
+            </select>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{(todoModal.bot_strategy||'complete')==='complete'?'One delivery — everything waits for the latest restock.':todoModal.bot_strategy==='per_sku'?'In-stock SKUs ship now; backordered SKUs ship later. A SKU is never split across dates.':'Fastest — available sizes ship now, backordered sizes follow. A SKU may split across dates.'}</div>
+          </div>
+          {/* Attention line 2 — only meaningful for a drop-ship (one-time) address. Prefills
+              from the resolved DPO for decorator orders; editable for any reference. */}
+          {(todoModal.bot_payload?.ship_to||todoModal.bot_payload?.drop_ship)&&(()=>{const _attVal=todoModal.bot_attention!==undefined?todoModal.bot_attention:(todoModal.bot_payload?.ship_to?.attention||'');return<div style={{marginBottom:12}}>
+            <label className="form-label">🏷️ Attention line 2 (optional)</label>
+            <input className="form-input" value={_attVal} onChange={e=>setTodoModal(m=>({...m,bot_attention:e.target.value}))} placeholder="e.g. DPO 3081 — printed on the 2nd address line so the receiver can match it"/>
+            <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>Goes on the second line of the drop-ship delivery address. Auto-filled from the DPO for decorator orders; blank = nothing on line 2.</div>
+          </div>})()}
+        </>}
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:12}}>
           <div><label className="form-label">Assign To *</label>
             <select className="form-select" value={todoModal.assigned_to} onChange={e=>setTodoModal(m=>({...m,assigned_to:e.target.value}))}>
@@ -32243,14 +32263,17 @@ export default function App(){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
+            _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
             // Drop ship: make sure the delivery address travels with the payload so the
             // worker never has to guess where the order actually goes.
             const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
             if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
+            // Attention line 2 rides on the ship-to address (only place it can render).
+            if(_bp.ship_to){const _att=todoModal.bot_attention!==undefined?String(todoModal.bot_attention).trim():(_bp.ship_to.attention||'');_bp.ship_to={..._bp.ship_to,attention:_att||null}}
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:''});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

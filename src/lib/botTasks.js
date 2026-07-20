@@ -116,7 +116,7 @@ export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, item
 // Build the title/description/bot_payload for an "add all items to the vendor
 // cart" task from a ready batch. The caller hands the result to onAssignTodo,
 // which opens the standard Assign Task modal pre-filled for the Claude bot.
-export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null, shipTo = null }) {
+export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null, shipTo = null, deliveryStrategy = 'complete' }) {
   const target = botTargetForVendor(vendorName);
   const lines = batchesToLines(batches);
   const totalQty = lines.reduce((a, l) => a + (l.qty || 0), 0);
@@ -141,6 +141,7 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
       lines,
       drop_ship: dropShip,
       ship_to: resolvedShipTo,
+      delivery_strategy: deliveryStrategy || 'complete',
       totals: { line_count: lines.length, qty: totalQty, cost: Number(totalCost.toFixed(2)) },
     },
   };
