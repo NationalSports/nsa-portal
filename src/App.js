@@ -26867,26 +26867,40 @@ export default function App(){
                     const prop=_props[_pi];
                     const _accept=_acceptProposal;
                     return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
-                      {prop&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:8}}>
-                        <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                          <span style={{fontSize:12,fontWeight:800,color:NAVY}}>Best answer{_props.length>1?' ('+(_pi+1)+' of '+_props.length+')':''}:</span>
-                          <span style={{fontSize:12,fontWeight:800,color:'#1e40af'}}>{prop.target.label}</span>
+                      {prop&&<div style={{marginBottom:10,padding:'12px 14px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:10,boxShadow:'0 1px 3px rgba(15,23,42,.06)'}}>
+                        <div style={{fontSize:8.5,fontWeight:900,letterSpacing:.8,textTransform:'uppercase',color:'#818cf8',marginBottom:6}}>Our best answer — review and accept</div>
+                        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                          <span style={{width:22,height:22,borderRadius:'50%',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:900,flex:'0 0 auto',background:prop.confidence==='high'?'#dcfce7':prop.confidence==='medium'?'#fef3c7':'#f1f5f9',color:prop.confidence==='high'?'#16a34a':prop.confidence==='medium'?'#d97706':'#64748b'}}>{prop.confidence==='high'?'✓':'?'}</span>
+                          <span style={{fontSize:14,fontWeight:800,color:NAVY}}>{prop.target.label}</span>
                           <span style={{fontSize:11,color:'#64748b'}}>{prop.target.sub}</span>
-                          <span style={{fontSize:9,padding:'2px 8px',borderRadius:10,fontWeight:800,background:prop.confidence==='high'?'#dcfce7':prop.confidence==='medium'?'#fef9c3':'#f1f5f9',color:prop.confidence==='high'?'#166534':prop.confidence==='medium'?'#854d0e':'#475569'}}>{prop.confidence} confidence</span>
+                          <span style={{marginLeft:'auto',fontSize:9,padding:'3px 9px',borderRadius:10,fontWeight:800,letterSpacing:.3,textTransform:'uppercase',background:prop.confidence==='high'?'#dcfce7':prop.confidence==='medium'?'#fef9c3':'#f1f5f9',color:prop.confidence==='high'?'#166534':prop.confidence==='medium'?'#854d0e':'#475569'}}>{prop.confidence==='high'?'Strong match':prop.confidence==='medium'?'Check first':'Weak match'}</span>
+                          {_props.length>1&&<span style={{fontSize:9,color:'#94a3b8',fontWeight:700}}>{(_pi+1)+' of '+_props.length}</span>}
                         </div>
-                        <ul style={{margin:'6px 0 8px',paddingLeft:18,fontSize:11,color:'#334155'}}>
-                          {prop.evidence.map((e,ei)=><li key={ei}>{e}</li>)}
-                        </ul>
-                        <div style={{maxHeight:150,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:6,marginBottom:8}}>
-                          <table style={{width:'100%',fontSize:10,borderCollapse:'collapse'}}>
+                        <div style={{fontSize:11,color:'#475569',margin:'3px 0 9px',paddingLeft:32}}>{prop.evidence[0]||''}
+                          {prop.evidence.length>1&&<details style={{display:'inline-block',marginLeft:6,verticalAlign:'top'}}><summary style={{cursor:'pointer',color:'#6366f1',fontWeight:700,fontSize:10}}>+{prop.evidence.length-1} more reason{prop.evidence.length>2?'s':''}</summary>
+                            <ul style={{margin:'4px 0 0',paddingLeft:16}}>{prop.evidence.slice(1).map((e,ei)=><li key={ei}>{e}</li>)}</ul></details>}
+                        </div>
+                        <div style={{maxHeight:190,overflow:'auto',border:'1px solid #e2e8f0',borderRadius:8,marginBottom:6}}>
+                          <table style={{width:'100%',fontSize:11,borderCollapse:'collapse'}}>
+                            <thead><tr style={{background:'#f8fafc'}}>
+                              <th style={{textAlign:'left',padding:'4px 10px',fontSize:8.5,letterSpacing:.5,textTransform:'uppercase',color:'#94a3b8',fontWeight:800}}>On the bill</th>
+                              <th></th>
+                              <th style={{textAlign:'left',padding:'4px 10px',fontSize:8.5,letterSpacing:.5,textTransform:'uppercase',color:'#94a3b8',fontWeight:800}}>Pays for this order item</th>
+                              <th style={{textAlign:'right',padding:'4px 10px',fontSize:8.5,letterSpacing:.5,textTransform:'uppercase',color:'#94a3b8',fontWeight:800}}>Matched on</th>
+                            </tr></thead>
                             <tbody>{prop.ties.map((t,ti2)=>{const bl=bill.items[t.bill_idx]||{};const it=prop.target.items[t.target_idx]||{};
-                              return<tr key={ti2} style={{borderBottom:'1px solid #f1f5f9',background:t.overage?'#fff7ed':'#f7fdf9'}}>
-                                <td style={{padding:'3px 8px',fontFamily:'monospace'}}>{bl.sku} {bl.size} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)}</td>
-                                <td style={{padding:'3px 4px',color:'#94a3b8'}}>→</td>
-                                <td style={{padding:'3px 8px',fontFamily:'monospace',color:'#166534'}}>✓ {it.sku} {it.size} ({t.open_qty} open) @ ${safeNum(it.unit_cost).toFixed(2)}</td>
-                                <td style={{padding:'3px 8px',fontSize:9,color:t.overage?'#c2410c':'#94a3b8'}}>{t.overage?'+'+t.overage+' over':t.basis.replace(/_/g,' ')}</td>
+                              return<tr key={ti2} style={{borderBottom:'1px solid #f1f5f9',background:t.overage?'#fff7ed':'#fff'}}>
+                                <td style={{padding:'5px 10px',whiteSpace:'nowrap'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#0f172a'}}>{bl.sku}</span><span style={{color:'#64748b'}}> {[bl.color,bl.size].filter(Boolean).join(' ')} · {safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)}</span></td>
+                                <td style={{padding:'5px 2px',color:'#cbd5e1'}}>→</td>
+                                <td style={{padding:'5px 10px',whiteSpace:'nowrap'}}><span style={{color:'#16a34a',fontWeight:800}}>✓ </span><span style={{fontFamily:'monospace',fontWeight:700,color:'#166534'}}>{it.sku}</span><span style={{color:'#64748b'}}> {[it.color,it.size].filter(Boolean).join(' ')} · {t.open_qty} open @ ${safeNum(it.unit_cost).toFixed(2)}</span></td>
+                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:9,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
                               </tr>;})}</tbody>
                           </table>
+                        </div>
+                        <div style={{fontSize:10.5,color:'#475569',marginBottom:9,display:'flex',gap:14,flexWrap:'wrap'}}>
+                          <span><b style={{color:'#166534'}}>{prop.ties.length}</b> of <b>{(bill.items||[]).length}</b> bill line{(bill.items||[]).length===1?'':'s'} tied</span>
+                          {(()=>{const tied=prop.ties.reduce((s,t)=>{const l=bill.items[t.bill_idx]||{};return s+safeNum(l.qty)*safeNum(l.unit_price)},0);const tot=(bill.items||[]).reduce((s,l)=>s+safeNum(l.qty)*safeNum(l.unit_price),0);
+                            return<span>covers <b style={{color:tied>=tot-0.005?'#166534':'#b45309'}}>${tied.toFixed(2)}</b> of <b>${tot.toFixed(2)}</b> billed</span>;})()}
                         </div>
                         {/* Owner rule: exact PO match ⇒ right order. Unresolved lines get the order's
                             open items as CLICK-TO-LINK chips — see the items, click, done. */}
@@ -26894,23 +26908,55 @@ export default function App(){
                           const xt=b._extraTies||{};
                           const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
                           const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk').map(t2=>t2.target_idx),...Object.values(xt)]);
-                          return<div style={{marginTop:8,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6}}>
-                            <div style={{fontSize:10,fontWeight:800,color:'#92400e',marginBottom:5}}>Link the rest — the PO matches this order, so these belong to one of its items. Click to link:</div>
+                          return<div style={{marginTop:8,padding:'9px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+                            <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
+                            <div style={{fontSize:10,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
                             {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
-                              return<div key={i2} style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'4px 0',borderTop:'1px solid #fef3c7'}}>
-                                <span style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#0f172a',flex:'0 0 auto'}}>{bl.sku} {bl.size} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)}</span>
-                                {linked?<><span style={{fontSize:10,color:'#166534',fontWeight:700}}>→ {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''} ✓ linked</span>
-                                  <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 6px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c'}}>✕</button></>
-                                :prop.target.items.map((it2,ti2)=>{if(takenTi.has(ti2))return null;const pp2=poParts(it2.po_id);const bp2=poParts(bill._po_raw||bill.po_number);if(bp2.flat&&pp2.flat!==bp2.flat)return null;
-                                  return<button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
-                                    style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
-                                    {it2.sku} {[it2.color,it2.size].filter(Boolean).join(' ')} · {safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)} →</button>;})}
+                              return<div key={i2} style={{padding:'7px 0',borderTop:'1px solid #fef3c7'}}>
+                                <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                                  <span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#0f172a'}}>{bl.sku}</span>
+                                  <span style={{fontSize:10,color:'#64748b'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
+                                  {linked&&<><span style={{fontSize:10,padding:'2px 9px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:800}}>✓ Linked → {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''}</span>
+                                    <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 7px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c',fontWeight:700}}>✕ undo</button></>}
+                                </div>
+                                {!linked&&(()=>{
+                                  // Ranked, not exhaustive (the chip wall was bad UI): same cost and same
+                                  // size float to the top — the operator's own heuristic. Top 6 visible,
+                                  // the rest behind one click.
+                                  const bp2=poParts(bill._po_raw||bill.po_number);
+                                  const cz2=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase();
+                                  const nr2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                                  const dst=nr2(String(bl.desc||'').trim().split(/[.\s]/)[0]||'');
+                                  const scored=prop.target.items.map((it2,ti2)=>{
+                                    if(takenTi.has(ti2))return null;
+                                    const pp2=poParts(it2.po_id);
+                                    if(bp2.flat&&pp2.flat!==bp2.flat)return null;
+                                    let sc=0;
+                                    if(bl.size&&cz2(it2.size)===cz2(bl.size))sc+=4;
+                                    if(safeNum(bl.unit_price)>0&&Math.abs(safeNum(it2.unit_cost)-safeNum(bl.unit_price))<=0.02)sc+=3;
+                                    if(bl.color&&it2.color&&nr2(it2.color)===nr2(bl.color))sc+=2;
+                                    if(dst.length>=3&&(nr2(it2.sku).includes(dst)||dst.includes(nr2(it2.sku))))sc+=3;
+                                    return{it2,ti2,sc};
+                                  }).filter(Boolean).sort((a2,z2)=>z2.sc-a2.sc);
+                                  const mkCard=({it2,ti2,sc},best)=><button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
+                                    style={{textAlign:'left',minWidth:104,padding:'5px 9px',borderRadius:8,cursor:'pointer',position:'relative',border:'1.5px solid '+(best?'#16a34a':sc>=6?'#86efac':'#d1fae5'),background:best?'#f0fdf4':'#fff'}}>
+                                    {best&&<span style={{position:'absolute',top:-8,left:8,fontSize:7.5,fontWeight:900,letterSpacing:.5,background:'#16a34a',color:'#fff',padding:'1px 6px',borderRadius:6}}>BEST MATCH</span>}
+                                    <div style={{fontFamily:'monospace',fontSize:10,fontWeight:800,color:'#0f172a'}}>{it2.sku}</div>
+                                    <div style={{fontSize:9,color:'#64748b'}}>{[it2.color,it2.size].filter(Boolean).join(' · ')||' '}</div>
+                                    <div style={{fontSize:9,fontWeight:700,color:'#166534'}}>{safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)}</div>
+                                  </button>;
+                                  const top=scored.slice(0,6);const rest=scored.slice(6);
+                                  return<>
+                                    <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{top.map((c,ci)=>mkCard(c,ci===0&&c.sc>=6))}</div>
+                                    {rest.length>0&&<details style={{marginTop:6}}><summary style={{fontSize:10,color:'#92400e',cursor:'pointer',fontWeight:800,display:'inline-block',padding:'3px 9px',border:'1px dashed #fbbf24',borderRadius:8}}>Show {rest.length} more item{rest.length===1?'':'s'} on this order…</summary>
+                                      <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{rest.map(c=>mkCard(c,false))}</div></details>}</>;
+                                })()}
                               </div>;})}
                           </div>;})()}
-                        <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                          <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#16a34a',color:'#fff',border:'none',fontWeight:800}} onClick={()=>_accept(prop)}>✓ Accept — tie {prop.ties.length+Object.keys(b._extraTies||{}).filter(k=>!prop.ties.some(t2=>t2.bill_idx===parseInt(k))).length} line{(prop.ties.length+Object.keys(b._extraTies||{}).length)===1?'':'s'}</button>
-                          {_props.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_propIdx:(_pi+1)%_props.length}:pp)}))}>Not this ▸ next</button>}
-                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} title="Open the manual line-matcher seeded with this proposal — adjust any tie before confirming"
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginTop:10}}>
+                          <button className="btn btn-sm" style={{fontSize:12,padding:'7px 18px',borderRadius:8,background:'#16a34a',color:'#fff',border:'none',fontWeight:800,boxShadow:'0 1px 2px rgba(22,163,74,.35)'}} onClick={()=>_accept(prop)}>✓ Accept — tie {prop.ties.length+Object.keys(b._extraTies||{}).filter(k=>!prop.ties.some(t2=>t2.bill_idx===parseInt(k))).length} line{(prop.ties.length+Object.keys(b._extraTies||{}).length)===1?'':'s'}</button>
+                          {_props.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_propIdx:(_pi+1)%_props.length}:pp)}))}>Not this order ▸ see next</button>}
+                          <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} title="Open the manual line-matcher seeded with this proposal — adjust any tie before confirming"
                             onClick={()=>setW({open:true,query:bill.po_number||'',target:prop.target,mappings:Object.fromEntries(prop.ties.map(t=>[t.bill_idx,{target_idx:t.target_idx,allocated_qty:t.allocated_qty,ambiguous:false}]))})}>Adjust ties…</button>
                         </div>
                       </div>}
