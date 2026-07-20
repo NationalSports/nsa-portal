@@ -2218,6 +2218,24 @@ export default function App(){
   // nothing is missed or double-paid. Durable in app_state like omgFirstSeen.
   const[omgTaxRemit,setOmgTaxRemit]=useState(()=>loadState('omg_tax_remit',{}));
   const[todoModal,setTodoModal]=useState({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null});
+  // Portal-side Adidas availability for the Assign Task bot card: the portal
+  // already syncs per-size stock + restock dates (adidas_inventory), so show
+  // them at assign time and ship the snapshot in the payload — the bot starts
+  // informed instead of discovering everything by hovering the vendor site.
+  const[botAvail,setBotAvail]=useState(null);// {map:{sku:{size:{stock,date,fqty}}},synced}
+  React.useEffect(()=>{
+    if(!todoModal.open||!supabase){setBotAvail(null);return}
+    const skus=[...new Set((todoModal.bot_payload?.lines||[]).map(l=>l.sku).filter(Boolean))];
+    if(!skus.length){setBotAvail(null);return}
+    let dead=false;
+    supabase.from('adidas_inventory').select('sku,size,stock_qty,future_delivery_date,future_delivery_qty,last_synced').in('sku',skus).then(r=>{
+      if(dead||r.error||!r.data||!r.data.length){if(!dead)setBotAvail(null);return}
+      const map={};let synced=null;
+      r.data.forEach(row=>{(map[row.sku]=map[row.sku]||{})[row.size]={stock:row.stock_qty??0,date:row.future_delivery_date||null,fqty:row.future_delivery_qty??null};if(row.last_synced&&(!synced||row.last_synced>synced))synced=row.last_synced});
+      setBotAvail({map,synced});
+    });
+    return()=>{dead=true};
+  },[todoModal.open,todoModal.bot_payload]);// eslint-disable-line react-hooks/exhaustive-deps
   const[todoDetailId,setTodoDetailId]=useState(null);
   const openIssueCount=issues.filter(i=>i.status==='open').length;
   const consoleErrors=React.useRef([]);
@@ -32148,6 +32166,17 @@ export default function App(){
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
           const shipTo=bp.ship_to||(dropShip?resolveShipToClient(todoModal.so_id,sos,cust):null);
           const szStr=l=>Object.entries(l.sizes||{}).filter(([,v])=>Number(v)>0).map(([s,v])=>s+':'+v).join('  ');
+          // Per-size availability chips from the portal's own inventory sync:
+          // green = enough stock, amber = short with a restock date, red = short
+          // with no data. Falls back to the plain size string when no snapshot.
+          const _in14=d=>{if(!d)return false;const dt=new Date(d+'T12:00:00Z');return(dt-new Date())/864e5<=14};
+          const szChips=l=>{const a=botAvail?.map?.[l.sku];if(!a)return null;
+            return<div style={{display:'flex',flexWrap:'wrap',gap:4,marginTop:2}}>{Object.entries(l.sizes||{}).filter(([,v])=>Number(v)>0).map(([sz,q])=>{
+              const r=a[sz];const ok=r&&(r.stock||0)>=Number(q);
+              const bg=ok?'#dcfce7':(r&&r.date?'#fef3c7':'#fee2e2');const fg=ok?'#166534':(r&&r.date?'#92400e':'#b91c1c');
+              return<span key={sz} style={{fontSize:10,fontFamily:'ui-monospace,monospace',padding:'1px 6px',borderRadius:6,background:bg,color:fg}} title={r?`portal stock ${r.stock}${r.date?' · restock '+r.date:''}${r.fqty!=null?' · ~'+r.fqty+' coming':''}`:'no portal data'}>
+                {sz}:{q} {ok?'✓':(r&&r.date?'⏳'+r.date.slice(5):'?')}</span>;
+            })}</div>};
           return<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
             <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
               <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>🤖 Claude · Add to cart</span>
@@ -32169,12 +32198,12 @@ export default function App(){
                 <div style={{minWidth:0}}>
                   <div style={{fontSize:13,color:'#0f172a'}}><b style={{fontFamily:'ui-monospace,monospace'}}>{l.sku}</b>{l.color?<span style={{color:'#64748b'}}> · {l.color}</span>:null}</div>
                   {l.name?<div style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>:null}
-                  {szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null}
+                  {szChips(l)||(szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null)}
                 </div>
                 <div style={{fontSize:13,fontWeight:700,color:'#0f172a',flexShrink:0}}>{l.qty||0} pcs</div>
               </div>)}
             </div>
-            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.</div>
+            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
         {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<>
@@ -32197,6 +32226,21 @@ export default function App(){
             </select>
             <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{(todoModal.bot_strategy||'complete')==='complete'?'One delivery — everything waits for the latest restock.':todoModal.bot_strategy==='per_sku'?'In-stock SKUs ship now; backordered SKUs ship later. A SKU is never split across dates.':'Fastest — available sizes ship now, backordered sizes follow. A SKU may split across dates.'}</div>
           </div>
+          {/* The portal's inventory snapshot already knows which sizes restock beyond the
+              2-week window — let the rep decide NOW instead of the bot asking mid-run. */}
+          {(()=>{if(!botAvail?.map)return null;
+            const _in14=d=>{if(!d)return false;return(new Date(d+'T12:00:00Z')-new Date())/864e5<=14};
+            const _long=[];(todoModal.bot_payload?.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;Object.entries(l.sizes||{}).forEach(([sz,q])=>{const r=a[sz];if(r&&(r.stock||0)<Number(q)&&!_in14(r.date))_long.push(l.sku+' '+sz+(r.date?' (restock '+r.date+')':' (no date)'))})});
+            if(_long.length===0)return null;
+            return<div style={{marginBottom:12}}>
+              <label className="form-label">⏳ {_long.length} size{_long.length===1?'':'s'} restock beyond 2 weeks — what should Claude do?</label>
+              <select className="form-select" value={todoModal.bot_backorder||'ask'} onChange={e=>setTodoModal(m=>({...m,bot_backorder:e.target.value}))}>
+                <option value="ask">Ask me — pause with a question (default)</option>
+                <option value="order">Order everything anyway — schedule under restock dates</option>
+                <option value="drop">Drop unavailable sizes — order the rest now</option>
+              </select>
+              <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>{_long.slice(0,4).join(' · ')}{_long.length>4?' · +'+(_long.length-4)+' more':''}</div>
+            </div>})()}
           {/* Attention line 2 — only meaningful for a drop-ship (one-time) address. Prefills
               from the resolved DPO for decorator orders; editable for any reference. */}
           {(todoModal.bot_payload?.ship_to||todoModal.bot_payload?.drop_ship)&&(()=>{const _attVal=todoModal.bot_attention!==undefined?todoModal.bot_attention:(todoModal.bot_payload?.ship_to?.attention||'');return<div style={{marginBottom:12}}>
@@ -32279,6 +32323,14 @@ export default function App(){
             const _bp={...(todoModal.bot_payload||{})};
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
             _bp.delivery_strategy=todoModal.bot_strategy||_bp.delivery_strategy||'complete';
+            // Ship the portal's availability snapshot (needed sizes only) + the rep's
+            // long-backorder decision so the bot starts informed and doesn't round-trip.
+            if(botAvail?.map){
+              const _avNeeded={};
+              (_bp.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const per={};Object.keys(l.sizes||{}).forEach(sz=>{if(a[sz])per[sz]=a[sz]});if(Object.keys(per).length)_avNeeded[l.sku]=per});
+              if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
+            }
+            if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
             // Drop ship: make sure the delivery address travels with the payload so the
             // worker never has to guess where the order actually goes.
             const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
@@ -32288,7 +32340,7 @@ export default function App(){
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask'});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

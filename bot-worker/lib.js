@@ -76,6 +76,33 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     : _strat === 'as_available'
     ? `Strategy: SHIP AS AVAILABLE. Ship each SIZE the moment it's ready: put in-stock sizes on today's date and each short-backordered size under its own restock date via "Add more dates". A single SKU MAY span two dates — that's expected and fine; the goal is the fastest partial shipments.`
     : `Strategy: SHIP COMPLETE. Set the cart's ONE delivery date to the LATEST restock date among all ordered short-backordered sizes, so the WHOLE order ships together in a single delivery. Click the "Delivery Dates" chip, pick that date, and confirm the chip shows it. (If the portal auto-splits into extra date columns you can't merge, note it in issues.)`;
+  // The portal's own adidas_inventory snapshot (per SKU+size stock and restock
+  // dates), captured at assign time — the agent starts from it and verifies
+  // live, instead of discovering everything by hovering.
+  const _av = p.availability || null;
+  const _avLines = [];
+  if (_av) {
+    for (const l of (p.lines || [])) {
+      const a = _av[l.sku];
+      if (!a) continue;
+      const parts = Object.entries(l.sizes || {}).map(([sz, q]) => {
+        const r = a[sz];
+        if (!r) return `${sz}: no portal data`;
+        if ((r.stock || 0) >= q) return `${sz}: in stock (${r.stock})`;
+        return `${sz}: SHORT (stock ${r.stock || 0}, restock ${r.date || 'unknown'}${r.fqty != null ? `, ~${r.fqty} coming` : ''})`;
+      });
+      _avLines.push(`- ${l.sku}: ${parts.join(' · ')}`);
+    }
+  }
+  const portalAvailability = _avLines.length
+    ? `Per the NSA portal's Adidas inventory sync${p.availability_synced ? ` (as of ${p.availability_synced})` : ''}:\n${_avLines.join('\n')}\n`
+      + `Treat these as expectations, not truth — verify on the live portal (calendar-icon hovers). If live data disagrees, TRUST THE LIVE PORTAL and note the difference in issues.`
+    : `No portal snapshot available for this order — rely entirely on the live portal.`;
+  const backorderAction = p.backorder_action === 'order'
+    ? `ORDER EVERYTHING. For sizes restocking beyond 14 days, do NOT skip or ask — enter the full quantities under each size's restock date (use "Add more dates"), following the delivery-date strategy. Only ask (needs_input) for a size with NO restock date at all.`
+    : p.backorder_action === 'drop'
+    ? `DROP LONG BACKORDERS. Order every size that's available now or restocks within 14 days; for sizes beyond 14 days (or with no date), enter nothing, list them in \`skipped\` (size-level, with dates), and do NOT ask — finish to needs_review.`
+    : `None given — follow the 14-day rule above and ask via needs_input when it triggers.`;
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
@@ -92,6 +119,8 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     .replaceAll('{{LINES}}', lines)
     .replaceAll('{{TASK_NOTES}}', notes)
     .replaceAll('{{DELIVERY}}', delivery)
+    .replaceAll('{{PORTAL_AVAILABILITY}}', portalAvailability)
+    .replaceAll('{{BACKORDER_ACTION}}', backorderAction)
     .replaceAll('{{DELIVERY_STRATEGY}}', deliveryStrategy)
     .replaceAll('{{DELIVERY_DATE}}', deliveryDate);
 }
