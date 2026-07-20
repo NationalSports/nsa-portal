@@ -735,7 +735,7 @@ function applyDesign(st, rawSpec) {
         tex.repeat.set(rep, rep);
         // CanvasTexture follows the browser's top-left image origin. Keep its
         // normal Y flip so the baked atlas lines up with the garment UVs.
-        if (isAtlas) tex.flipY = true;
+        if (isAtlas) tex.flipY = tpl.atlasFlipY !== false;
         tex.generateMipmaps = false;
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;

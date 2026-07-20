@@ -46,10 +46,10 @@ const EMBEDDED = (() => { try { return new URLSearchParams(window.location.searc
 // autosave/catalog state so every URL opens a deterministic starting point.
 const REVIEW_DESIGN = (() => { try { return new URLSearchParams(window.location.search).get('design') || ''; } catch { return ''; } })();
 const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'AYSONSA' || REVIEW_DESIGN === 'FF-228187';
-// The first procedural shorts study is intentionally withheld from the customer
-// flow. Keep the underlying template/source for a future artist-built replacement,
-// while the released configurator stays focused on the production-ready jersey.
-const SHORTS_PREVIEW_ENABLED = false;
+// The artist-built Holloway 321821 soccer short replaces the early procedural
+// study. Keep the paired-garment flow enabled so the jersey and short can be
+// reviewed as one kit, while each piece remains independently editable.
+const SHORTS_PREVIEW_ENABLED = true;
 
 // 12-color team palette (+ sky, kept selectable so the Argentina demo maps to
 // real swatches rather than a "custom" hex).
@@ -174,9 +174,9 @@ const sectionsFromLegacy = (c) => expandSections({
 // shorts unless they want to; unlinking freezes the current derived look so
 // they can then customize it independently.
 const BOTTOM_SECTIONS = [
-  { key: 'legs', label: 'Legs' },
-  { key: 'waistband', label: 'Waistband' },
-  { key: 'stripe', label: 'Angular Side Inserts' },
+  { key: 'legs', label: 'Shorts Body' },
+  { key: 'stripe', label: 'Corner Kick Artwork' },
+  { key: 'waistband', label: 'Interior / Reverse' },
 ];
 const defaultBottomSections = () => ({
   legs: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
@@ -207,11 +207,26 @@ function bottomSpecFromConfig(cfg) {
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'shorts', fabric: cfg.fabric || 'sublimated',
+    garmentId: 'shorts_321821', fabric: cfg.fabric || 'sublimated',
     zones: {
       legL: zoneOf(B.legs), legR: zoneOf(B.legs),
       waistband: zoneOf(B.waistband),
       sidePanelL: zoneOf(B.stripe), sidePanelR: zoneOf(B.stripe),
+      // The vendor GLB is a production UV garment with one exterior material,
+      // so its design line is applied as a full atlas rather than pretending
+      // that the accent is a separate 3D mesh. Corner Kick gives us a clean,
+      // two-ink first test: jersey body -> shorts body, jersey secondary -> art.
+      body: {
+        ...zoneOf(B.legs),
+        color2: B.stripe.color,
+        pattern: 'custom',
+        patternImage: '/uniform/patterns/shorts-321821/corner-kick-atlas.svg',
+        patternName: 'Corner Kick',
+        patternTint: true,
+        patternTintMode: 'atlas',
+        patternColorCount: 2,
+      },
+      collar: zoneOf(B.waistband),
     },
     text: {
       front: { number: { value: '' }, name: { value: '' } },
@@ -1249,7 +1264,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const unlinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: false, sections: effectiveBottomSections(c) } }));
   const relinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: true } }));
   const bottomSpec = useMemo(() => bottomSpecFromConfig(config), [config]);
-  const shortsTpl = getTemplate('shorts');
+  const shortsTpl = getTemplate('shorts_321821');
   const showingShorts = stagePiece === 'shorts' && bottom.enabled;
   // The 3D model may use an artist cut, while `spec` remains on the approved
   // design template for production proofs, exports and fallbacks.
@@ -2345,12 +2360,24 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                   </RailCard>
                   </div>
                   <div style={{ order: 1 }}>
-                  <RailCard num={1} title="Sections"
-                    action={(config.neckStyle === 'flag228187' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
+                  <RailCard num={1} title={showingShorts ? 'Shorts Sections' : 'Sections'}
+                    action={showingShorts ? <button onClick={bottom.linked ? unlinkBottom : relinkBottom}
+                      style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
+                      {bottom.linked ? 'Customize' : 'Match Jersey'}
+                    </button> : (config.neckStyle === 'flag228187' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
                     </button>}>
-                  <SectionEditor
+                  {showingShorts ? (bottom.linked ? (
+                    <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
+                      <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>Corner Kick · Matching Kit</strong>
+                      Body and artwork colors follow the jersey automatically. Choose Customize only when the shorts need a different colorway.
+                    </div>
+                  ) : (
+                    <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
+                      onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={[]} teamColors={teamColors}
+                      layoutLocked layoutLabel="321821 Corner Kick layout" />
+                  )) : <SectionEditor
                     sectionDefs={config.neckStyle === 'flag228187'
                       ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Reverse Side' }]
                       : config.neckStyle === 'ayson'
@@ -2368,9 +2395,10 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={config.neckStyle === 'flag228187' ? FLAG_228187_DESIGNS : (config.neckStyle === 'ayson' ? [] : printLib)} teamColors={teamColors}
                     layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187'}
                     layoutLabel={config.neckStyle === 'flag228187' ? '228187 reversible prototype' : `${config.designId || 'AGI'} approved layout`} />
+                  }
                   </RailCard>
                   </div>
-                  {SHORTS_PREVIEW_ENABLED && <div style={{ order: 3 }}>
+                  {SHORTS_PREVIEW_ENABLED && !showingShorts && <div style={{ order: 3 }}>
                   <RailCard num={3} title="Shorts"
                     action={<label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
                         <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
@@ -2386,7 +2414,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                         </div>
                         {!bottom.linked && (
                           <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
-                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} teamColors={teamColors} />
+                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={[]} teamColors={teamColors}
+                            layoutLocked layoutLabel="321821 Corner Kick layout" />
                         )}
                       </>
                     )}
@@ -2908,8 +2937,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
           {!narrow && <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>}
         </div>
         <div data-testid="uniform-live-price" style={{ flex: '1 1 auto', minWidth: 0, textAlign: 'center', lineHeight: 1.12 }}>
-          <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: .55, color: C.navy }}>{price.hasDiscount ? 'Coach price ' : 'Public price '}{formatUniformMoney(price.coachUnit)} / jersey</div>
-          {!narrow && <div style={{ marginTop: 4, fontFamily: F_BODY, fontSize: 11.5, color: price.hasDiscount ? C.green : C.textLight }}>{price.hasDiscount ? <><span style={{ color: C.textLight, textDecoration: 'line-through' }}>{formatUniformMoney(price.publicUnit)} public</span> · {price.discountPercent}% account savings · </> : null}{totalQty} jersey{totalQty === 1 ? '' : 's'} · {formatUniformMoney(price.coachTotal)} total</div>}
+          <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: .55, color: C.navy }}>{bottom.enabled ? 'Jersey price ' : (price.hasDiscount ? 'Coach price ' : 'Public price ')}{formatUniformMoney(price.coachUnit)} / jersey</div>
+          {!narrow && <div style={{ marginTop: 4, fontFamily: F_BODY, fontSize: 11.5, color: price.hasDiscount ? C.green : C.textLight }}>{price.hasDiscount ? <><span style={{ color: C.textLight, textDecoration: 'line-through' }}>{formatUniformMoney(price.publicUnit)} public</span> · {price.discountPercent}% account savings · </> : null}{totalQty} jersey{totalQty === 1 ? '' : 's'} · {formatUniformMoney(price.coachTotal)} total{bottom.enabled ? <span style={{ color: C.red }}> · shorts preview price pending</span> : null}</div>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
           <button onClick={goPrev} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>{stepIdx === 0 ? 'Designs' : 'Back'}</button>

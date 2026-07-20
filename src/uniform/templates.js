@@ -183,6 +183,16 @@ const TEMPLATES = {
     model3d: PUB('/uniform/agi-shorts.glb?v=6'),
     views: { front: SHORTS_FRONT, back: SHORTS_BACK },
   },
+  shorts_321821: {
+    id: 'shorts_321821', name: '321821 Soccer Shorts', category: 'Bottoms',
+    credit: 'Artist-built Holloway 321821 base',
+    model3d: PUB('/uniform/321821-soccer-shorts.glb?v=1'),
+    // This vendor atlas follows glTF's native UV origin. The 228187 flag atlas
+    // is browser-oriented, so Viewer3D keeps that older default unless an
+    // individual garment opts out here.
+    atlasFlipY: false,
+    views: { front: SHORTS_FRONT, back: SHORTS_BACK },
+  },
   hoodie: {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
