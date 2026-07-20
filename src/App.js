@@ -5361,8 +5361,8 @@ export default function App(){
       let next=e?p.map(x=>x.id===c.id?c:x):[...p,c];
       // Parent accounts cascade Pantones, thread colors, pricing (tier + markup), and tax (rate + exempt) to all sub-accounts.
       if(!c.parent_id){
-        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt,disable_cc_pay:!!c.disable_cc_pay};
-        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay;if(differs)subCount++;return differs?{...x,...inherit}:x});
+        const inherit={pantone_colors:c.pantone_colors||[],thread_colors:c.thread_colors||[],adidas_ua_tier:c.adidas_ua_tier,catalog_markup:c.catalog_markup,uniform_discount_percent:c.uniform_discount_percent||0,tax_rate:c.tax_rate||0,tax_exempt:!!c.tax_exempt,disable_cc_pay:!!c.disable_cc_pay};
+        next=next.map(x=>{if(x.parent_id!==c.id)return x;const differs=JSON.stringify(x.pantone_colors||[])!==JSON.stringify(inherit.pantone_colors)||JSON.stringify(x.thread_colors||[])!==JSON.stringify(inherit.thread_colors)||x.adidas_ua_tier!==inherit.adidas_ua_tier||x.catalog_markup!==inherit.catalog_markup||(x.uniform_discount_percent||0)!==inherit.uniform_discount_percent||(x.tax_rate||0)!==inherit.tax_rate||!!x.tax_exempt!==inherit.tax_exempt||!!x.disable_cc_pay!==inherit.disable_cc_pay;if(differs)subCount++;return differs?{...x,...inherit}:x});
         // Shipping address cascade — push parent's shipping address to each sub. If a sub already had a different
         // address, preserve it as a selectable alternate (in alt_billing_addresses) so it isn't lost.
         const pShip={line1:c.shipping_address_line1||'',line2:c.shipping_address_line2||'',city:c.shipping_city||'',state:c.shipping_state||'',zip:c.shipping_zip||''};
@@ -6392,7 +6392,7 @@ export default function App(){
       contacts:(r.coach_name||r.coach_email||r.coach_phone)?[{name:r.coach_name||'',email:r.coach_email||'',phone:r.coach_phone||'',role:'Head Coach'}]:[],
       billing_address_line1:'',billing_city:'',billing_state:'',billing_zip:'',
       shipping_address_line1:'',shipping_city:'',shipping_state:'',shipping_zip:'',
-      adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_rate:0,
+      adidas_ua_tier:'B',catalog_markup:1.65,uniform_discount_percent:0,payment_terms:'net30',tax_rate:0,
       primary_rep_id:cu.id,is_active:true,_oe:0,_os:0,_oi:0,_ob:0,created_at:ts,updated_at:ts};
     setCust(prev=>[...prev,c]);
     linkCatReqCust(r,id);
@@ -31263,4 +31263,3 @@ export default function App(){
 }
 
 // QB sync fix v2
-

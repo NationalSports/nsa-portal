@@ -93,10 +93,10 @@ const SHORTS_FRONT = {
       d: 'M120 84 L198 84 L198 300 L128 300 Q118 210 120 84 Z' },
     { id: 'legR', label: 'Right Leg',
       d: 'M202 84 L280 84 Q282 210 272 300 L202 300 Z' },
-    { id: 'sidePanelL', label: 'Left Side Stripe',
-      d: 'M120 84 L136 84 L134 300 L128 300 Q118 210 120 84 Z' },
-    { id: 'sidePanelR', label: 'Right Side Stripe',
-      d: 'M264 84 L280 84 Q282 210 272 300 L266 300 Z' },
+    { id: 'sidePanelL', label: 'Left Angular Insert',
+      d: 'M120 150 Q126 178 136 202 L140 258 L128 300 Q118 210 120 150 Z' },
+    { id: 'sidePanelR', label: 'Right Angular Insert',
+      d: 'M280 150 Q274 178 264 202 L260 258 L272 300 Q282 210 280 150 Z' },
   ],
   seams: [seam('M200 84 L200 300'), seam('M120 84 L280 84')],
   anchors: {
@@ -114,6 +114,10 @@ const SHORTS_BACK = {
       d: 'M120 84 L198 84 L198 300 L128 300 Q118 210 120 84 Z' },
     { id: 'legR', label: 'Right Leg',
       d: 'M202 84 L280 84 Q282 210 272 300 L202 300 Z' },
+    { id: 'sidePanelL', label: 'Left Angular Insert',
+      d: 'M120 190 Q128 236 154 270 Q170 288 190 300 L128 300 Q118 224 120 190 Z' },
+    { id: 'sidePanelR', label: 'Right Angular Insert',
+      d: 'M280 190 Q272 236 246 270 Q230 288 210 300 L272 300 Q282 224 280 190 Z' },
   ],
   seams: [seam('M200 84 L200 300')],
   anchors: {
@@ -176,6 +180,7 @@ const TEMPLATES = {
   },
   shorts: {
     id: 'shorts', name: 'Athletic Shorts', category: 'Bottoms',
+    model3d: PUB('/uniform/agi-shorts.glb?v=6'),
     views: { front: SHORTS_FRONT, back: SHORTS_BACK },
   },
   hoodie: {
@@ -223,6 +228,105 @@ const TEMPLATES = {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
         anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
+  // NSA soccer foundation with the approved AGI-1012 artwork. The three
+  // grayscale images are UV masks rather than baked colors: Viewer3D combines
+  // them with the builder's primary/secondary swatches, so the exact chest and
+  // sleeve-band placement stays fixed while both colors remain editable.
+  agi1012_jersey: {
+    id: 'agi1012_jersey', name: 'AGI-1012 Soccer', category: 'Photoreal', type: 'raster',
+    credit: 'NSA soccer foundation · AGI-1012 approved layout',
+    model3d: PUB('/uniform/agi-1012-jersey.glb'),
+    designMasks: {
+      body_front: PUB('/uniform/agi-1012-body-front-mask.png'),
+      sleeve_left: PUB('/uniform/agi-1012-sleeve-left-mask.png'),
+      sleeve_right: PUB('/uniform/agi-1012-sleeve-right-mask.png'),
+    },
+    designMaskAreas: {
+      body_front: { base: 'body', accent: 'bodyStripe' },
+      sleeve_left: { base: 'sleeveL', accent: 'sleeveBandL' },
+      sleeve_right: { base: 'sleeveR', accent: 'sleeveBandR' },
+    },
+    views: {
+      front: {
+        base: PUB('/uniform/agi-1012-proof-base-front.png?v=6'), mask: PUB('/uniform/agi-1012-proof-mask-front.png?v=6'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#ff0000' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#00ff00' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#0000ff' },
+          { id: 'collar', label: 'Collar', maskColor: '#ffff00' },
+          { id: 'bodyStripe', label: 'Chest Stripe', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color2' },
+          { id: 'sleeveBandL', label: 'Left Sleeve Band', maskColor: '#00ffff', sourceId: 'sleeveL', colorField: 'color2' },
+          { id: 'sleeveBandR', label: 'Right Sleeve Band', maskColor: '#ff8000', sourceId: 'sleeveR', colorField: 'color2' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.24, size: 86 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/agi-1012-proof-base-back.png?v=6'), mask: PUB('/uniform/agi-1012-proof-mask-back.png?v=6'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#ff0000' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#00ff00' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#0000ff' },
+          { id: 'collar', label: 'Collar', maskColor: '#ffff00' },
+          { id: 'sleeveBandL', label: 'Left Sleeve Band', maskColor: '#00ffff', sourceId: 'sleeveL', colorField: 'color2' },
+          { id: 'sleeveBandR', label: 'Right Sleeve Band', maskColor: '#ff8000', sourceId: 'sleeveR', colorField: 'color2' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.46, size: 205 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
+  // AGI-1011 shares the approved soccer garment and cloth treatment, but its
+  // construction artwork is independent: cyan main panels, black vertical side
+  // inserts, black opening-tracked sleeve cuffs and a black collar.
+  agi1011_jersey: {
+    id: 'agi1011_jersey', name: 'AGI-1011 Soccer', category: 'Photoreal', type: 'raster',
+    credit: 'NSA soccer foundation · AGI-1011 layout',
+    model3d: PUB('/uniform/agi-1012-jersey.glb'),
+    proceduralLayout: 'sidePanels',
+    designMasks: {
+      body_front: PUB('/uniform/agi-1011-body-front-mask.png'),
+      body_back: PUB('/uniform/agi-1011-body-back-mask.png'),
+      sleeve_left: PUB('/uniform/agi-1011-sleeve-left-mask.png'),
+      sleeve_right: PUB('/uniform/agi-1011-sleeve-right-mask.png'),
+    },
+    designMaskAreas: {
+      body_front: { base: 'body', accent: 'bodyAccent' },
+      body_back: { base: 'body', accent: 'bodyAccent' },
+      sleeve_left: { base: 'sleeveL', accent: 'sleeveBandL' },
+      sleeve_right: { base: 'sleeveR', accent: 'sleeveBandR' },
+    },
+    views: {
+      front: {
+        base: PUB('/uniform/agi-1011-proof-base-front.png?v=1'), mask: PUB('/uniform/agi-1011-proof-mask-front.png?v=1'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#ff0000' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#00ff00' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#0000ff' },
+          { id: 'collar', label: 'Collar', maskColor: '#ffff00' },
+          { id: 'bodyAccent', label: 'Side Panels', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color2' },
+          { id: 'sleeveBandL', label: 'Left Sleeve Cuff', maskColor: '#00ffff', sourceId: 'sleeveL', colorField: 'color2' },
+          { id: 'sleeveBandR', label: 'Right Sleeve Cuff', maskColor: '#ff8000', sourceId: 'sleeveR', colorField: 'color2' },
+        ], seams: [],
+        anchors: { number: { x: 0.61, y: 0.27, size: 86 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/agi-1011-proof-base-back.png?v=1'), mask: PUB('/uniform/agi-1011-proof-mask-back.png?v=1'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Body', maskColor: '#ff0000' },
+          { id: 'sleeveL', label: 'Left Sleeve', maskColor: '#00ff00' },
+          { id: 'sleeveR', label: 'Right Sleeve', maskColor: '#0000ff' },
+          { id: 'collar', label: 'Collar', maskColor: '#ffff00' },
+          { id: 'bodyAccent', label: 'Side Panels', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color2' },
+          { id: 'sleeveBandL', label: 'Left Sleeve Cuff', maskColor: '#00ffff', sourceId: 'sleeveL', colorField: 'color2' },
+          { id: 'sleeveBandR', label: 'Right Sleeve Cuff', maskColor: '#ff8000', sourceId: 'sleeveR', colorField: 'color2' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.46, size: 205 }, name: { x: 0.5, y: 0.2, size: 70 } },
       },
     },
   },

@@ -40,7 +40,7 @@ export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups',
 // Columns that may not exist in so_jobs — stripped on retry
 export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
 export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
-export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
+export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
 export const PANTONE_MAP={
@@ -413,7 +413,7 @@ export let CATEGORIES=['Tees','Hoodies','Polos','Shorts','1/4 Zips','Hats','Foot
 // Warehouse bin / stock locations — admin-managed in Settings → Lists & Options. Empty by default.
 export let BINS=[];
 export let CONTACT_ROLES=['Athlete','Parent','Coach','Manager','Athletic Director','Booster','Sponsor','Other'];
-export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange'];
+export const COLOR_CATEGORIES=['Black','White','Red','Navy','Royal','Dark Green','Cardinal','Maroon','Light Grey','Dark Grey','Vegas Gold','Athletic Gold','Orange','Burnt Orange'];
 
 export const EXTRA_SIZES=['XXS','XS','3XL','4XL','5XL','6XL','LT','XLT','2XLT','3XLT','OSFA'];
 // Full apparel size pool for the "+ Size" picker — includes the standard S–2XL so a sized item that's

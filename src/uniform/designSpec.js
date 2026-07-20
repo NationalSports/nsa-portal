@@ -21,8 +21,10 @@ const COLOR_HEX = {
   cardinal: '#9b1c31', scarlet: '#c8102e', burgundy: '#7b1e3b', forest: '#14532d',
   'forest green': '#14532d', green: '#16a34a', kelly: '#16a34a', 'kelly green': '#16a34a',
   lime: '#84cc16', 'safety green': '#c6ff00', 'neon green': '#39ff14', gold: '#d4af37',
-  'old gold': '#caa53d', 'vegas gold': '#c5b358', yellow: '#facc15', orange: '#ea580c',
-  purple: '#7c3aed', grey: '#9ca3af', gray: '#9ca3af', 'heather grey': '#b6bcc4',
+  'old gold': '#caa53d', 'vegas gold': '#c5b358', yellow: '#facc15', orange: '#f47a1f',
+  'burnt orange': '#bf5700', 'texas orange': '#bf5700', purple: '#7c3aed',
+  grey: '#9ca3af', gray: '#9ca3af', 'light grey': '#c0c0c0', 'light gray': '#c0c0c0',
+  'dark grey': '#4a4a4a', 'dark gray': '#4a4a4a', 'heather grey': '#b6bcc4',
   'heather gray': '#b6bcc4', 'athletic heather': '#cbd5e1', charcoal: '#374151',
   silver: '#cbd5e1', pink: '#ec4899', 'light blue': '#7dd3fc', 'carolina blue': '#4b9cd3',
   'columbia blue': '#9bcbeb', teal: '#14b8a6', brown: '#5c4033', tan: '#d2b48c',
@@ -32,10 +34,12 @@ const COLOR_HEX = {
 // Curated brand-forward palette shown as clickable chips in the editor. Ordered
 // light→dark→accent so the row reads like a real swatch card.
 const PALETTE = [
-  { name: 'White', hex: '#ffffff' }, { name: 'Silver', hex: '#cbd5e1' },
+  { name: 'White', hex: '#ffffff' }, { name: 'Light Grey', hex: '#c0c0c0' },
+  { name: 'Dark Grey', hex: '#4a4a4a' }, { name: 'Silver', hex: '#cbd5e1' },
   { name: 'Vegas Gold', hex: '#c5b358' }, { name: 'Gold', hex: '#d4af37' },
   { name: 'Yellow', hex: '#facc15' }, { name: 'Safety Green', hex: '#c6ff00' },
-  { name: 'Orange', hex: '#ea580c' }, { name: 'Red', hex: '#dc2626' },
+  { name: 'Orange', hex: '#f47a1f' }, { name: 'Burnt Orange', hex: '#bf5700' },
+  { name: 'Red', hex: '#dc2626' },
   { name: 'Scarlet', hex: '#c8102e' }, { name: 'Cardinal', hex: '#9b1c31' },
   { name: 'Maroon', hex: '#7f1d1d' }, { name: 'Pink', hex: '#ec4899' },
   { name: 'Purple', hex: '#7c3aed' }, { name: 'Navy', hex: '#1f2a44' },
@@ -130,7 +134,7 @@ const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', color3: '#ffffff', c
 const DEFAULT_TEXT = {
   value: '', font: 'anton', fill: '#ffffff', outline: 'auto', outlineWidth: 5,
   outline2: 'none', outline2Width: 3,
-  size: 1, x: null, y: null, letterSpacing: 0, arch: 0,
+  size: 1, inches: null, x: null, y: null, letterSpacing: 0, arch: 0,
 };
 
 function makeDefaultSpec(garmentId = 'crew_jersey') {
@@ -170,14 +174,14 @@ function makeDefaultSpec(garmentId = 'crew_jersey') {
     // Uploaded artwork / team logos, per view. Each is placed, sized, and rotated
     // over the garment and rendered by both the SVG editor and the Canvas export.
     logos: { front: [], back: [] },
-    meta: { teamName: '', notes: '' },
+    meta: { teamName: '', notes: '', program: 'mens', designId: '' },
   };
 }
 
 // Sanitize one logo layer. src must be a data: or http(s) image URL (a coach
 // upload is a data URL; a vectorized logo is a data:image/svg+xml URL). x/y are
-// the center as viewBox fractions; w is width as a fraction of the viewBox width;
-// aspect is height/width so the renderer can derive height.
+// the center as viewBox fractions; w is a legacy width fraction, inches is the
+// production finished visible height, and aspect is width/height.
 let _logoSeq = 0;
 function cleanLogo(l) {
   if (!l || typeof l !== 'object') return null;
@@ -189,9 +193,16 @@ function cleanLogo(l) {
     x: Number.isFinite(l.x) ? clamp(l.x, 0, 1) : 0.5,
     y: Number.isFinite(l.y) ? clamp(l.y, 0, 1) : 0.3,
     w: Number.isFinite(l.w) ? clamp(l.w, 0.03, 1) : 0.25,
+    inches: Number.isFinite(l.inches) ? clamp(l.inches, 0.5, 12) : null,
     aspect: Number.isFinite(l.aspect) && l.aspect > 0 ? l.aspect : 1,
     rotation: Number.isFinite(l.rotation) ? clamp(l.rotation, -180, 180) : 0,
     opacity: Number.isFinite(l.opacity) ? clamp(l.opacity, 0, 1) : 1,
+    // Placement identity must survive normalization. The 3D renderer uses the
+    // slot to constrain sleeve artwork to its sewn panel and to report direct
+    // on-garment drags back to the correct builder control.
+    slot: ['chest', 'leftSleeve', 'rightSleeve', 'back'].includes(l.slot) ? l.slot : null,
+    pixelWidth: Number.isFinite(l.pixelWidth) ? clamp(Math.round(l.pixelWidth), 1, 20000) : null,
+    pixelHeight: Number.isFinite(l.pixelHeight) ? clamp(Math.round(l.pixelHeight), 1, 20000) : null,
   };
 }
 
@@ -232,6 +243,7 @@ function cleanText(t, base = DEFAULT_TEXT) {
     else { const o2 = toHex(t.outline2); if (o2) out.outline2 = o2; }
     if (Number.isFinite(t.outline2Width)) out.outline2Width = clamp(t.outline2Width, 0, 20);
     if (Number.isFinite(t.size)) out.size = clamp(t.size, 0.2, 3);
+    if (Number.isFinite(t.inches)) out.inches = clamp(t.inches, 1, 12);
     if (Number.isFinite(t.x)) out.x = clamp(t.x, 0, 1);
     if (Number.isFinite(t.y)) out.y = clamp(t.y, 0, 1);
     if (Number.isFinite(t.letterSpacing)) out.letterSpacing = clamp(t.letterSpacing, -10, 40);
@@ -272,6 +284,8 @@ function normalizeSpec(input, base) {
   if (input && input.meta && typeof input.meta === 'object') {
     if (typeof input.meta.teamName === 'string') out.meta.teamName = input.meta.teamName.slice(0, 80);
     if (typeof input.meta.notes === 'string') out.meta.notes = input.meta.notes.slice(0, 500);
+    if (['mens', 'womens', 'youth'].includes(input.meta.program)) out.meta.program = input.meta.program;
+    if (typeof input.meta.designId === 'string') out.meta.designId = input.meta.designId.slice(0, 80);
   } else if (b.meta) { out.meta = { ...b.meta }; }
   return out;
 }

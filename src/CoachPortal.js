@@ -1793,7 +1793,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   if(storeBuilder) return <StoreBuilder mode="coach" customer={customer} rep={rep} onClose={()=>setStoreBuilder(false)} />;
 
   // Coach uniform designer — full-screen builder
-  if(uniformBuilder) return <React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder onExit={()=>setUniformBuilder(false)}/></React.Suspense>;
+  if(uniformBuilder) return <React.Suspense fallback={<div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder coachDiscountPercent={customer?.uniform_discount_percent||0} existingArtwork={artLibrary.map(a=>({id:a.key,name:a.name,src:a.urls&&a.urls[0]})).filter(a=>a.src)} onExit={()=>setUniformBuilder(false)}/></React.Suspense>;
 
   // ── Athletic-director Spend & Promo — full-screen dashboard opened from the portal link ──
   if(spendView&&adData){

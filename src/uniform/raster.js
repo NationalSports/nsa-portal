@@ -161,7 +161,15 @@ export function compositeRaster(ctx, view, spec, assets, dw, dh) {
   for (const z of view.zones) {
     const alpha = zoneAlpha[z.id];
     if (!alpha) continue;
-    const zs = (spec.zones && spec.zones[z.id]) || ds.DEFAULT_ZONE;
+    // A construction detail can be an independent mask while sourcing its
+    // color from another builder area's secondary channel. AGI-1012 uses this
+    // for the chest stripe and the two sleeve bands, matching the live 3D UV
+    // masks without inventing duplicate saved-spec zones.
+    const sourceId = z.sourceId || z.id;
+    const source = (spec.zones && spec.zones[sourceId]) || ds.DEFAULT_ZONE;
+    const zs = z.colorField
+      ? { ...source, color: source[z.colorField] || source.color, pattern: 'solid' }
+      : source;
     const layer = newCanvas(w, h);
     const lx = layer.getContext('2d');
     lx.drawImage(base, 0, 0, w, h);
@@ -185,7 +193,7 @@ export function zoneAtPoint(view, assets, fx, fy) {
   for (const z of view.zones) {
     const { r, g, b } = ds.hexToRgb(z.maskColor);
     const dd = (pr - r) ** 2 + (pg - g) ** 2 + (pb - b) ** 2;
-    if (dd < bestD) { bestD = dd; best = z.id; }
+    if (dd < bestD) { bestD = dd; best = z.sourceId || z.id; }
   }
   return best;
 }

@@ -24,6 +24,8 @@ import { fontShorthand } from './fonts';
 import { drawAthleticText, measureAthleticText } from './lettering';
 import { getTemplate } from './templates';
 import * as ds from './designSpec';
+import { shouldStartDecorationDrag } from './decorationInteraction';
+import { canvasFromImage } from './logoImage';
 
 const PUB = (typeof process !== 'undefined' && process.env && process.env.PUBLIC_URL) ? process.env.PUBLIC_URL : '';
 
@@ -33,9 +35,12 @@ function matchZone(name) {
   if (!name) return null;
   const s = String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
   const rules = [
+    ['sidepanell', 'sidePanelL'], ['sidepanelr', 'sidePanelR'],
+    ['legl', 'legL'], ['leftleg', 'legL'], ['legr', 'legR'], ['rightleg', 'legR'],
+    ['waistband', 'waistband'], ['waist', 'waistband'],
     ['sleevel', 'sleeveL'], ['leftsleeve', 'sleeveL'], ['sleeveleft', 'sleeveL'], ['larm', 'sleeveL'],
     ['sleever', 'sleeveR'], ['rightsleeve', 'sleeveR'], ['sleeveright', 'sleeveR'], ['rarm', 'sleeveR'],
-    ['sidepanell', 'sidePanelL'], ['sidepanelr', 'sidePanelR'], ['sidel', 'sidePanelL'], ['sider', 'sidePanelR'],
+    ['sidel', 'sidePanelL'], ['sider', 'sidePanelR'],
     ['collar', 'collar'], ['neck', 'collar'], ['cuff', 'collar'], ['trim', 'collar'], ['rib', 'collar'],
     ['yoke', 'yoke'], ['shoulder', 'yoke'], ['pocket', 'pocket'], ['hood', 'hood'],
     ['sleeve', 'sleeveL'],
@@ -83,6 +88,155 @@ const FABRIC_SURFACES = {
   gloss:      { gen: 'smooth', normalScale: 0.3,  repeat: 10 },
 };
 const _fabricNormals = {};
+const _designMaskImages = {};
+const _designMaskTextures = {};
+const _selectionMaskTextures = {};
+
+// Direct garment targeting uses the exact same UV artwork mask that colors the
+// jersey. This keeps clicks on a chest stripe, side insert or sleeve band tied
+// to the real production boundary without drawing any selection overlay.
+function designMaskIsAccent(url, uv) {
+  if (!url || !uv) return false;
+  const img = _designMaskImages[url];
+  if (!img || !img.complete || !(img.naturalWidth || img.width)) return false;
+  try {
+    const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    const x = Math.max(0, Math.min(w - 1, Math.floor(uv.x * w)));
+    // Canvas rows are top-down while the hit UV is bottom-up; mirror V to sample
+    // the same source texel the GPU uses for the garment artwork.
+    const y = Math.max(0, Math.min(h - 1, Math.floor((1 - uv.y) * h)));
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+    return ctx.getImageData(0, 0, 1, 1).data[0] >= 128;
+  } catch (_e) { return false; }
+}
+
+function rgb255(hex) {
+  const n = parseInt(String(hex || '#000000').replace('#', ''), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// A real white textile reflects less light than a perfect digital white.
+// Keeping the builder swatch at #fff but rendering it with a believable cloth
+// albedo preserves the knit, folds and seam shading under product lighting.
+function textileAlbedo(hex) {
+  const [r, g, b] = rgb255(hex);
+  if (Math.min(r, g, b) >= 238 && Math.max(r, g, b) - Math.min(r, g, b) <= 12) return '#e5e5e2';
+  return hex;
+}
+
+// Recolor a UV-aligned grayscale layout mask into a two-color albedo texture.
+// The texture is cached by mask + color pair, so changing another builder field
+// does not repeatedly process the 2K artwork. A white mask pixel is accent;
+// black is the section's base color, with gray preserving antialiased edges.
+function designMaskTexture(url, baseHex, accentHex, onReady) {
+  const key = [url, baseHex, accentHex].join('|');
+  if (_designMaskTextures[key]) { onReady(_designMaskTextures[key]); return; }
+  const build = (img) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width || 2048;
+    canvas.height = img.naturalHeight || img.height || 2048;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = image.data;
+    const a = rgb255(baseHex), b = rgb255(accentHex);
+    for (let i = 0; i < d.length; i += 4) {
+      // This is a sublimated color break, not a soft overlay. Thresholding the
+      // artist mask removes its wide gray fringe; texture filtering still adds
+      // a clean one-pixel antialias at render time.
+      const t = d[i] >= 128 ? 1 : 0;
+      d[i] = Math.round(a[0] + (b[0] - a[0]) * t);
+      d[i + 1] = Math.round(a[1] + (b[1] - a[1]) * t);
+      d[i + 2] = Math.round(a[2] + (b[2] - a[2]) * t);
+      d[i + 3] = 255;
+    }
+    ctx.putImageData(image, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    // GLTFLoader uses the glTF UV convention (no browser-image Y flip). Match
+    // it here or asymmetric sleeve masks land on the opposite side of UV space.
+    tex.flipY = false;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    // The binary source keeps the break crisp; high-quality mip filtering and
+    // stronger anisotropy keep that edge stable at steep sleeve angles without
+    // introducing shimmer when the full jersey is in view.
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 16;
+    tex.userData.shared = true;
+    _designMaskTextures[key] = tex;
+    onReady(tex);
+  };
+  if (_designMaskImages[url]) {
+    const cached = _designMaskImages[url];
+    if (cached.complete) build(cached); else cached.addEventListener('load', () => build(cached), { once: true });
+    return;
+  }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  _designMaskImages[url] = img;
+  img.onload = () => build(img);
+  img.src = url;
+}
+
+// Convert the artwork mask into an EDGE-ONLY alpha texture for selection. A
+// translucent fill made the fabric look glossy and exposed mesh intersections;
+// outlining the real color break keeps the textile completely untouched.
+function selectionEdgeTexture(url, selectAccent, onReady) {
+  const key = [url, selectAccent ? 'accent-edge' : 'base-edge'].join('|');
+  if (_selectionMaskTextures[key]) { onReady(_selectionMaskTextures[key]); return; }
+  const build = (img) => {
+    const sourceW = img.naturalWidth || img.width || 2048;
+    const sourceH = img.naturalHeight || img.height || 2048;
+    const scale = Math.min(1, 1024 / Math.max(sourceW, sourceH));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(sourceW * scale));
+    canvas.height = Math.max(1, Math.round(sourceH * scale));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = image.data;
+    const binary = new Uint8Array(canvas.width * canvas.height);
+    for (let p = 0; p < binary.length; p++) binary[p] = ((d[p * 4] >= 128) === selectAccent) ? 1 : 0;
+    const radius = 3;
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        const p = y * canvas.width + x;
+        const here = binary[p];
+        const left = binary[y * canvas.width + Math.max(0, x - radius)];
+        const right = binary[y * canvas.width + Math.min(canvas.width - 1, x + radius)];
+        const up = binary[Math.max(0, y - radius) * canvas.width + x];
+        const down = binary[Math.min(canvas.height - 1, y + radius) * canvas.width + x];
+        const edge = here !== left || here !== right || here !== up || here !== down;
+        const i = p * 4;
+        d[i] = 255; d[i + 1] = 255; d[i + 2] = 255; d[i + 3] = edge ? 255 : 0;
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.colorSpace = THREE.NoColorSpace;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 16;
+    tex.userData.shared = true;
+    _selectionMaskTextures[key] = tex;
+    onReady(tex);
+  };
+  if (_designMaskImages[url]) {
+    const cached = _designMaskImages[url];
+    if (cached.complete) build(cached); else cached.addEventListener('load', () => build(cached), { once: true });
+    return;
+  }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  _designMaskImages[url] = img;
+  img.onload = () => build(img);
+  img.src = url;
+}
 
 function makeNormalCanvas(gen) {
   const S = 256;
@@ -175,18 +329,18 @@ function heatherFleckTexture() {
 // real garment. "Copy values" exports the JSON so winning numbers can be baked
 // in here as the shipped defaults.
 export const STUDIO_DEFAULTS = {
-  key: 1.3,       // main top-front light
-  fill: 0.18,     // soft left fill
-  back: 0.5,      // rear light (back-view color read)
-  hemi: 0.14,     // ambient — the higher it goes, the flatter the garment
-  exposure: 1.0,  // overall brightness
-  env: 0.12,      // environment reflections
-  sheen: 0.1,     // fabric grazing-angle glow
-  aoRadius: 0.09, // AO reach, as a fraction of garment size
-  aoScale: 2.2,   // AO strength
-  bg: 1.0,        // backdrop shade (1 = white, lower = gray studio wall)
+  key: 0.94,      // main top-front light; kept below clipping for white fabric
+  fill: 0.08,     // restrained fill preserves folds instead of flattening them
+  back: 0.34,     // rear light (back-view color read)
+  hemi: 0.06,     // low ambient keeps white knit and under-sleeve shape visible
+  exposure: 0.82, // leaves highlight headroom while preserving brand colors
+  env: 0.08,      // subtle environment reflections
+  sheen: 0.08,    // fabric grazing-angle glow
+  aoRadius: 0.075,// tighter AO keeps seams crisp rather than muddy
+  aoScale: 2.8,   // stronger contact definition on white garments
+  bg: 0.92,       // soft off-white wall separates white cloth without looking gray
 };
-const STUDIO_LS_KEY = 'nsa_uniform_studio';
+const STUDIO_LS_KEY = 'nsa_uniform_studio_v3';
 export function loadStudioProfile() {
   try {
     const saved = JSON.parse(localStorage.getItem(STUDIO_LS_KEY) || 'null');
@@ -251,8 +405,78 @@ function zoneRepeat(span, targetTiles, fallback) {
   return Math.max(2, Math.min(60, targetTiles / span));
 }
 
+// AGI-1011's side insert crosses separate front/back UV shells. Computing the
+// color break from the garment surface itself keeps one continuous, clean edge
+// across that construction seam (and still leaves the UV mask available for
+// click targeting and production proofs).
+function applySidePanelSurface(st, mat, baseHex, accentHex) {
+  if (!st._sidePanelBounds) {
+    let xMin = Infinity, xMax = -Infinity;
+    let yMin = Infinity, yMax = -Infinity;
+    let depthMin = Infinity, depthMax = -Infinity;
+    for (const entry of st.meshes) {
+      const name = String(entry.mesh && entry.mesh.name || '').toLowerCase();
+      if (name !== 'body_front' && name !== 'body_back') continue;
+      const geo = entry.mesh.geometry;
+      if (!geo.boundingBox) geo.computeBoundingBox();
+      const box = geo.boundingBox;
+      xMin = Math.min(xMin, box.min.x); xMax = Math.max(xMax, box.max.x);
+      // GLTFLoader exposes the garment Y-up: Y is height and Z is the
+      // front-to-back depth around the torso.
+      yMin = Math.min(yMin, box.min.y); yMax = Math.max(yMax, box.max.y);
+      depthMin = Math.min(depthMin, box.min.z); depthMax = Math.max(depthMax, box.max.z);
+    }
+    st._sidePanelBounds = {
+      cx: (xMin + xMax) * 0.5,
+      half: Math.max((xMax - xMin) * 0.5, 1e-5),
+      yMin,
+      height: Math.max(yMax - yMin, 1e-5),
+      depthCenter: (depthMin + depthMax) * 0.5,
+      depthHalf: Math.max((depthMax - depthMin) * 0.5, 1e-5),
+    };
+  }
+  const b = st._sidePanelBounds;
+  const data = mat.userData.nsaSidePanel || {
+    base: new THREE.Color(), accent: new THREE.Color(),
+    cx: { value: b.cx }, half: { value: b.half }, yMin: { value: b.yMin }, height: { value: b.height },
+    depthCenter: { value: b.depthCenter }, depthHalf: { value: b.depthHalf },
+  };
+  data.base.set(baseHex); data.accent.set(accentHex);
+  mat.userData.nsaSidePanel = data;
+  if (!mat.userData.nsaSidePanelInstalled) {
+    mat.userData.nsaSidePanelInstalled = true;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.nsaPanelBase = { value: data.base };
+      shader.uniforms.nsaPanelAccent = { value: data.accent };
+      shader.uniforms.nsaPanelCx = data.cx;
+      shader.uniforms.nsaPanelHalf = data.half;
+      shader.uniforms.nsaPanelYMin = data.yMin;
+      shader.uniforms.nsaPanelHeight = data.height;
+      shader.uniforms.nsaPanelDepthCenter = data.depthCenter;
+      shader.uniforms.nsaPanelDepthHalf = data.depthHalf;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaPanelPosition;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNsaPanelPosition = position;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaPanelPosition;\nuniform vec3 nsaPanelBase;\nuniform vec3 nsaPanelAccent;\nuniform float nsaPanelCx;\nuniform float nsaPanelHalf;\nuniform float nsaPanelYMin;\nuniform float nsaPanelHeight;\nuniform float nsaPanelDepthCenter;\nuniform float nsaPanelDepthHalf;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float nsaYn = clamp((vNsaPanelPosition.y - nsaPanelYMin) / nsaPanelHeight, 0.0, 1.0);
+          float nsaDepth = abs(vNsaPanelPosition.z - nsaPanelDepthCenter) / nsaPanelDepthHalf;
+          // A sewn side insert is bounded by two vertical front/back cut lines.
+          // Depth-space boundaries keep those lines straight in a true side
+          // view instead of letting them zig-zag with every torso fold.
+          float nsaSide = (1.0 - smoothstep(0.472, 0.488, nsaDepth)) * (1.0 - smoothstep(0.695, 0.710, nsaYn));
+          diffuseColor.rgb = mix(nsaPanelBase, nsaPanelAccent, nsaSide);`);
+    };
+    mat.customProgramCacheKey = () => 'nsa-side-panel-v3';
+  }
+  mat.color.set('#ffffff');
+  mat.needsUpdate = true;
+}
+
 function applyDesign(st, rawSpec) {
   const spec = ds.normalizeSpec(rawSpec);
+  const tpl = getTemplate(spec.garmentId);
   // One repeat per ZONE, not per mesh: garments cut into several panels per zone
   // (e.g. an upper + lower body panel) must show the same stripe width across
   // the seam, so every panel in a zone uses the zone's dominant UV span.
@@ -265,11 +489,25 @@ function applyDesign(st, rawSpec) {
     const zone = entry.zone;
     const zs = (zone && spec.zones[zone]) || spec.zones.body || ds.DEFAULT_ZONE;
     const mat = entry.mesh.material;
-    const color = ds.toHex(zs.color, '#1f2a44');
-    const color2 = ds.toHex(zs.color2, '#ffffff');
+    const color = textileAlbedo(ds.toHex(zs.color, '#1f2a44'));
+    const color2 = textileAlbedo(ds.toHex(zs.color2, '#ffffff'));
     const pat = zs.pattern || 'solid';
+    const meshName = String(entry.mesh.name || '').toLowerCase();
+    const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
     if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
-    if (pat === 'custom' && zs.patternImage) {
+    if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
+      entry._patGen = (entry._patGen || 0) + 1;
+      applySidePanelSurface(st, mat, color, color2);
+    } else if (maskUrl) {
+      const gen = (entry._patGen = (entry._patGen || 0) + 1);
+      mat.color.set('#ffffff');
+      designMaskTexture(maskUrl, color, color2, (tex) => {
+        if (entry._patGen !== gen || !entry.mesh.material) return;
+        const m = entry.mesh.material;
+        m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
+        if (st.queueSnapshot) st.queueSnapshot(120);
+      });
+    } else if (pat === 'custom' && zs.patternImage) {
       // Admin-library print pattern: image tile loads async; a generation token
       // drops stale loads if the design changed again before the image decoded.
       const gen = (entry._patGen = (entry._patGen || 0) + 1);
@@ -292,6 +530,7 @@ function applyDesign(st, rawSpec) {
         const m = entry.mesh.material;
         if (m.map) m.map.dispose();
         m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
+        if (st.queueSnapshot) st.queueSnapshot(120);
       };
       img.src = zs.patternImage;
     } else if (pat === 'solid') {
@@ -350,17 +589,19 @@ function decalTextCanvas(el) {
   const fill = ds.toHex(el.fill, '#ffffff');
   let outline = el.outline === 'auto' ? ds.contrastInk(fill) : el.outline;
   if (outline && outline !== 'none') outline = ds.toHex(outline, '#111827');
-  // 3D decals want a beefier stroke than the 2D proof (small on screen);
-  // matches the old S/24 scaling via outlineWidth × 2 in the engine.
-  const ow = el.outlineWidth > 0 ? (el.outlineWidth * (S / 24)) / 2 : 0;
+  // Convert proof-space outline units to a finished athletic border. The text
+  // engine doubles this value for canvas lineWidth, so /7 lands around 6–8% of
+  // glyph height instead of the oversized quarter-height ring from the first
+  // projection pass.
+  const ow = el.outlineWidth > 0 ? (el.outlineWidth * (S / 24)) / 7 : 0;
   const outline2 = (el.outline2 && el.outline2 !== 'none') ? ds.toHex(el.outline2, '#111827') : 'none';
-  const ow2 = el.outline2Width > 0 ? (el.outline2Width * (S / 24)) / 2 : 0;
+  const ow2 = el.outline2Width > 0 ? (el.outline2Width * (S / 24)) / 7 : 0;
   const opts = { value: val, font: el.font, size: S, fill, outline, outlineWidth: ow, outline2, outline2Width: ow2, letterSpacing: el.letterSpacing || 0, arch: el.arch || 0 };
   const meas = document.createElement('canvas').getContext('2d');
   const m = measureAthleticText(meas, opts);
   const pad = Math.ceil(S * 0.4);
   const c = document.createElement('canvas');
-  c.width = Math.max(8, Math.ceil(m.total) + pad * 2);
+  c.width = Math.max(8, Math.ceil(Math.max(m.total, m.inkWidth || 0)) + pad * 2);
   c.height = Math.ceil(S * 1.5 + m.sag);
   const x = c.getContext('2d');
   // center the visual block: an arch adds `sag` below the center letter's line
@@ -391,8 +632,9 @@ function updateDecals(st, rawSpec) {
   const torsoH = hasTorso ? (torsoBox.max.y - torsoBox.min.y) : size.y;
   const torsoCx = hasTorso ? (torsoBox.min.x + torsoBox.max.x) / 2 : 0;
   const torsoTop = hasTorso ? torsoBox.max.y : size.y * 0.5;
+  st.decorationFrame = { torsoW, torsoH, torsoCx, torsoTop, size: size.clone() };
 
-  const placeOne = (el, role, view) => {
+  const placeOne = (el, role, view, key) => {
     if (!el || !(el.value || '').trim()) return;
     const canvas = decalTextCanvas(el); if (!canvas) return;
     const vw = tpl.views[view] || {};
@@ -418,7 +660,12 @@ function updateDecals(st, rawSpec) {
     const helper = new THREE.Object3D();
     helper.position.copy(hit.point);
     helper.lookAt(hit.point.clone().add(normal));
-    const decalH = anchor.size * (size.y / viewH) * (el.size || 1) * 1.05;
+    // The transparent text canvas is 1.5× the glyph height. Scale its decal so
+    // the visible lettering itself matches the requested finished inches on a
+    // 30" jersey, consistent with the 2D production proof.
+    const decalH = Number.isFinite(el.inches)
+      ? (el.inches / 30) * torsoH * 1.5
+      : anchor.size * (size.y / viewH) * (el.size || 1) * 1.05;
     const decalW = decalH * (canvas.width / canvas.height);
     const dsize = new THREE.Vector3(decalW, decalH, Math.max(size.x, size.y, size.z) * 0.5);
     let geo;
@@ -426,13 +673,14 @@ function updateDecals(st, rawSpec) {
     const tex = new THREE.CanvasTexture(canvas); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
     const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -8, roughness: 0.7, metalness: 0.0, side: THREE.FrontSide });
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.nsaDecal = { key, view, role };
     st.scene.add(mesh); st.decals.push(mesh);
   };
 
-  placeOne(spec.text.front.number, 'number', 'front');
-  placeOne(spec.text.front.name, 'name', 'front');
-  placeOne(spec.text.back.number, 'number', 'back');
-  placeOne(spec.text.back.name, 'name', 'back');
+  placeOne(spec.text.front.number, 'number', 'front', 'frontNumber');
+  placeOne(spec.text.front.name, 'name', 'front', 'frontName');
+  placeOne(spec.text.back.number, 'number', 'back', 'backNumber');
+  placeOne(spec.text.back.name, 'name', 'back', 'backName');
 
   // Uploaded logos → surface decals. Images decode async; we cache the decoded
   // canvas per src (keyed on the data URL) so dragging the logo (same src, new
@@ -442,7 +690,7 @@ function updateDecals(st, rawSpec) {
   const gen = st._decalGen;
   const canvasCache = st._logoCanvas || (st._logoCanvas = {});
   const drawLogo = (cv, logo, view) => {
-    const aspect = (logo.aspect && logo.aspect > 0) ? logo.aspect : (cv._aspect || 1);
+    const aspect = (cv._aspect && cv._aspect > 0) ? cv._aspect : ((logo.aspect && logo.aspect > 0) ? logo.aspect : 1);
     const front = view === 'front';
     const dir = new THREE.Vector3(0, 0, front ? -1 : 1);
     // Chest/back logos map to the torso; sleeve logos need the full model width
@@ -468,15 +716,22 @@ function updateDecals(st, rawSpec) {
     helper.position.copy(hit.point);
     helper.lookAt(hit.point.clone().add(normal));
     if (logo.rotation) helper.rotateZ((logo.rotation * Math.PI / 180) * (front ? 1 : -1));
-    const decalW = Math.max(0.02, (logo.w || 0.22)) * size.x;
-    const decalH = decalW / aspect;
+    // Logos, names, and numbers all use finished visible HEIGHT. The decoded
+    // image canvas is alpha-trimmed, so transparent PNG padding cannot make a
+    // nominal 4-inch crest appear smaller than a 4-inch number.
+    const decalH = Number.isFinite(logo.inches)
+      ? (logo.inches / 30) * torsoH
+      : (Math.max(0.02, (logo.w || 0.22)) * size.x) / aspect;
+    const decalW = decalH * aspect;
     const dsize = new THREE.Vector3(decalW, decalH, Math.max(size.x, size.y, size.z) * 0.6);
     let geo;
     try { geo = new DecalGeometry(surface, hit.point, helper.rotation, dsize); } catch (e) { return; }
     const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8;
     const mat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, depthTest: true, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -10, roughness: 0.75, metalness: 0.0, side: THREE.FrontSide });
     const mesh = new THREE.Mesh(geo, mat);
+    mesh.userData.nsaDecal = { key: `logo:${logo.slot}`, view, slot: logo.slot, role: 'logo' };
     st.scene.add(mesh); st.decals.push(mesh);
+    if (st.queueSnapshot) st.queueSnapshot(120);
   };
   const placeLogo = (logo, view) => {
     if (!logo || !logo.src) return;
@@ -484,9 +739,14 @@ function updateDecals(st, rawSpec) {
     if (cached) { drawLogo(cached, logo, view); return; }
     const img = new Image(); img.crossOrigin = 'anonymous';
     img.onload = () => {
-      const w = img.naturalWidth || img.width || 256, h = img.naturalHeight || img.height || 256;
-      const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
-      cv.getContext('2d').drawImage(img, 0, 0, w, h); cv._aspect = w / h;
+      let cv;
+      try { cv = canvasFromImage(img); }
+      catch (_e) {
+        const w = img.naturalWidth || img.width || 256, h = img.naturalHeight || img.height || 256;
+        cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+      }
+      cv._aspect = cv.width / cv.height;
       canvasCache[logo.src] = cv;
       if (st._decalGen === gen && st.mounted && st.bodyMesh) drawLogo(cv, logo, view);
     };
@@ -496,15 +756,117 @@ function updateDecals(st, rawSpec) {
   ((spec.logos && spec.logos.back) || []).forEach((l) => placeLogo(l, 'back'));
 }
 
+const ACTIVE_AREA_LABELS = {
+  body: 'Body', bodyStripe: 'Chest Stripe', bodyAccent: 'Side Panels', sleeves: 'Sleeves',
+  legs: 'Shorts Legs', stripe: 'Shorts Side Inserts', waistband: 'Shorts Waistband',
+  sleeveL: 'Left Sleeve', sleeveR: 'Right Sleeve', sleeveBands: 'Sleeve Bands',
+  sleeveBandL: 'Left Sleeve Band', sleeveBandR: 'Right Sleeve Band',
+  collar: 'Collar & Cuffs',
+};
+
+const DECORATION_LABELS = {
+  frontNumber: 'Front Number', backNumber: 'Back Number', backName: 'Back Name',
+  'logo:chest': 'Left Chest Logo', 'logo:rightChest': 'Right Chest Logo',
+  'logo:leftSleeve': 'Left Sleeve Logo', 'logo:rightSleeve': 'Right Sleeve Logo',
+  'logo:back': 'Back Neck Logo', 'logo:backUnderNumber': 'Under Number Logo',
+};
+
+// Selecting back artwork while the camera is showing the front made the
+// decoration controls feel broken. Keep the garment untouched, but rotate the
+// camera to the relevant working face. The customer can immediately resume
+// free orbiting from this position.
+function focusDecorationView(st, key) {
+  if (!st || !st.camera || !st.controls || !key) return;
+  const target = st.controls.target;
+  const offset = st.camera.position.clone().sub(target);
+  const radius = Math.max(offset.length(), 0.001);
+  const y = offset.y;
+  const horizontal = Math.sqrt(Math.max(radius * radius - y * y, radius * radius * 0.3));
+  let x = 0, z = horizontal;
+  if (key === 'backNumber' || key === 'backName' || key === 'logo:back' || key === 'logo:backUnderNumber') z = -horizontal;
+  else if (key === 'logo:leftSleeve') { x = -horizontal * 0.52; z = horizontal * 0.85; }
+  else if (key === 'logo:rightSleeve') { x = horizontal * 0.52; z = horizontal * 0.85; }
+  st.controls.autoRotate = false;
+  st.camera.position.set(target.x + x, target.y + y, target.z + z);
+  st.camera.lookAt(target);
+  st.controls.update();
+}
+
+function selectionMode(activeArea, zone) {
+  if (!activeArea || !zone) return null;
+  if (activeArea === 'legs') return (zone === 'legL' || zone === 'legR') ? 'whole' : null;
+  if (activeArea === 'stripe') return (zone === 'sidePanelL' || zone === 'sidePanelR') ? 'whole' : null;
+  if (activeArea === 'waistband') return zone === 'waistband' ? 'whole' : null;
+  if (activeArea === 'body') return zone === 'body' ? 'base' : null;
+  if (activeArea === 'bodyStripe') return zone === 'body' ? 'accent' : null;
+  if (activeArea === 'sleeves') return (zone === 'sleeveL' || zone === 'sleeveR') ? 'base' : null;
+  if (activeArea === 'sleeveL') return zone === 'sleeveL' ? 'base' : null;
+  if (activeArea === 'sleeveR') return zone === 'sleeveR' ? 'base' : null;
+  if (activeArea === 'sleeveBands') return (zone === 'sleeveL' || zone === 'sleeveR') ? 'accent' : null;
+  if (activeArea === 'sleeveBandL') return zone === 'sleeveL' ? 'accent' : null;
+  if (activeArea === 'sleeveBandR') return zone === 'sleeveR' ? 'accent' : null;
+  return activeArea === zone ? 'whole' : null;
+}
+
+function clearSelection(st) {
+  if (st.outlinePass) st.outlinePass.selectedObjects = [];
+  for (const overlay of (st.selectionOverlays || [])) {
+    if (overlay.parent) overlay.parent.remove(overlay);
+    if (overlay.material) overlay.material.dispose();
+  }
+  st.selectionOverlays = [];
+}
+
+function addSelectionEdge(st, entry, alphaMap) {
+  if (!st.mounted || !entry.mesh || !entry.mesh.geometry) return;
+  const material = new THREE.MeshBasicMaterial({
+    color: '#192853',
+    transparent: true,
+    opacity: 0.92,
+    alphaMap,
+    alphaTest: 0.08,
+    depthTest: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
+    toneMapped: false,
+  });
+  const overlay = new THREE.Mesh(entry.mesh.geometry, material);
+  overlay.name = `selected_${entry.mesh.name || entry.zone || 'area'}`;
+  overlay.renderOrder = 25;
+  overlay.userData.nsaSelectionOverlay = true;
+  entry.mesh.add(overlay);
+  st.selectionOverlays.push(overlay);
+}
+
+// The controls and garment always point at the same thing, but selection must
+// never change the garment's finish. Whole sewn panels use a screen-space
+// contour; artwork sub-zones trace only the real UV color-break boundary.
+function applySelection(st, activeArea, rawSpec) {
+  if (!st) return;
+  st._selectionGen = (st._selectionGen || 0) + 1;
+  clearSelection(st);
+}
+
 // `fit` scales the initial camera distance: 1.5 leaves generous margin (editor
 // default); smaller values frame the garment closer for hero/stage layouts.
 // `tiltDeg` orbits the camera up for a more dramatic 3/4 look (target stays on
 // the model center so it stays framed). `shiftPx` pans the model horizontally by
 // N screen pixels — the wizard uses it to sit the jersey under the whole page's
 // center even though the 3D stage only occupies the area left of the rail.
-export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0 }) {
+export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0, view = null, interactive = true, activeArea = null, activeDecoration = null, onDecorationSelect = null, onDecorationMove = null, onZoneSelect = null, onSnapshot = null, fallbackImage = null }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
+  const activeAreaRef = useRef(activeArea); activeAreaRef.current = activeArea;
+  const activeDecorationRef = useRef(activeDecoration); activeDecorationRef.current = activeDecoration;
+  const decorationSelectRef = useRef(onDecorationSelect); decorationSelectRef.current = onDecorationSelect;
+  const decorationMoveRef = useRef(onDecorationMove); decorationMoveRef.current = onDecorationMove;
+  const zoneSelectRef = useRef(onZoneSelect); zoneSelectRef.current = onZoneSelect;
+  const snapshotRef = useRef(onSnapshot); snapshotRef.current = onSnapshot;
+  const specRef = useRef(spec); specRef.current = spec;
+  const autoRotateRef = useRef(autoRotate); autoRotateRef.current = autoRotate;
   const [status, setStatus] = useState('loading');
   const [studio, setStudio] = useState(loadStudioProfile);
   const studioRef = useRef(studio); studioRef.current = studio;
@@ -515,7 +877,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     if (!mount || !modelUrl) { setStatus('nomodel'); return undefined; }
     const W = mount.clientWidth || 600, H = mount.clientHeight || 700;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    let renderer;
+    try { renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true }); }
+    catch (_e) { setStatus('error'); return undefined; }
     renderer.setSize(W, H);
     renderer.setPixelRatio(Math.min(2, (typeof window !== 'undefined' && window.devicePixelRatio) || 1));
     renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -540,6 +904,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true; controls.dampingFactor = 0.08;
     controls.enablePan = false;
+    controls.enabled = !!interactive;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
     // Lens shift: move the rendered image right by `shiftPx` CSS px without
     // moving the camera or orbit target. Re-applied on resize so the shift
@@ -574,8 +939,163 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     composer.addPass(gtao);
     composer.addPass(new OutputPass());
 
-    const st = { renderer, scene, camera, controls, pmrem, composer, gtao, lights: { key, fill, back, hemi }, meshes: [], decals: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
+    const st = { renderer, scene, camera, controls, pmrem, composer, gtao, lights: { key, fill, back, hemi }, meshes: [], detailMeshes: [], decals: [], selectionOverlays: [], bodyMesh: null, modelSize: null, raf: 0, mounted: true };
     stateRef.current = st;
+
+    // Finalize and production exports use this exact WebGL render instead of a
+    // second flat-art approximation. preserveDrawingBuffer above makes the
+    // post-processed canvas safe to capture after materials and decals settle.
+    const queueSnapshot = (delay = 220) => {
+      if (!snapshotRef.current) return;
+      clearTimeout(st.snapshotTimer);
+      st.snapshotTimer = setTimeout(() => {
+        if (!st.mounted || !snapshotRef.current) return;
+        requestAnimationFrame(() => {
+          if (!st.mounted || !snapshotRef.current) return;
+          try {
+            controls.update(); composer.render();
+            const canvas = renderer.domElement;
+            snapshotRef.current({ url: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height, view: st.captureView || 'front' });
+          } catch (_e) { /* capture is best-effort; the live model remains usable */ }
+        });
+      }, delay);
+    };
+    st.queueSnapshot = queueSnapshot;
+
+    // Direct-on-garment decoration placement is intentionally two-step. The
+    // first click selects artwork without moving it; only a later drag on that
+    // already-selected item captures the pointer and changes its position.
+    const dragRay = new THREE.Raycaster();
+    const dragPointer = new THREE.Vector2();
+    const rayHits = (e, objects) => {
+      if (!objects || !objects.length) return [];
+      const rect = renderer.domElement.getBoundingClientRect();
+      dragPointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      dragPointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+      scene.updateMatrixWorld(true);
+      dragRay.setFromCamera(dragPointer, camera);
+      return dragRay.intersectObjects(objects, false);
+    };
+    const stopPointer = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.nativeEvent && e.nativeEvent.stopImmediatePropagation) e.nativeEvent.stopImmediatePropagation();
+      else if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    };
+    const onDirectDown = (e) => {
+      if (decorationMoveRef.current && st.decals.length) {
+        const hit = rayHits(e, st.decals)[0];
+        const meta = hit && hit.object && hit.object.userData && hit.object.userData.nsaDecal;
+        if (meta && meta.key) {
+          stopPointer(e);
+          if (!shouldStartDecorationDrag(activeDecorationRef.current, meta.key)) {
+            st.selectDecorationPointer = e.pointerId;
+            if (decorationSelectRef.current) decorationSelectRef.current(meta.key);
+            return;
+          }
+          st.dragDecoration = { ...meta, pointerId: e.pointerId };
+          controls.enabled = false; controls.autoRotate = false;
+          try { renderer.domElement.setPointerCapture(e.pointerId); } catch (_e) {}
+          return;
+        }
+      }
+      if (zoneSelectRef.current) st.zoneClick = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+    };
+    const onDirectMove = (e) => {
+      if (st.zoneClick && st.zoneClick.pointerId === e.pointerId && Math.hypot(e.clientX - st.zoneClick.x, e.clientY - st.zoneClick.y) > 6) st.zoneClick.moved = true;
+      const drag = st.dragDecoration;
+      if (!drag || drag.pointerId !== e.pointerId || !st.decorationFrame) return;
+      stopPointer(e);
+      let targets = st.meshes.map((entry) => entry.mesh).filter(Boolean);
+      if (drag.slot === 'leftSleeve' || drag.slot === 'rightSleeve') {
+        const wanted = drag.slot === 'leftSleeve' ? 'sleeveL' : 'sleeveR';
+        const sleeveTargets = st.meshes.filter((entry) => entry.zone === wanted).map((entry) => entry.mesh).filter(Boolean);
+        if (sleeveTargets.length) targets = sleeveTargets;
+      } else {
+        const bodyTargets = st.meshes.filter((entry) => entry.zone === 'body').map((entry) => entry.mesh).filter(Boolean);
+        if (bodyTargets.length) targets = bodyTargets;
+      }
+      const hit = rayHits(e, targets)[0];
+      if (!hit) return;
+      const f = st.decorationFrame;
+      const front = drag.view !== 'back';
+      const sleeve = drag.slot === 'leftSleeve' || drag.slot === 'rightSleeve';
+      const boxW = sleeve ? f.size.x : f.torsoW;
+      const boxH = sleeve ? f.size.y : f.torsoH;
+      const cx = sleeve ? 0 : f.torsoCx;
+      const topY = sleeve ? f.size.y * 0.5 : f.torsoTop;
+      const dx = (hit.point.x - cx) / Math.max(boxW, 0.0001);
+      const x = THREE.MathUtils.clamp(front ? 0.5 + dx : 0.5 - dx, 0.03, 0.97);
+      const y = THREE.MathUtils.clamp((topY - hit.point.y) / Math.max(boxH, 0.0001), 0.03, 0.97);
+      if (decorationMoveRef.current) decorationMoveRef.current({ key: drag.key, x, y });
+    };
+    const onDirectUp = (e) => {
+      if (st.selectDecorationPointer === e.pointerId) {
+        stopPointer(e);
+        st.selectDecorationPointer = null;
+        st.zoneClick = null;
+        return;
+      }
+      if (st.dragDecoration && st.dragDecoration.pointerId === e.pointerId) {
+        stopPointer(e);
+        st.dragDecoration = null;
+        st.zoneClick = null;
+        controls.enabled = true; controls.autoRotate = !!autoRotateRef.current;
+        try { renderer.domElement.releasePointerCapture(e.pointerId); } catch (_e) {}
+        return;
+      }
+      const click = st.zoneClick;
+      st.zoneClick = null;
+      if (click && click.moved) st.suppressNextZoneClick = true;
+      if (!click || click.pointerId !== e.pointerId || click.moved || !zoneSelectRef.current) return;
+      const hit = rayHits(e, st.meshes.map((entry) => entry.mesh).filter(Boolean))[0];
+      if (!hit) return;
+      const entry = st.meshes.find((candidate) => candidate.mesh === hit.object);
+      if (!entry || !entry.zone) return;
+      const tpl = getTemplate(specRef.current && specRef.current.garmentId);
+      const meshName = String(entry.mesh.name || '').toLowerCase();
+      const areaMap = tpl.designMaskAreas && tpl.designMaskAreas[meshName];
+      const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
+      let accent = false;
+      if (areaMap && tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back') && st._sidePanelBounds) {
+        const p = entry.mesh.worldToLocal(hit.point.clone());
+        const b = st._sidePanelBounds;
+        const yn = THREE.MathUtils.clamp((p.y - b.yMin) / b.height, 0, 1);
+        const depth = Math.abs(p.z - b.depthCenter) / b.depthHalf;
+        accent = yn < 0.70 && depth < 0.48;
+      } else if (areaMap && (entry.zone === 'sleeveL' || entry.zone === 'sleeveR')) {
+        // Sleeve openings are narrow UV strips. Use both the authored mask and
+        // the physical distance from the opening so a click on the visible cuff
+        // remains dependable even at steep side/back viewing angles.
+        accent = designMaskIsAccent(maskUrl, hit.uv);
+        if (!accent) {
+          const worldBox = new THREE.Box3().setFromObject(entry.mesh);
+          const height = Math.max(worldBox.max.y - worldBox.min.y, 1e-5);
+          const yn = (hit.point.y - worldBox.min.y) / height;
+          accent = yn < 0.46;
+        }
+      } else if (areaMap) accent = designMaskIsAccent(maskUrl, hit.uv);
+      const area = areaMap ? (accent ? areaMap.accent : areaMap.base) : entry.zone;
+      if (area) zoneSelectRef.current(area);
+    };
+    // A native click fallback covers browsers/automation surfaces that do not
+    // expose PointerEvent ids consistently. Real orbit drags are suppressed by
+    // the movement guard above, so this never turns rotation into a selection.
+    const onDirectClick = (e) => {
+      if (!zoneSelectRef.current || st.dragDecoration) return;
+      if (st.suppressNextZoneClick) { st.suppressNextZoneClick = false; return; }
+      st.zoneClick = { pointerId: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+      onDirectUp(e);
+    };
+    const onDirectCancel = (e) => {
+      st.zoneClick = null;
+      if (st.selectDecorationPointer === e.pointerId) st.selectDecorationPointer = null;
+      if (st.dragDecoration && st.dragDecoration.pointerId === e.pointerId) onDirectUp(e);
+    };
+    renderer.domElement.addEventListener('pointerdown', onDirectDown, true);
+    renderer.domElement.addEventListener('pointermove', onDirectMove, true);
+    renderer.domElement.addEventListener('pointerup', onDirectUp, true);
+    renderer.domElement.addEventListener('pointercancel', onDirectCancel, true);
+    renderer.domElement.addEventListener('click', onDirectClick, true);
 
     const draco = new DRACOLoader().setDecoderPath(PUB + '/draco/');
     const loader = new GLTFLoader().setDRACOLoader(draco);
@@ -593,7 +1113,12 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       // and target both stay on the model center so OrbitControls pivots around
       // the middle of the garment.
       const tiltRad = (tiltDeg || 0) * Math.PI / 180;
-      camera.position.set(0, dist * Math.sin(tiltRad), dist * Math.cos(tiltRad));
+      // QA/product-view query support also gives merchandisers deterministic
+      // front/side/back URLs when reviewing a garment in the real web renderer.
+      const requestedView = view || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('view') : null);
+      st.captureView = requestedView || 'front';
+      const horizontal = dist * Math.cos(tiltRad);
+      camera.position.set(requestedView === 'side' ? horizontal : 0, dist * Math.sin(tiltRad), requestedView === 'back' ? -horizontal : requestedView === 'side' ? 0 : horizontal);
       camera.near = dist / 100; camera.far = dist * 100;
       controls.target.set(0, 0, 0);
       // The horizontal shift (to sit the model under the whole page's center,
@@ -613,6 +1138,22 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
           // catch the lights and wash tinted colors toward pastel. Keep the
           // original name: matchZone falls back to it for zone matching.
           const srcMat = o.material;
+          // Sewn topstitch and drawcord geometry is authored as a fixed detail,
+          // not a recolorable fabric zone. Preserve those neutral thread/cord
+          // materials while the garment panels remain fully editable.
+          // The soccer foundation names the stitch objects `stitch_*` while
+          // their shared material is `detail_stitch`.  Looking only at the
+          // object name accidentally treated those raised seam tubes as body
+          // fabric and recolored them cyan.  On AGI-1011's black insert that
+          // produced the large broken/zig-zag side seam the user could see.
+          const detailName = `${o.name || ''} ${srcMat && srcMat.name || ''}`;
+          if (/(^|\s)(detail_|stitch_)/i.test(detailName)) {
+            srcMat.side = THREE.DoubleSide;
+            srcMat.envMapIntensity = studioRef.current.env;
+            srcMat.needsUpdate = true;
+            st.detailMeshes.push(o);
+            return;
+          }
           // A vendor normal only counts if it actually carries detail — some
           // exports ship an all-neutral (128,128,255) map, which would both look
           // like flat plastic AND block our per-fabric surface system.
@@ -651,8 +1192,10 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
         gtao.updateGtaoMaterial({ radius: maxDim * sp.aoRadius, distanceExponent: 1.2, thickness: maxDim * 0.02, scale: sp.aoScale, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
         gtao.setSceneClipBox(new THREE.Box3().setFromObject(rootObj));
       } catch (e) { /* AO tuning is best-effort */ }
-      try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) { /* keep default */ }
+      try { applyDesign(st, spec); updateDecals(st, spec); applySelection(st, activeAreaRef.current, spec); } catch (e) { /* keep default */ }
+      if (activeDecorationRef.current) focusDecorationView(st, activeDecorationRef.current);
       setStatus('ready');
+      queueSnapshot(450);
       draco.dispose();
     }, undefined, () => { setStatus('error'); });
 
@@ -676,22 +1219,34 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
 
     return () => {
       st.mounted = false;
+      renderer.domElement.removeEventListener('pointerdown', onDirectDown, true);
+      renderer.domElement.removeEventListener('pointermove', onDirectMove, true);
+      renderer.domElement.removeEventListener('pointerup', onDirectUp, true);
+      renderer.domElement.removeEventListener('pointercancel', onDirectCancel, true);
+      renderer.domElement.removeEventListener('click', onDirectClick, true);
       window.removeEventListener('resize', resize);
       if (ro) ro.disconnect();
+      clearTimeout(st.snapshotTimer);
       cancelAnimationFrame(st.raf);
       controls.dispose();
+      clearSelection(st);
       st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
       st.meshes.forEach(({ mesh }) => { const m = mesh.material.map; if (m && !(m.userData && m.userData.shared)) m.dispose(); mesh.material.dispose(); mesh.geometry.dispose(); });
+      st.detailMeshes.forEach((mesh) => { if (mesh.material && mesh.material.map) mesh.material.map.dispose(); if (mesh.material) mesh.material.dispose(); if (mesh.geometry) mesh.geometry.dispose(); });
       pmrem.dispose();
       try { gtao.dispose(); composer.dispose(); } catch (e) { /* older three */ }
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       stateRef.current = null;
     };
-  }, [modelUrl]); // eslint-disable-line
+  }, [modelUrl, view, interactive]); // eslint-disable-line
 
   // re-apply on autoRotate toggle
   useEffect(() => { const st = stateRef.current; if (st && st.controls) st.controls.autoRotate = !!autoRotate; }, [autoRotate]);
+
+  // Jump to the working face when a decoration is selected. This changes only
+  // the view, never the jersey surface or the saved placement.
+  useEffect(() => { const st = stateRef.current; if (st && st.meshes && st.meshes.length && activeDecoration) focusDecorationView(st, activeDecoration); }, [activeDecoration]);
 
   // studio profile changes apply to the live scene and persist locally
   useEffect(() => {
@@ -703,8 +1258,16 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   // re-color on spec change
   useEffect(() => {
     const st = stateRef.current;
-    if (st && st.meshes && st.meshes.length) { try { applyDesign(st, spec); updateDecals(st, spec); } catch (e) {} }
+    if (st && st.meshes && st.meshes.length) {
+      try { applyDesign(st, spec); updateDecals(st, spec); st.queueSnapshot && st.queueSnapshot(350); } catch (e) {}
+    }
   }, [spec]);
+
+  // Keep the 3D garment visually tied to the section currently being edited.
+  useEffect(() => {
+    const st = stateRef.current;
+    if (st && st.meshes && st.meshes.length) { try { applySelection(st, activeArea, spec); } catch (e) {} }
+  }, [activeArea]); // eslint-disable-line
 
   const STUDIO_SLIDERS = [
     ['key', 'Key Light', 0, 2.5, 0.05], ['fill', 'Fill Light', 0, 1.5, 0.02], ['back', 'Back Light', 0, 1.5, 0.02],
@@ -714,10 +1277,28 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   ];
 
   return (
-    <div ref={mountRef} style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, cursor: 'grab' }}>
+    <div ref={mountRef} style={{ position: 'relative', width: '100%', height: '100%', minHeight: 0, cursor: interactive ? 'grab' : 'default' }}>
       {status === 'loading' && <div style={ovl}>Loading 3D…</div>}
-      {status === 'error' && <div style={ovl}>Couldn’t load the 3D model.</div>}
-      {status === 'nomodel' && <div style={ovl}>3D preview isn’t available for this garment yet.</div>}
+      {(status === 'error' || status === 'nomodel') && fallbackImage && (
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#fff' }}>
+          <img src={fallbackImage} alt="2D garment proof" style={{ width: '92%', height: '92%', objectFit: 'contain' }} />
+          <span style={{ position: 'absolute', right: 18, bottom: 18, padding: '6px 9px', borderRadius: 999, background: 'rgba(255,255,255,.94)', border: '1px solid #d1d5de', color: '#5A6075', fontFamily: "'Source Sans 3',system-ui,sans-serif", fontSize: 10, fontWeight: 700, letterSpacing: .6, textTransform: 'uppercase' }}>2D proof view</span>
+        </div>
+      )}
+      {status === 'error' && !fallbackImage && <div style={ovl}>Couldn’t load the 3D model.</div>}
+      {status === 'nomodel' && !fallbackImage && <div style={ovl}>3D preview isn’t available for this garment yet.</div>}
+      {status === 'ready' && activeArea && (
+        <div style={{ position: 'absolute', top: 18, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 999, background: 'rgba(255,255,255,.94)', border: '1px solid rgba(25,40,83,.2)', boxShadow: '0 3px 12px rgba(15,23,42,.11)', color: '#192853', fontFamily: "'Source Sans 3',system-ui,sans-serif", fontSize: 11, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', pointerEvents: 'none', zIndex: 4 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#192853', boxShadow: '0 0 0 3px rgba(25,40,83,.13)' }} />
+          Editing {ACTIVE_AREA_LABELS[activeArea] || activeArea}
+        </div>
+      )}
+      {status === 'ready' && activeDecoration && (
+        <div style={{ position: 'absolute', top: 18, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 7, padding: '7px 11px', borderRadius: 999, background: 'rgba(255,255,255,.94)', border: '1px solid rgba(150,44,50,.22)', boxShadow: '0 3px 12px rgba(15,23,42,.11)', color: '#192853', fontFamily: "'Source Sans 3',system-ui,sans-serif", fontSize: 11, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', pointerEvents: 'none', zIndex: 4 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#962C32', boxShadow: '0 0 0 3px rgba(150,44,50,.13)' }} />
+          {DECORATION_LABELS[activeDecoration] || 'Artwork'} Selected · Drag to Reposition
+        </div>
+      )}
       {studioOpen && (
         <div style={{ position: 'absolute', top: 10, right: 10, width: 230, background: 'rgba(255,255,255,0.96)', border: '1px solid #d7dbe3', borderRadius: 8, padding: '12px 14px', boxShadow: '0 4px 18px rgba(15,23,42,.14)', fontFamily: 'system-ui, sans-serif', zIndex: 5 }}
           onPointerDown={(e) => e.stopPropagation()}>

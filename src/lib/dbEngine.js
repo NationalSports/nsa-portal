@@ -1880,7 +1880,7 @@ const _dbSaveCustomerInner = async (c) => {
       // un-migrated DB. Strip optional columns one at a time, dropping art_files LAST — otherwise a
       // missing search_tags column also strips art_files, silently losing customer-library artwork
       // (the "Add Art does nothing" bug: the art never persists, then a realtime reload wipes it).
-      const _optional=['search_tags','art_files'];let _saved=false;
+      const _optional=['uniform_discount_percent','search_tags','art_files'];let _saved=false;
       for(let _n=1;_n<=_optional.length&&!_saved;_n++){
         const _drop=new Set(_optional.slice(0,_n));
         const _r=await _retryNet(()=>supabase.from('customers').upsert(_pick(custRow,_custCols.filter(c2=>!_drop.has(c2))),{onConflict:'id'}));

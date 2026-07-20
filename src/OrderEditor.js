@@ -3150,7 +3150,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>
     </div></div>;})()}
-    {showUniformBuilder&&<React.Suspense fallback={<div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'#f7f8fb',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder onExit={()=>setShowUniformBuilder(false)}/></React.Suspense>}
+    {showUniformBuilder&&<React.Suspense fallback={<div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'#f7f8fb',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder coachDiscountPercent={cust?.uniform_discount_percent||0} existingArtwork={safeArt(o)} onExit={()=>setShowUniformBuilder(false)}/></React.Suspense>}
     {editMockJob&&(()=>{
       const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
       // The job's declared _art_ids only carry the FIRST item's art (see buildJobs), so a job

@@ -48,7 +48,13 @@ A guided 5-step wizard (`STEPS` in `ProBuilder.js`):
    **The garment starts clean** — every decoration is added by the user, like a real
    kit order.
 4. **Roster** — player rows (name + number) mapped onto the design.
-5. **Finalize** — save the design, export proofs, and submit an order request.
+5. **Finalize** — save the design, export proofs, and submit an order. A successful
+   submission returns a permanent order number and private status/proof link.
+
+After checkout, the order continues through a server-backed lifecycle: submitted → rep
+review → versioned proof → coach approval → production lock → production → quality check
+→ shipping/tracking → delivered. Production and payment are tracked separately, and a
+locked order can be copied into a fresh, editable reorder.
 
 ---
 
@@ -143,16 +149,21 @@ fonts, so they match. Exports:
 
 ## Persistence
 
-- **localStorage (offline source of truth):**
+- **localStorage (design convenience only):**
   - `nsa_uniform_pro_autosave` — the live `{ config, assignments, playerNames, ts }`
     ("Continue your last design").
-  - Saved designs list + local order queue (`nsa_uniform_orders`).
-- **Supabase (best-effort sync, RLS-enabled):**
+  - Saved design shortcuts and the last confirmed private order link.
+- **Supabase (authoritative orders, RLS-enabled):**
   - `uniform_designs` (migration 070) — saved designs.
   - `uniform_patterns` (migration 071) — admin pattern library.
-  - `uniform_order_requests` (migration 072) — submitted order requests.
+  - `uniform_order_requests` — permanent order number, separate production/payment
+    state, rep review, production lock, tracking, and reorder lineage.
+  - `uniform_order_proofs` — immutable proof versions and customer decisions.
+  - `uniform_order_events` — customer/staff/notification audit timeline.
 
-The builder works fully offline; Supabase writes are best-effort and never block the UI.
+Autosaved design work still survives a browser refresh, but an order is never presented as
+confirmed until the server has stored it and returned its permanent order number. Browser
+storage is not used as an order guarantee.
 
 ---
 
@@ -162,7 +173,11 @@ Under **Settings** in the main app (`src/App.js`):
 
 - **Uniform Builder** → `BuilderSettingsAdmin.js` (palette + defaults)
 - **Uniform Patterns** → `PatternLibraryAdmin.js`
-- **Uniform Orders** → `UniformOrdersAdmin.js`
+- **Uniform Orders** → `UniformOrdersAdmin.js` (rep review, proof publishing/history,
+  approval visibility, production lock, payment and production statuses, QC, and tracking)
+
+Customer lifecycle operations are handled by `netlify/functions/uniform-order.js`.
+Transactional lifecycle mail is handled by `_uniformOrderEmail.js` through Brevo.
 
 ---
 

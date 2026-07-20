@@ -15,15 +15,30 @@ import { FONTS as FONT_LIBRARY, registerCustomFonts } from './fonts';
 
 export const DEFAULT_NUMBER_STYLES = [
   { id: 'block', label: 'Block', font: 'anton', hollow: false },
+  { id: 'tall', label: 'Tall', font: 'bebas', hollow: false },
+  { id: 'athletic', label: 'Athletic', font: 'oswald', hollow: false },
+  { id: 'collegiate', label: 'Collegiate', font: 'graduate', hollow: false },
   { id: 'varsity', label: 'Varsity', font: 'squada', hollow: false },
   { id: 'outline', label: 'Outline', font: 'anton', hollow: true },
 ];
 
-export const DEFAULT_PALETTE = [
+const LEGACY_DEFAULT_PALETTE = [
   { hex: '#192853', name: 'Navy' }, { hex: '#962C32', name: 'Red' }, { hex: '#0B0B0B', name: 'Black' },
   { hex: '#FFFFFF', name: 'White' }, { hex: '#1E4D8C', name: 'Royal' }, { hex: '#7CB0E0', name: 'Sky' },
   { hex: '#0B6E4F', name: 'Forest' }, { hex: '#F2B705', name: 'Gold' }, { hex: '#5B2A86', name: 'Purple' },
   { hex: '#7A1F3D', name: 'Maroon' }, { hex: '#D9631E', name: 'Orange' }, { hex: '#0EA5A5', name: 'Teal' },
+];
+
+// Keep the common uniform shades distinct. In particular, Vegas Gold is not
+// athletic gold, and Burnt Orange must remain selectable independently from
+// the brighter standard orange used by existing designs.
+export const DEFAULT_PALETTE = [
+  { hex: '#192853', name: 'Navy' }, { hex: '#962C32', name: 'Red' }, { hex: '#0B0B0B', name: 'Black' },
+  { hex: '#FFFFFF', name: 'White' }, { hex: '#C0C0C0', name: 'Light Grey' }, { hex: '#4A4A4A', name: 'Dark Grey' },
+  { hex: '#1E4D8C', name: 'Royal' }, { hex: '#7CB0E0', name: 'Sky' }, { hex: '#0B6E4F', name: 'Forest' },
+  { hex: '#C5B358', name: 'Vegas Gold' }, { hex: '#F2B705', name: 'Gold' }, { hex: '#5B2A86', name: 'Purple' },
+  { hex: '#7A1F3D', name: 'Maroon' }, { hex: '#F47A1F', name: 'Orange' }, { hex: '#BF5700', name: 'Burnt Orange' },
+  { hex: '#0EA5A5', name: 'Teal' },
 ];
 
 const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
@@ -33,7 +48,7 @@ export const DEFAULT_PRESETS = [
   { id: 'pinstripe', name: 'Pinstripe', sports: [], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
   { id: 'camo', name: 'Camo Sleeves', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
   { id: 'royalgold', name: 'Royal & Gold', sports: [], config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
-  { id: 'fade', name: 'Sunset Fade', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#D9631E'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'fade', name: 'Sunset Fade', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#F47A1F'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
   { id: 'blackout', name: 'Blackout', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
   { id: 'maroon', name: 'Maroon Stripes', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
 ];
@@ -62,6 +77,16 @@ function cleanPalette(raw) {
     .filter((p) => p && typeof p === 'object' && HEX_RE.test(p.hex))
     .map((p) => ({ hex: p.hex.toUpperCase(), name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim().slice(0, 18) : 'Custom' }));
   return out.length >= 2 ? out : null;
+}
+
+// Older installs may have the original built-in palette persisted in
+// uniform_settings. Upgrade only that exact untouched default; a deliberately
+// customized admin palette remains authoritative.
+function upgradeLegacyPalette(palette) {
+  if (!Array.isArray(palette) || palette.length !== LEGACY_DEFAULT_PALETTE.length) return palette;
+  const legacy = new Set(LEGACY_DEFAULT_PALETTE.map((p) => p.hex.toUpperCase()));
+  const isUntouchedLegacy = palette.every((p) => legacy.has(String(p.hex || '').toUpperCase()));
+  return isUntouchedLegacy ? DEFAULT_PALETTE.map((p) => ({ ...p })) : palette;
 }
 function cleanPresets(raw) {
   if (!Array.isArray(raw)) return null;
@@ -135,7 +160,7 @@ export function loadBuilderSettings() {
         for (const row of data || []) {
           const clean = CLEANERS[row.key];
           const v = clean && clean(row.value);
-          if (v) out[row.key] = v;
+          if (v) out[row.key] = row.key === 'palette' ? upgradeLegacyPalette(v) : v;
         }
       }
     } catch (_e) { /* defaults stand */ }
