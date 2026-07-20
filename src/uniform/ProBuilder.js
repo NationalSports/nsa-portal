@@ -71,7 +71,7 @@ const PATTERNS = ds.PATTERNS;
 const BUILT_IN_PRINT_PATTERNS = [
   {
     id: 'hex-flow-test', name: 'Hex Flow', image: '/uniform/patterns/hex-flow-test.png',
-    tintable: true, tint_mode: 'mono',
+    tintable: true, tint_mode: 'duotone',
   },
 ];
 // Human-readable "Construction Materials" row value for a section/zone.
@@ -776,21 +776,32 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             {printLib.length > 0 && (
               <>
                 <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
                   {printLib.map((p) => {
                     const on = value.pattern === 'custom' && value.patternImage === p.image;
                     return (
-                      <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: (p.tint_mode === 'blend' || p.tint_mode === 'mono') ? p.tint_mode : 'solid' })}
-                        style={{ width: 46, height: 40, borderRadius: 3, cursor: 'pointer', padding: 0, boxSizing: 'border-box', transform: 'skewX(-12deg)',
+                      <button type="button" key={p.id} data-testid={`pattern-${def.key}-${p.id}`} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} aria-pressed={on}
+                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone'].includes(p.tint_mode) ? p.tint_mode : 'solid' })}
+                        style={{ width: '100%', minHeight: 52, borderRadius: 5, cursor: 'pointer', padding: '6px 9px', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', background: '#fff',
                           border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
-                          boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)',
-                          backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
+                          boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)' }}>
+                        <span aria-hidden="true" style={{ width: 42, height: 36, flex: '0 0 42px', borderRadius: 3, border: '1px solid ' + C.mid,
+                          backgroundImage: `url(${p.image})`, backgroundSize: '24px 18px', backgroundRepeat: 'repeat' }} />
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, color: C.navy, textTransform: 'uppercase', letterSpacing: 0.5 }}>{p.name}</span>
+                          <span style={{ display: 'block', marginTop: 2, fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>{on ? 'Applied — edit colors below' : 'Click to apply to this section'}</span>
+                        </span>
+                      </button>
                     );
                   })}
                 </div>
               </>
             )}
-            {!layoutLocked && <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>}
+            {(!layoutLocked || (value.pattern === 'custom' && value.patternTintMode === 'duotone')) && (
+              <div style={{ ...railLabel, marginBottom: 8 }}>
+                {value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Background' : 'Color'}
+              </div>
+            )}
             <div style={{ marginBottom: layoutLocked ? 0 : (value.pattern !== 'solid' ? 14 : 0) }}>
               <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} />
             </div>
@@ -803,7 +814,13 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode === 'mono' && (
               <div style={{ marginTop: 12, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Monochrome print — shades derive automatically from the section color above.</div>
             )}
-            {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && (
+            {value.pattern === 'custom' && value.patternTint && value.patternTintMode === 'duotone' && (
+              <>
+                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Pattern Detail</div>
+                <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} />
+              </>
+            )}
+            {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && value.patternTintMode !== 'duotone' && (
               <>
                 <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Secondary</div>
                 <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} />

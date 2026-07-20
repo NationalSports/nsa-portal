@@ -218,13 +218,13 @@ function cleanZone(z, base = DEFAULT_ZONE) {
     if (typeof z.pattern === 'string' && PATTERN_IDS.includes(z.pattern)) out.pattern = z.pattern;
     // Admin-library print pattern: an image tile fills the zone. Only honored
     // with a valid image URL; carries a display name for spec sheets/PDFs.
-    const pimg = typeof z.patternImage === 'string' && /^(data:image\/|https?:)/i.test(z.patternImage) ? z.patternImage : null;
+    const pimg = typeof z.patternImage === 'string' && (/^(data:image\/|https?:)/i.test(z.patternImage) || /^\/uniform\/patterns\/[a-z0-9._-]+$/i.test(z.patternImage)) ? z.patternImage : null;
     if (pimg) {
       out.pattern = 'custom';
       out.patternImage = pimg;
       if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
       if (z.patternTint) out.patternTint = true; // tile → recolor with zone colors
-      if (['blend', 'solid', 'mono'].includes(z.patternTintMode)) out.patternTintMode = z.patternTintMode;
+      if (['blend', 'solid', 'mono', 'duotone'].includes(z.patternTintMode)) out.patternTintMode = z.patternTintMode;
     }
   }
   return out;

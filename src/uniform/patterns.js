@@ -181,10 +181,12 @@ function hx(h) {
 //             designer uses pure red) → color3/accent. Every pixel snaps to
 //             exactly ONE team color — crisp separations, no blending.
 //   'blend' — grayscale luminance lerp color2→color1 (tonal/smoke art).
+//   'duotone' — light source pixels → color1/background; dark source pixels →
+//               color2/detail. This keeps two-color artwork fully editable.
 // Cached per (src, mode, colors); alpha preserved.
 const _tintCache = new Map();
 export function tintedTile(img, src, color1, color2, color3, color4, mode) {
-  const m = (mode === 'blend' || mode === 'mono') ? mode : 'solid';
+  const m = (mode === 'blend' || mode === 'mono' || mode === 'duotone') ? mode : 'solid';
   const c3 = color3 || '#ffffff';
   const c4 = color4 || '#ffffff';
   const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3 + '|' + c4;
@@ -208,6 +210,16 @@ export function tintedTile(img, src, color1, color2, color3, color4, mode) {
       if (sat > 60) S = (g > r ? C4 : C3);
       else S = (lum >= 128 ? A : B);
       d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
+    } else if (m === 'duotone') {
+      // Preserve the source artwork's anti-aliased edges while mapping its two
+      // visual roles to independent builder colors. The supplied pattern has a
+      // light field and dark linework, so luminance is a stable classifier.
+      const lum = r * 0.299 + g * 0.587 + b * 0.114;
+      const t = Math.max(0, Math.min(1, (lum - 70) / 105));
+      const smooth = t * t * (3 - 2 * t);
+      d[i] = Math.round(B[0] + (A[0] - B[0]) * smooth);
+      d[i + 1] = Math.round(B[1] + (A[1] - B[1]) * smooth);
+      d[i + 2] = Math.round(B[2] + (A[2] - B[2]) * smooth);
     } else if (m === 'mono') {
       // One base color (color1); the tile's value shades it. Mid-gray = the
       // base as picked, lighter → toward white (tint), darker → toward black
