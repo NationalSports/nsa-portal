@@ -183,7 +183,6 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // qty-mirror both compare each distinct bucket's summed allocation to its open qty.
     const _bk = {};
     ties.forEach((t) => { const k = t.target_idx; (_bk[k] = _bk[k] || { open: t.open_qty, alloc: 0 }).alloc += t.allocated_qty; });
-    Object.values(_bk).forEach(() => {});
     const bucketOver = Object.values(_bk).reduce((a, b) => a + Math.max(0, b.alloc - b.open), 0);
     const qtyMirror = ties.length > 1 && Object.values(_bk).every((b) => b.alloc === b.open);
     const candPo = poParts(((ties.length ? cand.items[ties[0].target_idx] : cand.items.find((it) => poParts(it.po_id).flat === billPo.flat)) || {}).po_id || (cand.raw && cand.raw.po_number) || cand.label);

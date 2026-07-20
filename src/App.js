@@ -26894,7 +26894,6 @@ export default function App(){
                           const xt=b._extraTies||{};
                           const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
                           const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk').map(t2=>t2.target_idx),...Object.values(xt)]);
-                          const still=prop.unresolved.filter(i2=>xt[i2]==null);
                           return<div style={{marginTop:8,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6}}>
                             <div style={{fontSize:10,fontWeight:800,color:'#92400e',marginBottom:5}}>Link the rest — the PO matches this order, so these belong to one of its items. Click to link:</div>
                             {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
