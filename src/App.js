@@ -7454,6 +7454,25 @@ export default function App(){
       nf('Task completed!')
     };
     const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
+    // Redo a bot task that failed/was blocked/needs an answer — sets bot_status back to
+    // 'queued' so the worker's next poll picks it up fresh (same effect as replying to a
+    // needs_input task, generalized to any non-terminal bot status). Logs an optional note
+    // as a comment so the retry has context (e.g. "auth fixed on worker box").
+    const _botRequeue=(id,note='')=>{
+      const ts=new Date().toISOString();
+      const comment=note.trim()?{id:'tc-'+Date.now(),todo_id:id,author_id:cu.id,text:note.trim(),created_at:ts}:null;
+      setAssignedTodos(prev=>prev.map(t=>{
+        if(t.id!==id)return t;
+        const u={...t,bot_status:'queued',updated_at:ts};
+        if(comment)u.comments=[...(t.comments||[]),comment];
+        return u;
+      }));
+      if(supabase){
+        const upd={bot_status:'queued',updated_at:ts};
+        _dbSavingGuard(()=>supabase.from('assigned_todos').update(upd).eq('id',id).then(r=>{if(r.error)console.error('[DB] bot requeue:',r.error.message)}));
+      }
+      nf('🔁 Task requeued — Claude will retry shortly');
+    };
     // Rep-delivery: mark a "Pick up & deliver" to-do delivered straight from the dashboard. Mirrors the
     // warehouse Deliver tab (so.delivered[dkey]) so the item drops off every delivery list and persists.
     // Shows a success banner; the to-do regenerates without this item once sos state updates.
@@ -7815,6 +7834,7 @@ export default function App(){
               <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
               {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
               {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
+              {t.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title="Retry — requeue for Claude" style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
               <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
               <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
             </div>
@@ -8347,6 +8367,13 @@ export default function App(){
             {td.due_date&&<div><span style={{color:'#64748b'}}>Due:</span> <span style={{fontWeight:600,color:_todoDueColor(td.due_date)}}>{_fmtDueDate(td.due_date)}</span></div>}
           </div>
           {td.description&&<div style={{padding:10,background:'#f8fafc',borderRadius:6,fontSize:13,marginBottom:12,border:'1px solid #e2e8f0'}}>{td.description}</div>}
+          {/* Bot retry — failed/blocked/needs_input tasks never ran to completion; requeue
+              instead of forcing a manual comment. needs_input also has this via replying, but
+              the button makes it discoverable without knowing that trick. */}
+          {td.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(td.bot_status)&&(()=>{const _ui=botRowUI(td.bot_status);return<div style={{marginBottom:12,padding:'10px 12px',background:_ui?.bg||'#fef2f2',border:'1px solid '+(_ui?.bar||'#fecaca'),borderRadius:8,display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap'}}>
+            <div style={{fontSize:12,color:'#334155'}}><strong style={{color:_ui?.bar||'#b91c1c'}}>{_ui?.label||'Bot stopped'}</strong> — {td.bot_status==='failed'?'the run did not complete.':td.bot_status==='blocked'?'the bot could not proceed.':'reply above, or retry to run it again as-is.'}</div>
+            <button className="btn btn-sm btn-primary" onClick={()=>_botRequeue(td.id)}>🔁 Retry</button>
+          </div>})()}
           {/* PO detail — items, ship-to, and a link to the PO page */}
           {_poId&&<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
             <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:8,padding:'8px 12px',background:'#f0f9ff',borderBottom:'1px solid #e2e8f0'}}>
