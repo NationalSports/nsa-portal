@@ -11,6 +11,16 @@ alter table public.customers
   add constraint customers_uniform_discount_percent_check
   check (uniform_discount_percent between 0 and 100);
 
+-- uniform_settings predates the repo migration chain in prod (see 00179); the
+-- guard makes this migration runnable on fresh/branch databases too. Shape
+-- matches the live table exactly.
+create table if not exists public.uniform_settings (
+  key text primary key,
+  value jsonb,
+  updated_at timestamptz default now()
+);
+alter table public.uniform_settings enable row level security;
+
 insert into public.uniform_settings(key, value, updated_at)
 values (
   'pricing_policy',

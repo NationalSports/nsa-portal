@@ -16,7 +16,7 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
-import { SETTINGS_DEFAULTS, loadBuilderSettings } from './builderSettings';
+import { SETTINGS_DEFAULTS, loadBuilderSettings, loadBuilderPatterns } from './builderSettings';
 import { FABRIC_DETAILS, fabricSwatchDataURL } from './fabricInfo';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
 import { fontStack } from './fonts';
@@ -515,10 +515,13 @@ function restoredConfig() {
 }
 async function trySupabaseSave(rec) {
   try {
-    const mod = await import('../lib/supabase');
-    const sb = mod.supabase;
-    if (!sb) return;
-    await sb.from('uniform_designs').insert({ name: rec.name, spec: rec.spec, thumb: rec.thumb || null });
+    // uniform_designs is staff-only under RLS; the public builder saves through
+    // the service-role data function (size-capped server-side). Best-effort.
+    await fetch('/.netlify/functions/uniform-builder-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'save_design', name: rec.name, spec: rec.spec, thumb: rec.thumb || null }),
+    });
   } catch (_e) { /* best-effort */ }
 }
 
@@ -953,11 +956,17 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   // Admin-managed palette/styles/presets: hydrate once per session, then bump
   // to re-render everything reading the module-level registries.
   const [settingsRev, setSettingsRev] = useState(0);
+  // Admin-configured pricing (uniform_settings/pricing_policy) served by the
+  // builder-data function. Overrides the prop so the public preview always
+  // matches what the server will quote at checkout.
+  const [serverPricingPolicy, setServerPricingPolicy] = useState(null);
+  const effectivePricingPolicy = serverPricingPolicy || pricingPolicy;
   useEffect(() => {
     let alive = true;
     loadBuilderSettings().then((sx) => {
       if (!alive) return;
       PALETTE = sx.palette; FONTS = sx.numberStyles; DESIGN_PRESETS = sx.presets;
+      if (sx.pricingPolicy) setServerPricingPolicy(sx.pricingPolicy);
       setSettingsRev((r) => r + 1);
     });
     return () => { alive = false; };
@@ -1240,11 +1249,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     let alive = true;
     (async () => {
       try {
-        const mod = await import('../lib/supabase');
-        if (!mod.supabase) return;
-        const { data } = await mod.supabase.from('uniform_patterns')
-          .select('id,name,image,tintable,tint_mode').eq('active', true)
-          .order('created_at', { ascending: false }).limit(40);
+        const data = await loadBuilderPatterns();
         if (alive && Array.isArray(data)) setPrintLib(data);
       } catch (_e) { /* offline / table missing */ }
     })();
@@ -1477,13 +1482,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     fabric: config.fabric || 'sublimated',
     decorationMethod: config.decorationMethod || 'sublimated',
     discountPercent: normalizeUniformDiscount(coachDiscountPercent),
-    policy: pricingPolicy,
-  }), [totalQty, config.fabric, config.decorationMethod, coachDiscountPercent, pricingPolicy]);
+    policy: effectivePricingPolicy,
+  }), [totalQty, config.fabric, config.decorationMethod, coachDiscountPercent, effectivePricingPolicy]);
   const fabricOptions = useMemo(() => ds.FABRICS.map((fabric) => {
-    const quote = calculateUniformPrice({ fabric: fabric.id, policy: pricingPolicy, quantity: 1 });
+    const quote = calculateUniformPrice({ fabric: fabric.id, policy: effectivePricingPolicy, quantity: 1 });
     const adjustment = quote.fabricAdjustment;
     return { ...fabric, label: adjustment ? `${fabric.label} ${adjustment > 0 ? '+' : '−'}${formatUniformMoney(Math.abs(adjustment))}` : fabric.label };
-  }), [pricingPolicy]);
+  }), [effectivePricingPolicy]);
   const toggleNumber = (num) => setAssignments((s) => {
     const next = {}; for (const k of Object.keys(s)) next[k] = s[k].slice();
     const mine = (next[selectedSize] || []).includes(num);

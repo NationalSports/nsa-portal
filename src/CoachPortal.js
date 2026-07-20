@@ -702,6 +702,22 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[uniformBuilder,setUniformBuilder]=useState(false);// coach self-serve uniform designer
+  // This team's uniform-builder orders, listed so a coach can open a proof and
+  // confirm it from the portal (server resolves the alpha tag; same trust model
+  // as the rest of the portal).
+  const[uniformOrders,setUniformOrders]=useState([]);
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      try{
+        if(!customer?.alpha_tag)return;
+        const r=await fetch('/.netlify/functions/uniform-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'portal_list',portal:customer.alpha_tag})});
+        const d=await r.json();
+        if(alive&&d&&d.ok)setUniformOrders(Array.isArray(d.orders)?d.orders:[]);
+      }catch(_e){/* card simply stays hidden */}
+    })();
+    return()=>{alive=false};
+  },[customer?.alpha_tag]);
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   const[page,setPage]=useState('home');// portal nav: home|orders|roster|store|art|billing|shop
@@ -2679,6 +2695,25 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             </div>
             <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
           </button>
+
+          {/* Uniform orders — proof review & confirmation lives on each order's
+              tokened status page; this card is the portal's way in. */}
+          {uniformOrders.length>0&&<div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,padding:'16px 20px',marginBottom:16,boxShadow:'0 1px 6px rgba(15,23,42,.06)'}}>
+            <div className="nsa-disp" style={{fontSize:15,fontWeight:800,textTransform:'uppercase',color:tPrimary,marginBottom:10}}>Your Uniform Orders</div>
+            {uniformOrders.slice(0,6).map(o=>{
+              const needsConfirm=o.production_status==='proof_ready';
+              const statusLabel=needsConfirm?'Proof ready — review & confirm':String(o.production_status||'submitted').replace(/_/g,' ');
+              return(
+                <a key={o.order_number} href={`/uniform-builder?order=${encodeURIComponent(o.order_number)}&token=${encodeURIComponent(o.token)}`} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'9px 0',borderTop:'1px solid #f1f5f9',textDecoration:'none',color:'#0f172a'}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{o.order_number}<span style={{fontWeight:400,color:'#64748b'}}> · {o.total_qty} pcs</span></div>
+                    <div style={{fontSize:12,color:needsConfirm?'#962C32':'#64748b',fontWeight:needsConfirm?700:400,textTransform:'capitalize'}}>{statusLabel}</div>
+                  </div>
+                  <span className="nsa-disp" style={{flexShrink:0,fontSize:12,fontWeight:800,textTransform:'uppercase',color:'#fff',background:needsConfirm?'#962C32':tPrimary,borderRadius:4,padding:'7px 12px'}}>{needsConfirm?'Confirm →':'View →'}</span>
+                </a>
+              );
+            })}
+          </div>}
 
           {/* Shop & Order section */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>

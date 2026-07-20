@@ -17,32 +17,17 @@ create index if not exists uniform_patterns_active_idx on public.uniform_pattern
 
 alter table public.uniform_patterns enable row level security;
 
--- The builder runs on a public route, so anyone may READ the library.
+-- Staff-only (matches the live 00179 posture). The public builder lists active
+-- patterns through the service-role uniform-builder-data function.
 drop policy if exists uniform_patterns_public_select on public.uniform_patterns;
-create policy uniform_patterns_public_select
-  on public.uniform_patterns
-  for select
-  to anon, authenticated
-  using (true);
-
--- Only signed-in portal staff may manage the library.
 drop policy if exists uniform_patterns_auth_insert on public.uniform_patterns;
-create policy uniform_patterns_auth_insert
-  on public.uniform_patterns
-  for insert
-  to authenticated
-  with check (true);
-
 drop policy if exists uniform_patterns_auth_update on public.uniform_patterns;
-create policy uniform_patterns_auth_update
-  on public.uniform_patterns
-  for update
-  to authenticated
-  using (true);
-
 drop policy if exists uniform_patterns_auth_delete on public.uniform_patterns;
-create policy uniform_patterns_auth_delete
+drop policy if exists uniform_patterns_staff_all on public.uniform_patterns;
+create policy uniform_patterns_staff_all
   on public.uniform_patterns
-  for delete
+  for all
   to authenticated
-  using (true);
+  using (public.is_team_member())
+  with check (public.is_team_member());
+revoke select, insert, update, delete on public.uniform_patterns from anon;

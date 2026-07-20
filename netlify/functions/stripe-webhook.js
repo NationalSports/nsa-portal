@@ -162,9 +162,15 @@ exports.handler = async (event) => {
           const expected = Math.round(Number(uniformOrder.pricing_breakdown?.paymentChargeTotal || 0) * 100);
           const metadataMatches = pi.metadata?.uniform_order_id === uniformOrder.id;
           if (expected > 0 && Number(pi.amount) === expected && metadataMatches) {
-            const { data: paidRows } = await sb.from('uniform_order_requests')
+            const { data: paidRows, error: uniformFlipErr } = await sb.from('uniform_order_requests')
               .update({ payment_status: 'paid', status: 'paid' })
               .eq('id', uniformOrder.id).neq('payment_status', 'paid').select('*').limit(1);
+            if (uniformFlipErr) {
+              // Same webhook-honesty rule as the invoice flip above: if the write
+              // failed, return 500 so Stripe retries instead of losing the payment.
+              console.error('[stripe-webhook] uniform paid-flip failed:', uniformFlipErr.message);
+              hardFailure = true;
+            }
             const paidOrder = paidRows && paidRows[0];
             if (paidOrder) {
               await sb.from('uniform_order_events').insert({ order_id: paidOrder.id, event_type: 'payment_received', actor_type: 'system', message: 'Stripe payment received by webhook', metadata: { stripe_intent_id: pi.id } });

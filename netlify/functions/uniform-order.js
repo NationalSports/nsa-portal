@@ -18,6 +18,12 @@ const response = (statusCode, body, extraHeaders = {}) => ({ statusCode, headers
 const cleanText = (value, max = 200) => String(value == null ? '' : value).trim().slice(0, max);
 const validEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const clientRef = (value) => cleanText(value, 100) || crypto.randomUUID();
+// Thumbs are data-URL PNGs from the builder canvas. Cap them so a hostile body
+// can't store multi-megabyte rows that bloat every later select.
+const cleanThumb = (value) => {
+  const s = typeof value === 'string' ? value : '';
+  return s && s.length <= 600000 ? s : null;
+};
 
 async function verifyCardIntent(body, ref, email, orderTotal) {
   const intentId = cleanText(body.stripe_intent_id, 120);
@@ -66,7 +72,9 @@ async function createUniformPaymentIntent(order, method) {
     },
     receipt_email: order.contact_email,
     description: `NSA custom uniform ${order.order_number || order.id} - ${order.team_name}`,
-  }, { idempotencyKey: `uniform-${order.id}-${paymentMethod}-v1` });
+    // The amount is part of the key: a coach who edits the order and retries
+    // checkout gets a fresh intent instead of a Stripe idempotency_error.
+  }, { idempotencyKey: `uniform-${order.id}-${paymentMethod}-${amount}-v1` });
   return { intent, paymentMethod, subtotalCents, feeCents, amount };
 }
 
@@ -87,10 +95,15 @@ async function safeNotify(sb, order, kind, context = {}, staffToo = false) {
   }
 }
 
+// Customer-facing responses are allow-listed to the public columns even when the
+// row was loaded with STAFF_ORDER_FIELDS (rep notes, Stripe ids, internal links
+// must never reach the browser of a token-holding customer).
+const PUBLIC_FIELD_LIST = PUBLIC_ORDER_FIELDS.split(',');
 function publicOrder(order) {
   if (!order) return null;
-  const { public_token, ...safe } = order;
-  return { ...safe, token: public_token };
+  const safe = {};
+  for (const key of PUBLIC_FIELD_LIST) if (key !== 'public_token' && key in order) safe[key] = order[key];
+  return { ...safe, token: order.public_token };
 }
 
 async function findByToken(sb, orderNumber, token, fields = PUBLIC_ORDER_FIELDS) {
@@ -159,6 +172,10 @@ async function createOrder(sb, body) {
   row.spec = body.spec && typeof body.spec === 'object' ? body.spec : {};
   row.bottom_spec = body.bottom_spec && typeof body.bottom_spec === 'object' ? body.bottom_spec : null;
   row.roster = Array.isArray(body.roster) ? body.roster.slice(0, 1000) : [];
+  row.po_number = cleanText(body.po_number, 100) || null;
+  row.po_contact = cleanText(body.po_contact, 200) || null;
+  row.thumb = cleanThumb(body.thumb);
+  row.back_thumb = cleanThumb(body.back_thumb);
   row.pricing_breakdown = { ...quote, policySource: 'uniform_settings/pricing_policy', pricedAt: new Date().toISOString() };
 
   let { data: order, error } = await sb.from('uniform_order_requests').insert(row).select(STAFF_ORDER_FIELDS).single();
@@ -214,6 +231,10 @@ async function prepareCardOrder(sb, body) {
       spec: body.spec && typeof body.spec === 'object' ? body.spec : {},
       bottom_spec: body.bottom_spec && typeof body.bottom_spec === 'object' ? body.bottom_spec : null,
       roster: Array.isArray(body.roster) ? body.roster.slice(0, 1000) : [],
+      po_number: cleanText(body.po_number, 100) || null,
+      po_contact: cleanText(body.po_contact, 200) || null,
+      thumb: cleanThumb(body.thumb),
+      back_thumb: cleanThumb(body.back_thumb),
     });
     const inserted = await sb.from('uniform_order_requests').insert(row).select(STAFF_ORDER_FIELDS).single();
     if (inserted.error) throw inserted.error;
@@ -237,8 +258,8 @@ async function prepareCardOrder(sb, body) {
       spec: body.spec && typeof body.spec === 'object' ? body.spec : {},
       bottom_spec: body.bottom_spec && typeof body.bottom_spec === 'object' ? body.bottom_spec : null,
       roster: Array.isArray(body.roster) ? body.roster.slice(0, 1000) : [],
-      thumb: body.thumb || null,
-      back_thumb: body.back_thumb || null,
+      thumb: cleanThumb(body.thumb),
+      back_thumb: cleanThumb(body.back_thumb),
     }).eq('id', order.id).select(STAFF_ORDER_FIELDS).single();
     if (updated.error) throw updated.error;
     order = updated.data;
@@ -276,14 +297,21 @@ async function finalizeCardOrder(sb, body) {
   if (intent.currency !== 'usd' || intent.metadata?.uniform_order_id !== order.id || Number(intent.amount) !== expectedCents) return response(409, { ok: false, error: 'The Stripe payment does not match this uniform order.' });
   if (!['succeeded', 'processing'].includes(intent.status)) return response(409, { ok: false, error: 'The payment has not completed.' });
   const paymentStatus = intent.status === 'succeeded' ? 'paid' : 'pending';
-  const updated = await sb.from('uniform_order_requests').update({
+  // Compare-and-set (like the webhook's): if the webhook already flipped the
+  // order to paid, don't double-record the event or double-send the email.
+  const { data: updatedRows, error: updateErr } = await sb.from('uniform_order_requests').update({
     payment_status: paymentStatus,
     status: paymentStatus === 'paid' ? 'paid' : 'pending_payment',
-  }).eq('id', order.id).select(STAFF_ORDER_FIELDS).single();
-  if (updated.error) throw updated.error;
+  }).eq('id', order.id).neq('payment_status', 'paid').select(STAFF_ORDER_FIELDS).limit(1);
+  if (updateErr) throw updateErr;
+  const updated = updatedRows && updatedRows[0];
+  if (!updated) {
+    const fresh = await findByToken(sb, body.order_number, body.token, STAFF_ORDER_FIELDS);
+    return response(200, { ok: true, reused: true, ...await loadPublicStatus(sb, fresh || order) });
+  }
   await recordEvent(sb, order.id, paymentStatus === 'paid' ? 'payment_received' : 'payment_processing', 'coach', order.contact_name, paymentStatus === 'paid' ? 'Card payment received' : 'Bank payment is processing', { stripe_intent_id: intent.id });
-  await safeNotify(sb, updated.data, 'confirmation', {}, true);
-  return response(200, { ok: true, ...await loadPublicStatus(sb, updated.data) });
+  await safeNotify(sb, updated, 'confirmation', {}, true);
+  return response(200, { ok: true, ...await loadPublicStatus(sb, updated) });
 }
 
 async function customerDecision(sb, body) {
@@ -331,12 +359,30 @@ async function reorder(sb, body) {
   return response(201, { ok: true, ...await loadPublicStatus(sb, created) });
 }
 
+// Coach-portal order list. The portal's trust model is knowledge of the team's
+// alpha tag (same gate as the rest of /?portal=), so the response includes each
+// order's status link — that is what lets a coach open a proof and confirm it
+// from the portal without digging out the original email.
+async function portalList(sb, body) {
+  const tag = cleanText(body.portal, 80);
+  if (!tag) return response(400, { ok: false, error: 'Missing portal tag.' });
+  const { data: customer, error: custErr } = await sb.from('customers').select('id').ilike('alpha_tag', tag).maybeSingle();
+  if (custErr) throw custErr;
+  if (!customer) return response(404, { ok: false, error: 'Portal not found.' });
+  const { data: orders, error } = await sb.from('uniform_order_requests')
+    .select(PUBLIC_ORDER_FIELDS).eq('customer_id', customer.id)
+    .order('created_at', { ascending: false }).limit(50);
+  if (error) throw error;
+  return response(200, { ok: true, orders: (orders || []).map(publicOrder) });
+}
+
 async function publishProof(sb, body, staff) {
   const id = cleanText(body.order_id, 80);
   const { data: order, error: findErr } = await sb.from('uniform_order_requests').select(STAFF_ORDER_FIELDS).eq('id', id).maybeSingle();
   if (findErr) throw findErr;
   if (!order) return response(404, { ok: false, error: 'Order not found.' });
   if (order.locked_at) return response(409, { ok: false, error: 'The order is locked for production.' });
+  if (order.production_status === 'cancelled') return response(409, { ok: false, error: 'The order is cancelled — reactivate it before publishing a proof.' });
   const version = Number(order.proof_version || 0) + 1;
   const note = cleanText(body.note, 2000);
   const snapshot = { config: order.config, spec: order.spec, bottom_spec: order.bottom_spec, roster: order.roster, total_qty: order.total_qty, pricing_breakdown: order.pricing_breakdown };
@@ -438,6 +484,7 @@ exports.handler = async (event) => {
     }
     if (body.action === 'customer_decision') return await customerDecision(sb, body);
     if (body.action === 'reorder') return await reorder(sb, body);
+    if (body.action === 'portal_list') return await portalList(sb, body);
 
     const staff = await verifyUser(event);
     if (!staff.ok) return response(staff.status || 401, { ok: false, error: staff.error || 'Sign in required.' });

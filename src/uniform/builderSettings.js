@@ -139,12 +139,45 @@ export const SETTINGS_DEFAULTS = {
   palette: DEFAULT_PALETTE,
   presets: DEFAULT_PRESETS,
   customFonts: [],
+  pricingPolicy: null,
 };
 
 const CLEANERS = { numberStyles: cleanStyles, palette: cleanPalette, presets: cleanPresets, customFonts: cleanCustomFonts };
 
+// Server-authored pricing policy (uniform_settings/pricing_policy). Sanitize to
+// plain numbers so a half-edited row can't NaN the price display; the server
+// re-quotes authoritatively at checkout either way.
+function cleanPricingPolicy(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+  const table = (t) => {
+    if (!t || typeof t !== 'object') return undefined;
+    const out = {};
+    for (const k of Object.keys(t)) { const v = num(t[k]); if (v !== undefined) out[k] = v; }
+    return Object.keys(out).length ? out : undefined;
+  };
+  const policy = {};
+  const base = num(raw.publicBase); if (base !== undefined) policy.publicBase = base;
+  const fab = table(raw.fabricAdjustments); if (fab) policy.fabricAdjustments = fab;
+  const deco = table(raw.decorationAdjustments); if (deco) policy.decorationAdjustments = deco;
+  return Object.keys(policy).length ? policy : null;
+}
+
 let _cache = null;
 let _inflight = null;
+let _patterns = null;
+
+// The uniform tables are staff-only under RLS, so the login-free builder reads
+// settings + patterns through the uniform-builder-data function (service role
+// behind an allow-list). Staff sessions fall back to a direct read if the
+// function is unreachable (e.g. local dev without netlify functions).
+async function fetchBuilderData() {
+  const res = await fetch('/.netlify/functions/uniform-builder-data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'bootstrap' }) });
+  if (!res.ok) throw new Error('builder data ' + res.status);
+  const data = await res.json();
+  if (!data || !data.ok) throw new Error('builder data unavailable');
+  return data;
+}
 
 // Load admin overrides (cached per session). Always resolves to a complete,
 // safe settings object.
@@ -153,15 +186,32 @@ export function loadBuilderSettings() {
   if (_inflight) return _inflight;
   _inflight = (async () => {
     const out = { ...SETTINGS_DEFAULTS };
+    let rows = null;
     try {
-      const mod = await import('../lib/supabase');
-      if (mod.supabase) {
-        const { data } = await mod.supabase.from('uniform_settings').select('key,value');
-        for (const row of data || []) {
-          const clean = CLEANERS[row.key];
-          const v = clean && clean(row.value);
-          if (v) out[row.key] = row.key === 'palette' ? upgradeLegacyPalette(v) : v;
+      const data = await fetchBuilderData();
+      rows = Object.keys(data.settings || {}).map((key) => ({ key, value: data.settings[key] }));
+      if (Array.isArray(data.patterns)) _patterns = data.patterns;
+    } catch (_e) {
+      // Staff/local fallback: a signed-in team member can read the tables
+      // directly; anonymous coaches simply keep the built-in defaults.
+      try {
+        const mod = await import('../lib/supabase');
+        if (mod.supabase) {
+          const { data } = await mod.supabase.from('uniform_settings').select('key,value');
+          rows = data;
         }
+      } catch (_e2) { /* defaults stand */ }
+    }
+    try {
+      for (const row of rows || []) {
+        if (row.key === 'pricing_policy') {
+          const policy = cleanPricingPolicy(row.value);
+          if (policy) out.pricingPolicy = policy;
+          continue;
+        }
+        const clean = CLEANERS[row.key];
+        const v = clean && clean(row.value);
+        if (v) out[row.key] = row.key === 'palette' ? upgradeLegacyPalette(v) : v;
       }
     } catch (_e) { /* defaults stand */ }
     // Make uploaded fonts renderable before anything draws with them.
@@ -171,6 +221,24 @@ export function loadBuilderSettings() {
     return out;
   })();
   return _inflight;
+}
+
+// Active print patterns, delivered by the same bootstrap call as the settings.
+// Staff fallback mirrors loadBuilderSettings: direct read if the function is out.
+export async function loadBuilderPatterns() {
+  if (_patterns) return _patterns;
+  await loadBuilderSettings();
+  if (_patterns) return _patterns;
+  try {
+    const mod = await import('../lib/supabase');
+    if (mod.supabase) {
+      const { data } = await mod.supabase.from('uniform_patterns')
+        .select('id,name,image,tintable,tint_mode').eq('active', true)
+        .order('created_at', { ascending: false }).limit(40);
+      if (Array.isArray(data)) _patterns = data;
+    }
+  } catch (_e) { /* empty library is fine */ }
+  return _patterns || [];
 }
 
 // Save one registry (admin screens). Refreshes the session cache on success.
