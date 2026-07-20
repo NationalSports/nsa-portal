@@ -45,7 +45,7 @@ const EMBEDDED = (() => { try { return new URLSearchParams(window.location.searc
 // Dedicated review links for the approved soccer layouts. They bypass
 // autosave/catalog state so every URL opens a deterministic starting point.
 const REVIEW_DESIGN = (() => { try { return new URLSearchParams(window.location.search).get('design') || ''; } catch { return ''; } })();
-const AGI_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012';
+const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'FF-228187';
 // The first procedural shorts study is intentionally withheld from the customer
 // flow. Keep the underlying template/source for a future artist-built replacement,
 // while the released configurator stays focused on the production-ready jersey.
@@ -314,9 +314,16 @@ const SPORTS = [
   { key: 'basketball', label: 'Basketball', icon: '🏀' },
   { key: 'baseball', label: 'Baseball', icon: '⚾' },
   { key: 'track', label: 'Track & Field', icon: '🎽' },
+  { key: 'flagfootball', label: 'Flag Football', icon: '🏈' },
   { key: 'soccer', label: 'Soccer', icon: '⚽' },
 ];
 const SPORT_LABELS = SPORTS.reduce((m, s) => { m[s.key] = s.label; return m; }, {});
+// Generic soccer-style artwork can seed the traditional sports, but the first
+// flag-football cut is physically different and must not fall back to those
+// garment models. Until more flag cuts arrive, show only explicit flag presets.
+const presetMatchesSport = (preset, sport) => sport === 'flagfootball'
+  ? !!(preset.sports && preset.sports.includes(sport))
+  : (!preset.sports || !preset.sports.length || preset.sports.includes(sport));
 let DESIGN_PRESETS = SETTINGS_DEFAULTS.presets;
 const thumbCache = {}; // module-level: gallery thumbs render once per session
 const savedThumbsCache = {}; // module-level: My Designs thumbs render once per session
@@ -410,6 +417,7 @@ function garmentFor(cfg) {
   if (cfg.neckStyle === 'newbase') return 'nsapro_jersey'; // Sahrul (v1)
   if (cfg.neckStyle === 'sahrul2') return 'sahrul2_jersey'; // Sahrul (v2, production spec)
   if (cfg.neckStyle === 'vikram') return 'vikram_jersey';  // Vikram
+  if (cfg.neckStyle === 'flag228187') return 'flag228187_jersey'; // Holloway reversible flag cut
   const byNeck = PROGRAM_GARMENTS[cfg.program] || PROGRAM_GARMENTS.mens;
   return byNeck[cfg.neckStyle === 'crew' ? 'crew' : 'vneck'];
 }
@@ -492,6 +500,22 @@ function agi1011PreviewConfig() {
   };
 }
 
+function flag228187PreviewConfig() {
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'flagfootball', designId: 'FF-228187', neckStyle: 'flag228187',
+    teamName: '228187', playerNumber: '23', frontNumber: 'center',
+    numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
+    teamPalette: ['#0B6E4F', '#FFFFFF', '#4A4A4A'],
+    sections: {
+      body: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      sleeveL: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      sleeveR: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      collar: { color: '#4A4A4A', color2: '#FFFFFF', pattern: 'solid' },
+    },
+  };
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────
 // Autosave honors the top bar's "Changes save automatically": the in-progress
 // design + roster survive a refresh or accidental close. Saved designs and
@@ -508,6 +532,7 @@ function loadAutosave() {
 function restoredConfig() {
   if (REVIEW_DESIGN === 'AGI-1011') return agi1011PreviewConfig();
   if (REVIEW_DESIGN === 'AGI-1012') return agi1012PreviewConfig();
+  if (REVIEW_DESIGN === 'FF-228187') return flag228187PreviewConfig();
   const a = loadAutosave();
   if (!a || !a.config) return { ...DEFAULT_CONFIG };
   // Merge over defaults so configs saved before new fields/slots existed stay
@@ -795,6 +820,12 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                     );
                   })}
                 </div>
+                {value.pattern === 'custom' && (
+                  <button type="button" onClick={() => patchSection(def, { pattern: 'solid', patternImage: null, patternName: null, patternTint: false, patternTintMode: 'solid' })}
+                    style={{ margin: '-4px 0 14px', padding: 0, border: 0, background: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.7, color: C.red }}>
+                    Remove print
+                  </button>
+                )}
               </>
             )}
             {(!layoutLocked || (value.pattern === 'custom' && value.patternTintMode === 'duotone')) && (
@@ -976,7 +1007,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [config, setConfig] = useState(restoredConfig);
   const [orderLink] = useState(initialOrderLink);
   // Catalog flow: pick a sport → pick a starting design → the wizard.
-  const [screen, setScreen] = useState(orderLink ? 'status' : (AGI_PREVIEW ? 'wizard' : 'sports')); // sports | designs | wizard | status
+  const [screen, setScreen] = useState(orderLink ? 'status' : (DIRECT_PREVIEW ? 'wizard' : 'sports')); // sports | designs | wizard | status
   // Admin-managed palette/styles/presets: hydrate once per session, then bump
   // to re-render everything reading the module-level registries.
   const [settingsRev, setSettingsRev] = useState(0);
@@ -992,7 +1023,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [hasAutosave] = useState(() => !!loadAutosave());
   const [hasSavedDesigns] = useState(() => loadSavedDesigns().length > 0);
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
-  const [step, setStep] = useState(AGI_PREVIEW ? 'jersey' : 'team');
+  const [step, setStep] = useState(DIRECT_PREVIEW ? 'jersey' : 'team');
   const [spin, setSpin] = useState(false);
   const [stagePiece, setStagePiece] = useState('jersey');
   const [fabricGuide, setFabricGuide] = useState(false);
@@ -1224,7 +1255,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       if (key === 'sleeveL' || key === 'sleeveR') key = 'sleeveL';
       if (key === 'sleeveBandL' || key === 'sleeveBandR') key = 'sleeveBands';
     }
-    const definitions = config.neckStyle === 'agi1012'
+    const definitions = config.neckStyle === 'flag228187'
+      ? [{ key: 'body' }, { key: 'collar' }]
+      : config.neckStyle === 'agi1012'
       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
       : config.neckStyle === 'agi1011'
         ? (sleevesLinked ? AGI1011_LINKED_SECTIONS : AGI1011_SPLIT_SECTIONS)
@@ -1250,6 +1283,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       for (const pz of DESIGN_PRESETS) {
         if (thumbCache[pz.id]) continue;
         try {
+          if (pz.thumbnail) {
+            thumbCache[pz.id] = pz.thumbnail;
+            if (alive) setThumbs((t) => ({ ...t, [pz.id]: pz.thumbnail }));
+            continue;
+          }
           const tspec = specFromConfig({ ...DEFAULT_CONFIG, ...pz.config, teamName: '', playerName: '', playerNumber: '', logos: emptyLogos() });
           const url = await renderToDataURL(tspec, { view: 'front', width: 320 });
           thumbCache[pz.id] = url;
@@ -1326,7 +1364,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   // Render the alt-design thumbnails in the coach's current colors while the
   // dropdown is open (regenerated when colors change so they stay in sync).
   const changeDesigns = useMemo(
-    () => DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)),
+    () => DESIGN_PRESETS.filter((pz) => presetMatchesSport(pz, config.sport)),
     [config.sport, settingsRev] // eslint-disable-line
   );
   useEffect(() => {
@@ -2008,7 +2046,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                   <span style={{ fontSize: 34 }}>{s.icon}</span>
                   <span>
                     <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{s.label}</span>
-                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.filter((p) => !p.sports || !p.sports.length || p.sports.includes(s.key)).length} designs · more garments soon</span>
+                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.filter((p) => presetMatchesSport(p, s.key)).length} designs · more garments soon</span>
                   </span>
                 </button>
               ))}
@@ -2041,7 +2079,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               })}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
-              {DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)).map((pz) => (
+              {DESIGN_PRESETS.filter((pz) => presetMatchesSport(pz, config.sport)).map((pz) => (
                 <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
                     {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
@@ -2198,11 +2236,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     </div>
                     <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} onReplace={replaceTeamColor} />
                   </RailCard>
-                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
-                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012') ? (
+                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
+                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'flag228187') ? (
                       <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
-                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.designId} Foundation · Production Cut</strong>
-                        This approved garment is locked so the 3D view, proof, and finished order always match.
+                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : `${config.designId} Foundation · Production Cut`}</strong>
+                        {config.neckStyle === 'flag228187'
+                          ? 'This commissioned flag-football garment stays locked while its source asset is evaluated.'
+                          : 'This approved garment is locked so the 3D view, proof, and finished order always match.'}
                       </div>
                     ) : (
                       <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]}
@@ -2252,12 +2292,14 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                   </div>
                   <div style={{ order: 1 }}>
                   <RailCard num={1} title="Sections"
-                    action={<button onClick={toggleSleevesLinked}
+                    action={config.neckStyle === 'flag228187' ? null : <button onClick={toggleSleevesLinked}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
                     </button>}>
                   <SectionEditor
-                    sectionDefs={config.neckStyle === 'agi1012'
+                    sectionDefs={config.neckStyle === 'flag228187'
+                      ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Reverse Side' }]
+                      : config.neckStyle === 'agi1012'
                       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
                       : config.neckStyle === 'agi1011'
                         ? (sleevesLinked ? AGI1011_LINKED_SECTIONS : AGI1011_SPLIT_SECTIONS)
@@ -2268,8 +2310,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
                     onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={printLib} teamColors={teamColors}
-                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011'}
-                    layoutLabel={`${config.designId || 'AGI'} approved layout`} />
+                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'flag228187'}
+                    layoutLabel={config.neckStyle === 'flag228187' ? '228187 reversible prototype' : `${config.designId || 'AGI'} approved layout`} />
                   </RailCard>
                   </div>
                   {SHORTS_PREVIEW_ENABLED && <div style={{ order: 3 }}>

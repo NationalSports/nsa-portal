@@ -351,6 +351,28 @@ const TEMPLATES = {
       },
     },
   },
+  // Holloway 228187 reversible flag-football cut. The vendor GLB has one
+  // exterior material (main) and one interior material (reverse), both with a
+  // complete UV set and embedded fabric normal. It is a useful live-builder
+  // prototype, but not yet a production master: collar/trim/panels were not
+  // separated into independent meshes and no editable source .blend was sent.
+  flag228187_jersey: {
+    id: 'flag228187_jersey', name: '228187 Reversible Flag Football', category: 'Flag Football', type: 'raster',
+    credit: 'Holloway 228187 vendor configurator extraction',
+    model3d: PUB('/uniform/flag-228187-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.35, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.43, size: 225 }, name: { x: 0.5, y: 0.18, size: 70 } },
+      },
+    },
+  },
   // Built-in photoreal jersey: a neutral 3D render + zone mask (front/back) shipped
   // in /public/uniform, so the Photoreal path works out-of-the-box with no import.
   // Colors/patterns/logos tint through the base's real folds and shadows.

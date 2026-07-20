@@ -43,6 +43,18 @@ export const DEFAULT_PALETTE = [
 
 const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
 export const DEFAULT_PRESETS = [
+  {
+    id: 'FF-228187', name: '228187 Reversible', sports: ['flagfootball'],
+    thumbnail: '/uniform/flag-228187-preview.png',
+    config: {
+      neckStyle: 'flag228187', numberColor: '#FFFFFF',
+      sections: {
+        body: sec('#0B6E4F'),
+        sleeves: sec('#0B6E4F'),
+        collar: sec('#4A4A4A'),
+      },
+    },
+  },
   { id: 'bold', name: 'Bold Stripes', sports: [], config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
   { id: 'classic', name: 'Classic Solid', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
   { id: 'pinstripe', name: 'Pinstripe', sports: [], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
@@ -101,7 +113,9 @@ function cleanPresets(raw) {
         id: typeof p.id === 'string' && p.id ? p.id : `preset${i}`,
         name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim().slice(0, 26) : 'Design',
         sports: Array.isArray(p.sports) ? p.sports.filter((x) => typeof x === 'string') : [],
+        ...(typeof p.thumbnail === 'string' && /^\/uniform\/[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
         config: {
+          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'newbase', 'sahrul2', 'vikram', 'flag228187'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
           numberColor: HEX_RE.test(p.config.numberColor || '') ? p.config.numberColor : '#FFFFFF',
           sections: {
             body: zone(S.body, sec('#192853')),

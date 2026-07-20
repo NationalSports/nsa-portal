@@ -42,6 +42,10 @@ function matchZone(name) {
     ['sleever', 'sleeveR'], ['rightsleeve', 'sleeveR'], ['sleeveright', 'sleeveR'], ['rarm', 'sleeveR'],
     ['sidel', 'sidePanelL'], ['sider', 'sidePanelR'],
     ['collar', 'collar'], ['neck', 'collar'], ['cuff', 'collar'], ['trim', 'collar'], ['rib', 'collar'],
+    // Reversible flag-football jerseys expose the inside as a second material
+    // instead of a separate garment node. Reuse the collar configuration slot
+    // so coaches can color/print the reverse side independently.
+    ['reverse', 'collar'],
     ['yoke', 'yoke'], ['shoulder', 'yoke'], ['pocket', 'pocket'], ['hood', 'hood'],
     ['sleeve', 'sleeveL'],
     ['body', 'body'], ['torso', 'body'], ['front', 'body'], ['main', 'body'], ['chest', 'body'], ['jersey', 'body'],
