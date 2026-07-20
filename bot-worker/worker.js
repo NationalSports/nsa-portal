@@ -40,6 +40,12 @@ const {
 
 const WORKER_VERSION = '0.1.0';
 
+// Task types this (Playwright, cart-filling) worker knows how to run. Other bot
+// task types — e.g. 'track_po_status', a read-only CLICK order-status lookup run
+// by the Cowork PO-tracker — are left queued for their own runner. Tasks with no
+// task_type are legacy add-to-cart tasks and still run here.
+const HANDLED_TASK_TYPES = new Set(['add_to_cart']);
+
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('[worker] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required. Copy .env.example to .env.');
   process.exit(1);
@@ -299,6 +305,10 @@ async function processOne() {
   const now = Date.now();
   // Skip scheduled tasks whose run time hasn't arrived yet.
   const task = (tasks || []).find((t) => {
+    // Leave task types this worker doesn't handle (e.g. 'track_po_status') queued
+    // for their own runner. No task_type = legacy add-to-cart task → runs here.
+    const tt = t.bot_payload?.task_type;
+    if (tt && !HANDLED_TASK_TYPES.has(tt)) return false;
     const when = t.bot_payload?.scheduled_for;
     return !when || new Date(when).getTime() <= now;
   });

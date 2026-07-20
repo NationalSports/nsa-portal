@@ -21,7 +21,7 @@ import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoI
 import { getRichardsonLevel4Price } from './richardsonPrices';
 import { boxUnits, BOX_STATUS_META } from './boxTracking';
 import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, outsourcedDecoTypes, decoIsOutsourced, isDecoOutsourced, garmentNeedsUnderbase, pickCwAsset, isCommissionRep } from './businessLogic';
-import { buildBotCartPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
+import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
 
@@ -11179,7 +11179,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {pk.memo&&<div style={{fontSize:11,color:'#475569',marginTop:3,fontStyle:'italic'}}>💬 {pk.memo}</div>}
             </div>)}
           </div></>}
-        {allPoIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Purchase Orders</div>
+        {allPoIds.length>0&&<><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
+          <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Purchase Orders</div>
+          {onAssignTodo&&isBotOwner(cu)&&(()=>{
+            // Read-only CLICK tracking: every OPEN (not fully received) Adidas PO on this SO.
+            const openAdi=allPoIds.filter(p=>p.status!=='received'&&/adidas/i.test(p.vendor||''));
+            const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+            if(!openAdi.length||!bot)return null;
+            return <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11,color:'#0f766e',borderColor:'#5eead4'}} title="Claude logs into Adidas CLICK My Orders, reads the live ship status of every item on these open POs, and emails the rep a per-item update. Read-only — never touches a cart." onClick={()=>{
+              const _cust=(allCustomers||[]).find(c=>c.id===o.customer_id)||ic||null;
+              const{title,description,bot_payload}=buildBotTrackPayload({so:o,pos:openAdi,customer:_cust});
+              onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:2,bot_payload});
+            }}>🔎 Track {openAdi.length} open Adidas PO{openAdi.length===1?'':'s'} in CLICK</button>;
+          })()}
+        </div>
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
             {allPoIds.map(po=><div key={po.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:po.status==='received'?'#f0fdf4':po.status==='partial'?'#fffbeb':'#fff',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>{const poData=o.items[po.lineIdx]?.po_lines?.[po.poIdx];if(poData)setEditPO({lineIdx:po.lineIdx,poIdx:po.poIdx,po:poData,allLines:po.lines})}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>

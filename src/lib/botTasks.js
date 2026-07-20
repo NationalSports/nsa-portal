@@ -147,6 +147,31 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
   };
 }
 
+// Build a "track this SO's open Adidas POs in CLICK" task. Unlike the cart task,
+// this is READ-ONLY: the worker (a Cowork/claude-in-chrome run reusing the
+// inventory-sync CLICK access) looks each PO up in CLICK "My Orders", reads the
+// live per-item ship status, and emails the SO's rep a detailed update. It never
+// touches a cart. `task_type: 'track_po_status'` is what the Playwright add_to_cart
+// worker skips and the Cowork PO-tracker picks up. The tracker re-derives the open
+// POs from the DB; `po_numbers` here is a convenience mirror for the task card.
+export function buildBotTrackPayload({ so, pos = [], customer = null }) {
+  const poNumbers = [...new Set((pos || []).map((p) => p && p.id).filter(Boolean))];
+  const n = poNumbers.length;
+  const custName = (customer && (customer.name || customer.alpha_tag)) || '';
+  return {
+    title: `Track ${n || ''} open Adidas PO${n === 1 ? '' : 's'} in CLICK · ${so?.id || ''}`.replace(/\s+/g, ' ').trim(),
+    description: `Look up each open Adidas PO for ${so?.id || 'this SO'}${custName ? ` (${custName})` : ''} in Adidas CLICK "My Orders", read the live ship status of every item, and email the rep a per-item update. Read-only — never touches a cart.${poNumbers.length ? ' POs: ' + poNumbers.join(', ') + '.' : ''}`,
+    so_id: so?.id || null,
+    bot_payload: {
+      task_type: 'track_po_status',
+      so_id: so?.id || null,
+      po_numbers: poNumbers,
+      customer_name: custName || null,
+      notify: true,
+    },
+  };
+}
+
 // Visual styling for a task row by the bot's progress. Returns null for non-bot
 // tasks (render normally). The amber 'needs_review' is the human's cue that
 // Claude finished and the order just needs reviewing/submitting.
