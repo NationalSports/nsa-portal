@@ -23215,6 +23215,47 @@ export default function App(){
         return hit?{...p,parsed:{...bill,items}}:p;
       });
     };
+    // Phase B of order-aware matching (SPORTSLINK_ORDER_AWARE_MATCHING.md): read the vendor_keys
+    // we captured when the order was placed via API, so a Sports Inc bill keyed by the vendor's
+    // OWN part number resolves to our style exactly instead of guessing by color+size. The prime
+    // case is SanMar, whose per-line Unique_Key (partId, e.g. "262712") DOES round-trip on the SI
+    // feed (per the design doc's verified per-supplier table). Harvested from the same open-SO
+    // po_lines _buildMatchCandidates walks — so it stays in lockstep with live orders and needs no
+    // new persistence — as partId → { sku: our style, vendor }.
+    const _buildVendorKeyAliases=()=>{
+      const m=new Map();
+      (sos||[]).forEach(so=>(so.items||[]).forEach(it=>{
+        const psku=String(it.sku||'').trim();if(!psku)return;
+        (it.po_lines||[]).forEach(po=>{
+          const vk=po&&po.vendor_keys;if(!vk||!Array.isArray(vk.lines))return;
+          const vend=String(po.vendor||'').trim().toLowerCase();
+          vk.lines.forEach(l=>{
+            const pid=_skuKey(l&&l.sku);if(!pid||pid===_skuKey(psku))return;
+            if(!m.has(pid))m.set(pid,{sku:psku,vendor:vend});// a partId maps to exactly one style; first writer wins
+          });
+        });
+      }));
+      return m;
+    };
+    // Annotate bill lines whose SKU is a captured vendor part number with the style we ordered it
+    // as — same exact-grade _alias_sku the engine already trusts. Vendor-gated: a partId is that
+    // vendor's number, so a coincidental numeric collision on a DIFFERENT vendor's bill can't
+    // mis-tie (apply only when the bill's vendor matches the order's, or we never captured one).
+    const _annotateVendorKeyAliases=(results,vkMap)=>{
+      if(!vkMap||!vkMap.size)return results;
+      return results.map(p=>{
+        const bill=p.parsed||{};if(!(bill.items||[]).length)return p;
+        const bvend=_aliasVendor(bill);
+        let hit=false;
+        const items=bill.items.map(bl=>{
+          const e=vkMap.get(_skuKey(bl.sku));
+          if(!e||_skuKey(bl.sku)===_skuKey(e.sku))return bl;
+          if(e.vendor&&bvend&&!(e.vendor.includes(bvend)||bvend.includes(e.vendor)))return bl;
+          hit=true;return{...bl,_alias_sku:e.sku};
+        });
+        return hit?{...p,parsed:{...bill,items}}:p;
+      });
+    };
     // ONE constructor for the wizard-confirm shape — used by the card's Accept button AND
     // the pull-time auto-match, so the money path stays single (no hand-synced copies).
     const _propToAccept=(bill,pr)=>{
@@ -23293,6 +23334,9 @@ export default function App(){
       try{
         const aliasMap=await Promise.race([loadSkuAliases(),new Promise(r=>setTimeout(()=>r(null),2500))]);
         results=_annotateAliases(results,aliasMap||_skuAliasesRef.current);
+        // Order-aware tier: resolve vendor part numbers (SanMar Unique_Key) we captured at order
+        // time to our style, so those lines tie exactly instead of falling through to color+size.
+        results=_annotateVendorKeyAliases(results,_buildVendorKeyAliases());
         const sw=_autoMatchSweep(results);
         results=sw.list;
         if(sw.count)nf('⚡ '+sw.count+' bill(s) auto-matched — PO exact and every cost equals the order. In Matched, ready to push.','success');
@@ -23540,15 +23584,29 @@ export default function App(){
         // source of proposals, so disambiguating more lines directly grows the plan.
         let styleBySku={};
         try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
-        const proposals=_ssCrossRefProposals(orders,styleBySku);
-        if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0}}));nf('No confidently-matched S&S lines to map yet — nothing to seed','error');return}
+        let proposals=_ssCrossRefProposals(orders,styleBySku);
+        // Guard against S&S's CrossRef PUT 500 ("unhandled exception thrown by Customer Web API
+        // controller"): only send an Identifier S&S can actually resolve to a live product.
+        // styleBySku is the GET /Products result for these lines' S&S part numbers, so a proposal
+        // whose ssSku isn't in it is either a discontinued part or a line that already echoed a
+        // yourSku (not a real Sku/SkuID/Gtin) — writing it would 500 and abort the whole batch.
+        // Skip those; the plan is re-runnable, so a deferred mapping is written on a later pass.
+        // Only filter when the lookup returned something — a total lookup failure must not empty
+        // the plan (falls back to the prior behavior, still gated by the first-mapping verify).
+        let unresolved=0;
+        if(proposals.length&&Object.keys(styleBySku).length){
+          const before=proposals.length;
+          proposals=proposals.filter(p=>styleBySku[String(p.ssSku||'').trim().toUpperCase()]);
+          unresolved=before-proposals.length;
+        }
+        if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0,unresolved}}));nf(unresolved?('All '+unresolved+' candidate mapping(s) reference S&S parts we can’t resolve right now — nothing safe to seed'):'No confidently-matched S&S lines to map yet — nothing to seed','error');return}
         // What's already on the account for the styles we'd assign (idempotency).
         const styles=[...new Set(proposals.map(p=>p.yourSku))];
         let existing=[];
         try{for(let i=0;i<styles.length;i+=50)existing=existing.concat(await ssGetCrossRefs(styles.slice(i,i+50)))}catch(e){/* GET failed → plan as if none set; PUT stays idempotent via 200/201 */}
         const plan=planCrossRefs(proposals,existing);
-        setSsXref(x=>({...x,step:'planned',plan:{...plan,orders:orders.length,proposals:proposals.length}}));
-        nf('CrossRef plan: '+plan.toWrite.length+' to write · '+plan.alreadySet.length+' already set · '+plan.conflicts.length+' conflict(s)','success');
+        setSsXref(x=>({...x,step:'planned',plan:{...plan,orders:orders.length,proposals:proposals.length,unresolved}}));
+        nf('CrossRef plan: '+plan.toWrite.length+' to write · '+plan.alreadySet.length+' already set · '+plan.conflicts.length+' conflict(s)'+(unresolved?' · '+unresolved+' unresolvable skipped':''),'success');
       }catch(e){setSsXref(x=>({...x,step:'idle'}));nf('CrossRef plan failed: '+(e.message||e),'error')}
     };
     const _ssWriteCrossRef=async()=>{
@@ -26510,7 +26568,7 @@ export default function App(){
                   {ssXref.step==='writing'&&ssXref.progress&&<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>Writing {ssXref.progress.done}/{ssXref.progress.total}…</span>}
                 </div>
                 {ssXref.step==='planned'&&ssXref.plan&&<div style={{marginTop:10,fontSize:11}}>
-                  <div style={{color:'#334155',fontWeight:700,marginBottom:4}}>From {ssXref.plan.orders} order(s) · {ssXref.plan.proposals} confident line(s): <span style={{color:'#166534'}}>{ssXref.plan.toWrite.length} to write</span> · <span style={{color:'#64748b'}}>{ssXref.plan.alreadySet.length} already set</span>{ssXref.plan.conflicts.length?<span style={{color:'#b91c1c'}}> · {ssXref.plan.conflicts.length} conflict(s) skipped</span>:null}</div>
+                  <div style={{color:'#334155',fontWeight:700,marginBottom:4}}>From {ssXref.plan.orders} order(s) · {ssXref.plan.proposals} confident line(s): <span style={{color:'#166534'}}>{ssXref.plan.toWrite.length} to write</span> · <span style={{color:'#64748b'}}>{ssXref.plan.alreadySet.length} already set</span>{ssXref.plan.conflicts.length?<span style={{color:'#b91c1c'}}> · {ssXref.plan.conflicts.length} conflict(s) skipped</span>:null}{ssXref.plan.unresolved?<span style={{color:'#b45309'}}> · {ssXref.plan.unresolved} unresolvable skipped</span>:null}</div>
                   {ssXref.plan.toWrite.length>0&&<div style={{maxHeight:150,overflow:'auto',border:'1px solid #e9d5ff',borderRadius:6,background:'#fff',padding:'6px 8px'}}>
                     {ssXref.plan.toWrite.slice(0,50).map((w,i)=><div key={i} style={{color:'#475569',fontFamily:'monospace',fontSize:10}}><b style={{color:'#7c3aed'}}>{w.ssSku}</b> → yourSku <b style={{color:'#166534'}}>{w.yourSku}</b>{w.color||w.size?<span style={{color:'#94a3b8'}}> · {[w.color,w.size].filter(Boolean).join(' ')}</span>:null}</div>)}
                     {ssXref.plan.toWrite.length>50&&<div style={{color:'#94a3b8',marginTop:2}}>+{ssXref.plan.toWrite.length-50} more…</div>}
