@@ -12074,7 +12074,7 @@ export default function App(){
       </div></div>
       </>}
       {sanmarPreview&&<SanMarPreviewModal {...sanmarPreview} decoVendors={(decoVendors||[]).map(dv=>{if(dv.address_line1)return dv;const _v=vend.find(v2=>v2.id===dv.vendor_id);return _v?{...dv,address_line1:_v.address_line1||'',address_line2:_v.address_line2||'',city:_v.city||'',state:_v.state||'',zip:_v.zip||''}:dv})} onClose={()=>setSanMarPreview(null)}/>}
-      {ssOrder&&<SSOrderModal {...ssOrder} onClose={()=>setSSOrder(null)}/>}
+      {ssOrder&&<SSOrderModal {...ssOrder} onLearnSkus={_learnSsOrderSkus} onClose={()=>setSSOrder(null)}/>}
       {momentecOrder&&<MomentecOrderModal {...momentecOrder} onClose={()=>setMomentecOrder(null)}/>}
     </>);
   };
@@ -21622,6 +21622,30 @@ export default function App(){
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const _skuAliasesRef=useRef(null);// Map 'vendor|VENDORSKU' → portal SKU (bill_sku_aliases), lazy-loaded once per session
+  // Harvest S&S SKU aliases at ORDER time (owner insight, 2026-07-20): placing an S&S order,
+  // ssResolveSkus already turned our style (AT101) + color + size into S&S's exact per-size
+  // part number (B027F8654) from S&S's OWN /Products data. Capture that authoritative pairing
+  // now, so when the bill for this order arrives carrying only the bare B-number it matches our
+  // style line EXACTLY — no dependence on S&S's CrossRef endpoint (which they can 500), no
+  // style-token guessing. Higher confidence than the bill-time learner: a catalog fact, not a
+  // tie we made. Top-level (not in the import render) so the order modal can reach it.
+  const _learnSsOrderSkus=(lines,vendorName)=>{
+    try{
+      if(!supabase||!Array.isArray(lines)||!lines.length)return;
+      const nk=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const vend=String(vendorName||'S&S Activewear').trim().toLowerCase();
+      const rows={};
+      lines.forEach(l=>{const vs=String((l&&l.sku)||'').trim();const ps=String((l&&l.style)||'').trim();
+        // vs = S&S part number (their SKU on the bill); ps = our style (what our SO item carries).
+        if(!vs||!ps||nk(vs)===nk(ps)||nk(ps)==='CUSTOM')return;
+        rows[vend+'|'+nk(vs)+'|'+nk(ps)]={vendor:vend,vendor_sku:vs,portal_sku:ps,size:String((l&&l.size)||''),color:String((l&&l.color)||'')};});
+      const list=Object.values(rows);
+      if(!list.length)return;
+      supabase.from('bill_sku_aliases').upsert(list,{onConflict:'vendor,vendor_sku,portal_sku',ignoreDuplicates:true})
+        .then(({error})=>{if(error)console.warn('ss order alias save',error.message);else console.log('[S&S] learned',list.length,'SKU alias(es) from the order')});
+      if(_skuAliasesRef.current)list.forEach(r=>_skuAliasesRef.current.set(r.vendor+'|'+nk(r.vendor_sku),r.portal_sku));
+    }catch(e){console.warn('ss order alias learn',e)}
+  };
   const[savedBills,setSavedBills]=useState(()=>{try{const s=localStorage.getItem('nsa_saved_bills');return s?JSON.parse(s):[]}catch{return[]}});
   // Server bill ledger rows (applied_bills) — the system of record for pushed bills. Bill History
   // renders the union of these + savedBills, so pushed history survives cleared localStorage and
