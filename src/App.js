@@ -23636,7 +23636,7 @@ export default function App(){
         if(i%40===39)await new Promise(res=>setTimeout(res,1100));// stay under S&S's 60 req/min
       }
       setSsXref(x=>({...x,step:'done',result:{ok,created,updated,failed,errs,aborted}}));
-      nf(aborted?'CrossRef aborted — first mapping failed verification, nothing else written':(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
+      nf(aborted?('CrossRef aborted on the first write — '+(errs[0]&&/500|server|exception/i.test(errs[0])?'S&S\u2019s API errored server-side (their bug, not your data)':'it failed verification')+' — nothing written. Bill pulls are unaffected.'):(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
     };
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
@@ -24449,15 +24449,34 @@ export default function App(){
         setSOs(prev=>prev.map(s=>{
           const soMaps=maps.filter(mp=>mp.so_id===s.id);
           if(!soMaps.length)return s;
-          const updatedItems=(s.items||[]).map(it=>{
-            const itMaps=soMaps.filter(mp=>(mp.item_id&&mp.item_id===it.id)||(!mp.item_id&&(mp.sku||'').toUpperCase()===(it.sku||'').toUpperCase()));
+          // Resolve every mapping to exactly ONE item up front. item_id when it matches
+          // (string/number tolerant); otherwise the FIRST item matching by SKU, preferring
+          // one whose po_lines carry the mapping's po_id. The old per-item SKU fallback
+          // paid EVERY duplicate-SKU item row (SO-1275's twin PTS20 colorway lines turned
+          // a $576 Richardson bill into $1,152 of order cost). One mapping, one item.
+          const _itemIdxByMap=new Map();
+          soMaps.forEach(mp=>{
+            const its=s.items||[];
+            let idx=mp.item_id?its.findIndex(it2=>String(it2.id)===String(mp.item_id)):-1;
+            if(idx<0){
+              const skuEq=it2=>(mp.sku||'').toUpperCase()===(it2.sku||'').toUpperCase();
+              idx=its.findIndex(it2=>skuEq(it2)&&(it2.po_lines||[]).some(po=>(po.po_id||'')===(mp.po_id||'')));
+              if(idx<0)idx=its.findIndex(skuEq);
+            }
+            _itemIdxByMap.set(mp,idx);
+          });
+          const updatedItems=(s.items||[]).map((it,_ii)=>{
+            const itMaps=soMaps.filter(mp=>_itemIdxByMap.get(mp)===_ii);
             if(!itMaps.length)return it;
             let lineConsumed=false;
+            const poIdConsumed=new Set();
             return{...it,po_lines:(it.po_lines||[]).map(po=>{
-              // Prefer the po_line the mapping pointed at; if no po_id captured, apply to the first
-              // matching line only (lineConsumed guard) to avoid double-billing across po_lines.
-              const lineMaps=itMaps.filter(mp=>mp.po_id?(po.po_id||'')===mp.po_id:!lineConsumed);
+              // Prefer the po_line the mapping pointed at — and CONSUME it: an item carrying
+              // two po_lines with the same po_id must not bill the same group twice. No
+              // po_id captured → first matching line only (lineConsumed guard), as before.
+              const lineMaps=itMaps.filter(mp=>mp.po_id?((po.po_id||'')===mp.po_id&&!poIdConsumed.has(mp.po_id)):!lineConsumed);
               if(!lineMaps.length)return po;
+              lineMaps.forEach(mp=>{if(mp.po_id)poIdConsumed.add(mp.po_id)});
               if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
               const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
               lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
@@ -25388,9 +25407,17 @@ export default function App(){
         siPushed.forEach(b=>{
           _siMarkDoc(b.parsed.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()});
         });
-        sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false)
+        // One PATCH carries the whole batch, so a single hiccup failed ALL of them. Retry
+        // once after a pause; a residual failure is NOT surfaced to the operator (owner:
+        // the red banner "looks like a fail" on a successful push) — it's pure vendor-side
+        // housekeeping that self-heals: the doc returns on the next pull, dedup skips it,
+        // and the queue row is captured as already-billed. Console only, for diagnostics.
+        const _markImported=()=>sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false);
+        _markImported()
           .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
-          .catch(()=>nf('Bills applied, but marking '+siPushed.length+' Sports Inc doc(s) as imported failed — they\'ll be skipped as duplicates on the next pull','error'));
+          .catch(()=>new Promise(r=>setTimeout(r,2500)).then(_markImported)
+            .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported, on retry)'))
+            .catch(e=>console.warn('[SI] marking',siPushed.length,'doc(s) Historical failed after retry — self-heals via dedup next pull:',(e&&e.message)||e)));
       }
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
@@ -26582,7 +26609,7 @@ export default function App(){
                   {ssXref.plan.conflicts.length>0&&<div style={{marginTop:6,color:'#b45309'}}>⚠️ Skipped (one S&amp;S sku resolved to two styles — check the order data): {ssXref.plan.conflicts.slice(0,8).map(c=>c.ssSku).join(', ')}</div>}
                 </div>}
                 {ssXref.step==='done'&&ssXref.result&&<div style={{marginTop:10,fontSize:11,padding:'8px 10px',borderRadius:6,background:ssXref.result.aborted||ssXref.result.failed?'#fef2f2':'#f0fdf4',border:'1px solid '+(ssXref.result.aborted||ssXref.result.failed?'#fecaca':'#bbf7d0')}}>
-                  <div style={{fontWeight:700,color:ssXref.result.aborted||ssXref.result.failed?'#b91c1c':'#166534'}}>{ssXref.result.aborted?'Aborted after the first mapping failed verification — nothing else written.':('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
+                  <div style={{fontWeight:700,color:ssXref.result.aborted||ssXref.result.failed?'#b91c1c':'#166534'}}>{ssXref.result.aborted?((ssXref.result.errs&&ssXref.result.errs[0]&&/500|server|exception/i.test(ssXref.result.errs[0])?'Aborted on the first write — S&S\u2019s API is erroring server-side (a fault on their end, not your data). Nothing was written; bill pulls are unaffected. Retry later or send S&S the support ticket.':'Aborted after the first mapping failed verification — nothing else written.')):('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
                   {(ssXref.result.errs||[]).slice(0,6).map((e,i)=><div key={i} style={{color:'#b91c1c',fontFamily:'monospace',fontSize:10,marginTop:2}}>{e}</div>)}
                   <button className="btn btn-sm" style={{fontSize:10,marginTop:6,background:'#fff',border:'1px solid #cbd5e1'}} onClick={_ssPlanCrossRef}>Re-plan (check what's left)</button>
                 </div>}
