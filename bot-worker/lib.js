@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Real size:quantity pairs only — the sizes jsonb also carries meta keys
 // (drop_ship, unit_cost, etc.) that must not be treated as sizes.
-const SIZE_META = new Set(['drop_ship', 'unit_cost', 'po_type', 'vendor', 'memo', 'notes', 'status', 'ship_to', 'attention']);
+const SIZE_META = new Set(['drop_ship', 'unit_cost', 'po_type', 'vendor', 'memo', 'notes', 'status', 'ship_to', 'attention', 'ship_to_deco_id']);
 export function cleanSizes(raw) {
   const out = {};
   for (const [k, v] of Object.entries(raw || {})) {
