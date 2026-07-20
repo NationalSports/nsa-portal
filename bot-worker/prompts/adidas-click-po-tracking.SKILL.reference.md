@@ -114,11 +114,13 @@ POST `TRACKER_URL` with `{"action":"complete", ...}` per task:
   "pos_not_found": [], "issues": [] }
 ```
 
-The function updates the SO task, posts a comment, and (if `notify`) emails the rep — recipient is
-resolved server-side from the SO (`customers.primary_rep_id` → else `created_by`), so you never
-handle rep addresses or the Brevo key. Use `status`: `done` when compiled; `blocked` on a 401 /
-login wall; `needs_input` if a PO can't be matched and the rep must clarify; `failed` on an
-unrecoverable error.
+The function updates the SO task, posts a comment, and (if `notify`) emails the rep. The email is a
+**full order status** — every PO on the SO across all vendors, with ordered/received/stage assembled
+server-side from the portal, and your CLICK `po_reports` layered onto the Adidas POs. So you only
+supply the CLICK read; the portal-side status and the rep recipient (`customers.primary_rep_id` →
+else `created_by`) are resolved server-side — you never handle rep addresses or the Brevo key. Use
+`status`: `done` when compiled; `blocked` on a 401 / login wall; `needs_input` if a PO can't be
+matched and the rep must clarify; `failed` on an unrecoverable error.
 
 ---
 

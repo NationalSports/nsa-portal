@@ -11182,15 +11182,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {allPoIds.length>0&&<><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
           <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Purchase Orders</div>
           {onAssignTodo&&isBotOwner(cu)&&(()=>{
-            // Read-only CLICK tracking: every OPEN (not fully received) Adidas PO on this SO.
-            const openAdi=allPoIds.filter(p=>p.status!=='received'&&/adidas/i.test(p.vendor||''));
+            // Emails the rep a full order status (every PO). Open Adidas POs also get a
+            // live CLICK "My Orders" ship-status read layered on.
             const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
-            if(!openAdi.length||!bot)return null;
-            return <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11,color:'#0f766e',borderColor:'#5eead4'}} title="Claude logs into Adidas CLICK My Orders, reads the live ship status of every item on these open POs, and emails the rep a per-item update. Read-only — never touches a cart." onClick={()=>{
+            if(!bot)return null;
+            const openAdi=allPoIds.filter(p=>p.status!=='received'&&/adidas/i.test(p.vendor||''));
+            return <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11,color:'#0f766e',borderColor:'#5eead4'}} title="Emails the rep a full status of this order — every PO's received/shipped state — and reads live ship status from Adidas CLICK My Orders for any open Adidas POs. Read-only — never touches a cart." onClick={()=>{
               const _cust=(allCustomers||[]).find(c=>c.id===o.customer_id)||ic||null;
               const{title,description,bot_payload}=buildBotTrackPayload({so:o,pos:openAdi,customer:_cust});
               onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:2,bot_payload});
-            }}>🔎 Track {openAdi.length} open Adidas PO{openAdi.length===1?'':'s'} in CLICK</button>;
+            }}>📋 Order status{openAdi.length?` · ${openAdi.length} Adidas PO${openAdi.length===1?'':'s'} live`:''}</button>;
           })()}
         </div>
           <div style={{display:'flex',flexDirection:'column',gap:6}}>

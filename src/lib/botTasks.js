@@ -147,20 +147,21 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
   };
 }
 
-// Build a "track this SO's open Adidas POs in CLICK" task. Unlike the cart task,
-// this is READ-ONLY: the worker (a Cowork/claude-in-chrome run reusing the
-// inventory-sync CLICK access) looks each PO up in CLICK "My Orders", reads the
-// live per-item ship status, and emails the SO's rep a detailed update. It never
-// touches a cart. `task_type: 'track_po_status'` is what the Playwright add_to_cart
-// worker skips and the Cowork PO-tracker picks up. The tracker re-derives the open
-// POs from the DB; `po_numbers` here is a convenience mirror for the task card.
+// Build an "order status" task: email the SO's rep a full status of the order —
+// every PO's received/shipped state — with live Adidas CLICK "My Orders" ship
+// status layered onto the open Adidas POs. READ-ONLY: the worker (a Cowork/
+// claude-in-chrome run reusing the inventory-sync CLICK access) never touches a
+// cart. `task_type: 'track_po_status'` is what the Playwright add_to_cart worker
+// skips and the Cowork tracker picks up; the full status is assembled server-side
+// from the DB, so `pos` here only carries the open Adidas POs that get the live
+// CLICK read (may be empty — the email still gives full portal status).
 export function buildBotTrackPayload({ so, pos = [], customer = null }) {
   const poNumbers = [...new Set((pos || []).map((p) => p && p.id).filter(Boolean))];
   const n = poNumbers.length;
   const custName = (customer && (customer.name || customer.alpha_tag)) || '';
   return {
-    title: `Track ${n || ''} open Adidas PO${n === 1 ? '' : 's'} in CLICK · ${so?.id || ''}`.replace(/\s+/g, ' ').trim(),
-    description: `Look up each open Adidas PO for ${so?.id || 'this SO'}${custName ? ` (${custName})` : ''} in Adidas CLICK "My Orders", read the live ship status of every item, and email the rep a per-item update. Read-only — never touches a cart.${poNumbers.length ? ' POs: ' + poNumbers.join(', ') + '.' : ''}`,
+    title: `Order status — ${so?.id || ''}${custName ? ' · ' + custName : ''}`.replace(/\s+/g, ' ').trim(),
+    description: `Email the rep a full status of ${so?.id || 'this order'}${custName ? ` (${custName})` : ''}: every PO's received/shipped state, plus live ship status read from Adidas CLICK "My Orders" for ${n ? `${n} open Adidas PO${n === 1 ? '' : 's'}` : 'any open Adidas POs'}. Read-only — never touches a cart.${poNumbers.length ? ' Adidas POs: ' + poNumbers.join(', ') + '.' : ''}`,
     so_id: so?.id || null,
     bot_payload: {
       task_type: 'track_po_status',
