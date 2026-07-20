@@ -521,3 +521,49 @@ describe('maxProposals cap, score-descending sort, and the near-tie demotion bou
     expect(props[0].evidence.join(' ')).toMatch(/another order fits almost as well/);
   });
 });
+
+describe('bulk rollup — bought in bulk, billed by size (the KJ3429/CUSTOM cleats case)', () => {
+  const bill = {
+    po_number: 'PO 3460 FPUSOC',
+    items: [
+      { sku: 'KJ3429', size: '8-', color: '', qty: 2, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE CBLACK/CBL' },
+      { sku: 'KJ3429', size: '9', color: '', qty: 6, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE CBLACK/CBL' },
+      { sku: 'KJ3429', size: '10', color: '', qty: 2, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE CBLACK/CBL' },
+    ],
+  };
+  const mkCand = (openQty, extraLine) => ({
+    kind: 'so', id: 'SO-1367', label: 'SO-1367', raw: { id: 'SO-1367' },
+    items: [
+      { sku: 'CUSTOM', name: 'Adidas Soccer Cleats F50 / Predator', color: '', size: 'BULK', qty: openQty, unit_cost: 111.37, so_id: 'SO-1367', item_id: 'c1', po_id: 'PO 3460 FPUSOC' },
+      ...(extraLine ? [{ sku: 'JX9', name: 'Other thing', color: '', size: 'M', qty: 4, unit_cost: 9, so_id: 'SO-1367', item_id: 'c2', po_id: 'PO 3460 FPUSOC' }] : []),
+    ],
+  });
+  test('all sized lines roll up onto the PO single bulk line; sum 10 == 10 open → qty mirror, high confidence', () => {
+    const p = proposeResolutions(bill, [mkCand(10)], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.coverage).toBe(1);
+    expect(p.ties).toHaveLength(3);
+    expect(p.ties.every((t) => t.basis === 'bulk' && t.target_idx === 0)).toBe(true);
+    expect(p.qtyMirror).toBe(true);
+    expect(p.overageUnits).toBe(0);
+    expect(p.confidence).toBe('high');
+    expect(p.evidence.join(' ')).toMatch(/roll up to the PO/);
+  });
+  test('rollup overage is bucket-cumulative: 10 billed vs 8 open → 2 over, not per-line noise', () => {
+    const p = proposeResolutions(bill, [mkCand(8)], { canonSize: canon })[0];
+    expect(p.overageUnits).toBe(2);
+    expect(p.qtyMirror).toBe(false);
+  });
+  test('NO rollup when the PO has two distinct open lines — never guess which one', () => {
+    const props = proposeResolutions(bill, [mkCand(10, true)], { canonSize: canon });
+    expect(props).toHaveLength(0); // zero ladder ties, ambiguous rollup → no proposal at all
+  });
+  test('ladder ties still win first; rollup only mops up the untied remainder', () => {
+    const cand = mkCand(4);
+    cand.items.push({ sku: 'KJ3429', name: 'F50 Hyperfast', color: '', size: '9', qty: 6, unit_cost: 111.37, so_id: 'SO-1367', item_id: 'c1', po_id: 'PO 3460 FPUSOC' });
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    const bases = p.ties.map((t) => t.basis).sort();
+    expect(bases.filter((b) => b === 'bulk').length).toBeLessThan(3);
+    expect(p.ties.some((t) => /^(exact|variant)/.test(t.basis))).toBe(true);
+  });
+});

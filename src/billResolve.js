@@ -123,15 +123,38 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       const open = _num(cand.items[realIdx].qty);
       ties.push({ bill_idx: i, target_idx: realIdx, basis: hit.basis, allocated_qty: _num(bl.qty), open_qty: open, overage: Math.max(0, _num(bl.qty) - open) });
     });
+    // Bulk rollup — the "billed by size, bought in bulk" case (custom items, shoes):
+    // the bill's PO matched this candidate and that PO has exactly ONE distinct open
+    // line (e.g. "CUSTOM Adidas Soccer Cleats F50" with no size breakdown). A human
+    // rolls every sized bill line up onto it; so do we — but ONLY under that single-
+    // line anchor, so it can never guess between lines. Quantities accumulate.
+    const untied = usable.filter(({ i }) => !ties.some((t) => t.bill_idx === i));
+    if (untied.length && billPo.core) {
+      const poBuckets = cand.items.map((it, ti) => ({ it, ti }))
+        .filter(({ it }) => { const pp = poParts(it.po_id); return pp.core && pp.core === billPo.core; });
+      const lineKeys = [...new Set(poBuckets.map(({ it }) => (it.item_id || _ns(it.sku)) + '|' + (it.po_id || '')))];
+      if (lineKeys.length === 1 && poBuckets.length >= 1) {
+        const anchor = poBuckets[0];
+        untied.forEach(({ bl, i }) => {
+          ties.push({ bill_idx: i, target_idx: anchor.ti, basis: 'bulk', allocated_qty: _num(bl.qty), open_qty: _num(anchor.it.qty), overage: 0 });
+        });
+      }
+    }
     if (!ties.length) return;
     const coverage = ties.length / usable.length;
     if (coverage < 0.5) return;
-    const qtyMirror = ties.length > 1 && ties.every((t) => t.allocated_qty === t.open_qty);
+    // Quantity accounting is BUCKET-CUMULATIVE (bulk ties share a bucket): overage and the
+    // qty-mirror both compare each distinct bucket's summed allocation to its open qty.
+    const _bk = {};
+    ties.forEach((t) => { const k = t.target_idx; (_bk[k] = _bk[k] || { open: t.open_qty, alloc: 0 }).alloc += t.allocated_qty; });
+    Object.values(_bk).forEach(() => {});
+    const bucketOver = Object.values(_bk).reduce((a, b) => a + Math.max(0, b.alloc - b.open), 0);
+    const qtyMirror = ties.length > 1 && Object.values(_bk).every((b) => b.alloc === b.open);
     const candPo = poParts((cand.items[ties[0].target_idx] || {}).po_id || (cand.raw && cand.raw.po_number) || cand.label);
     const tagMatch = !!(billPo.tag && candPo.tag && billPo.tag === candPo.tag);
     const coreDistance = billPo.core && candPo.core ? editDistance(billPo.core, candPo.core) : 9;
-    const strongBases = ties.filter((t) => /^(exact|variant|style)/.test(t.basis)).length;
-    const overageUnits = ties.reduce((a, t) => a + t.overage, 0);
+    const strongBases = ties.filter((t) => /^(exact|variant|style|bulk)/.test(t.basis)).length;
+    const overageUnits = bucketOver;
     // Price changes an accept would sync (per po_line, consistent-only mirrors the apply rule).
     const priceChanges = [];
     const byPo = {};
@@ -155,6 +178,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (tagMatch) evidence.push('the bill’s tag “' + billPo.tag + '” matches this order');
     if (coreDistance === 1) evidence.push('the PO number is one digit off (' + billPo.core + ' → ' + candPo.core + ')');
     if (coreDistance === 0 && billPo.tag !== candPo.tag) evidence.push('same PO number, different tag');
+    const bulkTies = ties.filter((t) => t.basis === 'bulk').length;
+    if (bulkTies) evidence.push(bulkTies + ' sized bill line(s) roll up to the PO’s single bulk line — bought in bulk, billed by size');
     if (overageUnits) evidence.push('⚠ ' + overageUnits + ' unit(s) exceed the order’s open quantity — accepting flags them for a corrected order');
     if (priceChanges.length) evidence.push('accepting updates ' + priceChanges.length + ' order cost(s) to the billed price (audit kept)');
     const score = coverage * 60 + (qtyMirror ? 20 : 0) + (tagMatch ? 10 : 0) + (coreDistance <= 1 ? 8 : 0) + strongBases * 2 - (overageUnits ? 4 : 0);
