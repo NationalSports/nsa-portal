@@ -5,7 +5,7 @@ import './portal.css';
 import MobilePortal from './MobilePortal';
 import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
-import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm } from './lib/botTasks';
+import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './lib/requestBreaker';
 import { _sbAuthLock } from './lib/supabase';
@@ -11859,7 +11859,13 @@ export default function App(){
                 <div style={{fontSize:11,color:hitThreshold?'#166534':'#d97706',fontWeight:700}}>{vg.threshold>0?(hitThreshold?'✅ Free shipping unlocked':'$'+(vg.threshold-total).toFixed(2)+' to free ship'):'Batch orders'}</div>
                 {isBotOwner(cu)&&(REPS||[]).some(r=>r.is_active!==false&&r.role==='bot')&&<button className="btn btn-sm" style={{marginTop:6,fontSize:11,fontWeight:700,color:'#0f766e',background:'#f0fdfa',border:'1px solid #5eead4',borderRadius:8,padding:'3px 10px',whiteSpace:'nowrap'}} title="Assign this whole batch to the Claude bot — it adds every item to the vendor cart and enters the PO#, stopping before submit for your review" onClick={(e)=>{e.stopPropagation();
                   const poNum=vg.pos.map(bp=>bp.po_id).filter(Boolean).join(' / ');
-                  const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:vg.pos.find(bp=>bp.so_id)?.so_id||null});
+                  const _botSoId=vg.pos.find(bp=>bp.so_id)?.so_id||null;
+                  // Decorator-bound group (vendor:decoId): deliver to the decorator with the
+                  // DPO on the attention line; otherwise resolve the program's drop-ship address.
+                  const _botShipTo=vg.ship_to_deco_id
+                    ?resolveDecoShipToClient({decoId:vg.ship_to_deco_id,so:sos.find(s=>s.id===_botSoId),decoVendors,vendors:vend,itemIdxs:vg.pos.flatMap(bp=>(bp.items||[]).map(it=>it.item_idx).filter(ix=>ix!=null))})
+                    :resolveShipToClient(_botSoId,sos,cust);
+                  const{title,description,bot_payload}=buildBotCartPayload({poNumber:poNum,vendorName:vg.name,batches:vg.pos,soId:_botSoId,shipTo:_botShipTo});
                   assignBotTask({title,description,priority:1,bot_payload});
                 }}>🤖 Assign to Claude</button>}
               </div>
@@ -31894,10 +31900,42 @@ export default function App(){
           <input className="form-input" value={todoModal.title} onChange={e=>setTodoModal(m=>({...m,title:e.target.value}))} placeholder="e.g. Order blanks for CSM"/></div>
         <div style={{marginBottom:12}}><label className="form-label">Description</label>
           <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
-        {todoModal.bot_payload&&<div style={{marginBottom:12,padding:'8px 12px',background:'#f0fdfa',border:'1px solid #99f6e4',borderRadius:8}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#0f766e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}}>🤖 Bot task · {todoModal.bot_payload.target||'cart'}</div>
-          <div style={{fontSize:12,color:'#134e4a'}}>{(todoModal.bot_payload.totals?.line_count)||0} line{((todoModal.bot_payload.totals?.line_count)||0)===1?'':'s'} · {(todoModal.bot_payload.totals?.qty)||0} pcs → {todoModal.bot_payload.vendor_name||'vendor'} cart · PO {todoModal.bot_payload.po_number||'—'}. Claude fills the cart then stops for your approval before submitting.</div>
-        </div>}
+        {todoModal.bot_payload&&(()=>{
+          const bp=todoModal.bot_payload;
+          const lines=Array.isArray(bp.lines)?bp.lines:[];
+          const totQty=bp.totals?.qty??lines.reduce((a,l)=>a+(l.qty||0),0);
+          const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
+          const shipTo=bp.ship_to||(dropShip?resolveShipToClient(todoModal.so_id,sos,cust):null);
+          const szStr=l=>Object.entries(l.sizes||{}).filter(([,v])=>Number(v)>0).map(([s,v])=>s+':'+v).join('  ');
+          return<div style={{marginBottom:12,border:'1px solid #e2e8f0',borderRadius:10,overflow:'hidden'}}>
+            <div style={{padding:'10px 14px',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>🤖 Claude · Add to cart</span>
+              <span className="badge badge-blue">{bp.vendor_name||bp.target||'vendor'}</span>
+              <span className="badge badge-gray">PO {bp.po_number||'—'}</span>
+              <span className="badge badge-gray">{lines.length} item{lines.length===1?'':'s'} · {totQty} pcs</span>
+            </div>
+            {dropShip
+              ?<div style={{padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                <div style={{fontSize:11,fontWeight:700,color:'#92400e',textTransform:'uppercase',letterSpacing:0.5,marginBottom:2}}>{shipTo?.attention?'🎨 Drop ship to decorator — deliver to':'📦 Drop ship — deliver to'}</div>
+                {shipTo?<div style={{fontSize:13,color:'#0f172a',lineHeight:1.5}}>
+                  <b>{shipTo.name}</b>{shipTo.attention?<span style={{marginLeft:6,color:'#7c3aed',fontWeight:700}}>· Attn: {shipTo.attention}</span>:null}<br/>{shipTo.line1}<br/>{shipTo.city}{shipTo.city&&shipTo.state?', ':''}{shipTo.state} {shipTo.zip}
+                </div>:<div style={{fontSize:12,color:'#b91c1c',fontWeight:600}}>⚠ No delivery address on file{lines.some(l=>l.ship_to_deco_id)?' for this decorator (add it in Settings → Deco Vendors or on its linked Vendor)':" on the SO's ship-to customer"} — Claude can't set the delivery location. Add the address before assigning.</div>}
+              </div>
+              :<div style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',fontSize:12,color:'#64748b'}}>🏭 Ships to the <b style={{color:'#334155'}}>National Sports warehouse</b> (vendor default delivery location)</div>}
+            <div style={{maxHeight:200,overflowY:'auto'}}>
+              {lines.length===0&&<div style={{padding:'10px 14px',fontSize:12,color:'#94a3b8'}}>No structured line items — Claude works from the task title/description.</div>}
+              {lines.map((l,i)=><div key={i} style={{padding:'8px 14px',borderBottom:i<lines.length-1?'1px solid #f1f5f9':'none',display:'flex',justifyContent:'space-between',gap:10,alignItems:'baseline'}}>
+                <div style={{minWidth:0}}>
+                  <div style={{fontSize:13,color:'#0f172a'}}><b style={{fontFamily:'ui-monospace,monospace'}}>{l.sku}</b>{l.color?<span style={{color:'#64748b'}}> · {l.color}</span>:null}</div>
+                  {l.name?<div style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>:null}
+                  {szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null}
+                </div>
+                <div style={{fontSize:13,fontWeight:700,color:'#0f172a',flexShrink:0}}>{l.qty||0} pcs</div>
+              </div>)}
+            </div>
+            <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.</div>
+          </div>;
+        })()}
         {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<div style={{marginBottom:12}}>
           <label className="form-label">📅 Requested delivery date (optional)</label>
           <div style={{display:'flex',gap:6,alignItems:'center'}}>
@@ -31966,7 +32004,7 @@ export default function App(){
           </div>
         </div>
       </div>
-      <div className="modal-footer" style={{display:'flex',gap:8,justifyContent:'flex-end',padding:'12px 20px',borderTop:'1px solid #e2e8f0'}}>
+      <div className="modal-footer">
         <button className="btn btn-secondary" onClick={()=>setTodoModal(m=>({...m,open:false}))}>Cancel</button>
         <button className="btn btn-primary" disabled={!todoModal.title.trim()||!todoModal.assigned_to} onClick={()=>{
           const _ifId=todoModal.if_id||(/^IF-/i.test(todoModal.doc_label||'')?todoModal.doc_label:'')||null;
@@ -31979,6 +32017,10 @@ export default function App(){
             newTodo.bot_status='queued';
             const _bp={...(todoModal.bot_payload||{})};
             if(todoModal.bot_delivery)_bp.delivery_date=todoModal.bot_delivery;
+            // Drop ship: make sure the delivery address travels with the payload so the
+            // worker never has to guess where the order actually goes.
+            const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
+            if(_bpDrop){_bp.drop_ship=true;if(!_bp.ship_to)_bp.ship_to=resolveShipToClient(todoModal.so_id,sos,cust)}
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);

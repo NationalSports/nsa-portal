@@ -41,6 +41,15 @@ Fill in `.env`:
 - `BOT_MEMBER_ID` — leave as `bot-claude` (created by migration 00099).
 - `ADIDAS_CLICK_URL` / `_USER` / `_PASS` — the vendor login the agent uses.
 
+### Claude CLI login (the bot's own account)
+
+The worker spawns the `claude` CLI, which uses the Claude login stored on this
+machine. That OAuth session can expire (tasks then fail with
+"401 OAuth access token has expired"). Fix: run `claude` on the worker box and
+log in again, or run `claude setup-token` for a long-lived token. For a fully
+headless box, set `ANTHROPIC_API_KEY` in the environment instead — the CLI uses
+it automatically and it never needs interactive re-login.
+
 > **This is the "connection."** The worker and the portal aren't linked
 > directly — they share one Supabase project. Point this `.env` at the same
 > project your portal uses and the worker will see exactly the tasks you
