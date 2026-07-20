@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -153,8 +153,10 @@ describe('tieLine ladder — exact beats variant, ambiguity, price refinement', 
   test('ambiguous exact tier (same sku+size, different item_id) ties nothing for that line — coverage drops', () => {
     const bill = {
       items: [
-        { sku: 'DUPSKU1', size: 'M', qty: 1, unit_price: 0 }, // ambiguous
-        { sku: 'UNIQSKU', size: 'L', qty: 1, unit_price: 0 }, // unambiguous
+        // Priced lines (a $0 line is a no-money memo with its own semantics — see the
+        // zero-dollar describe block): this test is about exact-tier ambiguity only.
+        { sku: 'DUPSKU1', size: 'M', qty: 1, unit_price: 10 }, // ambiguous
+        { sku: 'UNIQSKU', size: 'L', qty: 1, unit_price: 10 }, // unambiguous
       ],
     };
     const cand = {
@@ -500,8 +502,8 @@ describe('maxProposals cap, score-descending sort, and the near-tie demotion bou
     const b = { items: [{ sku: 'BND1', size: 'M', qty: 5, unit_price: 10 }] };
     const P = { id: 'SO-P', label: 'SO-P', raw: { id: 'SO-P' }, // exact/strong, no overage = 62
       items: [{ sku: 'BND1', size: 'M', qty: 5, unit_cost: 10, item_id: 'p1', po_id: '' }] };
-    const S = { id: 'SO-S', label: 'SO-S', raw: { id: 'SO-S' }, // weak basis + overage = 56
-      items: [{ sku: 'DIFFX', size: 'M', qty: 3, unit_cost: 999, item_id: 's1', po_id: '' }] };
+    const S = { id: 'SO-S', label: 'SO-S', raw: { id: 'SO-S' }, // weak basis (size_price) + overage = 56
+      items: [{ sku: 'DIFFX', size: 'M', qty: 3, unit_cost: 10, item_id: 's1', po_id: '' }] };
     const props = proposeResolutions(b, [P, S], { canonSize: canon });
     expect(props[0].target.id).toBe('SO-P');
     expect(props[0].score - props[1].score).toBe(6);
@@ -596,11 +598,13 @@ describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only 
     expect(p.confidence).toBe('medium');
     expect(p.evidence[0]).toMatch(/PO number matches this order EXACTLY/);
   });
-  test('qty-unique + name-token + pigeonhole complete the links → high confidence at full coverage', () => {
+  test('name-token + qty-unique complete the links → high confidence at full coverage', () => {
+    // Name runs FIRST now (Predator/Supernova lesson): the backpack line name-ties before
+    // any quantity coincidence can claim its bucket; the remaining two resolve by qty.
     const bill = mkBill([
       { sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'SOMETHING' },          // qty-unique → i0
       { sku: 'V2', size: '', color: '', qty: 3, unit_price: 99, desc: 'BACKPACK DELUXE' },     // name token → i2
-      { sku: 'V3', size: '', color: '', qty: 3, unit_price: 40, desc: 'ZZZ' },                 // pigeonhole → i1 (price 40 matches nothing)
+      { sku: 'V3', size: '', color: '', qty: 3, unit_price: 40, desc: 'ZZZ' },                 // qty-unique after i2 taken → i1
     ]);
     const c = cand([
       { sku: 'CUSTOM', name: 'Warmup Jacket', color: '', size: 'BULK', qty: 7, unit_cost: 12, ...bucket(0) },
@@ -613,7 +617,10 @@ describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only 
     const basisByLine = Object.fromEntries(p.ties.map((t) => [t.bill_idx, t.basis]));
     expect(basisByLine[0]).toBe('po_qty');
     expect(basisByLine[1]).toBe('po_name');
-    expect(basisByLine[2]).toBe('po_last_pair');
+    expect(basisByLine[2]).toBe('po_qty');
+    const tgtByLine = Object.fromEntries(p.ties.map((t) => [t.bill_idx, t.target_idx]));
+    expect(tgtByLine[1]).toBe(2); // backpack → Team Backpack, by NAME
+    expect(tgtByLine[2]).toBe(1); // pant bucket — same target the old pigeonhole reached
   });
   test('a merely core-matched (tag differs) candidate is NOT anchored — no loose tiers, floor still applies', () => {
     const bill = { po_number: 'PO 5150 AAAA', items: [{ sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'X' }] };
@@ -661,5 +668,191 @@ describe('desc-derived style hint (SanMar 2649531-class SKUs — style leads the
     const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
     expect(p.poAnchored).toBe(true);
     expect(p.unresolved).toEqual([0]); // never guesses between duplicate lines
+  });
+});
+
+// ── Learned vendor-number aliases (bill_sku_aliases → bl._alias_sku) ──────────
+// The UA/Seton case: "Under Armour puts on their invoice a different number than
+// we order with." Once a pushed bill teaches B199E2655 → 1390159-410, the next
+// bill with that number ties at exact grade.
+describe('learned vendor-number aliases', () => {
+  const uaCand = {
+    kind: 'so', id: 'SO-1527', label: 'SO-1527', sub: 'Sales Order · Seton Track', raw: { id: 'SO-1527' },
+    items: [
+      { sku: '1390159-410', name: 'UA Rival Stretch Woven Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' },
+      { sku: '1390160-001', name: 'UA Rival Pant', color: 'Black', size: 'L', qty: 4, unit_cost: 30, so_id: 'SO-1527', item_id: 'a2', po_id: 'PO 13553 STCC' },
+    ],
+  };
+  test('a line with _alias_sku ties to its portal SKU (basis alias), even with no PO anchor', () => {
+    const bill = { po_number: 'PO 99999 ZZZ', items: [
+      { sku: 'B199E2655', _alias_sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+    ] };
+    const p = proposeResolutions(bill, [uaCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.length).toBe(1);
+    expect(p.ties[0].basis).toBe('alias');
+    expect(uaCand.items[p.ties[0].target_idx].sku).toBe('1390159-410');
+  });
+  test('alias ties are strong bases: full-coverage alias bill reads high with alias evidence', () => {
+    const bill = { po_number: 'PO 13553 STCC', items: [
+      { sku: 'B199E2655', _alias_sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+      { sku: 'B199E7777', _alias_sku: '1390160-001', size: 'L', qty: 4, unit_price: 30 },
+    ] };
+    const p = proposeResolutions(bill, [uaCand], { canonSize: canon })[0];
+    expect(p.ties.every((t) => t.basis === 'alias')).toBe(true);
+    expect(p.confidence).toBe('high');
+    expect(p.evidence.join(' ')).toMatch(/alias/);
+  });
+});
+
+// ── cleanAutoAccept — "PO matches and the cost matches perfectly → go to match" ──
+describe('cleanAutoAccept auto-match gate', () => {
+  const cand = {
+    kind: 'so', id: 'SO-1527', label: 'SO-1527', sub: 'Sales Order · Seton Track', raw: { id: 'SO-1527' },
+    items: [
+      { sku: '1390159-410', name: 'UA Rival Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' },
+      { sku: '1390160-001', name: 'UA Rival Pant', color: 'Black', size: 'L', qty: 4, unit_cost: 30, so_id: 'SO-1527', item_id: 'a2', po_id: 'PO 13553 STCC' },
+    ],
+  };
+  const cleanBill = { po_number: 'PO 13553 STCC', items: [
+    { sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+    { sku: '1390160-001', size: 'L', qty: 4, unit_price: 30 },
+  ] };
+  test('fires on the clean class: PO exact, all lines tied, costs equal to the penny', () => {
+    const p = proposeResolutions(cleanBill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.confidence).toBe('high');
+    expect(cleanAutoAccept(p, cleanBill.items)).toBe(true);
+  });
+  test('refuses when any billed price differs from the order cost', () => {
+    const bill = { ...cleanBill, items: cleanBill.items.map((l, i) => (i === 0 ? { ...l, unit_price: 45.0 } : l)) };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses when a line is left unresolved', () => {
+    const bill = { ...cleanBill, items: [...cleanBill.items, { sku: 'UNKNOWN999', size: 'M', qty: 2, unit_price: 10 }] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.unresolved.length).toBe(1);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses on bucket overage — the 9-billed-into-5-open bulk wrinkle', () => {
+    const bulkCand = {
+      kind: 'so', id: 'SO-1527', label: 'SO-1527', raw: { id: 'SO-1527' },
+      items: [{ sku: '1390159-410', name: 'UA Rival Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' }],
+    };
+    const bill = { po_number: 'PO 13553 STCC', items: [
+      { sku: 'B199E2655', size: 'L', qty: 5, unit_price: 42.25 },
+      { sku: 'B196E2652', size: 'XS', qty: 1, unit_price: 42.25 },
+      { sku: 'B196E2653', size: 'S', qty: 3, unit_price: 42.25 },
+    ] };
+    const p = proposeResolutions(bill, [bulkCand], { canonSize: canon })[0];
+    expect(p.overageUnits).toBe(4);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('refuses without an exact PO anchor, even when every SKU ties', () => {
+    const bill = { ...cleanBill, po_number: 'PO 13554 STCC' };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(false);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+});
+
+// ── Money honesty: a sharp price gap must not read "Strong match" ─────────────
+// The Adidas F50 case: right ORDER (PO exact) but $111.37 lines landing on $41.25
+// siblings by size alone — accepting would rewrite order costs by 170%.
+describe('sharp price gap demotes confidence', () => {
+  const cand = {
+    kind: 'so', id: 'SO-1367', label: 'SO-1367', sub: 'Sales Order · Fresno Pacific', raw: { id: 'SO-1367' },
+    items: [
+      { sku: 'JH8559', name: 'Predator Elite FG', color: 'White/Black', size: '8', qty: 4, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+      { sku: 'JH8559', name: 'Predator Elite FG', color: 'White/Black', size: '11', qty: 3, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    ],
+  };
+  const bill = { po_number: 'PO 3460 FPUSOC', items: [
+    { sku: 'JR5386', size: '8', qty: 3, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE SOLTUR/CBL' },
+    { sku: 'JR5386', size: '11', qty: 1, unit_price: 111.37, desc: 'F50 HYPERFAST ELITE SOLTUR/CBL' },
+  ] };
+  test('PO-anchored full coverage with a 170% cost rewrite reads medium, says why, and never auto-matches', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.priceChanges.length).toBeGreaterThan(0);
+    expect(p.confidence).toBe('medium');
+    expect(p.evidence.join(' ')).toMatch(/differs sharply/);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+  });
+  test('a modest, plausible price update (under 25%) does NOT demote', () => {
+    const b2 = { po_number: 'PO 3460 FPUSOC', items: [
+      { sku: 'JH8559', size: '8', qty: 4, unit_price: 44.5 },
+      { sku: 'JH8559', size: '11', qty: 3, unit_price: 44.5 },
+    ] };
+    const p = proposeResolutions(b2, [cand], { canonSize: canon })[0];
+    expect(p.priceChanges.length).toBe(1);
+    expect(p.confidence).toBe('high');
+    expect(cleanAutoAccept(p, b2.items)).toBe(false); // price change still blocks AUTO — humans confirm money
+  });
+});
+
+// ── $0 service lines (embroidery memo) never consume order quantity ───────────
+// The real Richardson bill (Inv 4670528, PO 3318 LLBB): 48 caps billed by size plus a
+// "91-T1 Direct Embroidery · 48 @ $0.00" service line. Rolled into the cap bucket, that
+// $0 line fabricated 96-vs-16 phantom overage. $0 lines carry no money — ignore them.
+describe('zero-dollar service lines are ignored', () => {
+  const cand = { kind: 'so', id: 'SO-1275', label: 'SO-1275', raw: { id: 'SO-1275' }, items: [
+    { sku: 'PTS20', name: 'PTS20 Richardson Cap', color: 'Gold/Navy', size: 'LG-XL', qty: 16, unit_cost: 13, so_id: 'SO-1275', item_id: 'p1', po_id: 'PO 3318 LLBB' },
+  ] };
+  const bill = { po_number: 'PO 3318 LLBB', items: [
+    { sku: 'PTS20S2-GN-XS', size: '', qty: 8, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy XS-S' },
+    { sku: 'PTS20S2-GN-SM', size: '', qty: 24, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy SM-M' },
+    { sku: 'PTS20S2-GN-ML', size: '', qty: 16, unit_price: 12, desc: 'PTS20 Alternate Gold/Navy LG-X' },
+    { sku: '91-T1', size: '', qty: 48, unit_price: 0, desc: 'Direct Embroidery - Team Custom' },
+  ] };
+  test('the 48-unit $0 embroidery line neither ties nor counts: real overage is 32, not 80', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.some((t) => bill.items[t.bill_idx].sku === '91-T1')).toBe(false);
+    expect(p.unresolved.includes(3)).toBe(false); // not even "needs a match" — it needs nothing
+    expect(p.ties.length).toBe(3);
+    expect(p.overageUnits).toBe(32); // 48 caps billed vs 16 ordered — the REAL discrepancy
+    expect(cleanAutoAccept(p, bill.items)).toBe(false); // overage + price change still get a human
+  });
+});
+
+// ── Name evidence beats size/qty coincidence (the Predator/Supernova case) ────
+// Real bill: JP6237 "PREDATOR ELITE FT F SOLTUR/THE" sizes 8-/9-/12 @ $115.50 on
+// PO 3460 FPUSOC. The order has JH8559 "Adidas Supernova Ease" (a $41.25 running
+// shoe, sizes that overlap) AND a CUSTOM "Adidas Soccer Cleats F50 / Predator"
+// bulk line @ $105. size_only used to tie the cleats to the Supernova by size.
+describe('name evidence beats size/qty coincidence', () => {
+  const cand = { kind: 'so', id: 'SO-1367', label: 'SO-1367', raw: { id: 'SO-1367' }, items: [
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '8.5', qty: 3, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '9.5', qty: 7, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '12', qty: 2, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'CUSTOM', name: 'Adidas Soccer Cleats F50 / Predator', color: '', size: 'OSFA', qty: 40, unit_cost: 105, so_id: 'SO-1367', item_id: 'c1', po_id: 'PO 3460 FPUSOC' },
+  ] };
+  const bill = { po_number: 'PO 3460 FPUSOC', items: [
+    { sku: 'JP6237', size: '8-', qty: 1, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+    { sku: 'JP6237', size: '9-', qty: 5, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+    { sku: 'JP6237', size: '12', qty: 2, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+  ] };
+  const canonShoe = (s) => { const m = String(s || '').trim().match(/^(\d{1,2})\s*[-–]$/); return m ? m[1] + '.5' : String(s || '').toUpperCase().trim(); };
+  test('all three cleat lines tie to the Predator CUSTOM line by name — none to the Supernova', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canonShoe })[0];
+    expect(p).toBeTruthy();
+    expect(p.poAnchored).toBe(true);
+    expect(p.ties).toHaveLength(3);
+    expect(p.ties.every((t) => t.basis === 'po_name')).toBe(true);
+    expect(p.ties.every((t) => cand.items[t.target_idx].sku === 'CUSTOM')).toBe(true);
+    expect(p.overageUnits).toBe(0); // 8 units into 40 open
+  });
+  test('size_only refuses a >50% price gap even without the name rescue', () => {
+    const b2 = { po_number: 'PO 9999 ZZZ', items: [ // unanchored: no PO tiers to fall back on
+      { sku: 'JP6237', size: '12', qty: 2, unit_price: 115.5, desc: 'no useful tokens here' },
+    ] };
+    const c2 = { kind: 'so', id: 'SO-X', label: 'SO-X', raw: { id: 'SO-X' }, items: [
+      { sku: 'JH8559', name: 'Adidas Supernova Ease', color: '', size: '12', qty: 2, unit_cost: 41.25, so_id: 'SO-X', item_id: 'x', po_id: 'PO 8888 YYY' },
+    ] };
+    const props = proposeResolutions(b2, [c2], { canonSize: canonShoe });
+    expect(props).toHaveLength(0); // no tie at all beats a confidently wrong one
   });
 });

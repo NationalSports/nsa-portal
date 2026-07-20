@@ -49,6 +49,11 @@ function batchesToLines(batches) {
         qty: it.qty || 0,
         unit_cost: it.unit_cost || 0,
         sizes: it.sizes || {},
+        drop_ship: it.drop_ship === true,
+        ship_to: it.ship_to || null,           // write-in "new address" from the PO form
+        attention: it.attention || null,       // write-in attention line (e.g. existing DPO)
+        ship_to_deco_id: it.ship_to_deco_id || bp.ship_to_deco_id || null,
+        item_idx: it.item_idx != null ? it.item_idx : null,
         source_batch_id: bp.id || null,
         source_po_id: bp.po_id || null,
         so_id: bp.so_id || null,
@@ -59,19 +64,74 @@ function batchesToLines(batches) {
   return lines;
 }
 
+// Client-side mirror of the worker's resolveShipTo: for a drop-ship order,
+// the delivery address is the SO's ship-to customer (ship_to_id, or the SO's
+// own customer when unset/'default'). Returns {name,line1,city,state,zip} or
+// null when the SO/customer has no usable shipping address.
+export function resolveShipToClient(soId, allOrders, customers) {
+  const so = (allOrders || []).find((s) => s.id === soId);
+  if (!so) return null;
+  const addrCustId = (so.ship_to_id && so.ship_to_id !== 'default') ? so.ship_to_id : so.customer_id;
+  const c = (customers || []).find((x) => x.id === addrCustId);
+  if (!c || !(c.shipping_address_line1 || c.shipping_city)) return null;
+  return {
+    name: c.name || c.alpha_tag || '',
+    line1: c.shipping_address_line1 || '',
+    city: c.shipping_city || '',
+    state: c.shipping_state || '',
+    zip: c.shipping_zip || '',
+  };
+}
+
+// Decorator-bound blanks (batch ship_to_deco_id): the delivery address is the
+// DECORATOR's, and the attention line must reference the deco PO (DPO number)
+// so the decorator can match the incoming blanks to their job — same convention
+// as the SanMar API flow (attentionTo: 'DPO <n>'). Address comes from the deco
+// vendor's own saved address, falling back to its linked Vendor record. The DPO
+// is found on the SO's deco_pos for that decorator (preferring one that covers
+// the batch's item rows). Returns {name, attention, line1, city, state, zip}
+// or null when no usable address exists.
+export function resolveDecoShipToClient({ decoId, so, decoVendors, vendors, itemIdxs = null }) {
+  if (!decoId) return null;
+  const dv = (decoVendors || []).find((d) => d.id === decoId);
+  if (!dv) return null;
+  const lv = dv.vendor_id ? (vendors || []).find((v) => v.id === dv.vendor_id) : null;
+  const src = (dv.address_line1 || dv.city) ? dv : (lv && (lv.address_line1 || lv.city) ? lv : null);
+  if (!src) return null;
+  const dps = ((so && so.deco_pos) || []).filter((dp) => dp.deco_vendor_id === decoId);
+  const dp = (itemIdxs && itemIdxs.length
+    ? dps.find((d) => (d.item_idxs || []).some((ix) => itemIdxs.includes(ix)))
+    : null) || dps[0] || null;
+  const dpoNum = dp ? String(dp.po_id || '').replace(/^DPO\s*/i, '').trim() : '';
+  return {
+    name: dv.name || lv?.name || '',
+    attention: dpoNum ? 'DPO ' + dpoNum : null,
+    line1: src.address_line1 || '',
+    city: src.city || '',
+    state: src.state || '',
+    zip: src.zip || '',
+  };
+}
+
 // Build the title/description/bot_payload for an "add all items to the vendor
 // cart" task from a ready batch. The caller hands the result to onAssignTodo,
 // which opens the standard Assign Task modal pre-filled for the Claude bot.
-export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null }) {
+export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null, shipTo = null }) {
   const target = botTargetForVendor(vendorName);
   const lines = batchesToLines(batches);
   const totalQty = lines.reduce((a, l) => a + (l.qty || 0), 0);
   const totalCost = lines.reduce((a, l) => a + (l.qty || 0) * (l.unit_cost || 0), 0);
   const label = vendorName || target;
+  const decoBound = lines.some((l) => l.ship_to_deco_id);
+  const lineShipTo = lines.find((l) => l.ship_to)?.ship_to || null;   // write-in address wins
+  const lineAttention = lines.find((l) => l.attention)?.attention || null; // write-in DPO/attention wins
+  const dropShip = lines.some((l) => l.drop_ship) || decoBound || !!lineShipTo;
+  let resolvedShipTo = dropShip ? (lineShipTo || shipTo || null) : null;
+  if (resolvedShipTo && lineAttention) resolvedShipTo = { ...resolvedShipTo, attention: lineAttention };
 
   return {
     title: `Add ${lines.length} item${lines.length === 1 ? '' : 's'} (${totalQty} pcs) to ${label} cart · PO ${poNumber || '—'}`,
-    description: `Log in to ${label}, add every line in the attached list to the cart at the given sizes/quantities, then enter PO# ${poNumber || '(none)'} on the cart. STOP before submitting — set bot_status to needs_review and comment here for approval.`,
+    description: `Log in to ${label}, add every line in the attached list to the cart at the given sizes/quantities, then enter PO# ${poNumber || '(none)'} on the cart.${decoBound ? ' DROP SHIP TO DECORATOR — set the delivery location to the decorator\'s address with the DPO number on the attention line.' : dropShip ? ' DROP SHIP — set the delivery location to the program address, not the NSA warehouse.' : ''} STOP before submitting — set bot_status to needs_review and comment here for approval.`,
     so_id: soId,
     bot_payload: {
       task_type: 'add_to_cart',
@@ -79,6 +139,8 @@ export function buildBotCartPayload({ poNumber, vendorName, batches, soId = null
       vendor_name: vendorName || null,
       po_number: poNumber || null,
       lines,
+      drop_ship: dropShip,
+      ship_to: resolvedShipTo,
       totals: { line_count: lines.length, qty: totalQty, cost: Number(totalCost.toFixed(2)) },
     },
   };

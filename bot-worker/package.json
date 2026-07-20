@@ -4,13 +4,21 @@
   "private": true,
   "description": "Always-on Claude Code worker that acts like a CSR — picks up tasks assigned to the 'Claude (Bot)' team member and drives vendor portals (Adidas CLICK, etc.).",
   "type": "module",
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node worker.js",
-    "once": "RUN_ONCE=1 node worker.js"
+    "once": "RUN_ONCE=1 node worker.js",
+    "test:harness": "node test/spec.mjs",
+    "test:agent": "node test/run-agent.mjs",
+    "mock-portal": "node test/mock-portal.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
     "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1"
   }
 }
