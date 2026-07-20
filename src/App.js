@@ -25500,8 +25500,16 @@ export default function App(){
           failed++;continue;
         }
         const memo=['PO: '+bill.po_number,bill.tracking?'Tracking: '+bill.tracking:'',bill.doc_number?'Doc #'+bill.doc_number:''].filter(Boolean).join(' | ');
-        const qbBill={VendorRef:{value:qbVendorId},TxnDate:bill.doc_date?bill.doc_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):new Date().toISOString().slice(0,10),
-          DueDate:bill.due_date?bill.due_date.replace(/(\d+)\/(\d+)\/(\d+)/,'20$3-$1-$2'):undefined,
+        // Date → QB ISO. The old regex blindly prepended '20' to the year, turning
+        // MM/DD/YYYY (how S&S/SI bills print dates) into '202026-07-17' — an invalid
+        // TxnDate QB rejects. Handle ISO passthrough, 2- and 4-digit years.
+        const _qbDate=(s)=>{if(!s)return undefined;const t=String(s).trim();
+          if(/^\d{4}-\d{2}-\d{2}/.test(t))return t.slice(0,10);
+          const m2=t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/);
+          if(!m2)return undefined;
+          return (m2[3].length===2?'20'+m2[3]:m2[3])+'-'+m2[1].padStart(2,'0')+'-'+m2[2].padStart(2,'0');};
+        const qbBill={VendorRef:{value:qbVendorId},TxnDate:_qbDate(bill.doc_date)||new Date().toISOString().slice(0,10),
+          DueDate:_qbDate(bill.due_date),
           DocNumber:bill.doc_number||bill.po_number||undefined,
           Line:lineItems,PrivateNote:memo};
         // Apply billed quantities, tracking, and freight to matched SO/PO
@@ -25513,7 +25521,10 @@ export default function App(){
         if(billRes?.Bill?.Id){
           const log={ts:new Date().toLocaleString(),type:'bill_upload',status:'success',
             details:['Bill created: '+vendorName+' $'+amt.toFixed(2)+' → QB Bill #'+billRes.Bill.Id,'PO: '+bill.po_number,bill.items.length+' line items, Freight: $'+bill.freight.toFixed(2)]};
-          setQBConfig(prev=>({...prev,syncLog:[log,...prev.syncLog].slice(0,100)}));
+          // Mark our own QB bill as already-synced so the QB→portal bill pull
+          // (syncBillsFromQB) can never pull it back and apply its cost a SECOND time —
+          // the portal already applied this bill's costs when it was pushed.
+          setQBConfig(prev=>({...prev,_syncedBillIds:[...(prev._syncedBillIds||[]),billRes.Bill.Id],syncLog:[log,...prev.syncLog].slice(0,100)}));
           setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id}:p)}));
           qbResults[b.id]={qbStatus:'success',qbMsg:'QB Bill #'+billRes.Bill.Id};
           success++;
@@ -27795,13 +27806,14 @@ export default function App(){
                 {overBills.length>0&&statTile(overBills.length,'Over-billed',RED_LT)}
                 {oldestDays!=null&&statTile(oldestDays===0?'today':oldestDays+'d','Oldest')}
                 {(()=>{
-                  // Drain the parked mountain through the proposal engine: every no-match /
-                  // won't-apply bill goes back to Review where the "Best answer" panel works
-                  // them. Over-billed stays here — its correct/accept tools live on this tab.
-                  const rematchable=enrichedAll.filter(e=>e.bucket==='nomatch'||e.bucket==='noapply');
+                  // Drain the parked mountain through the proposal engine: no-match, won't-
+                  // apply AND over-billed all go back to Review — the Best-answer panel now
+                  // matches by name, shows the money check, and an accepted overage corrects
+                  // the order automatically on push (this tab's manual tools stay as backup).
+                  const rematchable=enrichedAll.filter(e=>e.bucket==='nomatch'||e.bucket==='noapply'||e.bucket==='overbilled');
                   if(!rematchable.length)return null;
-                  return <button onClick={()=>{rematchable.forEach(e=>_moveBackToReview(e.sb));nf(rematchable.length+' bill(s) moved to Review — open each one for its Best answer')}}
-                    title="Send every no-match / won't-apply parked bill back to Import & Review, where the new matcher proposes its best answer with evidence"
+                  return <button onClick={()=>{rematchable.forEach(e=>_moveBackToReview(e.sb));nf(rematchable.length+' bill(s) moved to Review — each gets its Best answer (overage approval included)')}}
+                    title="Send every no-match / won't-apply / over-billed parked bill back to Import & Review — the matcher proposes its best answer with evidence, and accepting a flagged overage lets push correct the order automatically"
                     style={{fontSize:12,padding:'9px 16px',borderRadius:5,cursor:'pointer',fontWeight:800,fontFamily:FD,letterSpacing:.5,textTransform:'uppercase',background:'#fff',border:'none',color:NAVY}}>
                     🧵 Re-match {rematchable.length} through Review</button>;
                 })()}
@@ -27827,7 +27839,7 @@ export default function App(){
               const guideOpen=!laterCollapse['__guide'];
               const steps=[
                 ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
-                ['⚠️','Over-billed','Open the bill (▾) and read the ⚖️ Reconcile table — the bill beside the order, size by size. If the bill is right (it usually is), ✏️ Correct order from bill. If the overage is genuinely OK, ⚠️ Accept overage & push and say why.'],
+                ['⚠️','Over-billed','🧵 Reconcile in Review is the easy road now: the Best answer shows the ties and the money check, and accepting the flagged overage lets push correct the order automatically. Or handle it here: ✏️ Correct order from bill, or ⚠️ Accept overage & push with a note.'],
                 ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
                 ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
                 ['♻️','Duplicate','Its doc # was already applied — ♻️ Resolve as duplicate to clear it.'],
@@ -27896,7 +27908,7 @@ export default function App(){
                   </div>
                   {!clean&&<div style={{marginTop:10,display:'flex',flexDirection:'column',gap:6}}>{reasons.map((r,ri)=><div key={ri} style={{display:'flex',alignItems:'center',gap:9,padding:'8px 13px',background:REDBG,borderRadius:5}}><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flex:'0 0 auto'}}><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg><span style={{fontSize:13,color:'#7a2429',fontWeight:600}}>{r}</span></div>)}</div>}
                   {!expanded&&(()=>{
-                    const nextStep={ready:'Push to Portal — or Resolve if you handled it in QuickBooks',overbilled:'Open ▾ and check the Reconcile table, then Correct order from bill or Accept overage',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
+                    const nextStep={ready:'Push to Portal — or Resolve if you handled it in QuickBooks',overbilled:'Reconcile in Review (Best answer + overage approval) — or Correct order from bill / Accept overage here',noapply:'Fix match — remap the lines to the right order',nomatch:'Fix match, or Find PO with AI, to attach it to an order',duplicate:'Resolve as duplicate — it was already applied'}[bucket];
                     return nextStep?<div style={{fontFamily:FD,fontSize:12,fontWeight:700,letterSpacing:.4,color:NAVY,marginTop:8,textTransform:'uppercase'}}>👉 Next: <span style={{textTransform:'none',letterSpacing:0,fontFamily:'inherit',color:TXTL,fontWeight:600}}>{nextStep}</span></div>:null;
                   })()}
                   </div>
@@ -27988,6 +28000,7 @@ export default function App(){
                   <div style={{display:'flex',alignItems:'center',gap:10,padding:'14px 20px 16px 24px',borderTop:'1px solid '+LGRAY,flexWrap:'wrap'}} onClick={e=>e.stopPropagation()}>
                     {bucket==='ready'&&!sb.portalStatus&&skBtn({bg:GREEN,fg:'#fff',fs:12,pad:'10px 18px',title:"Apply this bill to the order's Billed tracking right now — it validates cleanly",onClick:()=>_pushParkedBill(sb,'pushed from Look at Later',''),children:'🚀 Push to Portal'})}
                     {bucket==='overbilled'&&<>
+                      {skBtn({bg:GREEN,fg:'#fff',fs:12,pad:'10px 18px',title:'Open this bill in Review — the Best-answer panel shows the ties, the money check, and the overage; accepting it lets push correct the order automatically (audit kept)',onClick:()=>{_moveBackToReview(sb);nf('Moved to Review — open it for its Best answer; accepting the flagged overage corrects the order on push')},children:'🧵 Reconcile in Review'})}
                       {skBtn({bg:NAVY,fg:'#fff',fs:12,pad:'10px 18px',title:'The bill is the source of truth: raise the order\'s ordered quantities to match what was billed (audit note kept on each line), then this bill validates cleanly',onClick:()=>_correctOrderFromBill(sb),children:'✏️ Correct order from bill'})}
                       {skBtn({bg:'#fff',fg:RED,border:'1.5px solid #e6c9cc',fs:12,pad:'9px 16px',title:'Push anyway and record why the overage is acceptable (note required)',onClick:()=>setBillOverrideModal({id:sb.id,note:''}),children:'⚠️ Accept overage & push…'})}
                     </>}
