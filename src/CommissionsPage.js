@@ -11,7 +11,7 @@ import { dP, rQ, parseDate, _decoUnitCostComb } from './App';
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from './lib/dbEngine';
 import { sendBrevoEmail } from './utils';
-import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch } from './commissionSnapshots';
+import { canSnapshotLine, snapshotRowFromLine, applySnapshotToLine, overrideSnapshotPatch, isCommissionEarnedInvoice } from './commissionSnapshots';
 
 // The Admin Dashboard tab is visible to this user only (Steve Peterson's seeded
 // team_members id — same single-user gate as the App.js to-do list).
@@ -186,7 +186,7 @@ export default function CommissionsPage(){
     // Commission: 30% of GP if paid within 90 days, 15% if paid after 90 days
     const buildCommLines=(repFilter)=>{
       return invs.filter(inv=>{
-        if(inv.status!=='paid'&&inv.status!=='partial')return false;
+        if(!isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         if(repFilter&&repFilter!=='all'){const cc=cust.find(x=>x.id===inv.customer_id);return commissionRepId(cc,so)===repFilter}
         return true;
@@ -229,13 +229,11 @@ export default function CommissionsPage(){
 
     // Build pipeline from open/unpaid invoices + uninvoiced open SOs
     const buildPipeline=(repFilter)=>{
-      // Open invoices only. Exclude 'partial' as well as 'paid': buildCommLines already
-      // credits a partial invoice's FULL gp as EARNED (calcGP uses inv.total, not the paid
-      // amount), so also counting it here as pipeline double-counts the same commission —
-      // a rep saw ~2x in the combined (earned + pipeline) total. A partial is booked as
-      // earned; it has no remaining pipeline.
+      // Open and partially paid invoices stay in pipeline. Nothing is earned until
+      // the invoice reaches fully paid, at which point buildCommLines moves it into
+      // the statement using the final payment date.
       const invLines=invs.filter(inv=>{
-        if(inv.status==='paid'||inv.status==='partial')return false;
+        if(isCommissionEarnedInvoice(inv))return false;
         const so=sos.find(s=>s.id===inv.so_id);
         // Attribution follows the account owner via commissionRepId (see businessLogic.js): an open
         // invoice on another rep's account must never surface in the SO creator's pipeline.

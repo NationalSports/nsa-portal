@@ -31,6 +31,7 @@ const stripe = require('stripe');
 const { createClient } = require('@supabase/supabase-js');
 const { sendOrderConfirmation, bumpCouponUse } = require('./_webstoreEmail');
 const { reconcileInvoiceFromIntent } = require('./_shared');
+const { sendCustomerEmail: sendUniformCustomerEmail, sendStaffEmail: sendUniformStaffEmail } = require('./_uniformOrderEmail');
 
 exports.handler = async (event) => {
   if (event.httpMethod !== 'POST') return { statusCode: 405, body: 'Method not allowed' };
@@ -150,6 +151,40 @@ exports.handler = async (event) => {
         // backstop for when that call never lands (tab closed, or a 3-D Secure redirect). Shared helper,
         // idempotent — the portal call, this one, and Stripe retries can't double-apply the surcharge.
         await reconcileInvoiceFromIntent(sb, pi);
+
+        // Uniform Builder checkout is order-first. If the buyer closes the tab
+        // after Stripe succeeds, this is the authoritative backstop that marks
+        // the already-created order paid and sends its permanent status link.
+        const { data: uniformRows } = await sb.from('uniform_order_requests')
+          .select('*').eq('stripe_intent_id', pi.id).limit(1);
+        const uniformOrder = uniformRows && uniformRows[0];
+        if (uniformOrder) {
+          const expected = Math.round(Number(uniformOrder.pricing_breakdown?.paymentChargeTotal || 0) * 100);
+          const metadataMatches = pi.metadata?.uniform_order_id === uniformOrder.id;
+          if (expected > 0 && Number(pi.amount) === expected && metadataMatches) {
+            const { data: paidRows, error: uniformFlipErr } = await sb.from('uniform_order_requests')
+              .update({ payment_status: 'paid', status: 'paid' })
+              .eq('id', uniformOrder.id).neq('payment_status', 'paid').select('*').limit(1);
+            if (uniformFlipErr) {
+              // Same webhook-honesty rule as the invoice flip above: if the write
+              // failed, return 500 so Stripe retries instead of losing the payment.
+              console.error('[stripe-webhook] uniform paid-flip failed:', uniformFlipErr.message);
+              hardFailure = true;
+            }
+            const paidOrder = paidRows && paidRows[0];
+            if (paidOrder) {
+              await sb.from('uniform_order_events').insert({ order_id: paidOrder.id, event_type: 'payment_received', actor_type: 'system', message: 'Stripe payment received by webhook', metadata: { stripe_intent_id: pi.id } });
+              try {
+                await Promise.all([
+                  sendUniformCustomerEmail(paidOrder, 'confirmation', {}),
+                  sendUniformStaffEmail(paidOrder, 'confirmation', {}),
+                ]);
+              } catch (emailError) { console.warn('[stripe-webhook] uniform confirmation failed:', emailError.message); }
+            }
+          } else {
+            console.error('[stripe-webhook] Uniform PI mismatch - NOT marking paid:', JSON.stringify({ order: uniformOrder.id, pi: pi.id, amount: pi.amount, expected, metadataMatches }));
+          }
+        }
       }
     } else if (evt.type === 'payment_intent.payment_failed') {
       // Team Shop ACH (settle-then-produce): an ACH debit can fail days after
