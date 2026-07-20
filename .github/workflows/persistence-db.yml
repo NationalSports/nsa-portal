@@ -1,0 +1,42 @@
+name: Persistence DB Round-trip
+
+# The DB-backed save-path persistence test (e2e/14-persistence-db-roundtrip).
+# Manual-trigger for now: it needs a THROWAWAY test database (a Supabase branch
+# or a dedicated test project — never production), supplied as repo secrets:
+#   E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY
+# Without them the suite skips, so this job is a safe no-op until wired up.
+# Promote to a schedule/PR trigger once a stable test DB is chosen.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  db-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Firefox
+        run: npx playwright install --with-deps firefox
+
+      - name: Run DB persistence round-trip
+        env:
+          E2E_SUPABASE_URL: ${{ secrets.E2E_SUPABASE_URL }}
+          E2E_SUPABASE_ANON_KEY: ${{ secrets.E2E_SUPABASE_ANON_KEY }}
+        run: npx playwright test e2e/14-persistence-db-roundtrip.spec.js --reporter=list
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: persistence-db-report
+          path: test-reports/
+          retention-days: 14
