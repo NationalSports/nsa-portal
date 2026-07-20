@@ -77,7 +77,7 @@ const BUILT_IN_PRINT_PATTERNS = [
 // Human-readable "Construction Materials" row value for a section/zone.
 const zoneRowValue = (z) => {
   if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
-  if (z.pattern !== 'solid') return `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.color2)}`;
+  if (z.pattern !== 'solid') return `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.patternColor2 || z.color2)}`;
   return nameForHex(z.color);
 };
 
@@ -172,7 +172,7 @@ function effectiveBottomSections(cfg) {
   const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
-    const from = (z) => ({ color: z.color, color2: z.color2, color3: z.color3, color4: z.color4, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
+    const from = (z) => ({ color: z.color, color2: z.color2, patternColor2: z.patternColor2, color3: z.color3, color4: z.color4, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
     // Match the supplied shorts construction: body-color legs + waistband,
     // with the jersey's secondary graphic color on the angular side insert.
     const stripe = from(S.body);
@@ -185,7 +185,7 @@ function effectiveBottomSections(cfg) {
 function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
   const zoneOf = (z) => ({
-    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
+    color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
     color3: z.color3, color4: z.color4,
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
   });
@@ -591,7 +591,7 @@ function specFromConfig(cfg) {
   // Only carry the print-pattern image when the section is actually set to it,
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
-    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
+    color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
     color3: z.color3, color4: z.color4,
     ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
   });
@@ -666,11 +666,11 @@ function Swatch({ hex, active, onClick, size = 42 }) {
 // team colors (plus white/black staples) so choices stay consistent, with the
 // full palette one tap away. The Team step stays the place where the "main"
 // colors get declared from the full range.
-function QuickColors({ teamColors, hex, onPick, size = 30 }) {
+function QuickColors({ teamColors, hex, onPick, size = 30, testId }) {
   const [more, setMore] = useState(false);
   const shown = more ? PALETTE : teamColors;
   return (
-    <div>
+    <div data-testid={testId}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingLeft: 4 }}>
         {shown.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
         <button onClick={() => setMore((m) => !m)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight, background: 'none', border: '1px dashed ' + C.mid, borderRadius: 3, padding: '6px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
@@ -806,7 +806,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                     const on = value.pattern === 'custom' && value.patternImage === p.image;
                     return (
                       <button type="button" key={p.id} data-testid={`pattern-${def.key}-${p.id}`} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} aria-pressed={on}
-                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone'].includes(p.tint_mode) ? p.tint_mode : 'solid' })}
+                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone'].includes(p.tint_mode) ? p.tint_mode : 'solid', patternColor2: value.patternColor2 || value.color2 })}
                         style={{ width: '100%', minHeight: 52, borderRadius: 5, cursor: 'pointer', padding: '6px 9px', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', background: '#fff',
                           border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
                           boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)' }}>
@@ -830,11 +830,11 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             )}
             {(!layoutLocked || (value.pattern === 'custom' && value.patternTintMode === 'duotone')) && (
               <div style={{ ...railLabel, marginBottom: 8 }}>
-                {value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Background' : 'Color'}
+                {value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Color 1' : 'Color'}
               </div>
             )}
             <div style={{ marginBottom: layoutLocked ? 0 : (value.pattern !== 'solid' ? 14 : 0) }}>
-              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} />
+              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} testId={value.pattern === 'custom' && value.patternTintMode === 'duotone' ? `pattern-color-1-${def.key}` : undefined} />
             </div>
             {!layoutLocked && value.pattern !== 'solid' && value.pattern !== 'custom' && (
               <>
@@ -847,8 +847,8 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             )}
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode === 'duotone' && (
               <>
-                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Pattern Detail</div>
-                <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} />
+                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Pattern Color 2</div>
+                <QuickColors teamColors={teamColors} hex={value.patternColor2 || value.color2} onPick={(h) => patchSection(def, { patternColor2: h })} testId={`pattern-color-2-${def.key}`} />
               </>
             )}
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && value.patternTintMode !== 'duotone' && (
@@ -1165,7 +1165,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const replaceValue = (value) => String(value || '').toUpperCase() === from ? to : value;
     const replaceZone = (zone) => {
       const next = { ...(zone || {}) };
-      for (const key of ['color', 'color2', 'color3', 'color4']) if (next[key]) next[key] = replaceValue(next[key]);
+      for (const key of ['color', 'color2', 'patternColor2', 'color3', 'color4']) if (next[key]) next[key] = replaceValue(next[key]);
       return next;
     };
     const sections = {};
@@ -1351,7 +1351,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const map = new Map([[pPrimary, uPrimary], [pSecondary, uSecondary], [pAccent, uAccent]]);
     const rc = (c) => map.get(String(c || '').toUpperCase()) || uPrimary;
     const zone = (z) => {
-      const out = { color: rc(z.color), color2: rc(z.color2), pattern: z.pattern || 'solid' };
+      const out = { color: rc(z.color), color2: rc(z.color2), ...(z.patternColor2 ? { patternColor2: rc(z.patternColor2) } : {}), pattern: z.pattern || 'solid' };
       // Preset patterns are always built-ins, so clear any custom-print fields.
       return out;
     };

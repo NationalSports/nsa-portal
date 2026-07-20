@@ -9,7 +9,8 @@ describe('custom print patterns', () => {
       patternTint: true,
       patternTintMode: 'duotone',
       color: '#7f1d1d',
-      color2: '#1f2a44',
+      color2: '#ffffff',
+      patternColor2: '#1f2a44',
     }, DEFAULT_ZONE);
 
     expect(zone).toMatchObject({
@@ -19,7 +20,8 @@ describe('custom print patterns', () => {
       patternTint: true,
       patternTintMode: 'duotone',
       color: '#7f1d1d',
-      color2: '#1f2a44',
+      color2: '#ffffff',
+      patternColor2: '#1f2a44',
     });
   });
 

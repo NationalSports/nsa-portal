@@ -37,11 +37,12 @@ function silhouette(view) {
 function fillZone(ctx, path, zone, vb, s) {
   const color = ds.toHex(zone.color, '#1f2a44');
   const color2 = ds.toHex(zone.color2, '#ffffff');
+  const patternColor2 = ds.toHex(zone.patternColor2, color2);
   const pat = zone.pattern || 'solid';
 
   if (pat === 'custom' && zone.patternImage) {
     let img = patternImgCache[zone.patternImage];
-    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, color2, ds.toHex(zone.color3, '#ffffff'), ds.toHex(zone.color4, '#ffffff'), zone.patternTintMode);
+    if (img && zone.patternTint) img = tintedTile(img, zone.patternImage, color, patternColor2, ds.toHex(zone.color3, '#ffffff'), ds.toHex(zone.color4, '#ffffff'), zone.patternTintMode);
     const cp = img ? ctx.createPattern(img, 'repeat') : null;
     if (cp && typeof cp.setTransform === 'function' && typeof DOMMatrix !== 'undefined') {
       // Fixed ~6 repeats across the view width → consistent physical scale in
@@ -523,7 +524,7 @@ export async function renderProductionPDF(spec, opts = {}) {
     });
   });
   const uniqueColors = [];
-  uniqueZones.forEach(({ spec: zs }) => [zs.color, zs.color2].forEach((color) => {
+  uniqueZones.forEach(({ spec: zs }) => [zs.color, zs.color2, zs.patternColor2].forEach((color) => {
     const hex = ds.toHex(color, '');
     if (hex && !uniqueColors.includes(hex)) uniqueColors.push(hex);
   }));
@@ -544,7 +545,7 @@ export async function renderProductionPDF(spec, opts = {}) {
   leftY = row(M, leftY, COL, 'Fabric', titleCase(spec.fabric || 'Sublimated Poly'));
   uniqueZones.forEach(({ label, spec: zs }) => {
     const pattern = zs.pattern && zs.pattern !== 'solid'
-      ? ` - ${titleCase(zs.pattern)}${zs.color2 ? ` / ${ds.nameForHex(zs.color2)} ${ds.toHex(zs.color2)}` : ''}`
+      ? ` - ${titleCase(zs.pattern)}${zs.patternColor2 ? ` / ${ds.nameForHex(zs.patternColor2)} ${ds.toHex(zs.patternColor2)}` : ''}`
       : '';
     leftY = row(M, leftY, COL, label, `${ds.nameForHex(zs.color)} ${ds.toHex(zs.color)}${pattern}`, { swatch: zs.color, minHeight: 16, fontSize: 7.05 });
   });

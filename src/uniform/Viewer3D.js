@@ -165,8 +165,10 @@ function designMaskTexture(url, baseHex, accentHex, onReady) {
     // The binary source keeps the break crisp; high-quality mip filtering and
     // stronger anisotropy keep that edge stable at steep sleeve angles without
     // introducing shimmer when the full jersey is in view.
-    tex.generateMipmaps = true;
-    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    // Preserve the two selected sublimation inks. Mipmaps average high-contrast
+    // inks into a third, washed-out color at normal builder distance.
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
     tex.anisotropy = 16;
     tex.userData.shared = true;
@@ -473,6 +475,14 @@ function zoneRepeat(span, targetTiles, fallback) {
   return Math.max(2, Math.min(60, targetTiles / span));
 }
 
+// Hex Flow contains several motifs inside one source tile. Give it a modestly
+// higher density than a conventional all-over print: large enough to read as
+// real garment artwork, but not so dense that the two inks visually merge.
+function customPatternRepeat(zs, span) {
+  const isHexFlow = /hex[\s_-]*flow/i.test(`${zs.patternName || ''} ${zs.patternImage || ''}`);
+  return zoneRepeat(span, isHexFlow ? 3 : 3.5, 5);
+}
+
 // AGI-1011's side insert crosses separate front/back UV shells. Computing the
 // color break from the garment surface itself keeps one continuous, clean edge
 // across that construction seam (and still leaves the UV mask available for
@@ -559,6 +569,7 @@ function applyDesign(st, rawSpec) {
     const mat = entry.mesh.material;
     const color = textileAlbedo(ds.toHex(zs.color, '#1f2a44'));
     const color2 = textileAlbedo(ds.toHex(zs.color2, '#ffffff'));
+    const patternColor2 = textileAlbedo(ds.toHex(zs.patternColor2, color2));
     const pat = zs.pattern || 'solid';
     const meshName = String(entry.mesh.name || '').toLowerCase();
     const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
@@ -577,11 +588,11 @@ function applyDesign(st, rawSpec) {
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         if (entry._patGen !== gen || !entry.mesh.material) return;
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, patternColor2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
         // The composite lives in the garment's original UV atlas. Convert the
         // desired panel-local tile count to atlas-space repetition.
-        const rep = zoneRepeat(spanByZone[entry.zone], 2.5, 4);
-        const patternKey = [zs.patternImage, zs.patternTintMode, color, color2, zs.color3, zs.color4].join('|');
+        const rep = customPatternRepeat(zs, spanByZone[entry.zone]);
+        const patternKey = [zs.patternImage, zs.patternTintMode, color, patternColor2, zs.color3, zs.color4].join('|');
         designMaskPatternTexture(maskUrl, source, patternKey, color2, rep, (tex) => {
           if (entry._patGen !== gen || !entry.mesh.material) return;
           const m = entry.mesh.material;
@@ -610,14 +621,16 @@ function applyDesign(st, rawSpec) {
         if (entry._patGen !== gen || !entry.mesh.material) return;
         // Tintable tiles are grayscale: recolor with the zone's colors so one
         // uploaded tile serves every colorway.
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, patternColor2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
         const tex = new THREE.CanvasTexture(source);
         tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
         // Same tile-count logic as the built-ins: ~2.5 print repeats across each
         // panel so a print never balloons on the sleeves.
-        const rep = zoneRepeat(spanByZone[entry.zone], 2.5, 4);
+        const rep = customPatternRepeat(zs, spanByZone[entry.zone]);
         tex.repeat.set(rep, rep);
-        tex.anisotropy = 8;
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         tex.colorSpace = THREE.SRGBColorSpace;
         const m = entry.mesh.material;
         if (m.map) m.map.dispose();
