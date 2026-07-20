@@ -72,10 +72,18 @@ try {
   const addr = (await state()).address;
   check('one-time address recorded', addr.type === 'one_time' && addr.line1 === '1717 S Chestnut Ave', JSON.stringify(addr));
 
-  // Step 6: availability — JW6600 L is hatched today with a short restock note
-  check('JW6600 L cell hatched with restock note', (await page.locator('td.hatched:has-text("Re-stock")').count()) >= 2);
-  check('KE9493 all cells hatched with NO date', (await page.locator('.card:has-text("KE9493") td.hatched').count()) === 8
-    && (await page.locator('.card:has-text("KE9493") td.hatched:has-text("Re-stock")').count()) === 0);
+  // Step 6: availability — restock dates are ONLY revealed by hovering the
+  // calendar icon (like the real portal); no visible date text in cells.
+  check('no restock date visible without hovering', (await page.locator('td.hatched:has-text("Re-stock")').count()) === 0);
+  check('backordered cells carry a calendar icon', (await page.locator('.card:has-text("JW6600") span.cal').count()) === 1
+    && (await page.locator('.card:has-text("KB5529") span.cal').count()) === 1);
+  await page.hover('.card:has-text("JW6600") span.cal');
+  await page.waitForTimeout(150);
+  const _tip = await page.locator('#cal-tip').textContent();
+  check('hovering the calendar icon reveals the restock tooltip', /Re-stock in/.test(_tip || ''), _tip || '(empty)');
+  check('hover was recorded server-side', (await state()).log.some((l) => l.action === 'hover_cal' && /JW6600 L/.test(l.label || '')));
+  check('KE9493 all cells hatched with NO calendar icon', (await page.locator('.card:has-text("KE9493") td.hatched').count()) === 8
+    && (await page.locator('.card:has-text("KE9493") span.cal').count()) === 0);
 
   // Enter a quantity BEFORE the date change to prove clearing happens
   await page.fill('input.qty[data-sku="JW6608"][data-size="S"]', '11');

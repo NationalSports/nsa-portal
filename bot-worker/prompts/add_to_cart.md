@@ -103,14 +103,31 @@ quantities. Today's date matters here — compute "two weeks from today" first.
 
 **Availability rule (per SKU):**
 - A needed size that accepts quantity normally → available.
-- A needed size showing 0 / hatched / disabled → hover it for a restock note
-  (e.g. "Re-stock in Jul 7, 2026").
+- A needed size showing 0 / hatched / disabled → find its restock date. The
+  date is NOT on the cell itself — it's revealed by **hovering the SMALL
+  CALENDAR ICON (📅) that sits right next to that size's cell / stock
+  number**. Hover the icon and a tooltip appears like "Re-stock in Aug 21,
+  2026". Hovering the cell shows nothing — that does NOT mean there's no
+  date. Nearly every out-of-stock size has this calendar icon; you MUST
+  hover it before deciding anything about that size.
   - Restock date WITHIN 14 days of today → treat the SKU as orderable
     (short backorder).
-  - Restock date MORE than 14 days out, or no date at all → **SKIP THE ENTIRE
-    SKU**: enter NO quantities on any of its sizes, add it to `skipped` with
-    the size(s), the restock date (or "no date"), and move on. The rep decides
-    what to do with it.
+  - Restock date MORE than 14 days out → **SKIP THE ENTIRE SKU**: enter NO
+    quantities on any of its sizes, add it to `skipped` WITH the date you
+    found (the rep decides with real information), and move on.
+  - Only report "no date" when the size truly has NO calendar icon and
+    hovering the icon location shows no tooltip — that means genuinely
+    unavailable. Never report "no date" for a size whose calendar icon you
+    did not hover.
+
+**Portal inventory snapshot (your starting expectation):**
+{{PORTAL_AVAILABILITY}}
+
+**The rep's standing decision on long backorders:**
+{{BACKORDER_ACTION}}
+
+**The rep's per-item schedule (overrides everything above for these items):**
+{{LINE_SCHEDULE}}
 
 **If any orderable SKU has a short backorder (restock ≤ 14 days)**, follow the
 delivery-date strategy the rep chose for this order:
