@@ -26534,6 +26534,9 @@ export default function App(){
             const _cardPi=Math.min(b._propIdx||0,Math.max(0,_cardProps.length-1));
             const _acceptProposal=(pr)=>{
                       const target=pr.target;
+                      // Merge the operator's click-links (chips on unresolved lines) into the ties.
+                      const _xt=b._extraTies||{};
+                      pr={...pr,ties:[...pr.ties,...Object.entries(_xt).filter(([bi2])=>!pr.ties.some(t2=>t2.bill_idx===parseInt(bi2))).map(([bi2,ti2])=>({bill_idx:parseInt(bi2),target_idx:ti2,basis:'manual',allocated_qty:safeNum((bill.items[parseInt(bi2)]||{}).qty),open_qty:safeNum((target.items[ti2]||{}).qty),overage:0}))]};
                       let matchedPO2,matchedPOSource2;
                       if(target.kind==='batch'){matchedPO2=target.raw;matchedPOSource2='batch'}
                       else{matchedPO2={so_id:target.id,po_id:(target.raw&&target.raw.po_number)||target.id,so:target.raw};matchedPOSource2='so_po'}
@@ -26542,7 +26545,7 @@ export default function App(){
                         return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
                       const _pc={};lineMappings.forEach(m=>{if(m.po_id)_pc[m.po_id]=(_pc[m.po_id]||0)+1});
                       const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
-                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,parsed:{...p.parsed,matchedPO:matchedPO2,matchedPOSource:matchedPOSource2,_lineMappings:lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==poCanon?p.parsed.po_number:undefined),po_number:poCanon,_wizard:{open:false}}}:p)}));
+                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,_extraTies:undefined,parsed:{...p.parsed,matchedPO:matchedPO2,matchedPOSource:matchedPOSource2,_lineMappings:lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==poCanon?p.parsed.po_number:undefined),po_number:poCanon,_wizard:{open:false}}}:p)}));
                       nf(pr.overageUnits?('Tied '+lineMappings.length+' line(s) to '+target.label+' — over-billed units flagged, reconcile the overage next'):('Tied '+lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
             };
             return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
@@ -26885,8 +26888,28 @@ export default function App(){
                               </tr>;})}</tbody>
                           </table>
                         </div>
+                        {/* Owner rule: exact PO match ⇒ right order. Unresolved lines get the order's
+                            open items as CLICK-TO-LINK chips — see the items, click, done. */}
+                        {prop.poAnchored&&prop.unresolved.length>0&&(()=>{
+                          const xt=b._extraTies||{};
+                          const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
+                          const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk').map(t2=>t2.target_idx),...Object.values(xt)]);
+                          const still=prop.unresolved.filter(i2=>xt[i2]==null);
+                          return<div style={{marginTop:8,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6}}>
+                            <div style={{fontSize:10,fontWeight:800,color:'#92400e',marginBottom:5}}>Link the rest — the PO matches this order, so these belong to one of its items. Click to link:</div>
+                            {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
+                              return<div key={i2} style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'4px 0',borderTop:'1px solid #fef3c7'}}>
+                                <span style={{fontFamily:'monospace',fontSize:10,fontWeight:700,color:'#0f172a',flex:'0 0 auto'}}>{bl.sku} {bl.size} · {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)}</span>
+                                {linked?<><span style={{fontSize:10,color:'#166534',fontWeight:700}}>→ {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''} ✓ linked</span>
+                                  <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 6px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c'}}>✕</button></>
+                                :prop.target.items.map((it2,ti2)=>{if(takenTi.has(ti2))return null;const pp2=poParts(it2.po_id);const bp2=poParts(bill._po_raw||bill.po_number);if(bp2.flat&&pp2.flat!==bp2.flat)return null;
+                                  return<button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
+                                    style={{fontSize:9,padding:'2px 8px',borderRadius:10,cursor:'pointer',border:'1px solid #86efac',background:'#f0fdf4',color:'#166534',fontWeight:700}}>
+                                    {it2.sku} {[it2.color,it2.size].filter(Boolean).join(' ')} · {safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)} →</button>;})}
+                              </div>;})}
+                          </div>;})()}
                         <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
-                          <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#16a34a',color:'#fff',border:'none',fontWeight:800}} onClick={()=>_accept(prop)}>✓ Accept — tie {prop.ties.length} line{prop.ties.length===1?'':'s'}</button>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#16a34a',color:'#fff',border:'none',fontWeight:800}} onClick={()=>_accept(prop)}>✓ Accept — tie {prop.ties.length+Object.keys(b._extraTies||{}).filter(k=>!prop.ties.some(t2=>t2.bill_idx===parseInt(k))).length} line{(prop.ties.length+Object.keys(b._extraTies||{}).length)===1?'':'s'}</button>
                           {_props.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_propIdx:(_pi+1)%_props.length}:pp)}))}>Not this ▸ next</button>}
                           <button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'5px 12px'}} title="Open the manual line-matcher seeded with this proposal — adjust any tie before confirming"
                             onClick={()=>setW({open:true,query:bill.po_number||'',target:prop.target,mappings:Object.fromEntries(prop.ties.map(t=>[t.bill_idx,{target_idx:t.target_idx,allocated_qty:t.allocated_qty,ambiguous:false}]))})}>Adjust ties…</button>

@@ -554,9 +554,14 @@ describe('bulk rollup — bought in bulk, billed by size (the KJ3429/CUSTOM clea
     expect(p.overageUnits).toBe(2);
     expect(p.qtyMirror).toBe(false);
   });
-  test('NO rollup when the PO has two distinct open lines — never guess which one', () => {
+  test('two distinct open lines: NO bulk guess between them — anchored proposal surfaces with the rest unresolved for click-linking', () => {
     const props = proposeResolutions(bill, [mkCand(10, true)], { canonSize: canon });
-    expect(props).toHaveLength(0); // zero ladder ties, ambiguous rollup → no proposal at all
+    expect(props).toHaveLength(1);
+    const p = props[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.ties.every((t) => t.basis !== 'bulk')).toBe(true); // rollup refused to guess
+    expect(p.unresolved.length).toBeGreaterThan(0);             // remainder left to the human
+    expect(p.confidence).toBe('medium');
   });
   test('ladder ties still win first; rollup only mops up the untied remainder', () => {
     const cand = mkCand(4);
@@ -565,5 +570,55 @@ describe('bulk rollup — bought in bulk, billed by size (the KJ3429/CUSTOM clea
     const bases = p.ties.map((t) => t.basis).sort();
     expect(bases.filter((b) => b === 'bulk').length).toBeLessThan(3);
     expect(p.ties.some((t) => /^(exact|variant)/.test(t.basis))).toBe(true);
+  });
+});
+
+describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only lines open)', () => {
+  const po = 'PO 5150 KCHS';
+  const mkBill = (items) => ({ po_number: po, items });
+  const bucket = (ti) => ({ so_id: 'SO-77', item_id: 'i' + ti, po_id: po });
+  const cand = (items) => ({ kind: 'so', id: 'SO-77', label: 'SO-77', raw: { id: 'SO-77' }, items });
+  test('always proposes the exact-PO order, even with ZERO auto-ties (unresolved listed for click-linking)', () => {
+    const bill = mkBill([
+      { sku: 'VENDOR-A', size: '', color: '', qty: 3, unit_price: 40, desc: 'MYSTERY WIDGET' },
+      { sku: 'VENDOR-B', size: '', color: '', qty: 7, unit_price: 55, desc: 'OTHER WIDGET' },
+    ]);
+    const c = cand([
+      { sku: 'CUSTOM', name: 'Warmup Jacket', color: '', size: 'BULK', qty: 3, unit_cost: 40, ...bucket(0) },
+      { sku: 'CUSTOM', name: 'Warmup Pant', color: '', size: 'BULK', qty: 3, unit_cost: 41, ...bucket(1) },
+      { sku: 'CUSTOM', name: 'Backpack', color: '', size: 'BULK', qty: 9, unit_cost: 20, ...bucket(2) },
+    ]);
+    // qty 3 is ambiguous (two buckets), qty 7 matches none exactly → still proposes, poAnchored
+    const p = proposeResolutions(mkBill([{ sku: 'X1', size: '', color: '', qty: 5, unit_price: 1, desc: '' }]), [c], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.poAnchored).toBe(true);
+    expect(p.unresolved).toEqual([0]);
+    expect(p.confidence).toBe('medium');
+    expect(p.evidence[0]).toMatch(/PO number matches this order EXACTLY/);
+  });
+  test('qty-unique + name-token + pigeonhole complete the links → high confidence at full coverage', () => {
+    const bill = mkBill([
+      { sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'SOMETHING' },          // qty-unique → i0
+      { sku: 'V2', size: '', color: '', qty: 3, unit_price: 99, desc: 'BACKPACK DELUXE' },     // name token → i2
+      { sku: 'V3', size: '', color: '', qty: 3, unit_price: 40, desc: 'ZZZ' },                 // pigeonhole → i1 (price 40 matches nothing)
+    ]);
+    const c = cand([
+      { sku: 'CUSTOM', name: 'Warmup Jacket', color: '', size: 'BULK', qty: 7, unit_cost: 12, ...bucket(0) },
+      { sku: 'CUSTOM', name: 'Warmup Pant', color: '', size: 'BULK', qty: 3, unit_cost: 41, ...bucket(1) },
+      { sku: 'CUSTOM', name: 'Team Backpack', color: '', size: 'BULK', qty: 3, unit_cost: 99, ...bucket(2) },
+    ]);
+    const p = proposeResolutions(bill, [c], { canonSize: canon })[0];
+    expect(p.coverage).toBe(1);
+    expect(p.confidence).toBe('high');
+    const basisByLine = Object.fromEntries(p.ties.map((t) => [t.bill_idx, t.basis]));
+    expect(basisByLine[0]).toBe('po_qty');
+    expect(basisByLine[1]).toBe('po_name');
+    expect(basisByLine[2]).toBe('po_last_pair');
+  });
+  test('a merely core-matched (tag differs) candidate is NOT anchored — no loose tiers, floor still applies', () => {
+    const bill = { po_number: 'PO 5150 AAAA', items: [{ sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'X' }] };
+    const c = cand([{ sku: 'CUSTOM', name: 'Warmup Jacket', color: '', size: 'BULK', qty: 7, unit_cost: 12, ...bucket(0) }]);
+    const props = proposeResolutions(bill, [c], { canonSize: canon });
+    expect(props.some((p) => p.poAnchored)).toBe(false);
   });
 });
