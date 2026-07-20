@@ -1042,8 +1042,9 @@ const ssGetOrders = async (filter = {}) => {
 // ─── S&S CrossRef (our SKU ↔ S&S SKU) ───
 // `yourSku` on order/product lines is populated from these cross-references. Mapping our
 // style to the S&S sku promotes S&S bill lines from a color+size guess to an exact SKU match.
-// GET /CrossRef/{yourSku,list} → records; PUT /CrossRef/{yourSku}?identifier={S&S sku value}
-// assigns a yourSku to one S&S product (200 = updated, 201 = created).
+// GET /CrossRef/{yourSku,list} → records; PUT /CrossRef/{yourSku}?Identifier={S&S sku value}
+// assigns a yourSku to one S&S product (200 = updated, 201 = created). Param name matches the
+// S&S doc example verbatim (PUT /v2/crossref/G2000whtxl?Identifier=B00760003).
 const ssGetCrossRefs = async (yourSkus) => {
   const list = (Array.isArray(yourSkus) ? yourSkus : [yourSkus]).map(s => String(s || '').trim()).filter(Boolean);
   if (!list.length) return [];
@@ -1054,7 +1055,7 @@ const ssGetCrossRefs = async (yourSkus) => {
 // Custom response handling: a PUT can come back with an empty body (json() would throw).
 // Returns { ok, status, created, updated }.
 const ssPutCrossRef = async (yourSku, identifier) => {
-  const path = '/CrossRef/' + encodeURIComponent(String(yourSku || '').trim()) + '?identifier=' + encodeURIComponent(String(identifier || '').trim());
+  const path = '/CrossRef/' + encodeURIComponent(String(yourSku || '').trim()) + '?Identifier=' + encodeURIComponent(String(identifier || '').trim());
   const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(path)}`;
   // No body and therefore NO Content-Type header: the identifier rides the querystring, and
   // a bodyless PUT declaring application/json is what S&S's ASP.NET stack 500s on.
