@@ -211,15 +211,14 @@ export function tintedTile(img, src, color1, color2, color3, color4, mode) {
       else S = (lum >= 128 ? A : B);
       d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
     } else if (m === 'duotone') {
-      // Preserve the source artwork's anti-aliased edges while mapping its two
-      // visual roles to independent builder colors. The supplied pattern has a
-      // light field and dark linework, so luminance is a stable classifier.
+      // Exact two-ink replacement: light source pixels are the background ink
+      // and dark source pixels are the detail ink. Do not interpolate between
+      // the chosen colors — that created pastel/lavender output even when a
+      // coach selected a saturated purple. GPU texture filtering supplies the
+      // one-pixel visual antialias at garment scale.
       const lum = r * 0.299 + g * 0.587 + b * 0.114;
-      const t = Math.max(0, Math.min(1, (lum - 70) / 105));
-      const smooth = t * t * (3 - 2 * t);
-      d[i] = Math.round(B[0] + (A[0] - B[0]) * smooth);
-      d[i + 1] = Math.round(B[1] + (A[1] - B[1]) * smooth);
-      d[i + 2] = Math.round(B[2] + (A[2] - B[2]) * smooth);
+      const S = lum >= 112 ? A : B;
+      d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
     } else if (m === 'mono') {
       // One base color (color1); the tile's value shades it. Mid-gray = the
       // base as picked, lighter → toward white (tint), darker → toward black

@@ -185,6 +185,70 @@ function designMaskTexture(url, baseHex, accentHex, onReady) {
   img.src = url;
 }
 
+// Apply an editable print to the BASE side of an approved two-area layout
+// mask while preserving its independently colored accent (AGI-1012 chest
+// stripe / sleeve bands). Without this composite, the fixed layout mask wins
+// over a coach-selected print and only unmasked back panels receive artwork.
+function designMaskPatternTexture(url, patternCanvas, patternKey, accentHex, repeat, onReady) {
+  const rep = Math.max(1, Number(repeat) || 1);
+  const key = ['masked-print', url, patternKey, accentHex, rep.toFixed(4)].join('|');
+  if (_designMaskTextures[key]) { onReady(_designMaskTextures[key]); return; }
+  const build = (img) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width || 2048;
+    canvas.height = img.naturalHeight || img.height || 2048;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = image.data;
+    const patternSource = patternCanvas.getContext ? patternCanvas : (() => {
+      const c = document.createElement('canvas');
+      c.width = patternCanvas.naturalWidth || patternCanvas.width || 1;
+      c.height = patternCanvas.naturalHeight || patternCanvas.height || 1;
+      c.getContext('2d').drawImage(patternCanvas, 0, 0, c.width, c.height);
+      return c;
+    })();
+    const pw = patternSource.width || 1, ph = patternSource.height || 1;
+    const pctx = patternSource.getContext('2d', { willReadFrequently: true });
+    const pd = pctx.getImageData(0, 0, pw, ph).data;
+    const accent = rgb255(accentHex);
+    for (let y = 0; y < canvas.height; y++) {
+      const py = Math.min(ph - 1, Math.floor((((y / canvas.height) * rep) % 1) * ph));
+      for (let x = 0; x < canvas.width; x++) {
+        const i = (y * canvas.width + x) * 4;
+        if (d[i] >= 128) {
+          d[i] = accent[0]; d[i + 1] = accent[1]; d[i + 2] = accent[2]; d[i + 3] = 255;
+          continue;
+        }
+        const px = Math.min(pw - 1, Math.floor((((x / canvas.width) * rep) % 1) * pw));
+        const pi = (py * pw + px) * 4;
+        d[i] = pd[pi]; d[i + 1] = pd[pi + 1]; d[i + 2] = pd[pi + 2]; d[i + 3] = pd[pi + 3];
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.generateMipmaps = true;
+    tex.minFilter = THREE.LinearMipmapLinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 16;
+    tex.userData.shared = true;
+    _designMaskTextures[key] = tex;
+    onReady(tex);
+  };
+  if (_designMaskImages[url]) {
+    const cached = _designMaskImages[url];
+    if (cached.complete) build(cached); else cached.addEventListener('load', () => build(cached), { once: true });
+    return;
+  }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  _designMaskImages[url] = img;
+  img.onload = () => build(img);
+  img.src = url;
+}
+
 // Convert the artwork mask into an EDGE-ONLY alpha texture for selection. A
 // translucent fill made the fabric look glossy and exposed mesh intersections;
 // outlining the real color break keeps the textile completely untouched.
@@ -502,6 +566,30 @@ function applyDesign(st, rawSpec) {
     if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
       entry._patGen = (entry._patGen || 0) + 1;
       applySidePanelSurface(st, mat, color, color2);
+    } else if (maskUrl && pat === 'custom' && zs.patternImage) {
+      // Composite the selected print into every BASE pixel of the approved
+      // layout mask. The accent pixels remain the independently editable chest
+      // stripe/sleeve band, so the print covers the full chosen panel without
+      // erasing construction artwork.
+      const gen = (entry._patGen = (entry._patGen || 0) + 1);
+      mat.color.set(color);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        if (entry._patGen !== gen || !entry.mesh.material) return;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        // The composite lives in the garment's original UV atlas. Convert the
+        // desired panel-local tile count to atlas-space repetition.
+        const rep = zoneRepeat(spanByZone[entry.zone], 2.5, 4);
+        const patternKey = [zs.patternImage, zs.patternTintMode, color, color2, zs.color3, zs.color4].join('|');
+        designMaskPatternTexture(maskUrl, source, patternKey, color2, rep, (tex) => {
+          if (entry._patGen !== gen || !entry.mesh.material) return;
+          const m = entry.mesh.material;
+          m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
+          if (st.queueSnapshot) st.queueSnapshot(120);
+        });
+      };
+      img.src = zs.patternImage;
     } else if (maskUrl) {
       const gen = (entry._patGen = (entry._patGen || 0) + 1);
       mat.color.set('#ffffff');
