@@ -622,3 +622,44 @@ describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only 
     expect(props.some((p) => p.poAnchored)).toBe(false);
   });
 });
+
+describe('desc-derived style hint (SanMar 2649531-class SKUs — style leads the description)', () => {
+  const { descStyleToken } = require('../billResolve');
+  test('descStyleToken extracts the leading mfr style, digit-required, never a word', () => {
+    expect(descStyleToken('64800L. GLDN Softstyle Wms Piq')).toBe('64800L');
+    expect(descStyleToken('LST550 Sport-Tek Womens PosiCharge')).toBe('LST550');
+    expect(descStyleToken('YOUTH GARMENT-DYED TEE')).toBe('');
+    expect(descStyleToken('')).toBe('');
+  });
+  test('the real SanMar SO-1396 case: numeric per-size SKUs tie by desc style + color + size', () => {
+    const bill = {
+      po_number: 'PO 3521 OLuST',
+      items: [
+        { sku: '2649531', size: 'S', color: 'Black', qty: 60, unit_price: 6.62, desc: '64800L. GLDN Softstyle Wms Piq' },
+        { sku: '2649551', size: 'S', color: 'Red', qty: 60, unit_price: 6.62, desc: '64800L. GLDN Softstyle Wms Piq' },
+      ],
+    };
+    const cand = { kind: 'so', id: 'SO-1396', label: 'SO-1396', raw: { id: 'SO-1396' },
+      items: [
+        { sku: '64800L', name: 'Gildan Softstyle Wms Pique 64800L', color: 'Black', size: 'S', qty: 60, unit_cost: 6.62, so_id: 'SO-1396', item_id: 'g1', po_id: 'PO 3521 OLuST' },
+        { sku: '64800L', name: 'Gildan Softstyle Wms Pique 64800L', color: 'Red', size: 'S', qty: 60, unit_cost: 6.62, so_id: 'SO-1396', item_id: 'g2', po_id: 'PO 3521 OLuST' },
+        { sku: '18600', name: 'Gildan Heavy Blend Hoodie 18600', color: 'Black', size: 'S', qty: 15, unit_cost: 15.26, so_id: 'SO-1396', item_id: 'h1', po_id: 'PO 3521 OLuST' },
+      ] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.coverage).toBe(1);
+    expect(p.ties.map((t) => t.basis).every((b2) => /^style/.test(b2))).toBe(true);
+    expect(p.confidence).toBe('high');
+  });
+  test('duplicate order lines (same style+color+size on two item rows) stay ambiguous → unresolved for chips', () => {
+    const bill = { po_number: 'PO 3521 OLuST', items: [
+      { sku: '2649531', size: 'S', color: 'Black', qty: 60, unit_price: 6.62, desc: '64800L. GLDN Softstyle Wms Piq' } ] };
+    const cand = { kind: 'so', id: 'SO-1396', label: 'SO-1396', raw: { id: 'SO-1396' },
+      items: [
+        { sku: '64800L', name: 'Gildan 64800L', color: 'Black', size: 'S', qty: 30, unit_cost: 6.62, so_id: 'SO-1396', item_id: 'dupA', po_id: 'PO 3521 OLuST' },
+        { sku: '64800L', name: 'Gildan 64800L', color: 'Black', size: 'S', qty: 30, unit_cost: 6.62, so_id: 'SO-1396', item_id: 'dupB', po_id: 'PO 3521 OLuST' },
+      ] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.unresolved).toEqual([0]); // never guesses between duplicate lines
+  });
+});

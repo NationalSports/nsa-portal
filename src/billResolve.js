@@ -18,6 +18,16 @@
 // confirm shape, so the money path stays single.
 
 const _ns = (s) => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+// Style token from a bill line's description: vendors billing with their OWN per-size
+// catalog numbers (SanMar "2649531", S&S "B00708043") usually lead the description with
+// the mfr style WE use — "64800L. GLDN Softstyle Wms Piq" → "64800L". Conservative: the
+// leading token only, 3-12 chars, must contain a digit (so "YOUTH…"/"MENS…" never match).
+export const descStyleToken = (desc) => {
+  const m = String(desc || '').trim().toUpperCase().match(/^([A-Z0-9][A-Z0-9-]{2,11})(?=[.\s]|$)/);
+  if (!m) return '';
+  const tok = m[1].replace(/[^A-Z0-9]/g, '');
+  return /[0-9]/.test(tok) && tok.length >= 3 ? tok : '';
+};
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
 // ── PO string anatomy ────────────────────────────────────────────────────────
@@ -66,7 +76,7 @@ export const looksPrePortalGlued = (po) => {
 // ({sku,name,color,size,qty(open),unit_cost,...}); qty>0 assumed (builder filters).
 const tieLine = (bl, items, canon) => {
   const sku = _ns(bl.sku); const size = canon(bl.size); const color = _ns(bl.color);
-  const style = _ns(bl._ss_style); const price = _num(bl.unit_price);
+  const style = _ns(bl._ss_style) || descStyleToken(bl.desc); const price = _num(bl.unit_price);
   const sizeOk = (it) => !size || canon(it.size) === size;
   const only = (list) => {
     const seen = new Map();
@@ -78,7 +88,7 @@ const tieLine = (bl, items, canon) => {
   const tiers = [
     ['exact', idx.filter(({ it }) => sku && _ns(it.sku) === sku && sizeOk(it))],
     ['variant', idx.filter(({ it }) => { const t = _ns(it.sku); return sku.length >= 5 && t.length >= 5 && t !== sku && (sku.startsWith(t) || t.startsWith(sku) || sku.includes(t) || t.includes(sku)) && sizeOk(it); })],
-    ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it); }) : []],
+    ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
     ['color_size', color && size ? idx.filter(({ it }) => _ns(it.color) === color && canon(it.size) === size) : []],
     ['size_price', size && price > 0 ? idx.filter(({ it }) => canon(it.size) === size && Math.abs(_num(it.unit_cost) - price) <= 0.02) : []],
     ['size_only', size ? idx.filter(({ it }) => canon(it.size) === size) : []],
