@@ -25388,15 +25388,17 @@ export default function App(){
         siPushed.forEach(b=>{
           _siMarkDoc(b.parsed.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:b.parsed.doc_number||null,updated_at:new Date().toISOString()});
         });
-        // One PATCH carries the whole batch, so a single hiccup failed ALL of them and the
-        // error was swallowed. Retry once after a pause; if it still fails, say WHAT failed.
-        // Money is already safe either way — the applied-bills dedup skips them next pull.
+        // One PATCH carries the whole batch, so a single hiccup failed ALL of them. Retry
+        // once after a pause; a residual failure is NOT surfaced to the operator (owner:
+        // the red banner "looks like a fail" on a successful push) — it's pure vendor-side
+        // housekeeping that self-heals: the doc returns on the next pull, dedup skips it,
+        // and the queue row is captured as already-billed. Console only, for diagnostics.
         const _markImported=()=>sportsLinkSetStatus(siPushed.map(b=>b.parsed.si_doc_number),false);
         _markImported()
           .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported)'))
           .catch(()=>new Promise(r=>setTimeout(r,2500)).then(_markImported)
             .then(()=>console.log('[SI] marked',siPushed.length,'doc(s) Historical (imported, on retry)'))
-            .catch(e=>nf('Bills applied, but marking '+siPushed.length+' Sports Inc doc(s) as imported failed after a retry ('+(((e&&e.message)||String(e)).slice(0,80))+') — they\'ll be skipped as duplicates on the next pull','error')));
+            .catch(e=>console.warn('[SI] marking',siPushed.length,'doc(s) Historical failed after retry — self-heals via dedup next pull:',(e&&e.message)||e)));
       }
       setBillImport(x=>({...x,parsed:[...x.parsed]}));
       setSavedBills(prev=>{const updated=prev.map(sb=>{const match=bills.find(s=>s.id===sb.id);return match?{...sb,portalStatus:match.portalStatus}:sb});_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
