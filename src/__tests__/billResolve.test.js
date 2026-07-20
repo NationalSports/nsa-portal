@@ -502,8 +502,8 @@ describe('maxProposals cap, score-descending sort, and the near-tie demotion bou
     const b = { items: [{ sku: 'BND1', size: 'M', qty: 5, unit_price: 10 }] };
     const P = { id: 'SO-P', label: 'SO-P', raw: { id: 'SO-P' }, // exact/strong, no overage = 62
       items: [{ sku: 'BND1', size: 'M', qty: 5, unit_cost: 10, item_id: 'p1', po_id: '' }] };
-    const S = { id: 'SO-S', label: 'SO-S', raw: { id: 'SO-S' }, // weak basis + overage = 56
-      items: [{ sku: 'DIFFX', size: 'M', qty: 3, unit_cost: 999, item_id: 's1', po_id: '' }] };
+    const S = { id: 'SO-S', label: 'SO-S', raw: { id: 'SO-S' }, // weak basis (size_price) + overage = 56
+      items: [{ sku: 'DIFFX', size: 'M', qty: 3, unit_cost: 10, item_id: 's1', po_id: '' }] };
     const props = proposeResolutions(b, [P, S], { canonSize: canon });
     expect(props[0].target.id).toBe('SO-P');
     expect(props[0].score - props[1].score).toBe(6);
@@ -598,11 +598,13 @@ describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only 
     expect(p.confidence).toBe('medium');
     expect(p.evidence[0]).toMatch(/PO number matches this order EXACTLY/);
   });
-  test('qty-unique + name-token + pigeonhole complete the links → high confidence at full coverage', () => {
+  test('name-token + qty-unique complete the links → high confidence at full coverage', () => {
+    // Name runs FIRST now (Predator/Supernova lesson): the backpack line name-ties before
+    // any quantity coincidence can claim its bucket; the remaining two resolve by qty.
     const bill = mkBill([
       { sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'SOMETHING' },          // qty-unique → i0
       { sku: 'V2', size: '', color: '', qty: 3, unit_price: 99, desc: 'BACKPACK DELUXE' },     // name token → i2
-      { sku: 'V3', size: '', color: '', qty: 3, unit_price: 40, desc: 'ZZZ' },                 // pigeonhole → i1 (price 40 matches nothing)
+      { sku: 'V3', size: '', color: '', qty: 3, unit_price: 40, desc: 'ZZZ' },                 // qty-unique after i2 taken → i1
     ]);
     const c = cand([
       { sku: 'CUSTOM', name: 'Warmup Jacket', color: '', size: 'BULK', qty: 7, unit_cost: 12, ...bucket(0) },
@@ -615,7 +617,10 @@ describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only 
     const basisByLine = Object.fromEntries(p.ties.map((t) => [t.bill_idx, t.basis]));
     expect(basisByLine[0]).toBe('po_qty');
     expect(basisByLine[1]).toBe('po_name');
-    expect(basisByLine[2]).toBe('po_last_pair');
+    expect(basisByLine[2]).toBe('po_qty');
+    const tgtByLine = Object.fromEntries(p.ties.map((t) => [t.bill_idx, t.target_idx]));
+    expect(tgtByLine[1]).toBe(2); // backpack → Team Backpack, by NAME
+    expect(tgtByLine[2]).toBe(1); // pant bucket — same target the old pigeonhole reached
   });
   test('a merely core-matched (tag differs) candidate is NOT anchored — no loose tiers, floor still applies', () => {
     const bill = { po_number: 'PO 5150 AAAA', items: [{ sku: 'V1', size: '', color: '', qty: 7, unit_price: 12, desc: 'X' }] };
@@ -810,5 +815,44 @@ describe('zero-dollar service lines are ignored', () => {
     expect(p.ties.length).toBe(3);
     expect(p.overageUnits).toBe(32); // 48 caps billed vs 16 ordered — the REAL discrepancy
     expect(cleanAutoAccept(p, bill.items)).toBe(false); // overage + price change still get a human
+  });
+});
+
+// ── Name evidence beats size/qty coincidence (the Predator/Supernova case) ────
+// Real bill: JP6237 "PREDATOR ELITE FT F SOLTUR/THE" sizes 8-/9-/12 @ $115.50 on
+// PO 3460 FPUSOC. The order has JH8559 "Adidas Supernova Ease" (a $41.25 running
+// shoe, sizes that overlap) AND a CUSTOM "Adidas Soccer Cleats F50 / Predator"
+// bulk line @ $105. size_only used to tie the cleats to the Supernova by size.
+describe('name evidence beats size/qty coincidence', () => {
+  const cand = { kind: 'so', id: 'SO-1367', label: 'SO-1367', raw: { id: 'SO-1367' }, items: [
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '8.5', qty: 3, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '9.5', qty: 7, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'JH8559', name: 'Adidas Supernova Ease', color: 'White/Black', size: '12', qty: 2, unit_cost: 41.25, so_id: 'SO-1367', item_id: 'j1', po_id: 'PO 3460 FPUSOC' },
+    { sku: 'CUSTOM', name: 'Adidas Soccer Cleats F50 / Predator', color: '', size: 'OSFA', qty: 40, unit_cost: 105, so_id: 'SO-1367', item_id: 'c1', po_id: 'PO 3460 FPUSOC' },
+  ] };
+  const bill = { po_number: 'PO 3460 FPUSOC', items: [
+    { sku: 'JP6237', size: '8-', qty: 1, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+    { sku: 'JP6237', size: '9-', qty: 5, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+    { sku: 'JP6237', size: '12', qty: 2, unit_price: 115.5, desc: 'PREDATOR ELITE FT F SOLTUR/THE' },
+  ] };
+  const canonShoe = (s) => { const m = String(s || '').trim().match(/^(\d{1,2})\s*[-–]$/); return m ? m[1] + '.5' : String(s || '').toUpperCase().trim(); };
+  test('all three cleat lines tie to the Predator CUSTOM line by name — none to the Supernova', () => {
+    const p = proposeResolutions(bill, [cand], { canonSize: canonShoe })[0];
+    expect(p).toBeTruthy();
+    expect(p.poAnchored).toBe(true);
+    expect(p.ties).toHaveLength(3);
+    expect(p.ties.every((t) => t.basis === 'po_name')).toBe(true);
+    expect(p.ties.every((t) => cand.items[t.target_idx].sku === 'CUSTOM')).toBe(true);
+    expect(p.overageUnits).toBe(0); // 8 units into 40 open
+  });
+  test('size_only refuses a >50% price gap even without the name rescue', () => {
+    const b2 = { po_number: 'PO 9999 ZZZ', items: [ // unanchored: no PO tiers to fall back on
+      { sku: 'JP6237', size: '12', qty: 2, unit_price: 115.5, desc: 'no useful tokens here' },
+    ] };
+    const c2 = { kind: 'so', id: 'SO-X', label: 'SO-X', raw: { id: 'SO-X' }, items: [
+      { sku: 'JH8559', name: 'Adidas Supernova Ease', color: '', size: '12', qty: 2, unit_cost: 41.25, so_id: 'SO-X', item_id: 'x', po_id: 'PO 8888 YYY' },
+    ] };
+    const props = proposeResolutions(b2, [c2], { canonSize: canonShoe });
+    expect(props).toHaveLength(0); // no tie at all beats a confidently wrong one
   });
 });
