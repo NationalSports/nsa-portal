@@ -145,8 +145,14 @@ function cartPage() {
         const v = state.quantities[sku]?.[sz] ?? '';
         return `<td><input class="qty" data-sku="${sku}" data-size="${sz}" value="${v}" aria-label="${sku} ${sz}"></td>`;
       }
+      // Faithful to the real CLICK cart: the restock date is NOT visible in the
+      // cell and NOT a native title tooltip — it's a small calendar icon whose
+      // DOM tooltip appears only on hover. A size with no inbound stock has no
+      // icon at all. (The bot must hover the icon to learn the date.)
       const note = a && a.restock ? `Re-stock in ${pretty(a.restock)}` : '';
-      return `<td class="hatched" title="${note}">${note || '&nbsp;'}</td>`;
+      return note
+        ? `<td class="hatched">0 <span class="cal" data-note="${note}" aria-label="delivery calendar ${sku} ${sz}">📅</span></td>`
+        : `<td class="hatched">&nbsp;</td>`;
     }).join('');
     return `<div class="card"><b>${p.name}</b> — ${p.color} (${sku})
       <table><tr>${SIZES.map((s) => `<th>${s}</th>`).join('')}</tr><tr>${cells}</tr></table></div>`;
@@ -188,6 +194,22 @@ function cartPage() {
   <script>
     const post = (u, b) => fetch(u, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(b)});
     document.getElementById('po').addEventListener('change', (e) => post('/api/po', {po: e.target.value}));
+    // Calendar-icon tooltip (matches the real portal: date only appears on hover).
+    // Hovers are logged so tests can prove the bot actually checked the icon.
+    const tip = document.createElement('div');
+    tip.id = 'cal-tip';
+    tip.style.cssText = 'position:fixed;display:none;background:#111;color:#fff;padding:4px 8px;border-radius:4px;font-size:11px;z-index:99';
+    document.body.appendChild(tip);
+    document.querySelectorAll('span.cal').forEach((el) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('mouseenter', () => {
+        tip.textContent = el.dataset.note;
+        const r = el.getBoundingClientRect();
+        tip.style.left = r.left + 'px'; tip.style.top = (r.bottom + 4) + 'px'; tip.style.display = 'block';
+        post('/api/hover', {label: el.getAttribute('aria-label'), note: el.dataset.note});
+      });
+      el.addEventListener('mouseleave', () => { tip.style.display = 'none'; });
+    });
     document.querySelectorAll('input.qty').forEach((el) => el.addEventListener('change', (e) =>
       post('/api/qty', {sku: el.dataset.sku, size: el.dataset.size, qty: e.target.value})));
     function setDefaultAddr(){ post('/api/address', {type:'default'}).then(()=>location.reload()); }
@@ -247,6 +269,7 @@ const server = http.createServer(async (req, res) => {
         act({ action: 'delivery_date', date: body.date });
       }
     }
+    if (url.pathname === '/api/hover') act({ action: 'hover_cal', label: body.label || '', note: body.note || '' });
     if (url.pathname === '/api/submit') { state.submitted = true; act({ action: 'SUBMIT' }); }
     return send(200, '{"ok":true}', 'application/json');
   }

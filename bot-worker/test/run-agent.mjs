@@ -194,6 +194,16 @@ for (const sku of EXPECT.skip) {
   check(`agent surfaced skipped SKU ${sku} to the rep`,
     JSON.stringify([result.skipped, result.question, result.issues] || '').includes(sku), JSON.stringify(result.skipped));
 }
+// Restock dates only exist behind the calendar-icon hover (like the real
+// portal) — a run that touches backordered sizes must prove it hovered, and a
+// skip with a known date must carry that date, never "no date".
+if (SCENARIO === 'warehouse') {
+  check('bot hovered calendar icons to learn restock dates', s.log.some((l) => l.action === 'hover_cal'),
+    JSON.stringify(s.log.filter((l) => l.action === 'hover_cal')));
+  const _sk = (result.skipped || []).find((x) => x.sku === 'KB5529') || {};
+  check('skipped KB5529 reports its actual restock date (not "no date")',
+    /(20\d\d|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)/.test(String(_sk.restock || '')), JSON.stringify(_sk));
+}
 check('order NOT submitted', s.submitted === false);
 check(`agent status is ${EXPECT.status}`, result.status === EXPECT.status, result.status);
 check('agent reported po_entered', result.po_entered === true);
