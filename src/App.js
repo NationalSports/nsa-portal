@@ -23574,7 +23574,18 @@ export default function App(){
         // Matched EDI bills land in ✓ Matched; weak/no-match EDI bills land in Review so
         // they can be tied to their order right here. Grab (PDF-only) and Outside are not
         // pushable bills — they stay on the Sports Inc tab.
-        const work=rows.filter(r=>r._t&&(r._t.bucket==='approve'||r._t.bucket==='review'));
+        let work=rows.filter(r=>r._t&&(r._t.bucket==='approve'||r._t.bucket==='review'));
+        // ONE date window for the whole pull: the same from/to that scopes the S&S call
+        // also scopes which Sports Inc docs enter review. The queue itself still syncs in
+        // full (completeness ledger) — docs outside the window just stay queued.
+        if(f||t){
+          const lo=f||'0000-00-00';
+          const hi=t||new Date().toISOString().slice(0,10);
+          const before=work.length;
+          work=work.filter(r=>{const d=String(r.supplier_doc_date||r.si_doc_date||'').slice(0,10);return d&&d>=lo&&d<=hi});
+          const left=before-work.length;
+          if(left>0)nf(left+' Sports Inc doc(s) outside '+lo+(t?'–'+hi:' onward')+' left in the queue — clear the dates and pull again to load them','success');
+        }
         if(work.length)_siSendToReview(work,ssList||undefined);
       }catch(e){nf('Sports Inc queue failed: '+(e.message||e)+' — S&S results are in the list below','error')}
       setSiQueueLoading(false);
@@ -26321,12 +26332,12 @@ export default function App(){
                 <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
                 <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail stay on the Sports Inc tab to grab.</div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>S&amp;S invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Only pull S&S bills invoiced on or after this date (saved as your default). Clear it to pull the last 3 months. Sports Inc always refreshes from its 2026-04-01 cutover."/>
+                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
+                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="One window for the whole pull: S&S bills invoiced in this range, and Sports Inc docs dated in it. Clear it to pull everything (S&S: last 3 months). The Sports Inc queue still syncs in full behind the scenes."/>
                   <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
                   <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
                   {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'S&S from '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'S&S: last 3 months'}</span>
+                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'both vendors, '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'no date filter (S&S: last 3 months)'}</span>
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
                   <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
@@ -26514,6 +26525,26 @@ export default function App(){
                 </div>
               </div>;
             }
+            // Reconcile machinery renders whenever the bill is unmatched, OR matched with
+            // untied lines and a triage issue — REGARDLESS of freight. (A freight-only apply
+            // "plan" used to hide the whole panel — and its Accept — on freight-carrying bills
+            // like the bulk-cleats case.) Hoisted to card scope so the header can carry Accept.
+            const _reconNeeded=bill.kind!=='decoration'&&(bill.items||[]).length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&((tri&&tri.issue)||!_billApplyPlan(bill))));
+            const _cardProps=_reconNeeded?proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3}):[];
+            const _cardPi=Math.min(b._propIdx||0,Math.max(0,_cardProps.length-1));
+            const _acceptProposal=(pr)=>{
+                      const target=pr.target;
+                      let matchedPO2,matchedPOSource2;
+                      if(target.kind==='batch'){matchedPO2=target.raw;matchedPOSource2='batch'}
+                      else{matchedPO2={so_id:target.id,po_id:(target.raw&&target.raw.po_number)||target.id,so:target.raw};matchedPOSource2='so_po'}
+                      const lineMappings=pr.ties.map(t=>{const it=target.items[t.target_idx];const bl=bill.items[t.bill_idx]||{};
+                        const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*t.allocated_qty;
+                        return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
+                      const _pc={};lineMappings.forEach(m=>{if(m.po_id)_pc[m.po_id]=(_pc[m.po_id]||0)+1});
+                      const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
+                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,parsed:{...p.parsed,matchedPO:matchedPO2,matchedPOSource:matchedPOSource2,_lineMappings:lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==poCanon?p.parsed.po_number:undefined),po_number:poCanon,_wizard:{open:false}}}:p)}));
+                      nf(pr.overageUnits?('Tied '+lineMappings.length+' line(s) to '+target.label+' — over-billed units flagged, reconcile the overage next'):('Tied '+lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
+            };
             return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
               <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:stripe}}/>
               <div style={{padding:'16px 22px 6px 24px',background:hdrBg}}>
@@ -26555,6 +26586,10 @@ export default function App(){
                 {b._aiError&&!b._aiRunning&&<span title={b._aiError} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:600,border:'1px solid #fecaca'}}>✨ AI: {b._aiError.length>32?b._aiError.slice(0,32)+'…':b._aiError}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
                 {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Look at later</span>}
+                {_cardProps[_cardPi]&&!portalPushed&&!b.qbStatus&&<button onClick={()=>_acceptProposal(_cardProps[_cardPi])}
+                  title={'Accept the best answer — '+(_cardProps[_cardPi].evidence[0]||'')+(_cardProps[_cardPi].confidence!=='high'?' ('+_cardProps[_cardPi].confidence+' confidence — see the panel below)':'')}
+                  style={{fontSize:10,padding:'3px 10px',borderRadius:4,cursor:'pointer',fontWeight:800,background:_cardProps[_cardPi].confidence==='high'?'#16a34a':'#d97706',border:'none',color:'#fff'}}>
+                  ✓ Accept: {_cardProps[_cardPi].target.label}{_cardProps[_cardPi].overageUnits?' ⚠':''}</button>}
                 {!b.qbStatus&&!portalPushed&&<button onClick={()=>{_parkBillsForLater([b]);nf('Moved to Look at Later')}}
                   title='Move this bill to the Look at Later tab and out of this list (so it can&apos;t be pushed to QB by accident)'
                   style={{fontSize:10,padding:'3px 9px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fbbf24',color:'#b45309'}}>
@@ -26814,7 +26849,7 @@ export default function App(){
                     unmatched bill (pick the order), AND for a bill matched by PO number only whose
                     lines don't map to that order cleanly (would-apply-nothing) — so a "matched but
                     won't push" bill has a real way to reconcile line-by-line instead of a dead end. */}
-                {bill.kind!=='decoration'&&bill.items.length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&!_billApplyPlan(bill)))&&(()=>{
+                {_reconNeeded&&(()=>{
                   const w=bill._wizard;
                   const setW=nw=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:nw}}:p)}));
                   if(!w||!w.open){
@@ -26824,23 +26859,10 @@ export default function App(){
                     // PO tag/edit-distance. The human JUDGES a complete answer instead of
                     // constructing one. Computed only for the expanded card (cheap: one bill ×
                     // open candidates). Accept writes the exact wizard-confirm shape — one money path.
-                    const _props=proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3});
-                    const _pi=Math.min(b._propIdx||0,Math.max(0,_props.length-1));
+                    const _props=_cardProps;
+                    const _pi=_cardPi;
                     const prop=_props[_pi];
-                    const _accept=(pr)=>{
-                      const target=pr.target;
-                      let matchedPO,matchedPOSource;
-                      if(target.kind==='batch'){matchedPO=target.raw;matchedPOSource='batch'}
-                      else{matchedPO={so_id:target.id,po_id:(target.raw&&target.raw.po_number)||target.id,so:target.raw};matchedPOSource='so_po'}
-                      const lineMappings=pr.ties.map(t=>{const it=target.items[t.target_idx];const bl=bill.items[t.bill_idx]||{};
-                        const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*t.allocated_qty;
-                        return{bill_idx:t.bill_idx,target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:t.allocated_qty,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};});
-                      // Canonical PO = the tied lines' own po_id (mode), so downstream raw-string compares agree.
-                      const _pc={};lineMappings.forEach(m=>{if(m.po_id)_pc[m.po_id]=(_pc[m.po_id]||0)+1});
-                      const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
-                      setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,_propIdx:0,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_po_raw:p.parsed._po_raw||((p.parsed.po_number||'')!==poCanon?p.parsed.po_number:undefined),po_number:poCanon,_wizard:{open:false}}}:p)}));
-                      nf(pr.overageUnits?('Tied '+lineMappings.length+' line(s) to '+target.label+' — over-billed units flagged, reconcile the overage next'):('Tied '+lineMappings.length+' line(s) to '+target.label+' — now in Matched'));
-                    };
+                    const _accept=_acceptProposal;
                     return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                       {prop&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:8}}>
                         <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
