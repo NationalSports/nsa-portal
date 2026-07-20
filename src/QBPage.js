@@ -136,7 +136,7 @@ export default function QBPage(){
       try{
         // Query QB for all invoices and their balance
         const qbIds=linkedInvs.map(i=>i.qb_invoice_id);
-        const res=await qbApi('query',{query:"SELECT Id, DocNumber, Balance, TotalAmt FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')"});
+        const res=await qbApi('query',{query:"SELECT Id, DocNumber, Balance, TotalAmt, SyncToken FROM Invoice WHERE Id IN ('"+qbIds.join("','")+"')"});
         const qbInvList=res?.QueryResponse?.Invoice||[];
         const qbMap={};qbInvList.forEach(qi=>{qbMap[qi.Id]=qi});
         for(const inv of linkedInvs){
@@ -144,6 +144,18 @@ export default function QBPage(){
           if(!qbInv){log.details.push((inv.display_id||inv.id)+' — not found in QB');continue}
           const qbBalance=safeNum(qbInv.Balance);
           const qbTotal=safeNum(qbInv.TotalAmt);
+          // Totals drift: invoices only pushed once (!qb_invoice_id filter), so a portal
+          // edit after the first sync left QB stale forever. Portal is the source of truth
+          // for the TOTAL — push the corrected amount, then reconcile paid on the NEXT run
+          // (this run's Balance was computed against the old total).
+          const portalTotal=safeNum(inv.total);
+          if(portalTotal>0&&Math.abs(portalTotal-qbTotal)>0.005){
+            const upd=await qbApi('upsert_invoice',{invoice:{Id:inv.qb_invoice_id,SyncToken:qbInv.SyncToken,sparse:true,
+              Line:[{DetailType:'SalesItemLineDetail',Amount:portalTotal,Description:'Invoice '+(inv.display_id||inv.id),SalesItemLineDetail:{Qty:1,UnitPrice:portalTotal}}]}});
+            if(upd?.Invoice?.Id){log.details.push((inv.display_id||inv.id)+' — QB total corrected $'+qbTotal.toFixed(2)+' → $'+portalTotal.toFixed(2)+' (paid re-checks next run)');updated++}
+            else{log.details.push((inv.display_id||inv.id)+' — total correction FAILED: '+(upd?.Fault?.Error?.[0]?.Detail||'unknown'));log.status='partial'}
+            continue;
+          }
           const qbPaid=qbTotal-qbBalance;
           const portalPaid=safeNum(inv.paid);
           if(qbPaid>portalPaid){
@@ -233,15 +245,18 @@ export default function QBPage(){
           if(!matchedPortalPOId){continue}
           // Determine which PO source this matches and apply the bill cost
           const billInfo={qb_bill_id:qbBill.Id,doc_number:billDocNum,vendor:vendorName,total:billTotal,date:billDate};
-          // Check SO item PO lines
+          // Check SO item PO lines. The match decision happens SYNCHRONOUSLY on the current
+          // array — the old version set a flag inside the setSOs updater and read it on the
+          // next line, but React 18 runs updaters at batch flush, AFTER that read. Result:
+          // the cost applied yet the bill was never recorded as synced, so EVERY sync run
+          // re-applied it — compounding _bill_cost on the PO. Decide first, then write once.
           let appliedToSO=false;
-          setSOs(prev=>{
-            let changed=false;
-            const next=prev.map(s=>{
+          const soHit=sos.find(s=>(s.items||[]).some(it=>(it.po_lines||[]).some(po=>po.po_id===matchedPortalPOId)));
+          if(soHit){
+            setSOs(prev=>prev.map(s=>{
+              if(s.id!==soHit.id)return s;
               const updatedItems=(s.items||[]).map(it=>{
-                const matchPO=it.po_lines?.find(po=>po.po_id===matchedPortalPOId);
-                if(!matchPO)return it;
-                changed=true;
+                if(!(it.po_lines||[]).some(po=>po.po_id===matchedPortalPOId))return it;
                 return{...it,po_lines:it.po_lines.map(po=>{
                   if(po.po_id!==matchedPortalPOId)return po;
                   const prevCost=safeNum(po._bill_cost||0);
@@ -249,14 +264,12 @@ export default function QBPage(){
                     _bill_details:[...(po._bill_details||[]),billInfo]};
                 })};
               });
-              if(!changed)return s;
               const updatedSO={...s,items:updatedItems,updated_at:new Date().toLocaleString()};
               _dbSaveSO(updatedSO);
               return updatedSO;
-            });
-            if(changed)appliedToSO=true;
-            return changed?next:prev;
-          });
+            }));
+            appliedToSO=true;
+          }
           // Check batch POs
           if(!appliedToSO){
             const batchMatch=submittedBatches.find(b=>(b.po_number||b.id)===matchedPortalPOId);
