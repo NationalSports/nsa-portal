@@ -24449,15 +24449,34 @@ export default function App(){
         setSOs(prev=>prev.map(s=>{
           const soMaps=maps.filter(mp=>mp.so_id===s.id);
           if(!soMaps.length)return s;
-          const updatedItems=(s.items||[]).map(it=>{
-            const itMaps=soMaps.filter(mp=>(mp.item_id&&mp.item_id===it.id)||(!mp.item_id&&(mp.sku||'').toUpperCase()===(it.sku||'').toUpperCase()));
+          // Resolve every mapping to exactly ONE item up front. item_id when it matches
+          // (string/number tolerant); otherwise the FIRST item matching by SKU, preferring
+          // one whose po_lines carry the mapping's po_id. The old per-item SKU fallback
+          // paid EVERY duplicate-SKU item row (SO-1275's twin PTS20 colorway lines turned
+          // a $576 Richardson bill into $1,152 of order cost). One mapping, one item.
+          const _itemIdxByMap=new Map();
+          soMaps.forEach(mp=>{
+            const its=s.items||[];
+            let idx=mp.item_id?its.findIndex(it2=>String(it2.id)===String(mp.item_id)):-1;
+            if(idx<0){
+              const skuEq=it2=>(mp.sku||'').toUpperCase()===(it2.sku||'').toUpperCase();
+              idx=its.findIndex(it2=>skuEq(it2)&&(it2.po_lines||[]).some(po=>(po.po_id||'')===(mp.po_id||'')));
+              if(idx<0)idx=its.findIndex(skuEq);
+            }
+            _itemIdxByMap.set(mp,idx);
+          });
+          const updatedItems=(s.items||[]).map((it,_ii)=>{
+            const itMaps=soMaps.filter(mp=>_itemIdxByMap.get(mp)===_ii);
             if(!itMaps.length)return it;
             let lineConsumed=false;
+            const poIdConsumed=new Set();
             return{...it,po_lines:(it.po_lines||[]).map(po=>{
-              // Prefer the po_line the mapping pointed at; if no po_id captured, apply to the first
-              // matching line only (lineConsumed guard) to avoid double-billing across po_lines.
-              const lineMaps=itMaps.filter(mp=>mp.po_id?(po.po_id||'')===mp.po_id:!lineConsumed);
+              // Prefer the po_line the mapping pointed at — and CONSUME it: an item carrying
+              // two po_lines with the same po_id must not bill the same group twice. No
+              // po_id captured → first matching line only (lineConsumed guard), as before.
+              const lineMaps=itMaps.filter(mp=>mp.po_id?((po.po_id||'')===mp.po_id&&!poIdConsumed.has(mp.po_id)):!lineConsumed);
               if(!lineMaps.length)return po;
+              lineMaps.forEach(mp=>{if(mp.po_id)poIdConsumed.add(mp.po_id)});
               if(lineMaps.some(mp=>!mp.po_id))lineConsumed=true;
               const newBilled={...(po.billed||{})};const sizesAdded={};let addedCost=0;
               lineMaps.forEach(mp=>{newBilled[mp.size]=(newBilled[mp.size]||0)+mp.allocated_qty;sizesAdded[mp.size]=(sizesAdded[mp.size]||0)+mp.allocated_qty;addedCost+=safeNum(mp.bill_cost||0)});
