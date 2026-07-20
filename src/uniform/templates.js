@@ -279,6 +279,46 @@ const TEMPLATES = {
       },
     },
   },
+  // AYSONSA is full garment artwork authored over front and back elevations.
+  // The live renderer projects those elevations over this same approved soccer
+  // foundation, preserving the original PBR fabric and all builder decorations.
+  ayson_jersey: {
+    id: 'ayson_jersey', name: 'AYSONSA Soccer', category: 'Photoreal', type: 'raster',
+    credit: 'NSA soccer foundation · AYSONSA supplied vector layout',
+    model3d: PUB('/uniform/agi-1012-jersey.glb'),
+    proceduralLayout: 'ayson',
+    projectionFront: PUB('/uniform/designs/ayson/projection-front.png?v=3'),
+    projectionBack: PUB('/uniform/designs/ayson/projection-back.png?v=3'),
+    projectionBodyU: { frontMin: 0.243, frontMax: 0.681, backMin: 0.339, backMax: 0.743 },
+    views: {
+      front: {
+        base: PUB('/uniform/agi-1012-proof-base-front.png?v=6'), mask: PUB('/uniform/designs/ayson/proof-mask-front.png?v=2'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
+          { id: 'aysonInk2', label: 'Pattern Ink 1', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
+          { id: 'aysonInk3', label: 'Pattern Ink 2', maskColor: '#0000ff', sourceId: 'body', colorField: 'color3' },
+          { id: 'aysonInk4', label: 'Pattern Ink 3', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color4' },
+          { id: 'aysonInk5', label: 'Pattern Ink 4', maskColor: '#ff8000', sourceId: 'body', colorField: 'color5' },
+          { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.27, size: 86 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/agi-1012-proof-base-back.png?v=6'), mask: PUB('/uniform/designs/ayson/proof-mask-back.png?v=2'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
+          { id: 'aysonInk2', label: 'Pattern Ink 1', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
+          { id: 'aysonInk3', label: 'Pattern Ink 2', maskColor: '#0000ff', sourceId: 'body', colorField: 'color3' },
+          { id: 'aysonInk4', label: 'Pattern Ink 3', maskColor: '#ff00ff', sourceId: 'body', colorField: 'color4' },
+          { id: 'aysonInk5', label: 'Pattern Ink 4', maskColor: '#ff8000', sourceId: 'body', colorField: 'color5' },
+          { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.46, size: 205 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
   // AGI-1011 shares the approved soccer garment and cloth treatment, but its
   // construction artwork is independent: cyan main panels, black vertical side
   // inserts, black opening-tracked sleeve cuffs and a black collar.

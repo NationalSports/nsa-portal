@@ -42,6 +42,7 @@ describe('artist cut model selection', () => {
     expect(modelGarmentFor({ neckStyle: 'agi1012', artistCut: 'sahrul' })).toBe('agi1012_jersey');
     expect(modelGarmentFor({ neckStyle: 'agi1012', artistCut: 'vikram' })).toBe('agi1012_jersey');
     expect(modelGarmentFor({ neckStyle: 'agi1012', artistCut: 'foundation' })).toBe('agi1012_jersey');
+    expect(modelGarmentFor({ neckStyle: 'ayson', artistCut: 'vikram' })).toBe('ayson_jersey');
     expect(modelGarmentFor({ neckStyle: 'flag228187', artistCut: 'foundation' })).toBe('flag228187_jersey');
     expect(modelGarmentFor({ neckStyle: 'vneck', artistCut: 'sahrul' })).toBe('sahrul2_jersey');
   });

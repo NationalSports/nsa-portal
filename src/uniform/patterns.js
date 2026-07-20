@@ -185,11 +185,12 @@ function hx(h) {
 //               color2/detail. This keeps two-color artwork fully editable.
 // Cached per (src, mode, colors); alpha preserved.
 const _tintCache = new Map();
-export function tintedTile(img, src, color1, color2, color3, color4, mode) {
-  const m = (mode === 'blend' || mode === 'mono' || mode === 'duotone') ? mode : 'solid';
+export function tintedTile(img, src, color1, color2, color3, color4, mode, color5) {
+  const m = (mode === 'blend' || mode === 'mono' || mode === 'duotone' || mode === 'atlas') ? mode : 'solid';
   const c3 = color3 || '#ffffff';
   const c4 = color4 || '#ffffff';
-  const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3 + '|' + c4;
+  const c5 = color5 || '#ffffff';
+  const key = src + '|' + m + '|' + color1 + '|' + color2 + '|' + c3 + '|' + c4 + '|' + c5;
   if (_tintCache.has(key)) return _tintCache.get(key);
   const w = img.naturalWidth || img.width || 1, h = img.naturalHeight || img.height || 1;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
@@ -197,10 +198,25 @@ export function tintedTile(img, src, color1, color2, color3, color4, mode) {
   x.drawImage(img, 0, 0);
   const id = x.getImageData(0, 0, w, h);
   const d = id.data;
-  const A = hx(color1), B = hx(color2), C3 = hx(c3), C4 = hx(c4);
+  const A = hx(color1), B = hx(color2), C3 = hx(c3), C4 = hx(c4), C5 = hx(c5);
   for (let i = 0; i < d.length; i += 4) {
     const r = d[i], g = d[i + 1], b = d[i + 2];
-    if (m === 'solid') {
+    if (m === 'atlas') {
+      // Holloway's 228187 configurator SVGs are already laid out in the GLB's
+      // full UV/production atlas. Their four named inks use this stable source
+      // palette (body, accent 1, accent 2, accent 3). Replace the nearest source
+      // ink with the coach's exact selected color; do not blend or pastelize it.
+      const sourceInks = [[0x00, 0x5b, 0x9b], [0x68, 0x73, 0x7a], [0xf1, 0x58, 0x2a], [0x00, 0x99, 0x49], [0x16, 0x24, 0x6e]];
+      const targetInks = [A, B, C3, C4, C5];
+      let best = 0, bestDistance = Infinity;
+      for (let ink = 0; ink < sourceInks.length; ink++) {
+        const q = sourceInks[ink];
+        const distance = (r - q[0]) ** 2 + (g - q[1]) ** 2 + (b - q[2]) ** 2;
+        if (distance < bestDistance) { best = ink; bestDistance = distance; }
+      }
+      const S = targetInks[best];
+      d[i] = S[0]; d[i + 1] = S[1]; d[i + 2] = S[2];
+    } else if (m === 'solid') {
       const sat = Math.max(r, g, b) - Math.min(r, g, b);
       const lum = r * 0.299 + g * 0.587 + b * 0.114;
       // Saturated pixels are accent markers, split by hue: red-ish → accent 1,

@@ -45,7 +45,7 @@ const EMBEDDED = (() => { try { return new URLSearchParams(window.location.searc
 // Dedicated review links for the approved soccer layouts. They bypass
 // autosave/catalog state so every URL opens a deterministic starting point.
 const REVIEW_DESIGN = (() => { try { return new URLSearchParams(window.location.search).get('design') || ''; } catch { return ''; } })();
-const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'FF-228187';
+const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'AYSONSA' || REVIEW_DESIGN === 'FF-228187';
 // The first procedural shorts study is intentionally withheld from the customer
 // flow. Keep the underlying template/source for a future artist-built replacement,
 // while the released configurator stays focused on the production-ready jersey.
@@ -74,6 +74,19 @@ const BUILT_IN_PRINT_PATTERNS = [
     tintable: true, tint_mode: 'duotone',
   },
 ];
+// Exact Holloway 228187 UV-atlas artwork. Unlike a repeating print tile, each
+// design line is already positioned across the front, back, sleeves and collar
+// shells of the commissioned flag-football GLB.
+const FLAG_228187_DESIGNS = [
+  ['all-over-pattern', 'All-Over Pattern', 1], ['audible', 'Audible', 4], ['craft', 'Craft', 3],
+  ['fade-out', 'Fade Out', 2], ['flash', 'Flash', 3], ['glide', 'Glide', 5],
+  ['huddle', 'Huddle', 4], ['paint', 'Paint', 5], ['passer', 'Passer', 4],
+  ['playmaker', 'Playmaker', 1], ['safety', 'Safety', 4], ['shift', 'Shift', 4],
+  ['steel-town', 'Steel Town', 4],
+].map(([slug, name, colors]) => ({
+  id: `228187-${slug}`, name, image: `/uniform/patterns/flag-228187/${slug}-atlas.png`,
+  tintable: true, tint_mode: 'atlas', colors,
+}));
 // Human-readable "Construction Materials" row value for a section/zone.
 const zoneRowValue = (z) => {
   if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
@@ -105,6 +118,10 @@ const AGI1012_SPLIT_SECTIONS = [
   { key: 'sleeveBandL', label: 'Left Band', sourceKey: 'sleeveL', colorField: 'color2' },
   { key: 'sleeveR', label: 'Right Sleeve' },
   { key: 'sleeveBandR', label: 'Right Band', sourceKey: 'sleeveR', colorField: 'color2' },
+  { key: 'collar', label: 'Collar & Cuffs' },
+];
+const AYSON_SECTIONS = [
+  { key: 'body', label: 'AYSONSA Artwork' },
   { key: 'collar', label: 'Collar & Cuffs' },
 ];
 const AGI1011_LINKED_SECTIONS = [
@@ -172,7 +189,7 @@ function effectiveBottomSections(cfg) {
   const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
-    const from = (z) => ({ color: z.color, color2: z.color2, patternColor2: z.patternColor2, color3: z.color3, color4: z.color4, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
+    const from = (z) => ({ color: z.color, color2: z.color2, patternColor2: z.patternColor2, color3: z.color3, color4: z.color4, color5: z.color5, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount });
     // Match the supplied shorts construction: body-color legs + waistband,
     // with the jersey's secondary graphic color on the angular side insert.
     const stripe = from(S.body);
@@ -186,8 +203,8 @@ function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
-    color3: z.color3, color4: z.color4,
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
+    color3: z.color3, color4: z.color4, color5: z.color5,
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
     garmentId: 'shorts', fabric: cfg.fabric || 'sublimated',
@@ -414,6 +431,7 @@ function garmentFor(cfg) {
   // so a cut comparison never changes the approved 2D proof or design zones.
   if (cfg.neckStyle === 'agi1011') return 'agi1011_jersey';
   if (cfg.neckStyle === 'agi1012') return 'agi1012_jersey';
+  if (cfg.neckStyle === 'ayson') return 'ayson_jersey';
   if (cfg.neckStyle === 'newbase') return 'nsapro_jersey'; // Sahrul (v1)
   if (cfg.neckStyle === 'sahrul2') return 'sahrul2_jersey'; // Sahrul (v2, production spec)
   if (cfg.neckStyle === 'vikram') return 'vikram_jersey';  // Vikram
@@ -427,7 +445,7 @@ export function modelGarmentFor(cfg) {
   // live viewer through proofing and production. Artist comparisons were
   // useful during model selection, but leaving them selectable on a real
   // design made the customer's view diverge from the production asset.
-  if (cfg.neckStyle === 'agi1011' || cfg.neckStyle === 'agi1012') return garmentFor(cfg);
+  if (cfg.neckStyle === 'agi1011' || cfg.neckStyle === 'agi1012' || cfg.neckStyle === 'ayson') return garmentFor(cfg);
   if (cfg.artistCut === 'sahrul') return 'sahrul2_jersey';
   if (cfg.artistCut === 'vikram') return 'vikram_jersey';
   return garmentFor(cfg);
@@ -500,6 +518,26 @@ function agi1011PreviewConfig() {
   };
 }
 
+function aysonPreviewConfig() {
+  const artwork = {
+    color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C',
+    pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
+    patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5,
+  };
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'soccer', designId: 'AYSONSA', neckStyle: 'ayson',
+    teamName: 'AYSONSA', playerNumber: '', frontNumber: 'none',
+    numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
+    teamPalette: ['#31132A', '#870064', '#83276B', '#76236C', '#68246C'],
+    sections: {
+      body: { ...artwork },
+      sleeveL: { ...artwork }, sleeveR: { ...artwork },
+      collar: { color: '#870064', color2: '#31132A', pattern: 'solid' },
+    },
+  };
+}
+
 function flag228187PreviewConfig() {
   return {
     ...DEFAULT_CONFIG,
@@ -532,6 +570,7 @@ function loadAutosave() {
 function restoredConfig() {
   if (REVIEW_DESIGN === 'AGI-1011') return agi1011PreviewConfig();
   if (REVIEW_DESIGN === 'AGI-1012') return agi1012PreviewConfig();
+  if (REVIEW_DESIGN === 'AYSONSA') return aysonPreviewConfig();
   if (REVIEW_DESIGN === 'FF-228187') return flag228187PreviewConfig();
   const a = loadAutosave();
   if (!a || !a.config) return { ...DEFAULT_CONFIG };
@@ -582,6 +621,7 @@ function specFromConfig(cfg) {
   const num = (cfg.playerNumber || '').toString();
   const logos = logoSpecFromConfig(cfg.logos || {});
   const S = normSections(cfg.sections);
+  const aysonArtwork = cfg.neckStyle === 'ayson' ? S.body : null;
   const frontX = cfg.frontNumber === 'center'
     ? 0.5
     : (Number.isFinite(cfg.frontNumberX) ? cfg.frontNumberX : (cfg.frontNumber === 'left' ? 0.67 : 0.33));
@@ -592,15 +632,15 @@ function specFromConfig(cfg) {
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
     color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
-    color3: z.color3, color4: z.color4,
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
+    color3: z.color3, color4: z.color4, color5: z.color5,
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
     garmentId: garmentFor(cfg), fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
-      sleeveL: zoneOf(S.sleeveL),
-      sleeveR: zoneOf(S.sleeveR),
+      sleeveL: zoneOf(aysonArtwork || S.sleeveL),
+      sleeveR: zoneOf(aysonArtwork || S.sleeveR),
       collar: zoneOf(S.collar),
     },
     text: {
@@ -806,7 +846,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                     const on = value.pattern === 'custom' && value.patternImage === p.image;
                     return (
                       <button type="button" key={p.id} data-testid={`pattern-${def.key}-${p.id}`} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} aria-pressed={on}
-                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone'].includes(p.tint_mode) ? p.tint_mode : 'solid', patternColor2: value.patternColor2 || value.color2 })}
+                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone', 'atlas'].includes(p.tint_mode) ? p.tint_mode : 'solid', patternColor2: value.patternColor2 || value.color2, ...(p.colors ? { patternColorCount: p.colors } : {}) })}
                         style={{ width: '100%', minHeight: 52, borderRadius: 5, cursor: 'pointer', padding: '6px 9px', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', background: '#fff',
                           border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
                           boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)' }}>
@@ -828,13 +868,13 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                 )}
               </>
             )}
-            {(!layoutLocked || (value.pattern === 'custom' && value.patternTintMode === 'duotone')) && (
+            {(!layoutLocked || (value.pattern === 'custom' && (value.patternTintMode === 'duotone' || value.patternTintMode === 'atlas'))) && (
               <div style={{ ...railLabel, marginBottom: 8 }}>
-                {value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Color 1' : 'Color'}
+                {value.pattern === 'custom' && value.patternTintMode === 'atlas' ? 'Body Color' : value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Color 1' : 'Color'}
               </div>
             )}
             <div style={{ marginBottom: layoutLocked ? 0 : (value.pattern !== 'solid' ? 14 : 0) }}>
-              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} testId={value.pattern === 'custom' && value.patternTintMode === 'duotone' ? `pattern-color-1-${def.key}` : undefined} />
+              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} testId={value.pattern === 'custom' && value.patternTintMode === 'atlas' ? `atlas-body-${def.key}` : value.pattern === 'custom' && value.patternTintMode === 'duotone' ? `pattern-color-1-${def.key}` : undefined} />
             </div>
             {!layoutLocked && value.pattern !== 'solid' && value.pattern !== 'custom' && (
               <>
@@ -853,14 +893,24 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             )}
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && value.patternTintMode !== 'duotone' && (
               <>
-                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Secondary</div>
-                <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} />
+                {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 2) && <>
+                  <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 1' : 'Print · Secondary'}</div>
+                  <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-1-${def.key}` : undefined} />
+                </>}
                 {value.patternTintMode !== 'blend' && (
                   <>
-                    <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 1</div>
-                    <QuickColors teamColors={teamColors} hex={value.color3 || '#FFFFFF'} onPick={(h) => patchSection(def, { color3: h })} />
-                    <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 2</div>
-                    <QuickColors teamColors={teamColors} hex={value.color4 || '#FFFFFF'} onPick={(h) => patchSection(def, { color4: h })} />
+                    {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 3) && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 2' : 'Print · Accent 1'}</div>
+                      <QuickColors teamColors={teamColors} hex={value.color3 || '#FFFFFF'} onPick={(h) => patchSection(def, { color3: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-2-${def.key}` : undefined} />
+                    </>}
+                    {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 4) && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 3' : 'Print · Accent 2'}</div>
+                      <QuickColors teamColors={teamColors} hex={value.color4 || '#FFFFFF'} onPick={(h) => patchSection(def, { color4: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-3-${def.key}` : undefined} />
+                    </>}
+                    {value.patternTintMode === 'atlas' && (value.patternColorCount || 4) >= 5 && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>Accent 4</div>
+                      <QuickColors teamColors={teamColors} hex={value.color5 || '#FFFFFF'} onPick={(h) => patchSection(def, { color5: h })} testId={`atlas-accent-4-${def.key}`} />
+                    </>}
                   </>
                 )}
               </>
@@ -1165,7 +1215,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const replaceValue = (value) => String(value || '').toUpperCase() === from ? to : value;
     const replaceZone = (zone) => {
       const next = { ...(zone || {}) };
-      for (const key of ['color', 'color2', 'patternColor2', 'color3', 'color4']) if (next[key]) next[key] = replaceValue(next[key]);
+      for (const key of ['color', 'color2', 'patternColor2', 'color3', 'color4', 'color5']) if (next[key]) next[key] = replaceValue(next[key]);
       return next;
     };
     const sections = {};
@@ -1251,12 +1301,15 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const selectGarmentZone = useCallback((area) => {
     if (step !== 'jersey' || showingShorts) return;
     let key = area;
+    if (config.neckStyle === 'ayson' && (key === 'body' || key === 'sleeveL' || key === 'sleeveR')) key = 'body';
     if (sleevesLinked) {
       if (key === 'sleeveL' || key === 'sleeveR') key = 'sleeveL';
       if (key === 'sleeveBandL' || key === 'sleeveBandR') key = 'sleeveBands';
     }
     const definitions = config.neckStyle === 'flag228187'
       ? [{ key: 'body' }, { key: 'collar' }]
+      : config.neckStyle === 'ayson'
+      ? AYSON_SECTIONS
       : config.neckStyle === 'agi1012'
       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
       : config.neckStyle === 'agi1011'
@@ -1448,6 +1501,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       const sec = { color, color2: ds.toHex(z && z.color2) || '#FFFFFF', pattern: (z && z.pattern) || 'solid' };
       const c3 = ds.toHex(z && z.color3); if (c3) sec.color3 = c3;
       const c4 = ds.toHex(z && z.color4); if (c4) sec.color4 = c4;
+      const c5 = ds.toHex(z && z.color5); if (c5) sec.color5 = c5;
       // A named print from the shop library beats a built-in pattern.
       if (z && z.printPattern) {
         const lib = printLib.find((p) => (p.name || '').toLowerCase() === String(z.printPattern).toLowerCase());
@@ -2236,10 +2290,10 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     </div>
                     <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} onReplace={replaceTeamColor} />
                   </RailCard>
-                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
-                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'flag228187') ? (
+                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'ayson' ? 'AYSONSA · AGI-1012 Cut' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
+                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187') ? (
                       <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
-                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : `${config.designId} Foundation · Production Cut`}</strong>
+                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : `${config.designId} · AGI-1012 Production Cut`}</strong>
                         {config.neckStyle === 'flag228187'
                           ? 'This commissioned flag-football garment stays locked while its source asset is evaluated.'
                           : 'This approved garment is locked so the 3D view, proof, and finished order always match.'}
@@ -2292,13 +2346,15 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                   </div>
                   <div style={{ order: 1 }}>
                   <RailCard num={1} title="Sections"
-                    action={config.neckStyle === 'flag228187' ? null : <button onClick={toggleSleevesLinked}
+                    action={(config.neckStyle === 'flag228187' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
                     </button>}>
                   <SectionEditor
                     sectionDefs={config.neckStyle === 'flag228187'
                       ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Reverse Side' }]
+                      : config.neckStyle === 'ayson'
+                      ? AYSON_SECTIONS
                       : config.neckStyle === 'agi1012'
                       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
                       : config.neckStyle === 'agi1011'
@@ -2309,8 +2365,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     sections={SX}
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
-                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={printLib} teamColors={teamColors}
-                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'flag228187'}
+                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={config.neckStyle === 'flag228187' ? FLAG_228187_DESIGNS : (config.neckStyle === 'ayson' ? [] : printLib)} teamColors={teamColors}
+                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187'}
                     layoutLabel={config.neckStyle === 'flag228187' ? '228187 reversible prototype' : `${config.designId || 'AGI'} approved layout`} />
                   </RailCard>
                   </div>

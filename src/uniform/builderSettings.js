@@ -44,6 +44,18 @@ export const DEFAULT_PALETTE = [
 const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
 export const DEFAULT_PRESETS = [
   {
+    id: 'AYSONSA', name: 'AYSONSA', sports: ['soccer'],
+    thumbnail: '/uniform/designs/ayson/reference-front.png',
+    config: {
+      neckStyle: 'ayson', numberColor: '#FFFFFF',
+      sections: {
+        body: { color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5 },
+        sleeves: { color: '#31132A', color2: '#870064', color3: '#83276B', color4: '#76236C', color5: '#68246C', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 5 },
+        collar: sec('#870064'),
+      },
+    },
+  },
+  {
     id: 'FF-228187', name: '228187 Reversible', sports: ['flagfootball'],
     thumbnail: '/uniform/flag-228187-preview.png',
     config: {
@@ -115,7 +127,7 @@ function cleanPresets(raw) {
         sports: Array.isArray(p.sports) ? p.sports.filter((x) => typeof x === 'string') : [],
         ...(typeof p.thumbnail === 'string' && /^\/uniform\/[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
         config: {
-          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'newbase', 'sahrul2', 'vikram', 'flag228187'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
+          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
           numberColor: HEX_RE.test(p.config.numberColor || '') ? p.config.numberColor : '#FFFFFF',
           sections: {
             body: zone(S.body, sec('#192853')),

@@ -95,6 +95,7 @@ const _fabricNormals = {};
 const _designMaskImages = {};
 const _designMaskTextures = {};
 const _selectionMaskTextures = {};
+const _aysonProjectionTextures = {};
 
 // Direct garment targeting uses the exact same UV artwork mask that colors the
 // jersey. This keeps clicks on a chest stripe, side insert or sleeve band tied
@@ -249,6 +250,101 @@ function designMaskPatternTexture(url, patternCanvas, patternKey, accentHex, rep
   _designMaskImages[url] = img;
   img.onload = () => build(img);
   img.src = url;
+}
+
+// AYSONSA is a complete front/back garment layout, not a repeating print tile.
+// Recolor its five stable source inks, then project the two approved elevations
+// over the actual AGI-1012 surface. This preserves the artist's rising hem and
+// underarm pattern while the original PBR fabric, folds and seams stay intact.
+function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
+  const colors = [zone.color, zone.color2, zone.color3, zone.color4, zone.color5].map((c) => ds.toHex(c, '#ffffff'));
+  const key = [frontUrl, backUrl, ...colors].join('|');
+  if (_aysonProjectionTextures[key]) { onReady(_aysonProjectionTextures[key]); return; }
+  const load = (url) => new Promise((resolve) => {
+    const image = new Image(); image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image); image.src = url;
+  });
+  Promise.all([load(frontUrl), load(backUrl)]).then(([frontImage, backImage]) => {
+    const make = (image, url) => {
+      const canvas = tintedTile(image, url, colors[0], colors[1], colors[2], colors[3], 'atlas', colors[4]);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.generateMipmaps = false;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.anisotropy = 16;
+      texture.userData.shared = true;
+      return texture;
+    };
+    const pair = { front: make(frontImage, frontUrl), back: make(backImage, backUrl) };
+    _aysonProjectionTextures[key] = pair;
+    onReady(pair);
+  }).catch(() => {});
+}
+
+function applyAysonSurface(st, mat, tpl, zone, meshName) {
+  const bounds = tpl.projectionBounds || { xMin: -0.334, xMax: 0.334, yMin: 0, yMax: 0.677, depthCenter: 0 };
+  const isBody = meshName === 'body_front' || meshName === 'body_back';
+  const sourceU = isBody
+    ? (tpl.projectionBodyU || { frontMin: 0.251, frontMax: 0.687, backMin: 0.348, backMax: 0.747 })
+    : (tpl.projectionSleeveU || { frontMin: 0.086, frontMax: 0.852, backMin: 0.180, backMax: 0.916 });
+  const geometryX = isBody ? { min: -0.212, max: 0.212 } : { min: bounds.xMin, max: bounds.xMax };
+  const fixedSide = meshName === 'body_front' ? 1 : meshName === 'body_back' ? 0 : -1;
+  const base = new THREE.Color(textileAlbedo(ds.toHex(zone.color, '#31132a')));
+  const data = mat.userData.nsaAyson || { base, front: null, back: null, shader: null };
+  data.base.copy(base);
+  mat.userData.nsaAyson = data;
+  if (!mat.userData.nsaAysonInstalled) {
+    mat.userData.nsaAysonInstalled = true;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.nsaAysonBase = { value: data.base };
+      shader.uniforms.nsaAysonFront = { value: data.front };
+      shader.uniforms.nsaAysonBack = { value: data.back };
+      shader.uniforms.nsaAysonBounds = { value: new THREE.Vector4(geometryX.min, geometryX.max, bounds.yMin, bounds.yMax) };
+      shader.uniforms.nsaAysonSourceU = { value: new THREE.Vector4(sourceU.frontMin, sourceU.frontMax, sourceU.backMin, sourceU.backMax) };
+      shader.uniforms.nsaAysonDepth = { value: bounds.depthCenter || 0 };
+      shader.uniforms.nsaAysonSide = { value: fixedSide };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNsaAysonPosition = position;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonFront;\nuniform sampler2D nsaAysonBack;\nuniform vec4 nsaAysonBounds;\nuniform vec4 nsaAysonSourceU;\nuniform float nsaAysonDepth;\nuniform float nsaAysonSide;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float nsaAysonX = clamp((vNsaAysonPosition.x - nsaAysonBounds.x) / max(0.00001, nsaAysonBounds.y - nsaAysonBounds.x), 0.0, 1.0);
+          float nsaAysonY = clamp((vNsaAysonPosition.y - nsaAysonBounds.z) / max(0.00001, nsaAysonBounds.w - nsaAysonBounds.z), 0.0, 1.0);
+          bool nsaAysonIsFront = nsaAysonSide > 0.5 || (nsaAysonSide < -0.5 && vNsaAysonPosition.z >= nsaAysonDepth);
+          float nsaAysonAngleX = nsaAysonIsFront
+            ? (atan(vNsaAysonPosition.x, vNsaAysonPosition.z) + 1.5707963) / 3.1415926
+            : (atan(-vNsaAysonPosition.x, -vNsaAysonPosition.z) + 1.5707963) / 3.1415926;
+          float nsaAysonEdge = smoothstep(0.55, 0.85, abs(nsaAysonX * 2.0 - 1.0));
+          float nsaAysonWrappedX = mix(nsaAysonX, clamp(nsaAysonAngleX, 0.0, 1.0), nsaAysonEdge * step(-0.5, nsaAysonSide));
+          // Match source pixels to garment dimensions so circular artwork
+          // stays circular instead of being compressed into wide diamonds.
+          float nsaAysonSourceY = nsaAysonY;
+          if (nsaAysonSide > 0.5) nsaAysonSourceY = mix(0.100, 0.856, nsaAysonY);
+          else if (nsaAysonSide > -0.5) nsaAysonSourceY = mix(0.062, 0.818, nsaAysonY);
+          vec2 nsaAysonUv = vec2(
+            nsaAysonIsFront ? mix(nsaAysonSourceU.x, nsaAysonSourceU.y, nsaAysonWrappedX) : mix(nsaAysonSourceU.z, nsaAysonSourceU.w, nsaAysonWrappedX),
+            nsaAysonSourceY
+          );
+          vec4 nsaAysonInk = nsaAysonIsFront ? texture2D(nsaAysonFront, nsaAysonUv) : texture2D(nsaAysonBack, nsaAysonUv);
+          diffuseColor.rgb = mix(nsaAysonBase, nsaAysonInk.rgb, step(0.04, nsaAysonInk.a));`);
+      data.shader = shader;
+    };
+    mat.customProgramCacheKey = () => `nsa-ayson-projection-v4-${fixedSide}`;
+  }
+  mat.color.set('#ffffff');
+  mat.needsUpdate = true;
+  aysonProjectionTextures(tpl.projectionFront, tpl.projectionBack, zone, (pair) => {
+    data.front = pair.front; data.back = pair.back;
+    if (data.shader) {
+      data.shader.uniforms.nsaAysonFront.value = pair.front;
+      data.shader.uniforms.nsaAysonBack.value = pair.back;
+      data.shader.uniforms.nsaAysonBase.value.copy(data.base);
+    }
+    mat.needsUpdate = true;
+    if (st.queueSnapshot) st.queueSnapshot(120);
+  });
 }
 
 // Convert the artwork mask into an EDGE-ONLY alpha texture for selection. A
@@ -574,7 +670,10 @@ function applyDesign(st, rawSpec) {
     const meshName = String(entry.mesh.name || '').toLowerCase();
     const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
     if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
-    if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
+    if (tpl.proceduralLayout === 'ayson' && ['body_front', 'body_back', 'sleeve_left', 'sleeve_right'].includes(meshName)) {
+      entry._patGen = (entry._patGen || 0) + 1;
+      applyAysonSurface(st, mat, tpl, zs, meshName);
+    } else if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
       entry._patGen = (entry._patGen || 0) + 1;
       applySidePanelSurface(st, mat, color, color2);
     } else if (maskUrl && pat === 'custom' && zs.patternImage) {
@@ -588,11 +687,12 @@ function applyDesign(st, rawSpec) {
       img.crossOrigin = 'anonymous';
       img.onload = () => {
         if (entry._patGen !== gen || !entry.mesh.material) return;
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, patternColor2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        const secondInk = zs.patternTintMode === 'atlas' ? color2 : patternColor2;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, secondInk, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode, ds.toHex(zs.color5, '#ffffff')) : img;
         // The composite lives in the garment's original UV atlas. Convert the
         // desired panel-local tile count to atlas-space repetition.
         const rep = customPatternRepeat(zs, spanByZone[entry.zone]);
-        const patternKey = [zs.patternImage, zs.patternTintMode, color, patternColor2, zs.color3, zs.color4].join('|');
+        const patternKey = [zs.patternImage, zs.patternTintMode, color, patternColor2, zs.color3, zs.color4, zs.color5].join('|');
         designMaskPatternTexture(maskUrl, source, patternKey, color2, rep, (tex) => {
           if (entry._patGen !== gen || !entry.mesh.material) return;
           const m = entry.mesh.material;
@@ -621,13 +721,18 @@ function applyDesign(st, rawSpec) {
         if (entry._patGen !== gen || !entry.mesh.material) return;
         // Tintable tiles are grayscale: recolor with the zone's colors so one
         // uploaded tile serves every colorway.
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, patternColor2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        const secondInk = zs.patternTintMode === 'atlas' ? color2 : patternColor2;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, secondInk, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode, ds.toHex(zs.color5, '#ffffff')) : img;
         const tex = new THREE.CanvasTexture(source);
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        // Same tile-count logic as the built-ins: ~2.5 print repeats across each
-        // panel so a print never balloons on the sleeves.
-        const rep = customPatternRepeat(zs, spanByZone[entry.zone]);
+        const isAtlas = zs.patternTintMode === 'atlas';
+        tex.wrapS = tex.wrapT = isAtlas ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+        // A vendor atlas is already positioned over the garment's exact UV
+        // shells. Ordinary artwork remains a repeated tile.
+        const rep = isAtlas ? 1 : customPatternRepeat(zs, spanByZone[entry.zone]);
         tex.repeat.set(rep, rep);
+        // CanvasTexture follows the browser's top-left image origin. Keep its
+        // normal Y flip so the baked atlas lines up with the garment UVs.
+        if (isAtlas) tex.flipY = true;
         tex.generateMipmaps = false;
         tex.minFilter = THREE.LinearFilter;
         tex.magFilter = THREE.LinearFilter;
