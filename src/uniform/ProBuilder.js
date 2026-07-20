@@ -64,6 +64,16 @@ const nameForHex = (hex) => {
 
 // Full pattern library (ids/labels from designSpec, so they always validate).
 const PATTERNS = ds.PATTERNS;
+// A small built-in library keeps approved test prints available even before an
+// administrator has connected the Uniform Patterns table. These are artwork
+// tiles, not garment layouts: a coach can apply one to any printable section
+// while its construction boundaries remain intact.
+const BUILT_IN_PRINT_PATTERNS = [
+  {
+    id: 'hex-flow-test', name: 'Hex Flow', image: '/uniform/patterns/hex-flow-test.png',
+    tintable: true, tint_mode: 'mono',
+  },
+];
 // Human-readable "Construction Materials" row value for a section/zone.
 const zoneRowValue = (z) => {
   if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
@@ -763,7 +773,7 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                 </div>
               </>
             )}
-            {!layoutLocked && printLib.length > 0 && (
+            {printLib.length > 0 && (
               <>
                 <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
                 <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -1233,9 +1243,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     return () => { alive = false; };
   }, [screen]);
 
-  // Admin-curated print patterns (Settings → Uniform Patterns). Best-effort:
-  // the builder works fine with an empty library if Supabase is unreachable.
-  const [printLib, setPrintLib] = useState([]);
+  // Admin-curated print patterns (Settings → Uniform Patterns). The test tile
+  // stays visible offline; database patterns extend it when available.
+  const [printLib, setPrintLib] = useState(BUILT_IN_PRINT_PATTERNS);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1245,8 +1255,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         const { data } = await mod.supabase.from('uniform_patterns')
           .select('id,name,image,tintable,tint_mode').eq('active', true)
           .order('created_at', { ascending: false }).limit(40);
-        if (alive && Array.isArray(data)) setPrintLib(data);
-      } catch (_e) { /* offline / table missing */ }
+        if (alive && Array.isArray(data)) {
+          const ids = new Set(BUILT_IN_PRINT_PATTERNS.map((pattern) => pattern.id));
+          setPrintLib([...BUILT_IN_PRINT_PATTERNS, ...data.filter((pattern) => !ids.has(pattern.id))]);
+        }
+      } catch (_e) { /* offline / table missing: built-in patterns remain */ }
     })();
     return () => { alive = false; };
   }, []);
