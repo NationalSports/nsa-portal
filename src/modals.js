@@ -381,7 +381,7 @@ function SearchTagsInput({tags,onChange}){
 }
 
 function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCustomers}){
-  const b={parent_id:null,name:'',alpha_tag:'',search_tags:[],contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,payment_terms:'net30',tax_exempt:false,tax_rate:0};
+  const b={parent_id:null,name:'',alpha_tag:'',search_tags:[],contacts:[{name:'',email:'',phone:'',role:'Head Coach'}],shipping_city:'',shipping_state:'',adidas_ua_tier:'B',catalog_markup:1.65,uniform_discount_percent:0,payment_terms:'net30',tax_exempt:false,tax_rate:0};
   const[f,setF]=useState(customer||b);const[ct,setCt]=useState(customer?.parent_id?'sub':'parent');const[err,setErr]=useState({});const[tcLook,setTcLook]=useState({loading:false,msg:''});
   const doTcLookup=async(fields)=>{if(!supabase||!fields.shipping_state||!fields.shipping_zip)return null;try{return await invokeEdgeFn(supabase,'taxcloud-lookup',{address1:fields.shipping_address_line1||'',city:fields.shipping_city||'',state:fields.shipping_state,zip5:fields.shipping_zip})}catch(e){return{ok:false,error:'Error: '+e.message}}};
   const APPAREL_EXEMPT=['MN','NJ','PA','VT','AK','DE','MT','NH','OR'];const APPAREL_THRESHOLD=['MA','NY','RI'];
@@ -464,6 +464,7 @@ function CustModal({isOpen,onClose,onSave,customer,parents,reps,supabase,allCust
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Pricing</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tier</label><select className="form-select" value={f.adidas_ua_tier||'B'} onChange={e=>sv('adidas_ua_tier',e.target.value)}><option value="A">A - 40%</option><option value="B">B - 35%</option><option value="C">C - 30%</option></select></div>
       <div><label className="form-label">Markup</label><input className="form-input" type="number" step="0.05" value={f.catalog_markup||1.65} onChange={e=>sv('catalog_markup',parseFloat(e.target.value)||1.65)}/></div></div>
+    <div style={{marginTop:8,maxWidth:310}}><label className="form-label">Custom Uniform Discount (%)</label><input className="form-input" type="number" min="0" max="100" step="0.5" value={f.uniform_discount_percent??0} onChange={e=>sv('uniform_discount_percent',Math.min(100,Math.max(0,parseFloat(e.target.value)||0)))}/><div style={{fontSize:10,color:'#64748b',marginTop:3}}>Shown against the public builder price and applied to custom-uniform checkout.</div></div>
     <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginTop:12,marginBottom:6,textTransform:'uppercase'}}>Tax</div>
     <div className="form-row form-row-2"><div><label className="form-label">Tax Rate (%)</label><div style={{display:'flex',gap:6}}><input className="form-input" type="number" step="0.125" min="0" max="15" value={f.tax_rate?(f.tax_rate*100).toFixed(4).replace(/0+$/,'').replace(/\.$/,''):''} onChange={e=>{const v=parseFloat(e.target.value);sv('tax_rate',v>0?v/100:0)}} placeholder="e.g. 7.875" style={{flex:1}}/><button className="btn btn-sm btn-secondary" disabled={tcLook.loading||!f.shipping_state||!f.shipping_zip} title={!f.shipping_state||!f.shipping_zip?'Enter shipping state & ZIP first':'Lookup rate from TaxCloud'} style={{whiteSpace:'nowrap',fontSize:11}} onClick={async()=>{setTcLook({loading:true,msg:''});const d=await Promise.race([doTcLookup(f),new Promise(r=>setTimeout(()=>r({ok:false,error:'Lookup timed out'}),8000))]);if(d?.ok){sv('tax_rate',d.tax_rate);setTcLook({loading:false,msg:d.tax_pct+'% (TaxCloud)'})}else{setTcLook({loading:false,msg:d?.error||'Lookup failed'})}}}>{tcLook.loading?'...':'TaxCloud'}</button></div>
     {tcLook.msg&&<div style={{fontSize:10,marginTop:3,color:tcLook.msg.includes('fail')||tcLook.msg.includes('Error')||tcLook.msg.includes('limit')?'#dc2626':'#166534'}}>{tcLook.msg}</div>}
@@ -639,16 +640,19 @@ function StripeCheckoutForm({amount,fee,onSuccess,onCancel}){
 }
 
 
-function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,onSuccess,onClose}){
+function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct,paymentNote,createIntent,onSuccess,onClose}){
   const[payChoice,setPayChoice]=useState(null);// 'card' | 'bank' — picked before Stripe loads; locks the fee + method
   const[clientSecret,setClientSecret]=useState(null);
   const[stripeReady,setStripeReady]=useState(null);
   const[loading,setLoading]=useState(false);// true only while creating the intent after a choice
   const[error,setError]=useState(null);
+  const[serverSubtotal,setServerSubtotal]=useState(null);
+  const[serverFee,setServerFee]=useState(null);
   const _feePct=typeof feePct==='number'?feePct:CC_FEE_PORTAL_DEFAULT;
   const totalDue=invoices.reduce((a,inv)=>a+(inv.total||0)-(inv.paid||0),0);
   const cardFee=Math.round(totalDue*_feePct*100)/100;
-  const chosenFee=payChoice==='card'?cardFee:0;
+  const chosenFee=serverFee!=null?serverFee:(payChoice==='card'?cardFee:0);
+  const checkoutSubtotal=serverSubtotal!=null?serverSubtotal:totalDue;
   const invoiceIds=invoices.map(i=>i.id).join(', ');
 
   // Load Stripe up front, but DON'T create the PaymentIntent until the buyer picks card vs bank. The
@@ -675,10 +679,18 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
     setPayChoice(choice);setLoading(true);setError(null);
     const fee=choice==='card'?cardFee:0;
     try{
-      const res=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag})});
-      const data=await res.json();
-      if(!res.ok)throw new Error(data.error||'Failed to create payment');
+      let data;
+      if(createIntent){
+        data=await createIntent({method:choice,subtotal:totalDue,fee,amountCents:Math.round((totalDue+fee)*100)});
+      }else{
+        const res=await fetch('/.netlify/functions/stripe-payment',{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({action:'create_intent',amount_cents:Math.round((totalDue+fee)*100),method:choice,customer_name:customerName,customer_email:customerEmail,invoice_id:invoiceIds,invoice_memo:invoices[0]?.memo||'',alpha_tag:alphaTag})});
+        data=await res.json();
+        if(!res.ok)throw new Error(data.error||'Failed to create payment');
+      }
+      if(!data||!data.clientSecret)throw new Error((data&&data.error)||'Failed to create payment');
+      if(Number.isFinite(Number(data.subtotal)))setServerSubtotal(Number(data.subtotal));
+      if(Number.isFinite(Number(data.fee)))setServerFee(Number(data.fee));
       setClientSecret(data.clientSecret);
     }catch(e){setError(e.message);setPayChoice(null)}
     finally{setLoading(false)}
@@ -721,7 +733,7 @@ function StripePaymentModal({invoices,customerName,customerEmail,alphaTag,feePct
           <button className="btn btn-secondary btn-sm" style={{marginTop:14,fontSize:11}} onClick={onClose}>Cancel</button>
         </div>}
         {!error&&payChoice&&clientSecret&&stripeReady&&<Elements stripe={stripeReady} options={{clientSecret,appearance:{theme:'stripe',variables:{colorPrimary:'#22c55e',borderRadius:'8px'}}}}>
-          <StripeCheckoutForm amount={totalDue} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
+          <StripeCheckoutForm amount={checkoutSubtotal} fee={chosenFee} onCancel={onClose} onSuccess={(result)=>onSuccess({...result,invoices})}/>
         </Elements>}
       </div>
     </div>

@@ -13,6 +13,8 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
+// Lazy so the uniform designer only loads when a rep opens it.
+const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
 import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
@@ -651,6 +653,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[jobWizard,setJobWizard]=useState(null);// {groups: [{name,deco_type,items:[...]},...]} — Job Setup Wizard
   const[mockBuilder,setMockBuilder]=useState(null);// {gi} — Quick Mock Builder open for jobWizard group index
   const[editMockJob,setEditMockJob]=useState(null);// job object whose quick mock is being re-edited in place
+  const[showUniformBuilder,setShowUniformBuilder]=useState(false);// custom Uniform Builder overlay
   const[prodSheetBusy,setProdSheetBusy]=useState(false);// generating the production-sheet PDF download
   const[countDiscModal,setCountDiscModal]=useState(null);// {open,entries:[{sku,name,color,size,expected,actual}],notes}
   const[poAddModal,setPoAddModal]=useState(null);// {sz,n,add,poId,onAdd,onLeave} — growing an already-ordered size: add the extra units to its PO, or leave it open to order
@@ -3319,6 +3322,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>
     </div></div>;})()}
+    {showUniformBuilder&&<React.Suspense fallback={<div style={{position:'fixed',inset:0,zIndex:50,display:'flex',alignItems:'center',justifyContent:'center',background:'#f7f8fb',color:'#64748b',fontFamily:'sans-serif'}}>Loading…</div>}><UniformBuilder coachDiscountPercent={cust?.uniform_discount_percent||0} existingArtwork={safeArt(o)} onExit={()=>setShowUniformBuilder(false)}/></React.Suspense>}
     {editMockJob&&(()=>{
       const j2=safeJobs(o).find(jj=>jj.id===editMockJob.id)||editMockJob;
       // The job's declared _art_ids only carry the FIRST item's art (see buildJobs), so a job
@@ -4019,6 +4023,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>))}
       {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
+    <div style={{display:'flex',justifyContent:'flex-end',marginBottom:8}}>
+      <button onClick={()=>setShowUniformBuilder(true)} className="btn btn-sm" style={{fontSize:11,padding:'5px 14px',background:'#192853',color:'#fff',border:'none',fontWeight:800}} title="Open the custom Uniform Builder">🎽 Design Uniform</button>
+    </div>
     {/* TABS */}
     <div className="tabs" style={{marginBottom:16}}>
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>

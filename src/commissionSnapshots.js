@@ -9,13 +9,20 @@ export const COMM_RATE_STANDARD = 0.30;
 export const COMM_RATE_LATE = 0.15;
 export const COMM_LATE_DAYS = 90;
 
+// Commission is earned only after the invoice is fully paid. Partial payments
+// remain pipeline until the final payment lands; this also keeps the eventual
+// paid date and days-to-pay calculation accurate.
+export function isCommissionEarnedInvoice(invoice) {
+  return !!invoice && invoice.status === 'paid';
+}
+
 // A line may be frozen only when freezing it would freeze the TRUTH:
 //  - fully paid (a partial's final payment date isn't known yet — it keeps rendering live)
 //  - payment rows hydrated and present (else paid_date would be the invoice-date fallback)
 //  - the SO and its cost inputs hydrated (else calcGP under-counts cost and over-states GP)
 export function canSnapshotLine(line) {
   if (!line || !line.inv) return false;
-  if (line.inv.status !== 'paid') return false;
+  if (!isCommissionEarnedInvoice(line.inv)) return false;
   if (line.inv._paymentsHydrated === false) return false;
   if (!(line.inv.payments && line.inv.payments.length)) return false;
   const so = line.so;

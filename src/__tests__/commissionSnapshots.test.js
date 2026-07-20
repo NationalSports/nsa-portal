@@ -5,6 +5,7 @@ import {
   snapshotRowFromLine,
   applySnapshotToLine,
   overrideSnapshotPatch,
+  isCommissionEarnedInvoice,
   COMM_RATE_STANDARD,
   COMM_RATE_LATE,
 } from '../commissionSnapshots';
@@ -31,6 +32,14 @@ const paidLine = (over = {}) => ({
   repId: 'rep-1',
   paidMonth: '6/2026',
   ...over.line,
+});
+
+describe('commission earning gate', () => {
+  test('waits for full payment', () => {
+    expect(isCommissionEarnedInvoice({ status: 'partial' })).toBe(false);
+    expect(isCommissionEarnedInvoice({ status: 'unpaid' })).toBe(false);
+    expect(isCommissionEarnedInvoice({ status: 'paid' })).toBe(true);
+  });
 });
 
 describe('canSnapshotLine — only freeze the truth', () => {
