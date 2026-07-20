@@ -32200,7 +32200,26 @@ export default function App(){
                   {l.name?<div style={{fontSize:11,color:'#94a3b8',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{l.name}</div>:null}
                   {szChips(l)||(szStr(l)?<div style={{fontSize:11,color:'#475569',fontFamily:'ui-monospace,monospace',marginTop:2}}>{szStr(l)}</div>:null)}
                 </div>
-                <div style={{fontSize:13,fontWeight:700,color:'#0f172a',flexShrink:0}}>{l.qty||0} pcs</div>
+                <div style={{flexShrink:0,textAlign:'right'}}>
+                  <div style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{l.qty||0} pcs</div>
+                  {/* Per-item order timing — the portal knows this SKU's restock dates, so
+                      the rep can pin WHEN it gets ordered right here. Overrides the rules. */}
+                  {(()=>{const a=botAvail?.map?.[l.sku];if(!a||!l.sku)return null;
+                    const shortDates=Object.entries(l.sizes||{}).filter(([sz,q])=>{const r=a[sz];return r&&(r.stock||0)<Number(q)}).map(([sz])=>a[sz]?.date).filter(Boolean).sort();
+                    const restockDate=shortDates.length?shortDates[shortDates.length-1]:null;
+                    const cur=todoModal.bot_line_sched?.[l.sku]||{mode:'auto'};
+                    const setSch=(sch)=>setTodoModal(m=>({...m,bot_line_sched:{...(m.bot_line_sched||{}),[l.sku]:sch}}));
+                    return<div style={{marginTop:4}}>
+                      <select className="form-select" style={{fontSize:10,padding:'2px 4px',width:150}} value={cur.mode==='date'?(cur.date===restockDate?'restock':'custom'):cur.mode}
+                        onChange={e=>{const v=e.target.value;setSch(v==='restock'?{mode:'date',date:restockDate}:v==='custom'?{mode:'date',date:cur.date||restockDate||''}:{mode:v})}}>
+                        <option value="auto">Auto (rules below)</option>
+                        <option value="now">Order in-stock only</option>
+                        {restockDate&&<option value="restock">All on {restockDate}</option>}
+                        <option value="custom">Pick date…</option>
+                      </select>
+                      {cur.mode==='date'&&cur.date!==restockDate&&<input type="date" className="form-input" style={{fontSize:10,padding:'2px 4px',width:150,marginTop:2}} value={cur.date||''} onChange={e=>setSch({mode:'date',date:e.target.value})}/>}
+                    </div>})()}
+                </div>
               </div>)}
             </div>
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
@@ -32331,6 +32350,10 @@ export default function App(){
               if(Object.keys(_avNeeded).length){_bp.availability=_avNeeded;_bp.availability_synced=botAvail.synced||null}
             }
             if(todoModal.bot_backorder&&todoModal.bot_backorder!=='ask')_bp.backorder_action=todoModal.bot_backorder;
+            // Per-item schedule: only ship real decisions ('auto' rows follow the rules;
+            // a date pick without a date is meaningless and dropped).
+            const _ls={};Object.entries(todoModal.bot_line_sched||{}).forEach(([sku,sch])=>{if(sch.mode==='now')_ls[sku]={mode:'now'};else if(sch.mode==='date'&&sch.date)_ls[sku]={mode:'date',date:sch.date}});
+            if(Object.keys(_ls).length)_bp.line_schedule=_ls;
             // Drop ship: make sure the delivery address travels with the payload so the
             // worker never has to guess where the order actually goes.
             const _bpDrop=_bp.drop_ship===true||(Array.isArray(_bp.lines)&&_bp.lines.some(l=>l.drop_ship));
@@ -32340,7 +32363,7 @@ export default function App(){
             if(Object.keys(_bp).length)newTodo.bot_payload=_bp;
           }
           setAssignedTodos(prev=>[newTodo,...prev]);
-          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask'});
+          setTodoModal({open:false,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:'',doc_label:'',if_id:'',po_id:'',wh_only:false,bot_payload:null,bot_delivery:'',bot_strategy:'complete',bot_attention:undefined,bot_backorder:'ask',bot_line_sched:{}});
           nf('Task assigned to '+(REPS.find(r=>r.id===todoModal.assigned_to)?.name||''))
         }}>Assign Task</button>
       </div>

@@ -103,6 +103,14 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     : p.backorder_action === 'drop'
     ? `DROP LONG BACKORDERS. Order every size that's available now or restocks within 14 days; for sizes beyond 14 days (or with no date), enter nothing, list them in \`skipped\` (size-level, with dates), and do NOT ask — finish to needs_review.`
     : `None given — follow the 14-day rule above and ask via needs_input when it triggers.`;
+  // Per-item schedule the rep picked at assign time — hard overrides for those
+  // SKUs; the global strategy/backorder rules still govern the rest.
+  const _ls = p.line_schedule || null;
+  const lineSchedule = _ls && Object.keys(_ls).length
+    ? Object.entries(_ls).map(([sku, sch]) => sch.mode === 'now'
+      ? `- ${sku}: order ONLY the sizes in stock today. Enter nothing for short sizes; list them in \`skipped\` (size-level, with any dates) — do NOT ask about them.`
+      : `- ${sku}: order ALL its sizes under delivery date ${sch.date} (use "Add more dates" so this SKU's quantities sit under that date) — even if the wait exceeds 14 days. Do NOT skip or ask.`).join('\n')
+    : '(none — follow the strategy and standing decision above)';
   // Prior human comments so the agent can act on answers (e.g. backorder
   // guidance) it received after a previous "needs_input" pass.
   const convo = (conversation || [])
@@ -121,6 +129,7 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     .replaceAll('{{DELIVERY}}', delivery)
     .replaceAll('{{PORTAL_AVAILABILITY}}', portalAvailability)
     .replaceAll('{{BACKORDER_ACTION}}', backorderAction)
+    .replaceAll('{{LINE_SCHEDULE}}', lineSchedule)
     .replaceAll('{{DELIVERY_STRATEGY}}', deliveryStrategy)
     .replaceAll('{{DELIVERY_DATE}}', deliveryDate);
 }

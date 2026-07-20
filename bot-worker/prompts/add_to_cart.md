@@ -115,6 +115,9 @@ quantities. Today's date matters here — compute "two weeks from today" first.
 **The rep's standing decision on long backorders:**
 {{BACKORDER_ACTION}}
 
+**The rep's per-item schedule (overrides everything above for these items):**
+{{LINE_SCHEDULE}}
+
 **If any orderable SKU has a short backorder (restock ≤ 14 days)**, follow the
 delivery-date strategy the rep chose for this order:
 {{DELIVERY_STRATEGY}}
