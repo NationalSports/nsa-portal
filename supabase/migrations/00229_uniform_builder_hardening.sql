@@ -1,4 +1,4 @@
--- Uniform Builder hardening (review follow-ups to 00223–00227).
+-- Uniform Builder hardening (review follow-ups to 00224–00228).
 --
 -- 1. Bring uniform_designs / uniform_patterns into the repo migration chain
 --    (they predate it in prod — created ad hoc, then locked by 00179) so fresh
@@ -6,7 +6,7 @@
 -- 2. Close the lock-bypass: protect locked_at itself and the customer-facing
 --    money columns, and forbid deleting a locked production record.
 -- 3. Make sure uniform_settings has the staff policy on fresh databases
---    (00225 creates the table there; prod already has the policy via 00179).
+--    (00226 creates the table there; prod already has the policy via 00179).
 
 -- ── 1. Designs + patterns: tables and staff-only posture ─────────────────────
 create table if not exists public.uniform_designs (
