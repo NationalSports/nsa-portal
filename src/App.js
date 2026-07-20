@@ -20,7 +20,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
@@ -914,7 +914,9 @@ const buildProdSheetOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     if(!nd&&!nameD)return;
     const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
     const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
-    const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
+    const _rawRoster=gi.roster||nd?.roster||null;
+    const roster=_rawRoster?scopeRosterToSizes(_rawRoster,Object.fromEntries(sizes)):null;
+    const names=nameD?.names?scopeRosterToSizes(nameD.names,Object.fromEntries(sizes)):null;
     results.push({item_idx:gi.item_idx,sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
   });return results})();
   const infoBoxes=[
@@ -1199,10 +1201,13 @@ const buildWorkOrderOpts=(j,so,{customers=[],allOrders=[],products=[],reps=[]}={
     let rd=null;
     for(const d of itemDetails){
       const nd=jobItemDecosOfKind(d.gi,d.it,'numbers')[0];const nameD=jobItemDecosOfKind(d.gi,d.it,'names')[0];
-      if(nd||nameD){rd={nd,nameD,gi:d.gi,sku:d.it.sku||d.gi.sku,color:d.it.color||d.gi.color||''};break}
+      if(nd||nameD){rd={nd,nameD,gi:d.gi,it:d.it,sku:d.it.sku||d.gi.sku,color:d.it.color||d.gi.color||''};break}
     }
     if(!rd)return null;
-    const rosterMap=(rd.gi&&rd.gi.roster)||(rd.nd&&rd.nd.roster)||{};const namesMap=(rd.nameD&&rd.nameD.names)||{};
+    // Scope to the garment's real sizes — stale roster keys (copied size curves) otherwise
+    // print phantom sizes / duplicated numbers on the floor sheet (SO-1588).
+    const _rosterSz=(rd.gi&&rd.gi.sizes)||safeSizes(rd.it);
+    const rosterMap=scopeRosterToSizes((rd.gi&&rd.gi.roster)||(rd.nd&&rd.nd.roster),_rosterSz);const namesMap=scopeRosterToSizes(rd.nameD&&rd.nameD.names,_rosterSz);
     const {groups,total}=pairRoster(rosterMap,namesMap,SZ_ORD);
     if(!total)return null;
     const personalization=[];
@@ -11102,7 +11107,9 @@ export default function App(){
           if(!nd&&!nameD)return;
           const sizeSrc=gi.sizes?Object.entries(gi.sizes).filter(([,v])=>safeNum(v)>0):Object.entries(safeSizes(it)).filter(([,v])=>v>0);
           const sizes=sizeSrc.sort((a,b)=>(SZ_ORD.indexOf(a[0])<0?99:SZ_ORD.indexOf(a[0]))-(SZ_ORD.indexOf(b[0])<0?99:SZ_ORD.indexOf(b[0])));
-          const roster=gi.roster||nd?.roster||null;const names=nameD?.names||null;
+          const _rawRoster=gi.roster||nd?.roster||null;
+          const roster=_rawRoster?scopeRosterToSizes(_rawRoster,Object.fromEntries(sizes)):null;
+          const names=nameD?.names?scopeRosterToSizes(nameD.names,Object.fromEntries(sizes)):null;
           results.push({item_idx:gi.item_idx,sku:it.sku||gi.sku,color:it.color||gi.color||'',nd,nameD,roster,names,sizes:sizes.map(([sz])=>sz),sizeQtys:Object.fromEntries(sizes)});
         });return results})();
 
