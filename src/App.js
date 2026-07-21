@@ -11952,15 +11952,26 @@ export default function App(){
                         // Map this line back to its rendered receive row: non-batch rows carry _pl;
                         // batch rows match on SO + item index (+ source PO# when present).
                         const _ri=poItems.findIndex(pi=>pi._pl?pi._pl===ml:(pi.soId===ml.soId&&pi.itemIdx===ml.itemIdx&&(!ml.poId||!pi.srcPoId||pi.srcPoId===ml.poId)));
-                        const rcv={};let _ord=0,_rcvd=0;
+                        // ACCUMULATE into the existing received map — never replace it. This screen used
+                        // to write `received:rcv` built from inputs that default to 0, so re-confirming a
+                        // batch after an earlier partial receipt zeroed the sizes not re-entered, silently
+                        // un-receiving units that were physically checked in (SO-1095/1096/1134 data loss).
+                        // Mirrors the mobile + scan-receive paths: add this round's qty (clamped to what's
+                        // still open per size), log it as a shipment entry, and derive status cancel-aware.
+                        const _prevRcv=pls[ml.poLineIdx].received||{};const _cancel=pls[ml.poLineIdx].cancelled||{};
+                        const rcv={};const newReceived={..._prevRcv};let _rcvd=0,_open=0;
                         // Only size keys are positive numbers on a po_line; skip _META metadata and any
                         // _-prefixed helper (e.g. _bill_cost) so a billed line's cost isn't counted as units.
                         Object.entries(pls[ml.poLineIdx]).forEach(([k,v])=>{if(typeof v==='number'&&v>0&&!_META.has(k)&&!k.startsWith('_')){
-                          _ord+=v;
                           const el=_ri>=0?document.getElementById('rcv-'+_ri+'-'+k):null;
-                          const rv=el?Math.max(0,parseInt(el.value)||0):0;rcv[k]=rv;_rcvd+=rv}});
-                        const _newStatus=_rcvd>=_ord&&_ord>0?'received':_rcvd>0?'partial':'waiting';
-                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:rcv,received_at:new Date().toLocaleString(),received_by:cu.name};
+                          const entered=el?Math.max(0,parseInt(el.value)||0):0;
+                          const rv=Math.min(entered,Math.max(0,v-(_prevRcv[k]||0)-(_cancel[k]||0)));
+                          if(rv>0){rcv[k]=rv;newReceived[k]=(newReceived[k]||0)+rv;_rcvd+=rv}
+                          _open+=Math.max(0,v-(newReceived[k]||0)-(_cancel[k]||0))}});
+                        const _anyRcvd=Object.values(newReceived).some(v=>v>0);
+                        const _newStatus=_open<=0&&_anyRcvd?'received':_anyRcvd?'partial':'waiting';
+                        const _shipment={date:new Date().toLocaleDateString(),...rcv};
+                        pls[ml.poLineIdx]={...pls[ml.poLineIdx],status:_newStatus,received:newReceived,...(_rcvd>0?{shipments:[...(pls[ml.poLineIdx].shipments||[]),_shipment]}:{}),received_at:new Date().toLocaleString(),received_by:cu.name};
                         updItems[ml.itemIdx]={...it,po_lines:pls};
                         if(_rcvd>0)_recvLines.push({sku:it.sku,name:safeStr(it.name),color:it.color||'',sizes:rcv,soId});
                       }
