@@ -158,7 +158,10 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
   // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
   const carrierLower = (carrier || 'fedex').toLowerCase();
   const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
+  const _base = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: 'fedex_ground' };
+  // A caller-supplied ship speed (a ShipStation service code, e.g. ups_next_day_air / ups_2nd_day_air)
+  // overrides the carrier's default Ground service. Empty/null keeps the carrier's default.
+  const cm = { carrierCode: _base.carrierCode, serviceCode: (typeof service === 'string' && service.trim()) ? service.trim() : _base.serviceCode };
   const dims = dimensions && dimensions.length && dimensions.width && dimensions.height
     ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
     : undefined;
