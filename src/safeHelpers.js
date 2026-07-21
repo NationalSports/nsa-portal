@@ -12,6 +12,24 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── Roster scoping ──
+// A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
+// "copy numbers from another item" brings the source's whole size curve, and a line's
+// sizes can shrink after numbers were entered. The line-item editor only renders slots
+// for the garment's own sizes, so stale keys are invisible there, but any consumer that
+// iterates roster keys raw shows phantom sizes and duplicated numbers (SO-1588: a
+// one-size backpack displayed the tee's S–3X roster on top of its own OSFA numbers).
+// Keeps only sizes with qty > 0, each list capped at that size's qty. No usable size
+// info → roster returned as-is. Works for names maps too (same per-size-array shape).
+export const scopeRosterToSizes = (roster, sizes) => {
+  const r = safeObj(roster); const sz = safeObj(sizes);
+  const live = Object.entries(sz).filter(([, q]) => safeNum(q) > 0);
+  if (!live.length) return r;
+  const out = {};
+  live.forEach(([s, q]) => { const arr = safeArr(r[s]).slice(0, q); if (arr.length) out[s] = arr; });
+  return out;
+};
+
 // ── Job-item decoration ownership ──
 // A job item records which decoration indexes of its SO line the job produces (deco_idxs).
 // Returns null for legacy items without the array — the legacy single deco_idx was written as
