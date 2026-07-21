@@ -9571,7 +9571,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         {(()=>{const _job2Items=(j.items||[]);
                           const _rosters=_job2Items.map(_gi=>{const _it=safeItems(o)[_gi.item_idx];const _nd=_it?jobItemDecosOfKind(_gi,_it,'numbers')[0]:null;const _raw=_gi.roster||_nd?.roster||null;return _raw?scopeRosterToSizes(_raw,_gi.sizes||safeSizes(_it)):null}).filter(r=>r&&Object.keys(r).length>0);
                           if(_rosters.length===0)return null;
-                          const _agg={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{(arr||[]).forEach(v=>{if(v&&String(v).trim()){if(!_agg[sz])_agg[sz]=[];_agg[sz].push(String(v))}})})});
+                          // Union across garments, NOT concatenation: every garment on the job carries the
+                          // same team roster, so summing lists each number once per garment (SO-1588: five
+                          // garments → every number 5×). Per (size, number) take the MAX count across
+                          // garments — collapses cross-garment repetition but keeps a genuine duplicate
+                          // inside one garment's roster (two players sharing a number and size).
+                          const _cnt={};_rosters.forEach(r=>{Object.entries(r).forEach(([sz,arr])=>{
+                            const c={};(arr||[]).forEach(v=>{const s=String(v||'').trim();if(s)c[s]=(c[s]||0)+1});
+                            if(!_cnt[sz])_cnt[sz]={};Object.entries(c).forEach(([n,k])=>{if(k>(_cnt[sz][n]||0))_cnt[sz][n]=k})})});
+                          const _agg={};Object.entries(_cnt).forEach(([sz,m])=>{_agg[sz]=Object.entries(m).flatMap(([n,k])=>Array(k).fill(n))});
                           const _szOrd=['XS','S','M','L','XL','2XL','3XL','4XL','LT','XLT','2XLT','3XLT'];
                           const _szRows=Object.entries(_agg).sort((a,b)=>(_szOrd.indexOf(a[0])<0?99:_szOrd.indexOf(a[0]))-(_szOrd.indexOf(b[0])<0?99:_szOrd.indexOf(b[0])));
                           if(_szRows.length===0)return null;
