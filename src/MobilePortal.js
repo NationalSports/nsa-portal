@@ -320,11 +320,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           const sell=+it.unit_sell||+it.unit_price||0;
           const decos=it.decorations||[];
           // Check-in progress for this line across its POs (drop-ship excluded — those never
-          // arrive at the warehouse). Answers "how many are checked in?" right on the item.
+          // arrive at the warehouse). Denominator is raw ordered so this matches the "Purchase
+          // Orders — X/Y checked in" panel below; "full" = nothing open (received + cancelled
+          // cover the order), the same rule the panel uses to badge a line Received.
           const _pol=(it.po_lines||[]).filter(po=>!po.drop_ship);
-          let _ordIn=0,_rcvIn=0;
-          _pol.forEach(po=>{numericSizeKeys(po).forEach(sz=>{const ord=po[sz]||0;const can=(po.cancelled||{})[sz]||0;_ordIn+=Math.max(0,ord-can);_rcvIn+=(po.received||{})[sz]||0;})});
-          const _rcvShow=Math.min(_rcvIn,_ordIn);const _inFull=_ordIn>0&&_rcvShow>=_ordIn;
+          let _ordIn=0,_rcvIn=0,_canIn=0;
+          _pol.forEach(po=>{numericSizeKeys(po).forEach(sz=>{_ordIn+=po[sz]||0;_rcvIn+=(po.received||{})[sz]||0;_canIn+=(po.cancelled||{})[sz]||0;})});
+          const _rcvShow=Math.min(_rcvIn,_ordIn);const _inFull=_ordIn>0&&_rcvIn>0&&(_rcvIn+_canIn)>=_ordIn;
           return<div key={idx} className="mp-item-card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
               <div><div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
