@@ -53,7 +53,7 @@ exports.handler = async () => {
   if (!pushed.length && !incoming.length) return { statusCode: 200, body: 'No anomalies — no email' };
   if (!brevoKey) return { statusCode: 200, body: 'Anomalies found but REACT_APP_BREVO_API_KEY not set' };
 
-  const recipients = (process.env.BILL_ANOMALY_EMAILS || 'accounting@nationalsportsapparel.com,smpeterson327@gmail.com')
+  const recipients = (process.env.BILL_ANOMALY_EMAILS || 'accounting@nationalsportsapparel.com,steve@nationalsportsapparel.com')
     .split(',').map((e) => e.trim()).filter(Boolean);
   const portalUrl = (process.env.PORTAL_PUBLIC_URL || process.env.URL || '').replace(/\/+$/, '');
   const link = portalUrl ? portalUrl + '/?pg=imports' : '';
