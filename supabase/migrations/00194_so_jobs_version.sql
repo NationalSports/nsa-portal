@@ -1,4 +1,5 @@
--- Optimistic concurrency for so_jobs — FILE ONLY, NOT YET APPLIED.
+-- Optimistic concurrency for so_jobs — APPLIED to production 2026-07-20 via MCP
+-- (migration name: so_jobs_version_cas_backstop). Verified live: so_jobs._version + trg_so_jobs_version.
 --
 -- Audit 2026-07-10, finding A9: so_jobs persistence is a blind whole-row upsert with no
 -- version/CAS guard — unlike sales_orders/estimates/customers (00049), the art-file tables
