@@ -258,6 +258,8 @@ async function fullOrderStatus(sb, soId, poReports) {
     ? await sb.from('so_item_po_lines').select('so_item_id,po_id,vendor,sizes,received,cancelled,expected_date,tracking_numbers').in('so_item_id', ids)
     : { data: [] };
   const pos = {};
+  // Apparel size order for the per-size rows (XS→S→M→L→XL→2XL→…); unknown labels sort last.
+  const rank = (sz) => { const u = String(sz).toUpperCase(); const m = { XXS: -1, XS: 0, S: 1, M: 2, L: 3, XL: 4 }; if (u in m) return m[u]; const x = u.match(/^(\d+)XL$/); if (x) return 4 + Number(x[1]); return 50; };
   (pls || []).forEach((p) => {
     if (!p.po_id) return;
     const it = byId[p.so_item_id] || {};
@@ -273,7 +275,7 @@ async function fullOrderStatus(sb, soId, poReports) {
     pos[k].ordered += orderedTot; pos[k].received += sumSizes(p.received); pos[k].tracking += trk;
     // Per-size rows so the email can break each SKU down by size (ordered/received,
     // plus per-size shipped/ETA once CLICK data is overlaid below).
-    const sizes = Object.entries(oz).map(([size, ordered]) => ({ size, ordered, received: Number(rz[size]) || 0, cancelled: Number(cz[size]) || 0, expected: p.expected_date || null }));
+    const sizes = Object.entries(oz).map(([size, ordered]) => ({ size, ordered, received: Number(rz[size]) || 0, cancelled: Number(cz[size]) || 0, expected: p.expected_date || null })).sort((a, b) => rank(a.size) - rank(b.size));
     pos[k].items.push({ sku: it.sku || '', color: it.color || '', sizes });
   });
   const byPo = Object.fromEntries((poReports || []).map((r) => [String(r.po || '').trim(), r]));
