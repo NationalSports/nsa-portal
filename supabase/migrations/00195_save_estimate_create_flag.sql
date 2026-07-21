@@ -1,4 +1,5 @@
--- Close the estimate-id-collision silent overwrite — FILE ONLY, NOT YET APPLIED.
+-- Close the estimate-id-collision silent overwrite — APPLIED to production 2026-07-20 via MCP
+-- (migration name: save_estimate_create_flag; ACL replicated: PUBLIC revoked, postgres/anon/authenticated/service_role EXECUTE).
 --
 -- Same class as the SO-1514 incident fixed client-side in dbEngine (_dbSaveSOInner now INSERTs
 -- brand-new sales orders instead of upserting): nextEstId mints ids from _dbMaxIds, which is only

@@ -779,6 +779,8 @@ const _dbSaveEstimateInner = async (est) => {
     if(_oldEstResp.error){
       console.error('[DB] SAFETY: Blocking estimate save — failed to read existing items for',est.id,':',_oldEstResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
+      // Transient (SELECT error): keep the edit in the failed-ids retry loop + outbox instead of dropping it (F7).
+      _dbSaveFailedIds.add(est.id);_recordSaveError(est.id,'estimate_items SELECT errored: '+_oldEstResp.error.message);_persistFailedIds();
       return false;
     }
     const _oldEstItems=_oldEstResp.data||[];
@@ -824,6 +826,9 @@ const _dbSaveEstimateInner = async (est) => {
       }else{
         console.error('[DB] SAFETY: Blocking estimate save —',_clientEstItemCount,'client item(s) vs',oldItemIds.length,'in DB for',est.id,'(items never hydrated this session)');
         if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+oldItemIds.length+', editor has '+_clientEstItemCount+'). Please reload the page.','error');
+        // TERMINAL for auto-retry (same payload re-fails); preserve the edit in the conflict card instead (F7).
+        _emitOutboxConflict('estimates',est);
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
         return false;
       }
     }
@@ -835,7 +840,7 @@ const _dbSaveEstimateInner = async (est) => {
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!est._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('estimate_item_decorations').select('id',{count:'exact',head:true}).in('estimate_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking estimate save — client has 0 decorations but DB has',dbDecoCount,'for',est.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');_emitOutboxConflict('estimates',est);_dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while others retain them).
@@ -851,6 +856,8 @@ const _dbSaveEstimateInner = async (est) => {
           const label=ci.sku||oi.sku||('item '+oi.item_index);
           console.error('[DB] SAFETY: Blocking estimate save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
           if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
+          _emitOutboxConflict('estimates',est);
+          _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
           return false;
         }
       }
@@ -881,6 +888,8 @@ const _dbSaveEstimateInner = async (est) => {
         console.error('[DB] SAFETY: Blocking estimate save — quantities for "'+label+'" would be wiped ('+w.prevQty+' units → 0) for',est.id);
         if(_dataLossAlert)_dataLossAlert({kind:'qty_wipe_blocked',soId:est.id,itemIndex:w.item_index,sku:w.sku,prevQty:w.prevQty,reason:'item quantities would be emptied'});
         if(_dbNotify)_dbNotify('Save blocked — the quantities for "'+label+'" ('+w.prevQty+' units) would be lost. Reload the page to restore them.','error');
+        _emitOutboxConflict('estimates',est);
+        _dbSaveFailedIds.delete(est.id);_clearSaveError(est.id);_persistFailedIds();
         return false;
       }
     }
@@ -1075,7 +1084,15 @@ const _dbSaveSOInner = async (so) => {
   // this SO after our copy loaded, and the guards below use that fact to refuse writes that would drop
   // items or deco POs the other session added (the SO-1333 wipe, 2026-06-30).
   let _versionConflict=null;
-  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};if(so._obBaseVersion==null)so._obBaseVersion=so._version;so._version=vc}}
+  if(so._version){const vc=await _checkVersion('sales_orders',so.id,so._version);if(vc!==true&&typeof vc==='number'){_versionConflict={local:so._version,server:vc};if(so._obBaseVersion==null)so._obBaseVersion=so._version;so._version=vc}
+    else if(vc===false){
+      // FAIL CLOSED (audit F6): the version SELECT itself failed (network/exception), so we cannot know
+      // whether another session moved this SO. Proceeding would run the whole save with _versionConflict
+      // null — the deco-restore and stale-content guards below all disarmed. A network blip is transient:
+      // defer into the failed-ids retry loop (which also outboxes the payload via _outboxWrap).
+      _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'sales_orders: version check failed — save deferred for retry');_persistFailedIds();
+      return false;
+    }}
   return _dbSavingGuard(async()=>{let saveFailed=false;let _failMsg='';try{
     const{items,art_files,firm_dates,jobs,...soRow}=so;
     // Save SO row FIRST (FK constraint requires it before items), but with OLD updated_at
@@ -1151,6 +1168,8 @@ const _dbSaveSOInner = async (so) => {
       console.error('[DB] SAFETY: Blocking SO save — failed to read existing items for',so.id,':',_oldItemsResp.error.message);
       if(_dbNotify)_dbNotify('Save blocked — could not verify existing items. Please reload the page.','error');
       if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_items SELECT errored: '+_oldItemsResp.error.message});
+      // Transient — actually enroll in the retry loop the comment above promises (F7): id + outbox capture.
+      _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'so_items SELECT errored: '+_oldItemsResp.error.message);_persistFailedIds();
       return false;
     }
     const _oldSoItems=_oldItemsResp.data||[];
@@ -1262,6 +1281,9 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking SO save —',_clientSoItemCount,'client item(s) vs',_oldDistinctItemIndexCount,(oldItemIds.length!==_oldDistinctItemIndexCount?'distinct ('+oldItemIds.length+' raw)':''),'in DB for',so.id,'(items never hydrated this session)');
         if(_dbNotify)_dbNotify('Save blocked — items may not have loaded fully (database has '+_oldDistinctItemIndexCount+', editor has '+_clientSoItemCount+'). Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'Client save had '+_clientSoItemCount+' items while DB had '+_oldDistinctItemIndexCount+' distinct ('+oldItemIds.length+' raw) (items not loaded this session)'});
+        // TERMINAL for auto-retry; preserve the blocked edit in the conflict card instead of toast-only (F7).
+        _emitOutboxConflict('sales_orders',so);
+        _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         return false;
       }
     }
@@ -1281,6 +1303,9 @@ const _dbSaveSOInner = async (so) => {
           console.error('[DB] SAFETY: Blocking SO save — client has 0 items but DB has',dbJobCount,'job(s) for',so.id,'(items not hydrated this session)');
           if(_dbNotify)_dbNotify('Save blocked — items would be wiped while '+dbJobCount+' job(s) still exist. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:null,newCount:0,reason:'Client save had 0 items but '+dbJobCount+' job(s) still exist in DB (items not hydrated)'});
+          // Preserve any header edits riding on this blocked payload (F7); the guards re-run on apply.
+          _emitOutboxConflict('sales_orders',so);
+          _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
           return false;
         }
         // Items loaded cleanly and the order is genuinely empty. The DB items are already gone, so this save
@@ -1299,7 +1324,7 @@ const _dbSaveSOInner = async (so) => {
     const allNoDeco=(items||[]).length>0&&(items||[]).every(it=>it.no_deco);
     if(clientDecoCount===0&&!allNoDeco&&oldItemIds.length&&!so._decosHydrated){
       const{count:dbDecoCount}=await supabase.from('so_item_decorations').select('id',{count:'exact',head:true}).in('so_item_id',oldItemIds);
-      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');return false}
+      if(dbDecoCount>0){console.error('[DB] SAFETY: Blocking SO save — client has 0 decorations but DB has',dbDecoCount,'for',so.id,'(decorations never hydrated this session)');if(_dbNotify)_dbNotify('Save blocked — decoration data would be lost. Please reload the page.','error');_emitOutboxConflict('sales_orders',so);_dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();return false}
     }
     // Per-item safety: block save if any single item would lose all its decorations.
     // Catches the partial-loss case the all-zero check above misses (one item drops decos while siblings retain them).
@@ -1316,6 +1341,8 @@ const _dbSaveSOInner = async (so) => {
           console.error('[DB] SAFETY: Blocking SO save — '+label+' had',oldN,'decoration(s) in DB but client has 0');
           if(_dbNotify)_dbNotify('Save blocked — decoration data for '+label+' would be lost. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'per-item deco safety: '+label+' had '+oldN+' deco(s) in DB, client had 0'});
+          _emitOutboxConflict('sales_orders',so);
+          _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
           return false;
         }
       }
@@ -1333,6 +1360,8 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking SO save — failed to read existing PO lines for',so.id,':',_dbPoErr.message);
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing purchase orders. Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_po_lines SELECT errored: '+_dbPoErr.message});
+        // Transient — enroll in retry + outbox instead of dropping the edit (F7).
+        _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'so_item_po_lines SELECT errored: '+_dbPoErr.message);_persistFailedIds();
         return false;
       }
       if(_dbPoRows&&_dbPoRows.length){
@@ -1465,6 +1494,8 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking SO save — failed to read existing pick lines for',so.id,':',_dbPickErr.message);
         if(_dbNotify)_dbNotify('Save blocked — could not verify existing picks. Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'so_item_pick_lines SELECT errored: '+_dbPickErr.message});
+        // Transient — enroll in retry + outbox instead of dropping the edit (F7).
+        _dbSaveFailedIds.add(so.id);_recordSaveError(so.id,'so_item_pick_lines SELECT errored: '+_dbPickErr.message);_persistFailedIds();
         return false;
       }
       if(_dbPickRows&&_dbPickRows.length){
@@ -1490,6 +1521,9 @@ const _dbSaveSOInner = async (so) => {
           console.error('[DB] SAFETY: Blocking SO save —',_unrestorable,'undeleted pick line(s) for',so.id,'could not be matched to current items');
           if(_dbNotify)_dbNotify('Save blocked — pick data could not be safely preserved. Please reload the page.','error');
           if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,reason:'pick restore: '+_unrestorable+' undeleted pick line(s) unmatched'});
+          // TERMINAL for auto-retry (mirrors the PO-restore block above): conflict card, not toast-only (F7).
+          _emitOutboxConflict('sales_orders',so);
+          _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
           return false;
         }
       }
@@ -1912,7 +1946,13 @@ const _dbSaveInvoiceInner = async (inv) => {
     // use: a numeric return means another session saved after our copy loaded; adopt the server
     // version so the counter doesn't fall behind (the poll/realtime merge guards key off it).
     // _version itself is never written — the DB trigger owns it (not in _invCols).
-    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){if(inv._obBaseVersion==null)inv._obBaseVersion=inv._version;inv._version=vc}}
+    if(inv._version){const vc=await _checkVersion('invoices',inv.id,inv._version);if(vc!==true&&typeof vc==='number'){if(inv._obBaseVersion==null)inv._obBaseVersion=inv._version;inv._version=vc}
+      else if(vc===false){
+        // FAIL CLOSED (audit F6): version check errored — cannot verify this invoice wasn't saved by
+        // another session. Defer to the failed-ids retry loop instead of writing unverified.
+        _dbSaveFailedIds.add(inv.id);_recordSaveError(inv.id,'invoices: version check failed — save deferred for retry');_persistFailedIds();
+        return false;
+      }}
     const{payments,items,...rest}=inv;
     let invRow=_pick(rest,_invCols);
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
@@ -2144,7 +2184,18 @@ const _dbSaveCustomerInner = async (c) => {
   if(!supabase){console.warn('[DB] save customer skipped — no supabase');return false}
   await _ensureFreshSession();
   // Optimistic locking: check version before saving
-  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){if(typeof vc==='number'){if(c._obBaseVersion==null)c._obBaseVersion=c._version;c._version=vc}return false}}
+  if(c._version){const vc=await _checkVersion('customers',c.id,c._version);if(vc!==true){
+    if(typeof vc==='number'){
+      if(c._obBaseVersion==null)c._obBaseVersion=c._version;c._version=vc;
+      // Durable capture (audit F7): this conflicted edit previously lived only in React memory — a
+      // reload/tab-close dropped it silently. Route it to the outbox conflict card like the SO/estimate
+      // stale-guards do, so the rep decides apply/discard instead of losing what they typed.
+      _emitOutboxConflict('customers',c);
+    }else{
+      // vc===false: the version check itself failed (network) — transient, so defer for retry (F6).
+      _dbSaveFailedIds.add(c.id);_recordSaveError(c.id,'customers: version check failed — save deferred for retry');_persistFailedIds();
+    }
+    return false}}
   try{
     const{contacts,_oe,_os,_oi,_ob,...custRow}=c;
     custRow.updated_at=new Date().toISOString();
