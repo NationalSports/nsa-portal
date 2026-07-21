@@ -1,4 +1,4 @@
-import { jobHasLiveDecorations } from '../safeHelpers';
+import { jobHasLiveDecorations, jobIsLiveForDisplay } from '../safeHelpers';
 
 describe('jobHasLiveDecorations', () => {
   const soWithDecos = {
@@ -79,5 +79,36 @@ describe('jobHasLiveDecorations', () => {
       ],
     };
     expect(jobHasLiveDecorations(j, so)).toBe(true);
+  });
+});
+
+describe('jobIsLiveForDisplay — dashboard/art-board retirement of orphaned frozen jobs', () => {
+  // SO-1590: an all-outside-deco OMG store order whose art was submitted (releasing jobs), then had its
+  // line decorations removed. The released jobs are protected from deletion and linger in so_jobs carrying
+  // a stale waiting_approval status — the phantom "Mockup ready for review" cards. jobHasLiveDecorations
+  // is false (no live deco behind them), so read surfaces must hide them.
+  const orphanedReleasedJob = {
+    id: 'JOB-1590-01', key: 'released_1590_1', art_status: 'waiting_approval',
+    art_file_id: 'af-olu', items: [{ item_idx: 0, deco_idx: 0, deco_idxs: [0], sku: 'JW6602' }],
+  };
+
+  test('hides an orphaned released job once its decorations are cleared (hydrated view)', () => {
+    const so = { _decosHydrated: true, items: [{ sku: 'JW6602', decorations: [] }] };
+    expect(jobIsLiveForDisplay(orphanedReleasedJob, so)).toBe(false);
+  });
+
+  test('still shows a job that has a live decoration behind it', () => {
+    const so = { _decosHydrated: true, items: [{ sku: 'JW6602', decorations: [{ kind: 'art', art_file_id: 'af-olu', position: 'Front' }] }] };
+    expect(jobIsLiveForDisplay(orphanedReleasedJob, so)).toBe(true);
+  });
+
+  test('fails OPEN when decorations are not hydrated — a partial load must not hide real work', () => {
+    const so = { _decosHydrated: false, items: [{ sku: 'JW6602', decorations: [] }] };
+    expect(jobIsLiveForDisplay(orphanedReleasedJob, so)).toBe(true);
+  });
+
+  test('absent _decosHydrated is treated as hydrated (only an explicit false fails open)', () => {
+    const so = { items: [{ sku: 'JW6602', decorations: [] }] };
+    expect(jobIsLiveForDisplay(orphanedReleasedJob, so)).toBe(false);
   });
 });

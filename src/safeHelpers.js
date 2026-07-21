@@ -91,6 +91,16 @@ export const jobHasLiveDecorations = (j, o) => {
   });
 };
 
+// Should a job appear on read-only dashboards / art boards? buildJobs returns persisted so_jobs
+// verbatim, including released/submitted jobs the save-time wipe guard (dbEngine) protects from
+// deletion. Once every line decoration behind such a job is removed (e.g. an all-outside-deco order
+// whose garments ship blank and are decorated off-site), the row lingers with a stale art_status and
+// would surface as a phantom "Mockup ready for review" card. syncJobs already retires these from the
+// editor's Jobs tab via jobHasLiveDecorations; read surfaces must mirror that. Fails OPEN when the SO's
+// decorations aren't hydrated (a transient partial load must never hide real work). Display only — save
+// paths must operate on the full buildJobs output, never this filtered view.
+export const jobIsLiveForDisplay = (j, o) => o?._decosHydrated === false || jobHasLiveDecorations(j, o);
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
