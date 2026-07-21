@@ -247,7 +247,7 @@ function poState(ordered, received) {
 }
 
 async function fullOrderStatus(sb, soId, poReports) {
-  const { data: so } = await sb.from('sales_orders').select('id,status,customer_id').eq('id', soId).maybeSingle();
+  const { data: so } = await sb.from('sales_orders').select('id,status,customer_id,expected_date').eq('id', soId).maybeSingle();
   if (!so) return null;
   let custName = 'Customer';
   if (so.customer_id) { const { data: c } = await sb.from('customers').select('name').eq('id', so.customer_id).maybeSingle(); if (c && c.name) custName = c.name; }
@@ -255,43 +255,50 @@ async function fullOrderStatus(sb, soId, poReports) {
   const byId = Object.fromEntries((items || []).map((i) => [i.id, i]));
   const ids = (items || []).map((i) => i.id);
   const { data: pls } = ids.length
-    ? await sb.from('so_item_po_lines').select('so_item_id,po_id,vendor,sizes,received,tracking_numbers').in('so_item_id', ids)
+    ? await sb.from('so_item_po_lines').select('so_item_id,po_id,vendor,sizes,received,cancelled,expected_date,tracking_numbers').in('so_item_id', ids)
     : { data: [] };
   const pos = {};
+  // Apparel size order for the per-size rows (XS→S→M→L→XL→2XL→…); unknown labels sort last.
+  const rank = (sz) => { const u = String(sz).toUpperCase(); const m = { XXS: -1, XS: 0, S: 1, M: 2, L: 3, XL: 4 }; if (u in m) return m[u]; const x = u.match(/^(\d+)XL$/); if (x) return 4 + Number(x[1]); return 50; };
   (pls || []).forEach((p) => {
     if (!p.po_id) return;
     const it = byId[p.so_item_id] || {};
-    const ordered = sumSizes(p.sizes);
-    if (ordered <= 0) return;
-    const received = sumSizes(p.received);
+    const oz = cleanSizes(p.sizes);
+    const orderedTot = Object.values(oz).reduce((a, v) => a + v, 0);
+    if (orderedTot <= 0) return;
+    const rz = p.received || {}, cz = p.cancelled || {};
     const vendor = p.vendor || it.brand || '';
     const trk = Array.isArray(p.tracking_numbers) ? p.tracking_numbers.length : 0;
     const k = p.po_id;
     if (!pos[k]) pos[k] = { po_id: k, vendor, is_adidas: /adidas/i.test(vendor) || /adidas/i.test(it.brand || ''), ordered: 0, received: 0, tracking: 0, items: [] };
     if (!pos[k].vendor && vendor) pos[k].vendor = vendor;
-    pos[k].ordered += ordered; pos[k].received += received; pos[k].tracking += trk;
-    pos[k].items.push({ sku: it.sku || '', color: it.color || '', ordered, received });
+    pos[k].ordered += orderedTot; pos[k].received += sumSizes(p.received); pos[k].tracking += trk;
+    // Per-size rows so the email can break each SKU down by size (ordered/received,
+    // plus per-size shipped/ETA once CLICK data is overlaid below).
+    const sizes = Object.entries(oz).map(([size, ordered]) => ({ size, ordered, received: Number(rz[size]) || 0, cancelled: Number(cz[size]) || 0, expected: p.expected_date || null })).sort((a, b) => rank(a.size) - rank(b.size));
+    pos[k].items.push({ sku: it.sku || '', color: it.color || '', sizes });
   });
   const byPo = Object.fromEntries((poReports || []).map((r) => [String(r.po || '').trim(), r]));
   const list = Object.values(pos).map((po) => {
     po.status = poState(po.ordered, po.received);
     const rep = byPo[String(po.po_id).trim()];
     if (rep) {
-      const cit = rep.items || [];
-      po.click = {
-        orders: rep.adidas_orders || [],
-        order_status: rep.order_status || '',
-        shipped: cit.reduce((a, x) => a + (Number(x.shipped) || 0), 0),
-        to_ship: cit.reduce((a, x) => a + (Number(x.to_ship) || 0), 0),
-        eta: cit.map((x) => x.eta).filter(Boolean).sort()[0] || '',
-      };
+      po.orders = rep.adidas_orders || [];
+      po.order_status = rep.order_status || '';
+      // Overlay the live CLICK read onto each size row by SKU+size.
+      const cmap = {};
+      (rep.items || []).forEach((ci) => { cmap[String(ci.sku || '').toUpperCase() + '|' + String(ci.size || '').toUpperCase()] = ci; });
+      po.items.forEach((item) => item.sizes.forEach((s) => {
+        const ci = cmap[String(item.sku).toUpperCase() + '|' + String(s.size).toUpperCase()];
+        if (ci) { s.shipped = Number(ci.shipped) || 0; s.to_ship = Number(ci.to_ship) || 0; if (ci.state) s.state = ci.state; if (ci.eta) s.eta = ci.eta; if (ci.tracking) s.tracking = ci.tracking; }
+      }));
     }
     return po;
   });
   // Adidas first (the live-tracked ones), then by PO id.
   list.sort((a, b) => (a.is_adidas === b.is_adidas ? String(a.po_id).localeCompare(String(b.po_id)) : (a.is_adidas ? -1 : 1)));
   return {
-    so: { id: so.id, status: so.status, customer: custName },
+    so: { id: so.id, status: so.status, customer: custName, expected: so.expected_date || null },
     pos: list,
     totals: {
       po_count: list.length,
@@ -305,54 +312,57 @@ async function fullOrderStatus(sb, soId, poReports) {
 }
 
 const STAGE_LABEL = { needs_pull: 'Needs Pull', waiting_receive: 'Awaiting Receiving', items_received: 'Items Received', in_production: 'In Production', need_order: 'Needs Ordering', ready_to_invoice: 'Ready to Invoice', complete: 'Complete', booking: 'Booking' };
-function itemsLabel(items) {
-  const seen = [...new Set((items || []).map((i) => i.sku).filter(Boolean))];
-  return seen.slice(0, 3).join(', ') + (seen.length > 3 ? ` +${seen.length - 3} more` : '');
-}
-function baseStatusHtml(po) {
-  if (po.status === 'received') return '<span style="color:#166534;font-weight:700">✅ Received</span>';
-  if (po.status === 'partial') return `<span style="color:#92400e;font-weight:700">🟡 Partial · ${po.received}/${po.ordered}</span>`;
-  if (po.tracking > 0) return '<span style="color:#1e40af;font-weight:700">📦 Shipped · tracking on file</span>';
+const sizeExp = (s) => s.eta || s.expected || '';
+function sizeStat(s) {
+  const o = s.ordered || 0, r = s.received || 0, sh = s.shipped || 0;
+  if (o > 0 && r >= o) return '<span style="color:#166534;font-weight:700">✅ Received</span>';
+  if (r > 0) return `<span style="color:#92400e;font-weight:700">🟡 ${r}/${o} in</span>`;
+  if (sh > 0) return `<span style="color:#1e40af;font-weight:700">📦 ${sh} shipped</span>`;
+  if (s.state === 'backordered') return '<span style="color:#b91c1c;font-weight:700">⛔ Backordered</span>';
   return '<span style="color:#475569">⏳ On order</span>';
 }
-function clickStatusHtml(po) {
-  if (po.click) {
-    const c = po.click; const bits = [];
-    if (c.shipped) bits.push(`📦 ${c.shipped} shipped`);
-    if (c.to_ship) bits.push(`⏳ ${c.to_ship} to ship`);
-    if (c.eta) bits.push(`ETA ${esc(c.eta)}`);
-    const ord = c.orders && c.orders.length ? ` <span style="color:#94a3b8;font-weight:500">${esc(c.orders.join(', '))}</span>` : '';
-    return `<span style="color:#1e40af;font-weight:700">${bits.join(' · ') || esc(c.order_status || 'seen in CLICK')}</span>${ord}`;
-  }
-  if (po.status === 'received') return baseStatusHtml(po);
-  if (po.status === 'partial') return `<span style="color:#92400e;font-weight:700">🟡 Partial · ${po.received}/${po.ordered}</span> <span style="color:#94a3b8">· ETA from CLICK</span>`;
-  if (po.tracking > 0) return '<span style="color:#1e40af;font-weight:700">📦 Shipped by Adidas · tracking on file</span>';
-  return '<span style="color:#475569">⏳ On order <span style="color:#94a3b8">· ship status from CLICK</span></span>';
+// One PO rendered as a header + a per-SKU, per-size table.
+function poBlock(po, isAdidas) {
+  const orderInfo = isAdidas && po.orders && po.orders.length ? ` · <span style="color:#64748b;font-weight:500">${esc(po.orders.join(', '))}</span>` : '';
+  const exps = [];
+  po.items.forEach((it) => it.sizes.forEach((s) => { if ((s.received || 0) < (s.ordered || 0)) { const e = sizeExp(s); if (e) exps.push(e); } }));
+  const by = exps.length ? exps.slice().sort().slice(-1)[0] : '';
+  const poStat = po.status === 'received' ? '✅ Received' : po.status === 'partial' ? `🟡 ${po.received}/${po.ordered} in` : '⏳ On order';
+  const poCol = po.status === 'received' ? '#166534' : po.status === 'partial' ? '#92400e' : '#475569';
+  const rows = po.items.map((it) => it.sizes.map((s) => `<tr>
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9"><span style="font-family:ui-monospace,monospace;font-weight:600">${esc(it.sku)}</span>${it.color ? ` <span style="color:#94a3b8">${esc(it.color)}</span>` : ''}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9;font-weight:600">${esc(s.size)}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9;text-align:center">${s.ordered || 0}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9;text-align:center">${s.received || 0}</td>
+        ${isAdidas ? `<td style="padding:5px 8px;border-top:1px solid #f1f5f9;text-align:center">${s.shipped || 0}</td>` : ''}
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9;white-space:nowrap">${esc(sizeExp(s) || '—')}</td>
+        <td style="padding:5px 8px;border-top:1px solid #f1f5f9">${sizeStat(s)}</td>
+      </tr>`).join('')).join('');
+  return `<div style="margin-top:12px;border:1px solid #eef1f5;border-radius:8px;overflow:hidden">
+      <div style="padding:8px 10px;background:#f8fafc;border-bottom:1px solid #eef1f5;font-size:12.5px">
+        <b style="color:#192853">${esc(po.po_id)}</b>${isAdidas ? '' : ` · ${esc(po.vendor || '')}`}${orderInfo}
+        <span style="float:right;color:${poCol};font-weight:700">${poStat}</span>
+        ${by ? `<div style="color:#64748b;font-size:11px;margin-top:3px">📅 Remaining expected by <b>${esc(by)}</b></div>` : ''}
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <tr style="color:#64748b;font-size:10px;text-transform:uppercase;text-align:left">
+          <th style="padding:4px 8px;font-weight:700">Item</th><th style="padding:4px 8px;font-weight:700">Size</th><th style="padding:4px 8px;font-weight:700;text-align:center">Ord</th><th style="padding:4px 8px;font-weight:700;text-align:center">Recv</th>${isAdidas ? '<th style="padding:4px 8px;font-weight:700;text-align:center">Shpd</th>' : ''}<th style="padding:4px 8px;font-weight:700">Expected</th><th style="padding:4px 8px;font-weight:700">Status</th>
+        </tr>
+        ${rows}
+      </table>
+    </div>`;
 }
 
 function buildFullStatusHtml({ soId, custName, summary, full, notFound, portal }) {
   const adidas = full ? full.pos.filter((p) => p.is_adidas) : [];
   const other = full ? full.pos.filter((p) => !p.is_adidas) : [];
   const t = full ? full.totals : { po_count: 0, received: 0, partial: 0, open: 0, ordered_units: 0, received_units: 0 };
-  const th = (label, extra) => `<th style="padding:5px 8px;font-weight:700;${extra || ''}">${label}</th>`;
-  const row = (po, withVendor, statusHtml) => `<tr>
-      <td style="padding:6px 8px;border-top:1px solid #eef1f5;font-weight:700;color:#192853;white-space:nowrap">${esc(po.po_id)}</td>
-      ${withVendor ? `<td style="padding:6px 8px;border-top:1px solid #eef1f5">${esc(po.vendor || '')}</td>` : ''}
-      <td style="padding:6px 8px;border-top:1px solid #eef1f5">${esc(itemsLabel(po.items))}</td>
-      <td style="padding:6px 8px;border-top:1px solid #eef1f5;text-align:center">${po.ordered}</td>
-      <td style="padding:6px 8px;border-top:1px solid #eef1f5;text-align:center">${po.received}</td>
-      <td style="padding:6px 8px;border-top:1px solid #eef1f5">${statusHtml}</td>
-    </tr>`;
-  const adidasTable = adidas.length ? `<div style="margin-top:14px;font-size:13px;font-weight:800;color:#962C32;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #962C32;padding-bottom:4px">Adidas — CLICK</div>
-      <table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px">
-        <tr style="color:#64748b;font-size:10.5px;text-transform:uppercase;text-align:left">${th('PO')}${th('Items')}${th('Ord', 'text-align:center')}${th('Recv', 'text-align:center')}${th('Live CLICK status')}</tr>
-        ${adidas.map((po) => row(po, false, clickStatusHtml(po))).join('')}
-      </table>` : '';
-  const otherTable = other.length ? `<div style="margin-top:20px;font-size:13px;font-weight:800;color:#334155;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #cbd5e1;padding-bottom:4px">Other vendors</div>
-      <table style="width:100%;border-collapse:collapse;font-size:12.5px;margin-top:6px">
-        <tr style="color:#64748b;font-size:10.5px;text-transform:uppercase;text-align:left">${th('PO')}${th('Vendor')}${th('Items')}${th('Ord', 'text-align:center')}${th('Recv', 'text-align:center')}${th('Status')}</tr>
-        ${other.map((po) => row(po, true, baseStatusHtml(po))).join('')}
-      </table>` : '';
+  // Order-wide "everything expected by" — the latest ETA across every size not yet received.
+  const allExp = [];
+  (full ? full.pos : []).forEach((po) => po.items.forEach((it) => it.sizes.forEach((s) => { if ((s.received || 0) < (s.ordered || 0)) { const e = sizeExp(s); if (e) allExp.push(e); } })));
+  const orderBy = allExp.length ? allExp.slice().sort().slice(-1)[0] : ((full && full.so.expected) || '');
+  const adidasSection = adidas.length ? `<div style="margin-top:16px;font-size:13px;font-weight:800;color:#962C32;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #962C32;padding-bottom:4px">Adidas — CLICK</div>${adidas.map((po) => poBlock(po, true)).join('')}` : '';
+  const otherSection = other.length ? `<div style="margin-top:20px;font-size:13px;font-weight:800;color:#334155;text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid #cbd5e1;padding-bottom:4px">Other vendors</div>${other.map((po) => poBlock(po, false)).join('')}` : '';
   const nf = (notFound || []).length ? `<p style="margin-top:14px;color:#b91c1c;font-size:13px">Not found in CLICK: ${notFound.map(esc).join(', ')}</p>` : '';
   const link = portal ? `<p style="margin-top:20px"><a href="${portal}/?so=${encodeURIComponent(soId)}" style="display:inline-block;background:#192853;color:#fff;text-decoration:none;padding:12px 26px;border-radius:8px;font-weight:700">Open ${esc(soId)} in the portal</a></p>` : '';
   const stage = STAGE_LABEL[full && full.so.status] || (full && full.so.status) || '—';
@@ -360,16 +370,16 @@ function buildFullStatusHtml({ soId, custName, summary, full, notFound, portal }
     <div style="background:#192853;color:#fff;padding:18px 24px;border-radius:10px 10px 0 0">
       <div style="font-size:12px;letter-spacing:1.5px;text-transform:uppercase;opacity:.85">National Sports Apparel · Order Status</div>
       <div style="font-size:22px;font-weight:800;margin-top:5px">${esc(soId)} — ${esc(custName)}</div>
-      <div style="font-size:13px;opacity:.9;margin-top:5px">Stage: <strong>${esc(stage)}</strong> · ${t.po_count} PO${t.po_count === 1 ? '' : 's'} · ${t.received_units} of ${t.ordered_units} units received</div>
+      <div style="font-size:13px;opacity:.9;margin-top:5px">Stage: <strong>${esc(stage)}</strong> · ${t.po_count} PO${t.po_count === 1 ? '' : 's'} · ${t.received_units} of ${t.ordered_units} units received${orderBy ? ` · <strong>everything expected by ${esc(orderBy)}</strong>` : ''}</div>
     </div>
     <div style="border:1px solid #eef1f5;border-top:none;border-radius:0 0 10px 10px;padding:18px 24px">
       ${summary ? `<p style="margin:0 0 10px;font-size:15px"><strong>${esc(summary)}</strong></p>` : ''}
       <div style="font-size:12px;color:#64748b">${t.received} received · ${t.partial} partial · ${t.open} on order</div>
-      ${adidasTable}
-      ${otherTable}
+      ${adidasSection}
+      ${otherSection}
       ${(!full || !full.pos.length) ? '<p style="color:#94a3b8;margin-top:12px">No purchase orders on this order yet.</p>' : ''}
       ${nf}
       ${link}
-      <p style="font-size:11px;color:#94a3b8;margin-top:18px">Automated order-status update from the NSA Portal. Ordered / received come from the portal; the live CLICK status is read from Adidas "My Orders" for open Adidas POs. Reply to this SO's task in the portal for anything that needs a human.</p>
+      <p style="font-size:11px;color:#94a3b8;margin-top:18px">Automated order-status update from the NSA Portal. Ordered / received / expected come from the portal; per-size shipped &amp; ETA are read live from Adidas "My Orders" for open Adidas POs. Reply to this SO's task in the portal for anything that needs a human.</p>
     </div></div>`;
 }

@@ -32206,6 +32206,24 @@ export default function App(){
           <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
         {todoModal.bot_payload&&(()=>{
           const bp=todoModal.bot_payload;
+          // Order-status (read-only CLICK tracking) task — a distinct, cart-free preview.
+          // Without this it fell through to the "Add to cart" card (ship-to, delivery date,
+          // ship strategy) which is wrong for a read-only status check and mislabeled the
+          // ship-to (e.g. showed the NSA warehouse on a drop-ship deco order).
+          if(bp.task_type==='track_po_status'){
+            const _pos=Array.isArray(bp.po_numbers)?bp.po_numbers:[];
+            return<div style={{marginBottom:12,border:'1px solid #99f6e4',borderRadius:10,overflow:'hidden'}}>
+              <div style={{padding:'10px 14px',background:'#f0fdfa',borderBottom:'1px solid #99f6e4',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>📋 Claude · Order status</span>
+                <span className="badge badge-gray">{bp.so_id||todoModal.so_id||''}</span>
+                {_pos.length>0&&<span className="badge badge-blue">{_pos.length} Adidas PO{_pos.length===1?'':'s'} live</span>}
+              </div>
+              <div style={{padding:'10px 14px',fontSize:12,color:'#475569',lineHeight:1.5}}>
+                Reads Adidas CLICK <b>My Orders</b> for {_pos.length>0?<>the open Adidas PO{_pos.length===1?'':'s'} (<span style={{fontFamily:'ui-monospace,monospace'}}>{_pos.join(', ')}</span>)</>:'any open Adidas POs'}, then emails the rep a full status of <b>every</b> PO on this order.
+                <div style={{marginTop:6,color:'#0f766e',fontWeight:600}}>🔒 Read-only — never places an order, fills a cart, or ships anything.</div>
+              </div>
+            </div>;
+          }
           const lines=Array.isArray(bp.lines)?bp.lines:[];
           const totQty=bp.totals?.qty??lines.reduce((a,l)=>a+(l.qty||0),0);
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
@@ -32269,7 +32287,7 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<>
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&<>
           <div style={{marginBottom:12}}>
             <label className="form-label">📅 Requested delivery date (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>
