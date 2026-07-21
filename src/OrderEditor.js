@@ -6332,7 +6332,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <td style={{textAlign:'right',fontWeight:700,color:diff>0?'#dc2626':diff<0?'#166534':'#94a3b8'}}>{l.isShippingDetail?'—':(l.actual>0||l.isShipping)?(diff>0?'+':diff<0?'-':'')+'$'+Math.abs(diff).toFixed(2):'—'}
                   {l.billedUnitCost!=null&&!catalogUpdatedSkus[l.sku]&&Math.abs(l.billedUnitCost-l.catalogCost)>0.005&&<div><button style={{fontSize:9,padding:'1px 6px',borderRadius:4,border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',cursor:'pointer',fontWeight:600,marginTop:2}} onClick={()=>{
                     const cp=l._catProduct||products.find(x=>x.id===l._productId)||products.find(x=>(x.sku||'').toLowerCase()===(l.sku||'').toLowerCase());
-                    const updated=cp?{...cp,nsa_cost:l.billedUnitCost}:{id:l._productId,sku:l.sku,name:l.name,vendor_id:l._vendorId||null,brand:l._brand||null,color:l._color||null,image_url:l._imageUrl||null,nsa_cost:l.billedUnitCost};
+                    // Only write a product we can key by a real id. A cost line that isn't a catalog
+                    // product (custom item, freight, deleted SKU) has no _productId — the old fallback
+                    // built {id:null,...}, which violated products.id NOT NULL and jammed the save-retry
+                    // loop on [null]. If there's no id, there's nothing in the catalog to update — say so.
+                    const updated=cp?{...cp,nsa_cost:l.billedUnitCost}:(l._productId?{id:l._productId,sku:l.sku,name:l.name,vendor_id:l._vendorId||null,brand:l._brand||null,color:l._color||null,image_url:l._imageUrl||null,nsa_cost:l.billedUnitCost}:null);
+                    if(!updated||updated.id==null){nf(l.sku+' isn’t a catalog product — nothing to update in the catalog','warn');return}
                     if(onSaveProduct)onSaveProduct(updated);
                     setCatalogUpdatedSkus(p=>({...p,[l.sku]:true}));
                     nf(l.sku+' catalog cost updated: $'+l.catalogCost.toFixed(2)+' → $'+l.billedUnitCost.toFixed(2));

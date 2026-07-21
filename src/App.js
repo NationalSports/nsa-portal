@@ -419,6 +419,7 @@ import {
   _dbDeleteInvoice,
   _dbDeleteHistInvoice,
   _dbSavingCount,
+  _dbLastSaveAt,
   _dbSavingGuard,
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
@@ -3969,6 +3970,9 @@ export default function App(){
     const scheduleRetry=()=>{retryTimer=setTimeout(doRetry,_retryBackoff.current)};
     const doRetry=()=>{
       if(!_dbSaveFailedIds.size||!_initialLoadDone.current||!_dbLoadSuccess.current){_retryBackoff.current=60000;scheduleRetry();return}
+      // A null/empty id can never save (products.id is NOT NULL) and would loop forever — purge it.
+      [..._dbSaveFailedIds].filter(id=>id==null||id==='').forEach(id=>{_dbSaveFailedIds.delete(id);_clearSaveError(id)});
+      if(!_dbSaveFailedIds.size){_persistFailedIds();_retryBackoff.current=60000;scheduleRetry();return}
       // Clean up failed IDs for entities that no longer exist in state (deleted by user)
       const d=_visFlushRefs.current;const allIds=new Set([...d.ests,...d.sos,...d.invs,...d.cust,...d.prod,...d.msgs].map(e=>e.id));
       const orphaned=[..._dbSaveFailedIds].filter(id=>!allIds.has(id));
