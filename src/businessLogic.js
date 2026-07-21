@@ -301,15 +301,26 @@ function normalizeWebLogos(webLogos, colorWays) {
 // Different deco types (e.g. screen_print vs embroidery) always create separate jobs
 const buildJobs = (o) => {
   if (o?.jobs && o.jobs.length > 0) return o.jobs;
-  // Build decoration entries per item, grouped by deco type
+  // Build decoration entries per item, grouped by deco type.
+  // Outsourced-deco map (item_idx -> Set of outsourced deco types, or '*'), computed once. A design
+  // routed to an outside decorator — flagged outside, bundled onto a deco PO, or covered by a SO-level
+  // deco PO — must NOT spawn an in-house job. Without this gate an outsourced design surfaces a phantom
+  // "🎨 Mockup ready for review" on the dashboard and a phantom card on the production board (SO-1590,
+  // SO-1573). This is the SAME gate syncJobs applies in OrderEditor; the two builders must classify
+  // decorations identically, and this copy had drifted (it lacked the check entirely).
+  const outsourcedByItem = outsourcedDecoTypes(o);
   const itemSigs = [];
   safeItems(o).forEach((it, idx) => {
     if (it.no_deco) return;
+    const outTypes = outsourcedByItem[idx];
     const decosByType = {};
     safeDecos(it).forEach((d, di) => {
       if (d.kind === 'art') {
+        if (d.fulfillment === 'outside' || d.deco_po_id) return; // routed outside (soft flag / on a deco PO) — no in-house job
         const artF = d.art_file_id ? safeArr(o?.art_files).find(f => f.id === d.art_file_id) : null;
-        const dt = artF?.deco_type || d.deco_type || 'screen_print';
+        const concreteDt = artF?.deco_type || d.deco_type || null;
+        if (decoIsOutsourced(outTypes, concreteDt)) return; // vendor produces this decoration — no in-house job
+        const dt = concreteDt || 'screen_print';
         // Art TBD saves to the DB with a null art_file_id (see _sanitizeDeco), so an unassigned
         // deco must still form a job — keyed by position, mirroring syncJobs in OrderEditor —
         // instead of silently vanishing from the production board.
@@ -323,11 +334,13 @@ const buildJobs = (o) => {
         decosByType[bk].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'numbers') {
         const dt = d.num_method || 'heat_transfer';
+        if (decoIsOutsourced(outTypes, dt)) return; // vendor produces these numbers — no in-house job
         const part = 'numbers_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
         decosByType[dt].push({ part, d, di, _dt: dt });
       } else if (d.kind === 'names') {
         const dt = d.name_method || 'heat_press';
+        if (decoIsOutsourced(outTypes, dt)) return; // vendor produces these names — no in-house job
         const part = 'names_' + dt + '@' + (d.position || '');
         if (!decosByType[dt]) decosByType[dt] = [];
         decosByType[dt].push({ part, d, di, _dt: dt });
