@@ -2,6 +2,7 @@
 // record (Spec 1, FABLE_HANDOFF_SPECS_2026-07-07). Extracted from App.js so the
 // row shaping, pre-migration fallback, and the Bill History union are unit-testable.
 import { safeNum } from './safeHelpers';
+import { billAnomalyFlags } from './lib/billAnomalies';
 
 const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
@@ -46,6 +47,9 @@ export const buildAppliedBillRows = (bills, appliedBy) => {
         ai_changed: p._aiChangedCount || 0,
         overage_ok: !!p._overage_ok,
         lines: (p._lineMappings || []).length,
+        // Post-push review net (shared rules: src/lib/billAnomalies.js — the daily
+        // anomaly email recomputes these from raw_meta, so old rows work too).
+        flags: billAnomalyFlags(p),
       },
       // Enough to render this bill's history row on a machine that never saw the
       // PDF. rawText/_wizard/_applyKey are big or transient — stripped, same as holds.
