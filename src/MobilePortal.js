@@ -48,7 +48,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel,decoRequest,onDecoRequestDone}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -317,6 +317,12 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
           const sell=+it.unit_sell||+it.unit_price||0;
           const decos=it.decorations||[];
+          // Check-in progress for this line across its POs (drop-ship excluded — those never
+          // arrive at the warehouse). Answers "how many are checked in?" right on the item.
+          const _pol=(it.po_lines||[]).filter(po=>!po.drop_ship);
+          let _ordIn=0,_rcvIn=0;
+          _pol.forEach(po=>{numericSizeKeys(po).forEach(sz=>{const ord=po[sz]||0;const can=(po.cancelled||{})[sz]||0;_ordIn+=Math.max(0,ord-can);_rcvIn+=(po.received||{})[sz]||0;})});
+          const _rcvShow=Math.min(_rcvIn,_ordIn);const _inFull=_ordIn>0&&_rcvShow>=_ordIn;
           return<div key={idx} className="mp-item-card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
               <div><div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
@@ -337,6 +343,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:(dk?.color||'#64748b')+'20',color:dk?.color||'#64748b'}}>{d.position?d.position+' · ':''}{lbl}</span>;
               })}
             </div>}
+            {_ordIn>0&&<div style={{marginTop:8,display:'inline-flex',alignItems:'center',gap:6,fontSize:11,fontWeight:800,padding:'3px 9px',borderRadius:8,background:_inFull?'#f0fdf4':'#fffbeb',color:_inFull?'#166534':'#b45309',border:'1px solid '+(_inFull?'#bbf7d0':'#fde68a')}}>{_inFull?'✓ All '+_ordIn+' checked in':'📦 '+_rcvShow+'/'+_ordIn+' checked in'}</div>}
           </div>})}
         {/* ─── Purchase Orders + Check-In status — so warehouse can see what's on order and what's arrived ─── */}
         {(()=>{
@@ -2406,6 +2413,30 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <button onClick={doCombine} disabled={!mpBox.combineWith} style={{fontSize:12,fontWeight:700,padding:'8px 14px',borderRadius:8,border:'1px solid #cbd5e1',background:'#f8fafc',opacity:mpBox.combineWith?1:0.5}}>Combine</button>
             </div>}
           </>}
+        </div>
+      </div>;
+    })()}
+    {/* Ready-for-decoration pop-up — fires when the last units of a job check in with art complete.
+        Mirrors the desktop green banner: the job(s) + every garment line to stage for decoration. */}
+    {decoRequest&&decoRequest.length>0&&(()=>{const done=onDecoRequestDone||(()=>{});const jobCount=decoRequest.reduce((a,g)=>a+g.jobs.length,0);
+      return<div style={{position:'fixed',inset:0,zIndex:3200,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={done}>
+        <div style={{width:'100%',maxWidth:560,maxHeight:'88vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'16px 16px calc(16px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+            <span style={{fontSize:18,fontWeight:900,color:'#166534'}}>🎽 Ready for Decoration</span>
+            <button onClick={done} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:26,lineHeight:1,padding:'0 4px'}}>×</button>
+          </div>
+          <div style={{fontSize:13,color:'#15803d',fontWeight:600,marginBottom:12}}>{jobCount===1?'This job has':jobCount+' jobs have'} all items in &amp; art complete — stage for decoration.</div>
+          {decoRequest.map((g,gi)=>g.jobs.map((j,ji)=><div key={gi+'-'+ji} style={{border:'2px solid #22c55e',background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:8,boxShadow:'0 2px 8px rgba(34,197,94,0.2)'}}>
+            <div style={{fontWeight:800,fontSize:15,color:'#14532d'}}>{j.art_name}</div>
+            <div style={{fontSize:12,color:'#15803d',marginBottom:j.lines.length?6:0}}>{j.id} · {g.soId}{g.custName?' · '+g.custName:''} · {j.units} units{j.deco_type?' · '+j.deco_type:''}</div>
+            {j.lines.map((ln,li)=><div key={li} style={{display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap',fontSize:12,padding:'4px 0',borderTop:'1px dashed '+(li===0?'#bbf7d0':'#dcfce7')}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{ln.sku}</span>
+              <span style={{color:'#334155',fontWeight:600}}>{ln.name}{ln.color?' — '+ln.color:''}</span>
+              <span style={{marginLeft:'auto',color:'#475569',fontFamily:'monospace'}}>{ln.szStr}</span>
+              <span style={{fontWeight:800,color:'#166534'}}>{ln.qty}</span>
+            </div>)}
+          </div>))}
+          <button onClick={done} style={{width:'100%',padding:'12px',borderRadius:10,border:'none',background:'#16a34a',color:'white',fontWeight:800,fontSize:15,marginTop:4,minHeight:48,cursor:'pointer'}}>Got it</button>
         </div>
       </div>;
     })()}
