@@ -2567,7 +2567,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
   const setItemFulfillment=(ii,val,vendor)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>{if(d.kind!=='art')return d;const nd={...d,fulfillment:val||undefined};if(val==='outside'){if(vendor)nd.vendor=vendor}else{nd.vendor=undefined}return nd})}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator.'+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
-  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[])[0]?.vendor||''};
+  // The order's outside garment decorator: first from item-level "Outside" routing, else from an
+  // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
+  // decorator, so it must never be inferred as the vendor blanks drop-ship to.
+  const _orderOutsideVendor=()=>{for(const it of safeItems(o)){for(const d of safeDecos(it)){if(d.kind==='art'&&d.fulfillment==='outside'&&d.vendor)return d.vendor}}return (o.deco_pos||[]).find(dp=>dp&&!dp.topstar_service)?.vendor||''};
   const rmD=(ii,di)=>{const next=o.items[ii].decorations.filter((_,i)=>i!==di);setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:next,...(next.length===0?{no_deco:true}:{})}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Art files (SO)
   const af=o.art_files||[];
@@ -2661,17 +2664,33 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   // ship-to address so blank POs can default Ship To to the decorator instead of NSA/customer.
   const decoShipForItems=useCallback((itemIdxs)=>{
     const idxs=itemIdxs||[];if(idxs.length===0)return null;
+    // Decorator address is stored as STRUCTURED fields (migration 00141: address_line1/city/...);
+    // assemble a single ship-to line. Many decorators keep their address on the LINKED Vendor
+    // record instead (e.g. Olympic, Astra Sport) — fall back there.
+    const dvAddr=(dv)=>{
+      const _asrc=dv&&(dv.address_line1||dv.city)?dv:(dv?.vendor_id?vendorList.find(v2=>v2.id===dv.vendor_id):null);
+      return _asrc?[_asrc.address_line1,_asrc.address_line2,[_asrc.city,_asrc.state].filter(Boolean).join(', '),_asrc.zip].filter(Boolean).join(', '):'';
+    };
+    // 1) An existing drop-ship deco PO covering any of these items is authoritative.
     for(const dp of (o.deco_pos||[])){
       if(!dp||!dp.drop_ship)continue;
       if(!(dp.item_idxs||[]).some(i=>idxs.includes(i)))continue;
       const dv=decoVendors.find(v=>v.id===dp.deco_vendor_id||v.name===dp.vendor);
-      // Decorator address is stored as STRUCTURED fields (migration 00141: address_line1/city/...);
-      // assemble a single ship-to line. Many decorators keep their address on the LINKED Vendor
-      // record instead (e.g. Olympic) — fall back there, then to any ship_address on the PO.
-      const _asrc=dv&&(dv.address_line1||dv.city)?dv:(dv?.vendor_id?vendorList.find(v2=>v2.id===dv.vendor_id):null);
-      const structured=_asrc?[_asrc.address_line1,_asrc.address_line2,[_asrc.city,_asrc.state].filter(Boolean).join(', '),_asrc.zip].filter(Boolean).join(', '):'';
-      const addr=String(structured||dp.ship_address||'').trim();
+      const addr=String(dvAddr(dv)||dp.ship_address||'').trim();
       if(addr)return{name:dp.vendor||dv?.name||'Decorator',addr,id:dv?.id||null};
+    }
+    // 2) No deco PO yet — the items may still be routed to an outside decorator at the decoration
+    // level (marked "Outside" → vendor). Resolve that decorator's saved address so the blanks
+    // default to shipping there. A digitizing/vector service (e.g. Topstar) is NOT a garment
+    // decorator — it has no deco-vendor record — so it never resolves an address here.
+    for(const i of idxs){
+      const it=safeItems(o)[i];if(!it)continue;
+      for(const d of safeDecos(it)){
+        if(!d||d.kind!=='art'||d.fulfillment!=='outside'||!d.vendor)continue;
+        const dv=decoVendors.find(v=>v.name===d.vendor||v.id===d.vendor);
+        const addr=String(dvAddr(dv)).trim();
+        if(addr)return{name:dv?.name||d.vendor,addr,id:dv?.id||null};
+      }
     }
     return null;
   },[o,decoVendors,vendorList]);
@@ -7568,7 +7587,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const _idxs=items.map(it=>safeItems(o).findIndex(x=>x.sku===it.sku&&x.color===it.color&&x.name===it.name)).filter(i=>i>=0);
             const _hasOutside=_idxs.some(i=>safeDecos(safeItems(o)[i]).some(d=>d&&d.kind==='art'&&d.fulfillment==='outside'))||(o.deco_pos||[]).some(dp=>dp&&dp.drop_ship&&(dp.item_idxs||[]).some(i=>_idxs.includes(i)));
             const _decoShip=_hasOutside?decoShipForItems(_idxs):null;
-            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside&&_decoShip?'deco':'warehouse');setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
+            // Drop ship never goes to the NSA warehouse: decorator address if we resolved one,
+            // else the customer's shipping address (matches the Drop Ship toggle below).
+            const _dsShipTo=_decoShip?'deco':(addrs[0]?.id||'warehouse');
+            setShowPO(vk);setPOExcluded({});setPoDropShip(_hasOutside?true:null);setPoShipTo(_hasOutside?_dsShipTo:'warehouse');setPoDecoInline(null);setPoShipCustom({name:'',line1:'',city:'',state:'',zip:''});setPoAttention('');setPoAlphaSuffix(cust?.alpha_tag||'')}}>
             <div style={{width:40,height:40,borderRadius:8,background:'#ede9fe',display:'flex',alignItems:'center',justifyContent:'center'}}><Icon name="package" size={20}/></div>
             <div style={{flex:1}}><div style={{fontWeight:700}}>{vn}</div><div style={{fontSize:12,color:'#64748b'}}>{openItems.length} item(s) — <span style={{color:'#dc2626',fontWeight:600}}>{openCount} units open</span></div></div>
             <Icon name="back" size={16} style={{transform:'rotate(180deg)'}}/></div>})}
