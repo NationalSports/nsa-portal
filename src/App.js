@@ -24,7 +24,7 @@ import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, 
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
-import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
@@ -10008,7 +10008,7 @@ export default function App(){
     // rest of the app uses (sales reports, orders list) so the Jobs page doesn't surface dead orders.
     sos.forEach(so=>{if(so.status==='cancelled'||so.status==='deleted'||so.deleted_at)return;const c=cust.find(x=>x.id===so.customer_id);const _pid=c?.parent_id||c?.id||null;
       buildJobs(so).filter(j=>j.prod_status!=='draft').forEach(j=>{allJobs.push({...j,so,soId:so.id,soMemo:so.memo,customer:c?.name||'Unknown',alpha:c?.alpha_tag||'',
-        parentId:_pid,grpKey:jobGroupKey(j,_pid),..._jobInbound(j,so),
+        parentId:_pid,grpKey:jobGroupKey(j,_pid),orderState:deriveJobItemStatus(j,so),..._jobInbound(j,so),
         repId:c?.primary_rep_id||so.created_by,rep:REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name||'—',
         expected:so.expected_date,daysOut:so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null})})});
     // Apply filters
@@ -10042,9 +10042,14 @@ export default function App(){
     // Waiting IF: garments aren't all in yet, but every missing unit sits on a reserved pick line
     // awaiting the warehouse Inventory Fulfillment pull — nothing left to order or receive.
     const _isWaitingIF=j=>j.total_units>0&&j.fulfilled_units<j.total_units&&j.ifCov>=j.total_units;
+    // Product chips match on the coverage-aware orderState (deriveJobItemStatus), NOT the stored
+    // item_status — so a job whose garments are fully on a PO reads "On Order", not "Need to Order".
+    // The "On Order" chip merges on_order (partly committed) and waiting_receive (fully committed):
+    // both mean "ordered, nothing received yet". need_to_order now means genuinely un-ordered.
+    const _matchItemSt=(j,id)=>id==='on_order'?(j.orderState==='on_order'||j.orderState==='waiting_receive'):j.orderState===id;
     if(jf.itemSt==='all_billed')fj=fj.filter(j=>j.total_units>0&&j.billedCov>=j.total_units);
     else if(jf.itemSt==='waiting_if')fj=fj.filter(_isWaitingIF);
-    else if(jf.itemSt!=='all')fj=fj.filter(j=>j.item_status===jf.itemSt);
+    else if(jf.itemSt!=='all')fj=fj.filter(j=>_matchItemSt(j,jf.itemSt));
     if(jf.dueBefore)fj=fj.filter(j=>j.expected&&j.expected<=jf.dueBefore);
     if(jf.search){const s=jf.search.toLowerCase();fj=fj.filter(j=>(j.art_name||'').toLowerCase().includes(s)||(j.soId||'').toLowerCase().includes(s)||(j.customer||'').toLowerCase().includes(s)||(j.id||'').toLowerCase().includes(s)||(j.items||[]).some(gi=>(gi.sku||'').toLowerCase().includes(s)||(gi.name||'').toLowerCase().includes(s)))}
     // Sort
@@ -10083,8 +10088,8 @@ export default function App(){
     };
 
     const ART_STATUSES=[['needs_art','Needs Art'],['art_requested','Art Requested'],['art_in_progress','In Progress'],['waiting_approval','Waiting Approval'],['production_files_needed','Art Approved — Waiting'],['order_dtf_transfers','Order DTF Transfers'],['upload_emb_files','Upload EMB Files'],['art_complete','Art Complete']];
-    const ITEM_STATUSES=[['need_to_order','Need to Order'],['partially_received','Partially Received'],['waiting_if','Waiting IF Pull'],['items_received','Items Received'],['all_billed','All Billed']];
-    const ITEM_CHIP_TIPS={waiting_if:'Only thing left is the warehouse pull: every missing garment is reserved on a pick line (Inventory Fulfillment) — nothing to order or receive from vendors.',all_billed:'Every unit is covered by vendor bills and/or warehouse stock pulls — nothing left un-billed.'};
+    const ITEM_STATUSES=[['need_to_order','Need to Order'],['on_order','On Order'],['partially_received','Partially Received'],['waiting_if','Waiting IF Pull'],['items_received','Items Received'],['all_billed','All Billed']];
+    const ITEM_CHIP_TIPS={need_to_order:'Genuinely still needs a PO — no purchase order or stock pick covers these garments yet. (A job whose garments are already fully on a PO shows under "On Order", not here.)',on_order:'Garments are ordered — every unit is committed to a PO (or reserved on a pick) but nothing has been received yet. Includes drop-ship jobs that never physically check in.',waiting_if:'Only thing left is the warehouse pull: every missing garment is reserved on a pick line (Inventory Fulfillment) — nothing to order or receive from vendors.',all_billed:'Every unit is covered by vendor bills and/or warehouse stock pulls — nothing left un-billed.'};
     const chipStyle=(active,sc)=>({fontSize:10,padding:'3px 10px',borderRadius:12,border:'1px solid '+(active?sc?.c||'#2563eb':'#e2e8f0'),
       background:active?(sc?.bg||'#eff6ff'):'white',color:active?(sc?.c||'#2563eb'):'#94a3b8',cursor:'pointer',fontWeight:600,display:'inline-flex',alignItems:'center',gap:4});
     const toggleArt=id=>setJF('artSt',jf.artSt===id?'all':id);
@@ -10126,7 +10131,7 @@ export default function App(){
         {/* Row 4: Product/Item Status chips */}
         <div style={{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center',marginBottom:6}}>
           <span style={{fontSize:10,fontWeight:700,color:'#64748b',marginRight:4,minWidth:48}}>PRODUCT:</span>
-          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=id==='all_billed'?allJobs.filter(j=>j.total_units>0&&j.billedCov>=j.total_units).length:id==='waiting_if'?allJobs.filter(_isWaitingIF).length:allJobs.filter(j=>j.item_status===id).length;
+          {ITEM_STATUSES.map(([id,label])=>{const active=(jf.itemSt||'all')===id;const ct=id==='all_billed'?allJobs.filter(j=>j.total_units>0&&j.billedCov>=j.total_units).length:id==='waiting_if'?allJobs.filter(_isWaitingIF).length:allJobs.filter(j=>_matchItemSt(j,id)).length;
             return<button key={id} title={ITEM_CHIP_TIPS[id]} style={chipStyle(active,id==='waiting_if'?{c:'#7c3aed',bg:'#ede9fe'}:SC[id])}
               onClick={()=>toggleItem(id)}>{label} <span style={{fontSize:9,opacity:0.7}}>({ct})</span></button>})}
         </div>
@@ -10151,7 +10156,7 @@ export default function App(){
         <div className="stat-card"><div className="stat-label">Fulfilled</div><div className="stat-value" style={{color:'#166534'}}>{fj.reduce((a,j)=>a+j.fulfilled_units,0)}</div></div>
         <div className="stat-card"><div className="stat-label">Billed</div><div className="stat-value" style={{color:'#1e40af'}}>{fj.reduce((a,j)=>a+j.billed,0)}</div></div>
         <div className="stat-card"><div className="stat-label">Needs Art</div><div className="stat-value" style={{color:fj.filter(j=>j.art_status!=='art_complete').length>0?'#d97706':''}}>{fj.filter(j=>j.art_status!=='art_complete').length}</div></div>
-        <div className="stat-card"><div className="stat-label">Needs Product</div><div className="stat-value" style={{color:fj.filter(j=>j.item_status==='need_to_order').length>0?'#92400e':''}}>{fj.filter(j=>j.item_status==='need_to_order').length}</div></div>
+        <div className="stat-card"><div className="stat-label" title="Jobs whose garments still need a PO — nothing ordered or picked yet (ordered-but-not-received jobs are not counted here).">Needs Product</div><div className="stat-value" style={{color:fj.filter(j=>j.orderState==='need_to_order').length>0?'#92400e':''}}>{fj.filter(j=>j.orderState==='need_to_order').length}</div></div>
       </div>
 
       {/* Jobs table */}

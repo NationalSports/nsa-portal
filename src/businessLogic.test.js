@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1602,6 +1602,70 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     const so = makeSO({ jobs: [job] });
     const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
     expect(recalcJobFulfillment(so, items)[0]).toBe(job);
+  });
+});
+
+describe('Derived job product status (deriveJobItemStatus)', () => {
+  // The Jobs-board "Need to Order" bug: a job whose garments are fully on a PO must NOT read
+  // 'need_to_order' just because nothing has been received yet (fulfilled_units 0). Stored
+  // item_status stays receipt-only for the floor gate; this is the coverage-aware DISPLAY status.
+  const job = (over) => ({ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }], ...over });
+
+  test('no PO and no pick → need_to_order (genuinely un-ordered)', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [], pick_lines: [] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('need_to_order');
+  });
+
+  test('every unit on a PO, nothing received → waiting_receive, NOT need_to_order', () => {
+    // Reproduces SO-1234 / SO-1475: OMG drop-ship orders, fully ordered, 0 received.
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('some units on a PO, nothing received → on_order', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('on_order');
+  });
+
+  test('cancelled PO units do not count as covered', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, cancelled: { S: 5, M: 10 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('need_to_order');
+  });
+
+  test('units reserved on a pick line count as covered → waiting_receive', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [], pick_lines: [{ pick_id: 'PK-1', status: 'pick', S: 5, M: 10 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('partial receipt → partially_received regardless of coverage', () => {
+    const so = makeSO({ jobs: [job({ fulfilled_units: 6 })] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 1 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('partially_received');
+  });
+
+  test('all received → items_received', () => {
+    const so = makeSO({ jobs: [job({ fulfilled_units: 15 })] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('items_received');
+  });
+
+  test('split job honors its own gi.sizes subset for coverage', () => {
+    // A split slice carries only its subset in gi.sizes; coverage is judged against that, not the
+    // full line. 4 units on the slice, 4 ordered → fully covered.
+    const so = makeSO({ jobs: [{ id: 'JOB-1-S', fulfilled_units: 0, total_units: 4, items: [{ item_idx: 0, sizes: { S: 4 } }] }] });
+    so.items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 4 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('qty_only item covered under the QTY bucket → waiting_receive', () => {
+    const so = makeSO({ jobs: [job({ total_units: 0 })] });
+    so.items = [makeSOItem({ sizes: {}, qty_only: true, est_qty: 50, po_lines: [{ po_id: 'PO-1', QTY: 50 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
   });
 });
 
