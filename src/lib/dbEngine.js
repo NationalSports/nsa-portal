@@ -2362,6 +2362,11 @@ const _persistDuplicateSkuIds=()=>{_lsSet('nsa_duplicate_sku_ids',JSON.stringify
 const _dbSaveProduct = (p) => _outboxWrap('products', p, _dbSaveProductInner(p));
 const _dbSaveProductInner = async (p) => {
   if(!supabase)return;
+  // Never save a product with no id: the row would violate products.id NOT NULL, and adding
+  // a null id to _dbSaveFailedIds jams the retry loop on [null] forever (the Costs-tab
+  // "Update Catalog" fallback used to build {id:null,...} when the line wasn't a real catalog
+  // product). Reject up front — return false WITHOUT touching the failed set.
+  if(!p||p.id==null||p.id===''){console.warn('[DB] Skipping product save — no id (sku:',p&&p.sku,')');return false}
   if(_dbDuplicateSkuIds.has(p.id))return true;// skip — this ID has a duplicate SKU in DB
   await _ensureFreshSession();// proactive token refresh before the write (see _dbSaveEstimateInner)
   try{
@@ -2599,7 +2604,7 @@ try{['nsa_auto_backup','nsa_auto_backup_ts','nsa_change_log','nsa_so_history','n
 // Persisted to localStorage so protection survives page refresh
 // Guarded parse (same as _dbSaveFailedErrors below): a corrupted value here used to throw
 // at module load and crash the entire dbEngine import.
-const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]');return new Set(Array.isArray(v)?v:[])}catch{return new Set()}})();
+const _dbSaveFailedIds=(()=>{try{const v=JSON.parse(localStorage.getItem('nsa_save_failed_ids')||'[]');return new Set((Array.isArray(v)?v:[]).filter(x=>x!=null&&x!==''))}catch{return new Set()}})();// filter null/'' so a stuck [null] from an old session can't reload
 // Track WHY each save failed — surfaced in the banner so the team can see real DB errors
 // instead of just a count. Persisted alongside the IDs so the diagnosis survives reload.
 const _dbSaveFailedErrors=(()=>{try{const raw=localStorage.getItem('nsa_save_failed_errors');return raw?new Map(Object.entries(JSON.parse(raw))):new Map()}catch{return new Map()}})();
@@ -2833,6 +2838,7 @@ export {
   _dbDeleteInvoice,
   _dbDeleteHistInvoice,
   _dbSavingCount,
+  _dbLastSaveAt,
   _dbSavingGuard,
   _batchPosDirtyUntil,
   _dbUpdatePickLineStatus,
