@@ -1,11 +1,19 @@
-// Netlify scheduled function to sync SanMar pricing into Supabase products
-// Schedule: daily at 5:30 AM CT (11:30 UTC)
+// Netlify function to re-cost SanMar products in Supabase from live SanMar pricing.
+// Manual / on-demand only (no cron) — the daily cost refresh runs in
+// sanmar-brands-sync-background. Run this to force a re-cost, e.g. after a bad or
+// blended cost was imported onto a row the brand sync doesn't own.
+//
+// Pricing is looked up per SanMar STYLE (e.g. "ST520"). Product SKUs are stored
+// color-suffixed ("ST520-Cardinal"), so the style is the segment before the first
+// "-". SanMar prices per style+size (uniform across colors), so one lookup re-costs
+// every color of a style. nsa_cost = the lowest (base, XS–XL) size price; size_costs
+// holds the per-size upcharges (2XL/3XL+).
 //
 // Environment variables required:
 //   SANMAR_USERNAME, SANMAR_PASSWORD — SanMar API credentials
 //   REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — Supabase access
 //
-// Can also be triggered manually via: GET /.netlify/functions/sanmar-pricing-sync
+// Trigger manually via: GET /.netlify/functions/sanmar-pricing-sync
 
 function escapeXml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -123,37 +131,47 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers, body: JSON.stringify({ message: 'No SanMar vendors in database', updated: 0 }) };
     }
 
-    // 2. Get products for these vendors
+    // 2. Get SanMar products to re-cost: rows on a SanMar vendor OR tagged
+    //    inventory_source='sanmar'. The inventory_source arm catches rows whose
+    //    vendor_id is stale or missing (e.g. an item imported or hand-costed onto a
+    //    non-SanMar vendor) — the old vendor-only filter skipped those, so a wrong
+    //    cost on such a row could never be corrected here.
     const vendorIds = vendors.map(function(v) { return '"' + v.id + '"'; }).join(',');
-    const pRes = await fetch(sbUrl + '/rest/v1/products?vendor_id=in.(' + vendorIds + ')&select=id,sku,nsa_cost,size_costs,vendor_id', { headers: sbHeaders });
+    const pRes = await fetch(sbUrl + '/rest/v1/products?or=(vendor_id.in.(' + vendorIds + '),inventory_source.eq.sanmar)&select=id,sku,nsa_cost,size_costs,vendor_id,inventory_source&limit=100000', { headers: sbHeaders });
     const products = await pRes.json();
     if (!Array.isArray(products) || !products.length) {
       return { statusCode: 200, headers, body: JSON.stringify({ message: 'No SanMar products in database', updated: 0, vendors_found: vendors.length }) };
     }
 
-    // 3. Fetch pricing from SanMar for each unique SKU
-    var uniqueSkus = [];
-    var seen = {};
-    products.forEach(function(p) { if (!seen[p.sku]) { seen[p.sku] = true; uniqueSkus.push(p.sku); } });
+    // 3. Group products by SanMar STYLE. Stored SKUs are color-suffixed
+    //    ("ST520-Cardinal"); the SanMar style is the segment before the first "-".
+    //    Pricing is per style+size (uniform across colors), so one lookup re-costs
+    //    every color of the style. (The old code passed the full color-suffixed SKU
+    //    as the style to getSignInPricing, which matched nothing — so brand-synced
+    //    SanMar rows were never re-costed by this function.)
+    var styleOf = function(sku) { return String(sku || '').split('-')[0].trim(); };
+    var byStyle = {};
+    products.forEach(function(p) { var st = styleOf(p.sku); if (!st) return; (byStyle[st] = byStyle[st] || []).push(p); });
+    var styles = Object.keys(byStyle);
 
     var updated = 0;
     var errors = [];
     var changes = [];
 
-    for (var i = 0; i < uniqueSkus.length; i++) {
-      var sku = uniqueSkus[i];
+    for (var i = 0; i < styles.length; i++) {
+      var style = styles[i];
       try {
         if (i > 0) await new Promise(function(r) { setTimeout(r, 500); });
 
-        // Call SanMar Pricing SOAP service
-        var soapBody = buildSoapEnvelope('getSignInPricing', { style: sku, color: '', size: '' }, smUser, smPass);
+        // Call SanMar Pricing SOAP service with the bare style number.
+        var soapBody = buildSoapEnvelope('getSignInPricing', { style: style, color: '', size: '' }, smUser, smPass);
         var smRes = await fetch('https://ws.sanmar.com:8080/SanMarWebService/SanMarPricingServicePort', {
           method: 'POST',
           headers: { 'Content-Type': 'text/xml;charset=UTF-8', 'SOAPAction': 'getSignInPricing' },
           body: soapBody
         });
 
-        if (!smRes.ok) { errors.push({ sku: sku, error: 'HTTP ' + smRes.status }); continue; }
+        if (!smRes.ok) { errors.push({ style: style, error: 'HTTP ' + smRes.status }); continue; }
 
         var xml = await smRes.text();
 
@@ -171,6 +189,9 @@ exports.handler = async (event) => {
 
         if (!prices.length) continue;
 
+        // Base cost = the lowest (XS–XL tier) size price. SanMar record order varies
+        // (an upsized 2XL+ row can come first), so take the min — matching
+        // sanmar-brands-sync and what the store editor shows as the item cost.
         var newCost = Math.min.apply(null, prices);
 
         // Build the per-size cost map. Only persist it when sizes actually
@@ -182,7 +203,7 @@ exports.handler = async (event) => {
         var nextSizeCosts = Object.keys(distinctVals).length > 1 ? sizeCosts : null;
         var nextSCStr = stableSC(nextSizeCosts);
 
-        var matching = products.filter(function(p) { return p.sku === sku; });
+        var matching = byStyle[style];
 
         for (var j = 0; j < matching.length; j++) {
           var prod = matching[j];
@@ -196,15 +217,15 @@ exports.handler = async (event) => {
             });
             if (!uRes.ok) {
               var errTxt = await uRes.text();
-              errors.push({ sku: sku, error: errTxt });
+              errors.push({ sku: prod.sku, error: errTxt });
             } else {
               updated++;
-              changes.push({ sku: sku, old: prod.nsa_cost, new: newCost, size_costs: nextSizeCosts || undefined });
+              changes.push({ sku: prod.sku, old: prod.nsa_cost, new: newCost, size_costs: nextSizeCosts || undefined });
             }
           }
         }
       } catch (err) {
-        errors.push({ sku: sku, error: err.message });
+        errors.push({ style: style, error: err.message });
       }
     }
 
@@ -212,7 +233,7 @@ exports.handler = async (event) => {
       statusCode: 200, headers,
       body: JSON.stringify({
         message: 'SanMar pricing sync complete',
-        total_skus: uniqueSkus.length,
+        total_styles: styles.length,
         updated: updated,
         changes: changes,
         errors: errors.length > 0 ? errors : undefined
