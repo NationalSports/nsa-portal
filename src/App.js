@@ -4649,7 +4649,11 @@ export default function App(){
           const groups = {};
           rows.forEach(row => {
             const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/,'');
-            const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz)?'OSFA':rawSz);
+            // OMG labels sized apparel with an age/gender qualifier — "Adult S", "Adult Medium",
+            // "Youth L". normSzName strips the qualifier and normalizes the remainder (Adult Small → S).
+            // A bare "Adult" with no size is a genuine one-size item → OSFA. The old /^adult\b/ shortcut
+            // collapsed EVERY "Adult …" size to OSFA, so a multi-size store imported as one OSFA bucket.
+            const sz = /^adult$/i.test(rawSz) ? 'OSFA' : normSzName(rawSz);
             const qty = row.quantity || 0;
             const colorSku = extractSku(row.color);
             const rowColor = (row.color || '').trim();
