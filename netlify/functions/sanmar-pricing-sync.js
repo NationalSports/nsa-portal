@@ -14,6 +14,10 @@
 //   REACT_APP_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY — Supabase access
 //
 // Trigger manually via: GET /.netlify/functions/sanmar-pricing-sync
+//   Defaults to a DRY RUN (returns the proposed nsa_cost/size_costs diffs, writes
+//   nothing). Add ?commit=1 to actually apply them:
+//     GET /.netlify/functions/sanmar-pricing-sync            → preview
+//     GET /.netlify/functions/sanmar-pricing-sync?commit=1   → apply
 
 function escapeXml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -122,6 +126,13 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers, body: JSON.stringify({ error: 'Supabase not configured' }) };
     }
 
+    // Safety: default to a DRY RUN (compute the diffs, write nothing). This tool
+    // re-costs every SanMar product from live pricing, so require an explicit
+    // ?commit=1 (or ?write=1) to actually PATCH the rows. Preview first, confirm the
+    // before/after looks right (e.g. ST520 10.37 → 8.37), then commit.
+    var qp = (event && event.queryStringParameters) || {};
+    var commit = /^(1|true|yes)$/i.test(String(qp.commit || qp.write || ''));
+
     const sbHeaders = { 'apikey': sbKey, 'Authorization': 'Bearer ' + sbKey, 'Content-Type': 'application/json' };
 
     // 1. Get SanMar vendor IDs from Supabase
@@ -210,6 +221,8 @@ exports.handler = async (event) => {
           var costChanged = Math.abs((prod.nsa_cost || 0) - newCost) > 0.005;
           var scChanged = stableSC(prod.size_costs) !== nextSCStr;
           if (costChanged || scChanged) {
+            var change = { sku: prod.sku, old: prod.nsa_cost, new: newCost, size_costs: nextSizeCosts || undefined };
+            if (!commit) { changes.push(change); continue; } // dry run: record the diff, write nothing
             var uRes = await fetch(sbUrl + '/rest/v1/products?id=eq.' + prod.id, {
               method: 'PATCH',
               headers: Object.assign({}, sbHeaders, { 'Prefer': 'return=minimal' }),
@@ -220,7 +233,7 @@ exports.handler = async (event) => {
               errors.push({ sku: prod.sku, error: errTxt });
             } else {
               updated++;
-              changes.push({ sku: prod.sku, old: prod.nsa_cost, new: newCost, size_costs: nextSizeCosts || undefined });
+              changes.push(change);
             }
           }
         }
@@ -232,8 +245,12 @@ exports.handler = async (event) => {
     return {
       statusCode: 200, headers,
       body: JSON.stringify({
-        message: 'SanMar pricing sync complete',
+        message: commit
+          ? 'SanMar pricing sync complete'
+          : 'SanMar pricing DRY RUN — nothing written. Add ?commit=1 to apply these changes.',
+        dry_run: !commit,
         total_styles: styles.length,
+        proposed: changes.length,
         updated: updated,
         changes: changes,
         errors: errors.length > 0 ? errors : undefined
