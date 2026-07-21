@@ -472,6 +472,36 @@ import {
 // ── Loading fallback for lazy components ──
 const LazyFallback=()=><div style={{display:'flex',alignItems:'center',justifyContent:'center',padding:40,color:'#64748b',fontSize:14}}>Loading...</div>;
 
+// ── Warehouse ship-speed options (ShipStation service codes) ──
+// Lets the warehouse pick a ship speed on the Ship Package + Manual Ship label flows
+// instead of always defaulting to Ground. Carriers not listed here have no speed picker
+// and keep their carrier default service (see createShipStationLabel).
+const SHIP_SPEEDS={
+  ups:[
+    {code:'ups_ground',label:'Ground'},
+    {code:'ups_2nd_day_air',label:'2nd Day Air'},
+    {code:'ups_next_day_air',label:'Next Day Air'},
+  ],
+};
+// Resolve the service code to send for a (carrier, chosen speed). Returns null when the
+// carrier has no speed choices (→ createShipStationLabel uses the carrier default), and
+// falls back to the carrier's first/Ground option if the stored speed doesn't belong to it.
+const shipServiceCode=(carrier,service)=>{
+  const opts=SHIP_SPEEDS[String(carrier||'').toLowerCase()];
+  if(!opts)return null;
+  return opts.some(o=>o.code===service)?service:opts[0].code;
+};
+// Ship-speed <select>. Renders only for carriers that expose speeds (currently UPS);
+// self-corrects a stale value from a previous carrier back to Ground.
+function ShipSpeedSelect({carrier,value,onChange,style}){
+  const opts=SHIP_SPEEDS[String(carrier||'').toLowerCase()];
+  if(!opts)return null;
+  const val=opts.some(o=>o.code===value)?value:opts[0].code;
+  return <select className="form-select" title="Ship speed" value={val} style={style} onChange={e=>onChange(e.target.value)}>
+    {opts.map(o=><option key={o.code} value={o.code}>{o.label}</option>)}
+  </select>;
+}
+
 // ── OMG store-pull stock pills (in-house + vendor availability per item) ──
 const _STOCK_PILL={display:'inline-block',fontSize:9,fontWeight:800,padding:'2px 6px',borderRadius:3,border:'1px solid transparent',whiteSpace:'nowrap',letterSpacing:0.2};
 const _STOCK_STYLE={full:['#dcfce7','#166534','✓'],partial:['#fef9c3','#854d0e','◑'],none:['#fee2e2','#991b1b','✗'],incoming:['#e0f2fe','#075985','⏳'],unknown:['#f1f5f9','#64748b','–']};
@@ -16757,6 +16787,7 @@ export default function App(){
                         onChange={e=>{const b=[...boxes];b[bi]={...b[bi],carrier:e.target.value};setBoxes(b)}}>
                         <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                       </select>
+                      <ShipSpeedSelect carrier={box.carrier} value={box.service} style={{width:120,fontSize:12,padding:'5px 8px'}} onChange={v=>{const b=[...boxes];b[bi]={...b[bi],service:v};setBoxes(b)}}/>
                     </div>
                   </div>
 
@@ -16789,7 +16820,7 @@ export default function App(){
                           if(!box.dimensions?.length||!box.dimensions?.width||!box.dimensions?.height){nf('Please enter box dimensions (L × W × H) before creating a label','error');return}
                           if(!box.items||box.items.length===0||!box.items.some(it=>Object.values(it.sizes||{}).some(v=>v>0))){nf('Please add at least 1 item to the box before creating a label','error');return}
                           nf('Creating ShipStation label...');
-                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,null,box.dimensions);
+                          const label=await createShipStationLabel(so,c,box.items,box.weight,box.carrier,shipServiceCode(box.carrier,box.service),box.dimensions);
                           const b=[...boxes];
                           const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                           const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
@@ -17777,6 +17808,7 @@ export default function App(){
                       onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
                       <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                     </select>
+                    <ShipSpeedSelect carrier={box.carrier} value={box.service} style={{width:110,fontSize:11,padding:'3px 6px'}} onChange={v=>{const b=[...shipModal.boxes];b[bi]={...b[bi],service:v};setShipModal({...shipModal,boxes:b})}}/>
                     {shipModal.boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                       onClick={()=>{const b=[...shipModal.boxes];b.splice(bi,1);setShipModal({...shipModal,boxes:b})}}>×</button>}
                   </div>
@@ -17799,7 +17831,7 @@ export default function App(){
                         if(!box.dimensions?.length||!box.dimensions?.width||!box.dimensions?.height){nf('Please enter box dimensions (L × W × H) before creating a label','error');return}
                         if(!box.items||box.items.length===0||!box.items.some(it=>Object.values(it.sizes||{}).some(v=>v>0))){nf('Please add at least 1 item to the box before creating a label','error');return}
                         nf('Creating ShipStation label...');
-                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,'fedex_ground',box.dimensions);
+                        const label=await createShipStationLabel(so,c2,box.items,box.weight,box.carrier,shipServiceCode(box.carrier,box.service),box.dimensions);
                         const b=[...shipModal.boxes];
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                         // ShipStation returns labelData as base64 PDF string or labelDownload as URL
@@ -18256,7 +18288,8 @@ export default function App(){
               <div><label className="form-label" style={{fontSize:11}}>Carrier</label>
                 <select className="form-select" style={{fontSize:12}} value={pe.carrier} onChange={e=>setPickupEdit({...pe,carrier:e.target.value})}>
                   <option value="ups">UPS</option><option value="fedex">FedEx</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
-                </select></div>
+                </select>
+                <ShipSpeedSelect carrier={pe.carrier} value={pe.service} style={{fontSize:12,marginTop:6,width:'100%'}} onChange={v=>setPickupEdit({...pe,service:v})}/></div>
             </div>
             <div style={{display:'flex',gap:10,alignItems:'flex-end',marginBottom:12,flexWrap:'wrap'}}>
               <div><label className="form-label" style={{fontSize:11}}>Weight (lbs)</label>
@@ -18307,7 +18340,7 @@ export default function App(){
                 try{
                   if(hasLabel)await voidOldLabel();
                   nf('Creating ShipStation label...');
-                  const label=await createShipStationLabel(liveSO,c2,liveShp.items||[],w,pe.carrier,'fedex_ground',{length:d.length,width:d.width,height:d.height});
+                  const label=await createShipStationLabel(liveSO,c2,liveShp.items||[],w,pe.carrier,shipServiceCode(pe.carrier,pe.service),{length:d.length,width:d.width,height:d.height});
                   const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                   const labelUrl2=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                   const labelDl=label.labelDownload||labelUrl2||null;
@@ -18421,7 +18454,8 @@ export default function App(){
                   <div style={{flex:1}}><label style={_lbl}>Carrier</label>
                     <select className="form-select" value={manualShipModal.carrier||'fedex'} style={{width:'100%',fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
                       <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
-                    </select></div>
+                    </select>
+                    <ShipSpeedSelect carrier={manualShipModal.carrier} value={manualShipModal.service} style={{width:'100%',fontSize:11,marginTop:6}} onChange={v=>setManualShipModal({...manualShipModal,service:v})}/></div>
                   <div style={{flex:2}}><label style={_lbl}>Tracking Number</label>
                     <input className="form-input" value={manualShipModal.tracking||''} placeholder="Enter tracking or create a label below..." style={{fontSize:11,fontFamily:'monospace'}} onChange={e=>setManualShipModal({...manualShipModal,tracking:e.target.value})}/></div>
                 </div>
@@ -18445,7 +18479,7 @@ export default function App(){
                         const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:manualShipModal.shipToMode!=='warehouse'};
                         if(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                         nf('Creating ShipStation label...');
-                        const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
+                        const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                         const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                         const labelDownload=label.labelDownload||labelUrl||null;
@@ -18787,6 +18821,7 @@ export default function App(){
                     onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
                     <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                   </select>
+                  <ShipSpeedSelect carrier={manualShipModal.carrier} value={manualShipModal.service} style={{width:'100%',fontSize:11,marginTop:6}} onChange={v=>setManualShipModal({...manualShipModal,service:v})}/>
                 </div>
                 <div style={{flex:2}}>
                   <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Tracking Number</label>
@@ -18838,7 +18873,7 @@ export default function App(){
                         residential:_mode==='customer'};
                       if(_shipToOverride&&(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode)){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                       nf('Creating ShipStation label...');
-                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex','fedex_ground',dims,_shipToOverride);
+                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
                       const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                       const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                       const labelDownload=label.labelDownload||labelUrl||null;
