@@ -16783,7 +16783,7 @@ export default function App(){
                     </div>
                     <div>
                       <label style={{fontSize:10,color:'#64748b',fontWeight:600,display:'block',marginBottom:2}}>Carrier</label>
-                      <select className="form-select" value={box.carrier||'fedex'} style={{width:110,fontSize:12,padding:'5px 8px'}}
+                      <select className="form-select" value={box.carrier||'ups'} style={{width:110,fontSize:12,padding:'5px 8px'}}
                         onChange={e=>{const b=[...boxes];b[bi]={...b[bi],carrier:e.target.value};setBoxes(b)}}>
                         <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                       </select>
@@ -16908,7 +16908,7 @@ export default function App(){
         <button className="btn btn-sm" style={{fontSize:10,background:whTab==='receive'?'#1e40af':'#2563eb',color:'white',border:whTab==='receive'?'2px solid #1e40af':'none',padding:whTab==='receive'?'3px 11px':'4px 12px',fontWeight:700,borderRadius:4,boxShadow:whTab==='receive'?'0 2px 6px rgba(37,99,235,0.4)':'none'}}
           onClick={()=>setWhTab('receive')}>📱 Scan to Receive</button>
         <button className="btn btn-sm" style={{fontSize:10,background:'#92400e',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
-          onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'fedex',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
+          onClick={()=>setManualShipModal({custSearch:'',custFilter:null,so:null,cust:null,carrier:'ups',tracking:'',cost:'',notes:'',markShipped:{},weight:5,dimensions:{length:'',width:'',height:''}})}>⚡ Manual Ship</button>
         {_whCanDelegate&&<button className="btn btn-sm" style={{fontSize:10,background:'#0891b2',color:'white',border:'none',padding:'4px 12px',fontWeight:700,borderRadius:4}}
           onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:_whTodayStr,doc_label:'',wh_only:true})}>📌 Assign Task</button>}
         {!ssConnected&&<div style={{display:'flex',alignItems:'center',gap:8,marginLeft:'auto',background:'#fef2f2',border:'1px solid #fca5a5',borderRadius:6,padding:'4px 10px'}}>
@@ -17804,7 +17804,7 @@ export default function App(){
                       <input className="form-input" type="number" min="1" placeholder="H" value={(box.dimensions||{}).height||''} style={{width:40,fontSize:11,padding:'3px 4px',textAlign:'center'}}
                         onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],dimensions:{...(b[bi].dimensions||{}),height:e.target.value}};setShipModal({...shipModal,boxes:b})}}/>
                     </div>
-                    <select className="form-select" value={box.carrier||'fedex'} style={{width:100,fontSize:11,padding:'3px 6px'}}
+                    <select className="form-select" value={box.carrier||'ups'} style={{width:100,fontSize:11,padding:'3px 6px'}}
                       onChange={e=>{const b=[...shipModal.boxes];b[bi]={...b[bi],carrier:e.target.value};setShipModal({...shipModal,boxes:b})}}>
                       <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                     </select>
@@ -18007,7 +18007,7 @@ export default function App(){
                       headerRight:'<div class="ta" style="font-size:18px">'+boxUnits+' Units — Box '+(bi+1)+' of '+shipModal.boxes.length+'</div>'+(box.tracking_number?'<div class="ts" style="font-family:monospace">'+box.tracking_number+'</div>':''),
                       infoBoxes:[
                         {label:'Ship To',value:shipModal.grp.cName,sub:boxAddrSub},
-                        {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'fedex').toUpperCase()},
+                        {label:'Ship Date',value:new Date().toLocaleDateString(),sub:(box.carrier||'ups').toUpperCase()},
                         ...(box.tracking_number?[{label:'Tracking',value:box.tracking_number}]:[]),
                       ],
                       tables:[{
@@ -18452,7 +18452,7 @@ export default function App(){
               <div style={{display:'grid',gap:8,marginBottom:12}}>
                 <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
                   <div style={{flex:1}}><label style={_lbl}>Carrier</label>
-                    <select className="form-select" value={manualShipModal.carrier||'fedex'} style={{width:'100%',fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
+                    <select className="form-select" value={manualShipModal.carrier||'ups'} style={{width:'100%',fontSize:11}} onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
                       <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                     </select>
                     <ShipSpeedSelect carrier={manualShipModal.carrier} value={manualShipModal.service} style={{width:'100%',fontSize:11,marginTop:6}} onChange={v=>setManualShipModal({...manualShipModal,service:v})}/></div>
@@ -18479,7 +18479,7 @@ export default function App(){
                         const _shipToOverride={name:_attn?('ATTN: '+_attn):_org,company:_org,street1:(_da.street1||'').trim(),street2:(_da.street2||'').trim(),city:(_da.city||'').trim(),state:(_da.state||'').trim().toUpperCase(),postalCode:(_da.zip||'').trim(),country:'US',phone:(_da.phone||'').trim(),residential:manualShipModal.shipToMode!=='warehouse'};
                         if(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                         nf('Creating ShipStation label...');
-                        const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'fedex',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
+                        const label=await createShipStationLabel({id:'NOSO-'+Date.now()},c,[{sku:'MANUAL',name:manualShipModal.itemDesc||'Manual ship',sizes:{}}],w,manualShipModal.carrier||'ups',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
                         const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                         const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                         const labelDownload=label.labelDownload||labelUrl||null;
@@ -18601,7 +18601,7 @@ export default function App(){
                   return so.customer_id===manualShipModal.custFilter.id;
                 });
                 const _noSoBtn=<button className="btn btn-sm" style={{width:'100%',marginTop:8,fontSize:11,fontWeight:700,background:'white',color:'#166534',border:'1px dashed #86efac',padding:'8px'}}
-                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'fedex'});}}>
+                  onClick={()=>{const c2=manualShipModal.custFilter;const _destAddr={company:c2?.name||'',attn:'',street1:c2?.shipping_address_line1||'',street2:c2?.shipping_address_line2||'',city:c2?.shipping_city||'',state:c2?.shipping_state||'',zip:c2?.shipping_zip||'',phone:c2?.contacts?.[0]?.phone||''};setManualShipModal({...manualShipModal,noSo:true,cust:c2,destAddr:_destAddr,shipToMode:'customer',itemDesc:'',charge:'',cost:'',tracking:'',labelUrl:null,carrier:manualShipModal.carrier||'ups'});}}>
                   📦 Ship without an order — bill {manualShipModal.custFilter.name} on their next order
                 </button>;
                 if(custSos.length===0)return<><div style={{fontSize:11,color:'#94a3b8',textAlign:'center',padding:16}}>No open sales orders for this customer</div>{_noSoBtn}</>;
@@ -18817,7 +18817,7 @@ export default function App(){
               <div style={{display:'flex',gap:8,alignItems:'flex-end'}}>
                 <div style={{flex:1}}>
                   <label style={{fontSize:10,fontWeight:700,color:'#64748b',display:'block',marginBottom:2}}>Carrier</label>
-                  <select className="form-select" value={manualShipModal.carrier||'fedex'} style={{width:'100%',fontSize:11}}
+                  <select className="form-select" value={manualShipModal.carrier||'ups'} style={{width:'100%',fontSize:11}}
                     onChange={e=>setManualShipModal({...manualShipModal,carrier:e.target.value})}>
                     <option value="fedex">FedEx</option><option value="ups">UPS</option><option value="usps">USPS</option><option value="rep_delivery">Rep Delivery</option><option value="other">Other</option>
                   </select>
@@ -18873,7 +18873,7 @@ export default function App(){
                         residential:_mode==='customer'};
                       if(_shipToOverride&&(!_shipToOverride.street1||!_shipToOverride.city||!_shipToOverride.state||!_shipToOverride.postalCode)){nf('Enter a complete ship-to address (street, city, state, zip)','error');return}
                       nf('Creating ShipStation label...');
-                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'fedex',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
+                      const label=await createShipStationLabel(so,c2,(manualShipModal.shipItems||[]),w,manualShipModal.carrier||'ups',shipServiceCode(manualShipModal.carrier,manualShipModal.service),dims,_shipToOverride);
                       const cost=label.shipmentCost||label.insuranceCost?parseFloat(label.shipmentCost||0)+parseFloat(label.insuranceCost||0):null;
                       const labelUrl=label.labelData?(typeof label.labelData==='string'&&label.labelData.length>200?'data:application/pdf;base64,'+label.labelData:label.labelData?.href||null):null;
                       const labelDownload=label.labelDownload||labelUrl||null;
