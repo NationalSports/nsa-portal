@@ -582,6 +582,49 @@ const recalcJobFulfillment = (o, items) => {
   });
 };
 
+// ── Derived (display) product status for a job ──
+// The stored item_status (set by recalcJobFulfillment) tracks RECEIPTS only: it reads
+// 'need_to_order' whenever fulfilled_units is 0, even when a PO already covers every unit.
+// That's correct for the floor release gate (advance_job_stage / jobReadiness key off it —
+// "goods in hand?"), but it is the WRONG thing to LABEL "Need to Order" on the Jobs board:
+// a job whose garments are fully on a PO — or a drop-ship job that never gets received —
+// would sit under "Need to Order" forever even though nothing more needs ordering.
+// This derives a coverage-aware status for DISPLAY/FILTER, mirroring calcSOStatus's coverage
+// math (committed = PO ordered − cancelled, or already on a pick line). It NEVER mutates the
+// stored item_status. Same ladder as OrderEditor's job-detail jItemStatus so the Jobs list and
+// the order's job detail agree:
+//   items_received  — every unit received/pulled
+//   partially_received — some (but not all) units received
+//   waiting_receive — nothing received, but every unit is committed (fully ordered/picked)
+//   on_order        — nothing received, some units committed
+//   need_to_order   — nothing received and nothing committed (genuinely still needs a PO)
+const deriveJobItemStatus = (j, o) => {
+  const total = safeNum(j.total_units);
+  const ful = safeNum(j.fulfilled_units);
+  if (total > 0 && ful >= total) return 'items_received';
+  if (ful > 0) return 'partially_received';
+  const items = safeItems(o);
+  let totalSz = 0, coveredSz = 0;
+  (j.items || []).forEach(gi => {
+    const it = items[gi.item_idx];
+    if (!it) return;
+    // Split job items carry their own subset in gi.sizes; fall back to the full line otherwise.
+    // qty_only items (no size breakdown) hold their count in est_qty under the 'QTY' bucket.
+    let entries = Object.entries(gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : safeSizes(it)).filter(([, v]) => safeNum(v) > 0);
+    if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+    entries.forEach(([sz, v]) => {
+      const need = safeNum(v);
+      totalSz += need;
+      const picked = safePicks(it).reduce((a, pk) => a + safeNum(pk[sz]), 0);
+      const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
+      coveredSz += Math.min(need, picked + poOrd);
+    });
+  });
+  if (totalSz > 0 && coveredSz >= totalSz) return 'waiting_receive';
+  if (coveredSz > 0) return 'on_order';
+  return 'need_to_order';
+};
+
 // ── Ready-for-decoration transition ──
 // Given a job list from before and after a fulfillment recalc, returns the jobs that JUST
 // crossed into items_received while their artwork is already complete — i.e. the moment the
@@ -1071,7 +1114,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
