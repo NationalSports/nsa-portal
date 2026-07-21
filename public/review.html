@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leave National Sports Apparel a Review</title>
+
+<!-- ─────────────────────────────────────────────────────────────────────────
+     Rich link-preview redirect page.
+
+     Purpose: g.page/r/… Google review short links produce an ugly, generic
+     iMessage/Slack preview (bare "g.page" strip, map-pin icon). Texting THIS
+     page instead gives coaches a branded card (logo + clear "leave a review"
+     message), because link-preview bots read the Open Graph tags below from the
+     served HTML. Bots don't run JavaScript, so they stay on this page and show
+     the card; a real visitor's browser runs the redirect script and lands
+     straight on the Google review form.
+
+     To change where reviews go, edit REVIEW_URL in the <script> at the bottom.
+     Served at /review (see public/_redirects).
+     ──────────────────────────────────────────────────────────────────────── -->
+
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="National Sports Apparel" />
+<meta property="og:title" content="Leave National Sports Apparel a review ⭐" />
+<meta property="og:description" content="Thanks for working with us! Tap to leave a quick Google review — it takes under a minute and means the world to our team." />
+<meta property="og:image" content="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png" />
+<meta property="og:url" content="https://nsa-portal.netlify.app/review" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="Leave National Sports Apparel a review ⭐" />
+<meta name="twitter:description" content="Thanks for working with us! Tap to leave a quick Google review — it takes under a minute and means the world to our team." />
+<meta name="twitter:image" content="https://nsa-portal.netlify.app/NEW%20NSA%20Logo%20on%20white.png" />
+
+<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f1f5f9;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;color:#1e293b}
+.card{background:white;max-width:420px;width:100%;border-radius:16px;box-shadow:0 8px 32px rgba(0,0,0,0.10);overflow:hidden;text-align:center}
+.top{background:linear-gradient(135deg,#1e3a5f,#2563eb);padding:28px 24px}
+.top img{max-width:220px;width:80%;height:auto;filter:drop-shadow(0 2px 6px rgba(0,0,0,0.15))}
+.body{padding:28px 24px 32px}
+.stars{font-size:30px;letter-spacing:4px;margin-bottom:12px}
+h1{font-size:20px;line-height:1.3;margin-bottom:10px;color:#0f172a}
+p{font-size:14px;line-height:1.55;color:#475569;margin-bottom:22px}
+.btn{display:inline-block;background:#2563eb;color:white;text-decoration:none;font-size:16px;font-weight:700;padding:14px 32px;border-radius:10px;transition:background 0.15s}
+.btn:hover{background:#1d4ed8}
+.hint{font-size:12px;color:#94a3b8;margin-top:18px}
+.spinner{width:18px;height:18px;border:2px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;display:inline-block;vertical-align:middle;margin-right:6px;animation:spin 0.7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="top">
+    <img src="/NEW%20NSA%20Logo%20on%20white.png" alt="National Sports Apparel" />
+  </div>
+  <div class="body">
+    <div class="stars">⭐⭐⭐⭐⭐</div>
+    <h1>Thanks for choosing National&nbsp;Sports&nbsp;Apparel!</h1>
+    <p>We'd love a quick Google review — it takes less than a minute and helps our team a ton.</p>
+    <a class="btn" id="reviewBtn" href="https://g.page/r/CfcLJB_RwxCREBM/review" rel="noopener">⭐ Leave a Review</a>
+    <div class="hint"><span class="spinner"></span>Taking you to Google… tap the button if it doesn't open.</div>
+  </div>
+</div>
+
+<script>
+  // Real visitors get bounced straight to the Google review form. Link-preview
+  // bots don't run this, so they stay on the branded card above.
+  var REVIEW_URL = 'https://g.page/r/CfcLJB_RwxCREBM/review';
+  document.getElementById('reviewBtn').href = REVIEW_URL;
+  // replace() so the back button skips this interstitial and returns to Messages.
+  window.location.replace(REVIEW_URL);
+</script>
+</body>
+</html>
