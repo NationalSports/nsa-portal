@@ -3889,6 +3889,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             }} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Apply Credit</button>}
             {o.credit_applied&&<button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#065f46',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);sv('credit_applied',false);sv('credit_amount',0);nf('Credit removed')}} onMouseEnter={e=>e.currentTarget.style.background='#ecfdf5'} onMouseLeave={e=>e.currentTarget.style.background='none'}>🏷️ Remove Credit</button>}
             {onAssignTodo&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#374151',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);onAssignTodo({title:'',description:'',so_id:isSO?o.id:'',customer_id:o.customer_id||'',priority:2,doc_label:o.id})}} onMouseEnter={e=>e.currentTarget.style.background='#f1f5f9'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📋 Assign TODO</button></>}
+            {isSO&&onAssignTodo&&isBotOwner(cu)&&(()=>{
+              const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
+              if(!bot)return null;
+              // Distinct OPEN Adidas POs on this SO get the live CLICK read; the email covers every PO.
+              const openAdi=(()=>{const m={};safeItems(o).forEach(it=>{(it.po_lines||[]).forEach(pl=>{if(!pl.po_id||!/adidas/i.test(pl.vendor||it.brand||''))return;let ord=0,rcv=0,can=0;Object.entries(pl).forEach(([k,v])=>{if(!_PO_SZ_META.has(k)&&!k.startsWith('_')&&typeof v==='number')ord+=v});Object.values(pl.received||{}).forEach(v=>{if(typeof v==='number')rcv+=v});Object.values(pl.cancelled||{}).forEach(v=>{if(typeof v==='number')can+=v});if(ord-rcv-can>0)m[pl.po_id]={id:pl.po_id}})});return Object.values(m)})();
+              return <><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#0f766e',textAlign:'left'}} title="Emails the rep a full status of this order — every PO's received/shipped state — and reads live ship status from Adidas CLICK My Orders for any open Adidas POs. Read-only." onClick={()=>{setShowActionsDD(false);const _cust=(allCustomers||[]).find(c=>c.id===o.customer_id)||ic||null;const{title,description,bot_payload}=buildBotTrackPayload({so:o,pos:openAdi,customer:_cust});onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:2,bot_payload})}} onMouseEnter={e=>e.currentTarget.style.background='#f0fdfa'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📋 Order status{openAdi.length?` · ${openAdi.length} Adidas PO${openAdi.length===1?'':'s'} live`:''}</button></>;
+            })()}
             {isSO&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#7c3aed',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);setFirmReqDate(o.expected_date||'');setFirmReqNote('');setShowFirmReq(true)}} onMouseEnter={e=>e.currentTarget.style.background='#f5f3ff'} onMouseLeave={e=>e.currentTarget.style.background='none'}>📌 Request Firm Date</button></>}
             {(isE||onDelete)&&<><div style={{borderTop:'1px solid #e2e8f0',margin:'2px 0'}}/><button style={{display:'flex',alignItems:'center',gap:6,width:'100%',padding:'8px 12px',border:'none',background:'none',cursor:'pointer',fontSize:12,color:'#dc2626',textAlign:'left'}} onClick={()=>{setShowActionsDD(false);if(onDelete){onDelete(o.id)}else{nf('Delete not available','error')}}} onMouseEnter={e=>e.currentTarget.style.background='#fef2f2'} onMouseLeave={e=>e.currentTarget.style.background='none'}><Icon name="trash" size={12}/> Delete</button></>}
           </div></>})()}
@@ -11189,21 +11196,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {pk.memo&&<div style={{fontSize:11,color:'#475569',marginTop:3,fontStyle:'italic'}}>💬 {pk.memo}</div>}
             </div>)}
           </div></>}
-        {allPoIds.length>0&&<><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6}}>
-          <div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase'}}>Purchase Orders</div>
-          {onAssignTodo&&isBotOwner(cu)&&(()=>{
-            // Emails the rep a full order status (every PO). Open Adidas POs also get a
-            // live CLICK "My Orders" ship-status read layered on.
-            const bot=(REPS||[]).find(r=>r.is_active!==false&&r.role==='bot');
-            if(!bot)return null;
-            const openAdi=allPoIds.filter(p=>p.status!=='received'&&/adidas/i.test(p.vendor||''));
-            return <button className="btn btn-sm btn-secondary" style={{marginLeft:'auto',fontSize:11,color:'#0f766e',borderColor:'#5eead4'}} title="Emails the rep a full status of this order — every PO's received/shipped state — and reads live ship status from Adidas CLICK My Orders for any open Adidas POs. Read-only — never touches a cart." onClick={()=>{
-              const _cust=(allCustomers||[]).find(c=>c.id===o.customer_id)||ic||null;
-              const{title,description,bot_payload}=buildBotTrackPayload({so:o,pos:openAdi,customer:_cust});
-              onAssignTodo({title,description,assigned_to:bot.id,so_id:o.id,priority:2,bot_payload});
-            }}>📋 Order status{openAdi.length?` · ${openAdi.length} Adidas PO${openAdi.length===1?'':'s'} live`:''}</button>;
-          })()}
-        </div>
+        {allPoIds.length>0&&<><div style={{fontSize:11,fontWeight:700,color:'#64748b',textTransform:'uppercase',marginBottom:6}}>Purchase Orders</div>
           <div style={{display:'flex',flexDirection:'column',gap:6}}>
             {allPoIds.map(po=><div key={po.id} style={{padding:'10px 14px',border:'1px solid #e2e8f0',borderRadius:8,cursor:'pointer',background:po.status==='received'?'#f0fdf4':po.status==='partial'?'#fffbeb':'#fff',transition:'box-shadow 0.15s'}} className="hover-card" onClick={()=>{const poData=o.items[po.lineIdx]?.po_lines?.[po.poIdx];if(poData)setEditPO({lineIdx:po.lineIdx,poIdx:po.poIdx,po:poData,allLines:po.lines})}}>
               <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4}}>
