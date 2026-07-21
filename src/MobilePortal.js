@@ -48,7 +48,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel,decoRequest,onDecoRequestDone}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -119,6 +119,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[whTab,setWhTab]=useState('if'); // if | pos
   const[mpScanOpen,setMpScanOpen]=useState(false); // camera/QR scanner modal
   const[mpBox,setMpBox]=useState(null); // {box,binDraft,combineWith} — Box Action sheet (BX plate scans)
+  const[receiptPrinted,setReceiptPrinted]=useState(false); // check-in confirmation: has the label been printed yet?
+  useEffect(()=>{setReceiptPrinted(false)},[receipt]); // reset the Print button each time a new confirmation opens
   const[whDetail,setWhDetail]=useState(null); // null | {kind:'if',soId,pickId} | {kind:'po',key}
   const[whPullQty,setWhPullQty]=useState({}); // {itemIdx:{size:qty}}
   const[whRcvQty,setWhRcvQty]=useState({}); // {lineIdx:{size:qty}}
@@ -2416,27 +2418,40 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
       </div>;
     })()}
-    {/* Ready-for-decoration pop-up — fires when the last units of a job check in with art complete.
-        Mirrors the desktop green banner: the job(s) + every garment line to stage for decoration. */}
-    {decoRequest&&decoRequest.length>0&&(()=>{const done=onDecoRequestDone||(()=>{});const jobCount=decoRequest.reduce((a,g)=>a+g.jobs.length,0);
+    {/* Check-in confirmation — fires after a receive/pull is applied. Shows exactly what was
+        just checked in (items + Program/Rep/SO), any job now ready for decoration, and the
+        label print button (label prints from here on tap, never before the save is applied). */}
+    {receipt&&receipt.groups&&receipt.groups.length>0&&(()=>{
+      const done=onReceiptDone||(()=>{});
+      const pulled=receipt.kind==='pulled';
+      const hasLabels=(receipt.labels||[]).length>0;
+      const doPrint=()=>{if(onPrintLabels)onPrintLabels(receipt.labels||[]);setReceiptPrinted(true)};
       return<div style={{position:'fixed',inset:0,zIndex:3200,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={done}>
-        <div style={{width:'100%',maxWidth:560,maxHeight:'88vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'16px 16px calc(16px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
+        <div style={{width:'100%',maxWidth:560,maxHeight:'90vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'16px 16px calc(16px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
-            <span style={{fontSize:18,fontWeight:900,color:'#166534'}}>🎽 Ready for Decoration</span>
+            <span style={{fontSize:18,fontWeight:900,color:'#166534'}}>✓ {pulled?'Pulled':'Checked In'} — {receipt.units} unit{receipt.units!==1?'s':''}</span>
             <button onClick={done} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:26,lineHeight:1,padding:'0 4px'}}>×</button>
           </div>
-          <div style={{fontSize:13,color:'#15803d',fontWeight:600,marginBottom:12}}>{jobCount===1?'This job has':jobCount+' jobs have'} all items in &amp; art complete — stage for decoration.</div>
-          {decoRequest.map((g,gi)=>g.jobs.map((j,ji)=><div key={gi+'-'+ji} style={{border:'2px solid #22c55e',background:'#f0fdf4',borderRadius:10,padding:'10px 12px',marginBottom:8,boxShadow:'0 2px 8px rgba(34,197,94,0.2)'}}>
-            <div style={{fontWeight:800,fontSize:15,color:'#14532d'}}>{j.art_name}</div>
-            <div style={{fontSize:12,color:'#15803d',marginBottom:j.lines.length?6:0}}>{j.id} · {g.soId}{g.custName?' · '+g.custName:''} · {j.units} units{j.deco_type?' · '+j.deco_type:''}</div>
-            {j.lines.map((ln,li)=><div key={li} style={{display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap',fontSize:12,padding:'4px 0',borderTop:'1px dashed '+(li===0?'#bbf7d0':'#dcfce7')}}>
+          <div style={{fontSize:12,color:'#64748b',fontWeight:600,marginBottom:12}}>Review what was {pulled?'pulled':'received'}, then print the label.</div>
+          {receipt.groups.map((g,gi)=><div key={gi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:'10px 12px',marginBottom:10}}>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+              <span style={{fontWeight:800,color:'#1e40af',fontSize:15}}>{g.soId}</span>
+              {g.custName&&<span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{g.custName}</span>}
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Program: <strong style={{color:'#334155'}}>{g.custName||'—'}</strong>{g.repName?<> · Rep: <strong style={{color:'#334155'}}>{g.repName}</strong></>:null} · SO: <strong style={{color:'#334155'}}>{g.soId}</strong></div>
+            {(g.lines||[]).map((ln,li)=><div key={li} style={{display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap',fontSize:12,padding:'5px 0',borderTop:'1px solid #f1f5f9'}}>
               <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{ln.sku}</span>
               <span style={{color:'#334155',fontWeight:600}}>{ln.name}{ln.color?' — '+ln.color:''}</span>
               <span style={{marginLeft:'auto',color:'#475569',fontFamily:'monospace'}}>{ln.szStr}</span>
-              <span style={{fontWeight:800,color:'#166534'}}>{ln.qty}</span>
+              <span style={{fontWeight:800,color:'#166534',minWidth:28,textAlign:'right'}}>{ln.qty}</span>
             </div>)}
-          </div>))}
-          <button onClick={done} style={{width:'100%',padding:'12px',borderRadius:10,border:'none',background:'#16a34a',color:'white',fontWeight:800,fontSize:15,marginTop:4,minHeight:48,cursor:'pointer'}}>Got it</button>
+            {(g.deco||[]).length>0&&<div style={{marginTop:8,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'8px 10px'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:4}}>🎽 Ready for Decoration</div>
+              {g.deco.map((j,ji)=><div key={ji} style={{fontSize:11,color:'#15803d',padding:'2px 0'}}><strong style={{color:'#14532d'}}>{j.art_name}</strong> · {j.id} · {j.units} units{j.deco_type?' · '+j.deco_type:''}</div>)}
+            </div>}
+          </div>)}
+          {hasLabels&&<button onClick={doPrint} style={{width:'100%',padding:'13px',borderRadius:10,border:'none',background:receiptPrinted?'#0891b2':'#1e40af',color:'white',fontWeight:800,fontSize:15,marginTop:2,minHeight:48,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}><MIcon name="box" size={17}/> {receiptPrinted?'Print Label Again':'Print Label'+((receipt.labels||[]).length>1?'s ('+receipt.labels.length+')':'')}</button>}
+          <button onClick={done} style={{width:'100%',padding:'12px',borderRadius:10,border:hasLabels?'1px solid #cbd5e1':'none',background:hasLabels?'white':'#16a34a',color:hasLabels?'#334155':'white',fontWeight:800,fontSize:15,marginTop:8,minHeight:48,cursor:'pointer'}}>{receiptPrinted||!hasLabels?'Done':'Done — Skip Label'}</button>
         </div>
       </div>;
     })()}

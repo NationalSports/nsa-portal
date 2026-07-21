@@ -5465,10 +5465,11 @@ export default function App(){
   // A ?scan= deep link (printed QR labels) that arrives while in mobile mode — handed to
   // MobilePortal's scan router instead of handleScanResult, which only drives desktop state.
   const[mobileScanReq,setMobileScanReq]=useState(null);
-  // Mobile "Ready for decoration" pop-up payload — set by the mobile receive/pull handlers when
-  // the final units of a job are checked in with art already complete. Mirrors the desktop green
-  // banner (job + its full garment line list), which a 3.5s toast can't convey on a phone.
-  const[mobileDecoReq,setMobileDecoReq]=useState(null);
+  // Mobile check-in confirmation payload — set by the mobile receive/pull handlers after a
+  // receipt/pull is applied. Shows exactly what was just checked in (items + Program/Rep/SO),
+  // any job that became ready for decoration, and a "Print Label" button. Replaces the old
+  // straight-to-label-print flow so the team can confirm the system caught everything first.
+  const[mobileReceipt,setMobileReceipt]=useState(null);
 
   // ─── BOX TRACKING (BX-#### license plates — BOX_TRACKING_PLAN.md v1, migration 00185) ───
   // Persists what the ephemeral whViewIF._boxes UI never captured: which physical box holds
@@ -16204,7 +16205,21 @@ export default function App(){
       return{id:j.id,art_name:j.art_name||j.id,deco_type:(j.deco_type||'').replace(/_/g,' '),units:j.total_units||lines.reduce((a,l)=>a+l.qty,0),lines};
     })};
   };
-  const _showMobileDecoReady=(groups)=>{const g=(groups||[]).filter(Boolean);if(g.length)setMobileDecoReq(g)};
+  // Line summary for the confirmation screen: {itemIdx:{size:qty}} → [{sku,name,color,szStr,qty}].
+  const _receiptLines=(so,itemQtyMap)=>{
+    const its=safeItems(so);
+    const szSort=(a,b)=>(SZ_ORD.indexOf(a)===-1?99:SZ_ORD.indexOf(a))-(SZ_ORD.indexOf(b)===-1?99:SZ_ORD.indexOf(b));
+    return Object.entries(itemQtyMap||{}).map(([ii,qtys])=>{const it=its[ii]||{};const szKeys=Object.keys(qtys||{}).filter(sz=>(qtys[sz]||0)>0).sort(szSort);const qty=szKeys.reduce((a,sz)=>a+(qtys[sz]||0),0);if(qty<=0)return null;return{sku:it.sku||'',name:it.name||'',color:it.color||'',szStr:szKeys.map(sz=>sz+':'+qtys[sz]).join('  '),qty}}).filter(Boolean);
+  };
+  const _repNameForSO=(so,cc)=>{const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));return r?.name||''};
+  // One confirmation group per SO: Program (customer), Rep, SO, the lines just checked in, and any
+  // jobs that became ready for decoration (reuses the deco-ready line builder above).
+  const _buildReceiptGroup=(so,itemQtyMap,decoJobs)=>{
+    if(!so)return null;
+    const cc=cust.find(c=>c.id===so.customer_id);const decoG=_buildDecoReadyGroup(so,decoJobs);
+    return{soId:so.id,custName:cc?.name||'',repName:_repNameForSO(so,cc),lines:_receiptLines(so,itemQtyMap),deco:decoG?decoG.jobs:[]};
+  };
+  const _showMobileReceipt=(payload)=>{const groups=(payload?.groups||[]).filter(Boolean);if(groups.length)setMobileReceipt({...payload,groups})};
   // ─── Mobile warehouse mutations — parity with desktop IF-pull / PO-receive side effects ───
   // Pull an IF (pick group) from mobile. pullMap: {itemIdx:{size:qty}} pulled this round.
   const mobilePullIF=(soId,pickId,pullMap)=>{
@@ -16233,7 +16248,16 @@ export default function App(){
     nf('✅ '+pickId+' pulled — '+grand+' units');
     const _deco=jobsNowReadyForDeco(so.jobs,_newJobs);
     notifyDecoReady(_deco);
-    _showMobileDecoReady([_buildDecoReadyGroup(so,_deco)]);
+    // PULLED pull-sheet label — same 4×6 format as a receiving label, printed from the
+    // confirmation screen on tap (not auto), so it never fires before the save is applied.
+    const pullLabels=[];
+    try{
+      const labelItems=[];let unitsL=0;
+      Object.entries(pullMap).forEach(([ii,qtys])=>{const it=items[ii];if(!it)return;const sz=Object.entries(qtys||{}).filter(([,v])=>v>0);if(!sz.length)return;const q=sz.reduce((a,[,v])=>a+v,0);unitsL+=q;labelItems.push({title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')})});
+      const _r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||so.created_by));const _d=new Date().toLocaleDateString();
+      if(labelItems.length)pullLabels.push({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:cc?.name||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:soId,note:'PULLED — '+_d,noteStyle:'color:#166534',items:labelItems,codeSub:unitsL+' units · scan to open'});
+    }catch(_){}
+    _showMobileReceipt({kind:'pulled',units:grand,labels:pullLabels,groups:[_buildReceiptGroup(so,pullMap,_deco)]});
   };
   // Receive (check in) SO-attached PO lines from mobile. lines: [{itemIdx,poLineIdx,rcv:{size:qty}}].
   // opts.defer: skip the toast/deco-notify/print and return {labels,decoJobs,units} so batch
@@ -16265,6 +16289,9 @@ export default function App(){
       .then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
+    // Aggregate what was received per item (across POs) for the confirmation summary.
+    const itemQtyMap={};
+    lines.forEach(({itemIdx,rcv})=>{const m=itemQtyMap[itemIdx]||(itemQtyMap[itemIdx]={});Object.entries(rcv||{}).forEach(([sz,q])=>{if(q>0)m[sz]=(m[sz]||0)+q})});
     // Build the 4×6 receiving label(s) — parity with the desktop "Confirm Received" flow:
     // one label page per SOURCE PO (each box gets its own label), not one merged label per
     // SO. Wrapped so a label-build failure can never abort the receive.
@@ -16281,24 +16308,24 @@ export default function App(){
       const groups=Object.values(byPo);const _rDate=new Date().toLocaleDateString();
       groups.forEach((g,gi)=>labels.push({code:g.code,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(g.code),program:(cc&&cc.name)||'',rep:_r&&_r.name?'Rep: '+_r.name.split(' ')[0]:'',subtitle:groups.length>1?soId+' · Box '+(gi+1)+' of '+groups.length:soId,note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:g.items,codeSub:g.units+' units · scan to open PO'}));
     }catch(_){}
+    const group=_buildReceiptGroup(so,itemQtyMap,decoJobs);
     if(!opts.defer){
       nf('Received '+grand+' unit'+(grand!==1?'s':'')+' on '+soId);
       notifyDecoReady(decoJobs);
-      _showMobileDecoReady([_buildDecoReadyGroup(so,decoJobs)]);
-      try{printQrLabels(labels)}catch(_){}
+      // Show the confirmation screen (labels print from there on tap) instead of auto-printing.
+      _showMobileReceipt({kind:'received',units:grand,labels,groups:[group]});
     }
-    return{labels,decoJobs,units:grand};
+    return{labels,decoJobs,units:grand,group};
   };
   // Mobile batch check-in: apply every SO's receipts, then ONE combined print job (one page
   // per source PO) and ONE deco-ready toast. Fired after MobilePortal's summary toast so the
   // "🎽 Ready for decoration" notice is what stays on screen instead of being clobbered.
   const mobileReceiveSOPOBatch=(entries)=>{
-    const labels=[],deco=[],decoGroups=[];let units=0;
-    (entries||[]).forEach(({soId,lines})=>{const so=sos.find(s=>s.id===soId);const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r){labels.push(...r.labels);deco.push(...r.decoJobs);if(r.decoJobs.length){const g=_buildDecoReadyGroup(so,r.decoJobs);if(g)decoGroups.push(g)}units+=r.units}});
+    const labels=[],deco=[],groups=[];let units=0;
+    (entries||[]).forEach(({soId,lines})=>{const r=mobileReceiveSOPO(soId,lines,{defer:true});if(r){labels.push(...r.labels);deco.push(...r.decoJobs);if(r.group)groups.push(r.group);units+=r.units}});
     if(units===0)return;
     notifyDecoReady(deco);
-    _showMobileDecoReady(decoGroups);
-    try{printQrLabels(labels)}catch(_){}
+    _showMobileReceipt({kind:'received',units,labels,groups});
   };
   // Persist warehouse recent actions to app_state (DB) + localStorage so they survive across devices/sessions
   // Local mutation (not a hydration echo) opens a 12s dirty window so an in-flight stale load can't clobber it — same pattern as batch_pos.
@@ -32026,7 +32053,7 @@ export default function App(){
   // <Toast> in the return below is never reached in mobile mode (this early return),
   // so without this every mobile toast — the green "🎽 Ready for decoration" and
   // "✅ Received N units" confirmations included — was silently dropped.
-  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} decoRequest={mobileDecoReq} onDecoRequestDone={()=>setMobileDecoReq(null)} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
+  if(mobileMode)return<><Toast msg={toast?.msg} type={toast?.type}/><ComponentErrorBoundary name="MobilePortal"><MobilePortal cu={cu} cust={cust} sos={sos} ests={ests} invs={invs} histInvs={histInvs} msgs={msgs} prod={prod} vend={vend} REPS={REPS} assignedTodos={assignedTodos} computedTodos={computedTodos} dismissedTodos={dismissedTodos} onDismissTodo={dismissTodo} onLogout={handleLogout} onSwitchDesktop={()=>setMobileMode(false)} onSaveEstimate={savE} onSaveSO={savSO} searchProducts={_searchProductsServer} nextEstId={()=>nextEstId(ests)} nf={nf} onMsg={setMsgs} invPOs={invPOs} submittedBatches={submittedBatches} onPullIF={mobilePullIF} onReceiveSOPO={mobileReceiveSOPO} onReceiveSOPOBatch={mobileReceiveSOPOBatch} onReceiveInvPO={receiveInvPO} receipt={mobileReceipt} onReceiptDone={()=>setMobileReceipt(null)} onPrintLabels={(labels)=>{try{printQrLabels(labels)}catch(_){}}} onAssignBot={assignBotTask} canAccess={canAccess} scanRequest={mobileScanReq} onScanRequestDone={()=>setMobileScanReq(null)} boxes={boxRows} onBoxLookup={lookupBox} onBoxUpdate={_boxUpdate} onBoxCombine={combineBoxes} onBoxLabel={printBoxLabel}/></ComponentErrorBoundary></>;
 
   // Shared state interface for pages extracted out of App() (see src/AppContext.js).
   // Every key must be an App()-scope binding; extracted pages read these via useAppData().
