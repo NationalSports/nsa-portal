@@ -82,6 +82,43 @@ describe('normSzName — numeric-input fix (regression)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION 2b — normSzName: age/gender-qualified sizes normalize to the bare
+// size, they do NOT collapse to OSFA. The OMG store import used to shortcut any
+// size starting with "Adult" straight to OSFA (/^adult\b/ → 'OSFA'), so a store
+// of sized apparel labeled "Adult S / Adult Medium / …" imported as a single
+// OSFA bucket (Bellflower Baseball, Jul 2026). The fix routes the import through
+// normSzName; these pin the behavior it now relies on.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('normSzName — "Adult <size>" strips the qualifier, never collapses to OSFA (regression)', () => {
+  test('spelled-out adult sizes normalize to the core scale', () => {
+    expect(normSzName('Adult Small')).toBe('S');
+    expect(normSzName('Adult Medium')).toBe('M');
+    expect(normSzName('Adult Large')).toBe('L');
+    expect(normSzName('Adult X-Large')).toBe('XL');
+  });
+
+  test('abbreviated adult sizes normalize to the core scale', () => {
+    expect(normSzName('Adult S')).toBe('S');
+    expect(normSzName('Adult M')).toBe('M');
+    expect(normSzName('Adult L')).toBe('L');
+    expect(normSzName('Adult XL')).toBe('XL');
+    expect(normSzName('Adult 2XL')).toBe('2XL');
+  });
+
+  test('none of the adult-qualified sizes come back as OSFA', () => {
+    for (const s of ['Adult Small', 'Adult Medium', 'Adult Large', 'Adult X-Large', 'Adult S', 'Adult XL', 'Adult 2XL']) {
+      expect(normSzName(s)).not.toBe('OSFA');
+    }
+  });
+
+  test('a bare "Adult" (no size) is NOT forced to OSFA by normSzName — the import guards that one-size case at the call site', () => {
+    // normSzName only strips a qualifier when a size actually follows it; with nothing
+    // after "Adult" there is no size to normalize, so it passes through uppercased.
+    expect(normSzName('Adult')).toBe('ADULT');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // REGRESSION 3 — decoPricing dP: non-numeric sell_override ignored, numeric honored
 // ─────────────────────────────────────────────────────────────────────────────
 describe('dP — sell_override coercion fix (regression)', () => {

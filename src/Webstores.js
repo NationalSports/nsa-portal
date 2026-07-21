@@ -5,7 +5,7 @@ import { supabase } from './lib/supabase';
 import { cloudUpload, sendBrevoEmail, authFetch, invokeEdgeFn, printPdfLabels, estimateWeightOz, labelWeightLbs, validateShipAddress, computeOrderTracking, _cloudinaryPdfThumb } from './utils';
 import { shipStationCall, sanmarResolveSku, ssResolveSku, richardsonResolveSku, momentecResolveSku, resolveSkuAcrossVendors } from './vendorApis';
 import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSearch';
-import { NSA, pantoneHex, SZ_NORM } from './constants';
+import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
@@ -1528,7 +1528,11 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         const groups = {};
         rows.forEach((row) => {
           const rawSz = (row.size || 'OS').trim().replace(/["''″]+$/, '');
-          const sz = SZ_NORM[rawSz.toUpperCase()] || (/^adult\b/i.test(rawSz) ? 'OSFA' : rawSz);
+          // OMG labels sized apparel with an age/gender qualifier — "Adult S", "Adult Medium",
+          // "Youth L". normSzName strips the qualifier and normalizes the remainder (Adult Small → S).
+          // A bare "Adult" with no size is a genuine one-size item → OSFA. The old /^adult\b/ shortcut
+          // collapsed EVERY "Adult …" size to OSFA, so a multi-size store imported as one OSFA bucket.
+          const sz = /^adult$/i.test(rawSz) ? 'OSFA' : normSzName(rawSz);
           const qty = row.quantity || 0;
           const colorSku = extractSku(row.color);
           const rowColor = (row.color || '').trim();
