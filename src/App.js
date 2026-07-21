@@ -32225,15 +32225,14 @@ export default function App(){
                     const restockDate=shortDates.length?shortDates[shortDates.length-1]:null;
                     const cur=todoModal.bot_line_sched?.[l.sku]||{mode:'auto'};
                     const setSch=(sch)=>setTodoModal(m=>({...m,bot_line_sched:{...(m.bot_line_sched||{}),[l.sku]:sch}}));
-                    return<div style={{marginTop:4}}>
-                      <select className="form-select" style={{fontSize:10,padding:'2px 4px',width:150}} value={cur.mode==='date'?(cur.date===restockDate?'restock':'custom'):cur.mode}
-                        onChange={e=>{const v=e.target.value;setSch(v==='restock'?{mode:'date',date:restockDate}:v==='custom'?{mode:'date',date:cur.date||restockDate||''}:{mode:v})}}>
-                        <option value="auto">Auto (rules below)</option>
-                        <option value="now">Order in-stock only</option>
-                        {restockDate&&<option value="restock">All on {restockDate}</option>}
-                        <option value="custom">Pick date…</option>
-                      </select>
-                      {cur.mode==='date'&&cur.date!==restockDate&&<input type="date" className="form-input" style={{fontSize:10,padding:'2px 4px',width:150,marginTop:2}} value={cur.date||''} onChange={e=>setSch({mode:'date',date:e.target.value})}/>}
+                    const _pill=(on)=>({fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:999,cursor:'pointer',border:'1px solid '+(on?'#1d4ed8':'#cbd5e1'),background:on?'#1d4ed8':'#fff',color:on?'#fff':'#475569',whiteSpace:'nowrap'});
+                    const isCustom=cur.mode==='date'&&cur.date!==restockDate;
+                    return<div style={{marginTop:4,display:'flex',gap:4,justifyContent:'flex-end',alignItems:'center',flexWrap:'wrap'}}>
+                      <button type="button" style={_pill(!cur.mode||cur.mode==='auto')} title="Follow the order-wide rules below" onClick={()=>setSch({mode:'auto'})}>Auto</button>
+                      <button type="button" style={_pill(cur.mode==='now')} title="Order only the sizes in stock today; report the rest as dropped" onClick={()=>setSch({mode:'now'})}>Now only</button>
+                      {restockDate&&<button type="button" style={_pill(cur.mode==='date'&&cur.date===restockDate)} title={'Order the whole SKU under its restock date '+restockDate} onClick={()=>setSch({mode:'date',date:restockDate})}>All {restockDate.slice(5).replace('-','/')}</button>}
+                      <button type="button" style={_pill(isCustom)} title="Order the whole SKU under a date you pick" onClick={()=>setSch({mode:'date',date:cur.date&&cur.date!==restockDate?cur.date:''})}>📅</button>
+                      {isCustom&&<input type="date" className="form-input" style={{fontSize:10,padding:'2px 4px',width:130}} value={cur.date||''} onChange={e=>setSch({mode:'date',date:e.target.value})}/>}
                     </div>})()}
                 </div>
               </div>)}
@@ -32265,7 +32264,10 @@ export default function App(){
               2-week window — let the rep decide NOW instead of the bot asking mid-run. */}
           {(()=>{if(!botAvail?.map)return null;
             const _in14=d=>{if(!d)return false;return(new Date(d+'T12:00:00Z')-new Date())/864e5<=14};
-            const _long=[];(todoModal.bot_payload?.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;Object.entries(l.sizes||{}).forEach(([sz,q])=>{const r=a[sz];if(r&&(r.stock||0)<Number(q)&&!_in14(r.date))_long.push(l.sku+' '+sz+(r.date?' (restock '+r.date+')':' (no date)'))})});
+            // Lines the rep already scheduled explicitly (per-line control) are decided —
+            // don't ask about them again here.
+            const _sched=todoModal.bot_line_sched||{};
+            const _long=[];(todoModal.bot_payload?.lines||[]).forEach(l=>{const a=botAvail.map[l.sku];if(!a)return;const s=_sched[l.sku];if(s&&(s.mode==='now'||(s.mode==='date'&&s.date)))return;Object.entries(l.sizes||{}).forEach(([sz,q])=>{const r=a[sz];if(r&&(r.stock||0)<Number(q)&&!_in14(r.date))_long.push(l.sku+' '+sz+(r.date?' (restock '+r.date+')':' (no date)'))})});
             if(_long.length===0)return null;
             return<div style={{marginBottom:12}}>
               <label className="form-label">⏳ {_long.length} size{_long.length===1?'':'s'} restock beyond 2 weeks — what should Claude do?</label>
