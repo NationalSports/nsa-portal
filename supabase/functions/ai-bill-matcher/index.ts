@@ -29,9 +29,32 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
-const MODEL = Deno.env.get("AI_BILL_MATCHER_MODEL") || "claude-sonnet-4-6";
+// Two model tiers, one per pass (2026-07-21 mining, BILL_AI_MINING_2026-07-21.md):
+// RECONCILE is mechanical size-label mapping inside a closed set with server-side
+// validation and a human approve behind it — 83% of its mappings came back high-
+// confidence, so the cheap tier handles it. FIND-PO is genuine judgment (pick the
+// order) and stays on Sonnet. AI_BILL_MATCHER_MODEL still overrides BOTH (existing
+// deploys keep their behavior); the per-pass vars override that.
+const MODEL_GLOBAL = Deno.env.get("AI_BILL_MATCHER_MODEL") || "";
+const MODEL_RECONCILE = Deno.env.get("AI_BILL_MATCHER_MODEL_RECONCILE") || MODEL_GLOBAL || "claude-haiku-4-5-20251001";
+const MODEL_FINDPO = Deno.env.get("AI_BILL_MATCHER_MODEL_FINDPO") || MODEL_GLOBAL || "claude-sonnet-4-6";
+// Escalation for the hard pass (owner, 2026-07-21): when find-PO comes back with no pick
+// or low confidence, retry ONCE on a stronger model — pennies per bill, hard bills only.
+// Set AI_BILL_MATCHER_MODEL_FINDPO_RETRY="" to disable.
+const MODEL_FINDPO_RETRY = Deno.env.get("AI_BILL_MATCHER_MODEL_FINDPO_RETRY") ?? "claude-opus-4-8";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// Stable hash of exactly what the model sees, so a byte-identical re-run (same bill,
+// same order state) replays the stored result instead of re-calling the API. Mined
+// 2026-07-21: 379 of 478 calls (~695k tokens) were such repeats — the client re-sweeps
+// unresolved bills on every pull. Order state that changes (a size gets billed, a
+// candidate list shifts) changes the hash, so staleness self-invalidates.
+async function inputHash(mode: string, contextBlock: string): Promise<string> {
+  const data = new TextEncoder().encode(mode + "\n" + contextBlock);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -88,6 +111,7 @@ Rules:
   - half-sizes for shoes: "9-" / "9½" / "9 1/2" all mean "9.5".
   - tall: "3XLT" is the Tall cut of "3XL" — map to "3XL" ONLY IF the order has no distinct "3XLT" bucket; if the order does carry "3XLT", keep it.
   - one-size: "OSFM"/"OS"/"ONE" all mean the order's one-size bucket (often "OSFA").
+  - unsized/bulk: a bucket literally named "QTY" means the product was bought without sizes. When a SKU's only bucket is "QTY", map its bill lines (whatever size they print) to order_size "QTY" — exactly the string "QTY", never "QTY:2" or the quantity.
   - Match a bill size to the order bucket that means the same physical size. Prefer an exact bucket; otherwise the equivalent.
 - SKUs usually match exactly. If a bill SKU is a placeholder ("CUSTOM", "SPECIAL") or a near-variant, map it to the order SKU whose name/style it matches. If a bill line genuinely has no counterpart on the order, set order_sku=null and order_size=null (do NOT force a match).
 - changed = true if order_sku or order_size differs from what the bill printed; false if the bill was already correct (a pure confirmation).
@@ -106,7 +130,7 @@ Do two things:
 1) Pick the ONE candidate order this bill belongs to. Weigh the signals: shared SKUs are the strongest, then matching product names, then sizes that line up, then vendor. The candidates are a CLOSED SET — chosen_id MUST be one of the given candidate ids, or null. If no candidate plausibly matches, return chosen_id=null (do NOT force it).
 2) For each bill line, map it to the item INDEX (target_idx) within the CHOSEN candidate's items list. target_idx must be a valid index in that candidate's items, or null if the bill line has no counterpart there.
 
-Size-label rules (same as reconciliation): "L 7\"" / "XL7\"" → "L"/"XL"; "9-" / "9½" → "9.5"; "3XLT" → the order's "3XL" unless it carries a distinct tall bucket; "OSFM"/"OS"/"ONE" → the order's one-size item. Match by the same physical size.
+Size-label rules (same as reconciliation): "L 7\"" / "XL7\"" → "L"/"XL"; "9-" / "9½" → "9.5"; "3XLT" → the order's "3XL" unless it carries a distinct tall bucket; "OSFM"/"OS"/"ONE" → the order's one-size item; an item whose size is literally "QTY" was bought unsized/bulk — sized bill lines for that product map onto it. Match by the same physical size.
 
 allocated_qty defaults to the bill line's qty.
 confidence: "high" when shared SKUs make it unambiguous, "medium" when matched by name/size family, "low" when guessing.
@@ -184,73 +208,92 @@ serve(async (req: Request) => {
     const userText = isFindPo
       ? `Find which open order this bill belongs to, then map its lines:\n\n${contextBlock}`
       : `Reconcile this bill against the order:\n\n${contextBlock}`;
+    const MODEL = isFindPo ? MODEL_FINDPO : MODEL_RECONCILE;
 
-    const anthropicHeaders = {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    };
-    const anthropicBody = JSON.stringify({
-      model: MODEL,
-      max_tokens: 2048,
-      system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
-      messages: [{ role: "user", content: [{ type: "text", text: userText }] }],
-    });
+    // Cache replay: identical inputs → the stored validated result, no API call.
+    // body.force=true bypasses (a human explicitly asking for a fresh opinion).
+    const cacheKey = await inputHash(isFindPo ? "find_po" : "reconcile", contextBlock);
+    if (!body.force && SUPABASE_URL && SERVICE_ROLE_KEY) {
+      try {
+        const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+        const { data: hit } = await admin.from("ai_bill_matches")
+          .select("response")
+          .eq("input_hash", cacheKey)
+          .not("response", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (hit && hit.response && hit.response.ok) {
+          return new Response(JSON.stringify({ ...hit.response, cached: true }), { status: 200, headers: CORS });
+        }
+      } catch (_) { /* cache is best-effort (e.g. pre-00230 schema) — fall through to a live call */ }
+    }
 
-    // Retry 429 (rate_limit) and 529 (overloaded), capped so we stay within the runtime budget.
-    let anthropicRes!: Response;
-    let lastRetryAfter: number | null = null;
-    const maxAttempts = 3;
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: anthropicHeaders,
-        body: anthropicBody,
+    // One model call: 429/529 retry loop, JSON extraction. Returns {ok, parsed, usage}
+    // or {ok:false, response} — a ready-to-return error Response.
+    const askClaude = async (model: string): Promise<{ ok: true; parsed: any; usage: any } | { ok: false; response: Response }> => {
+      const anthropicBody = JSON.stringify({
+        model,
+        max_tokens: 2048,
+        system: [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }],
+        messages: [{ role: "user", content: [{ type: "text", text: userText }] }],
       });
-      if (anthropicRes.ok) break;
-      if (anthropicRes.status !== 429 && anthropicRes.status !== 529) break;
-      const raHeader = parseInt(anthropicRes.headers.get("retry-after") || "", 10);
-      lastRetryAfter = Number.isFinite(raHeader) ? raHeader : null;
-      if (attempt === maxAttempts) break;
-      try { await anthropicRes.text(); } catch (_) { /* drain */ }
-      const waitMs = lastRetryAfter ? Math.min(lastRetryAfter * 1000, 10_000) : Math.min(1000 * Math.pow(2, attempt - 1), 8000);
-      await new Promise((r) => setTimeout(r, waitMs));
-    }
+      let anthropicRes!: Response;
+      let lastRetryAfter: number | null = null;
+      const maxAttempts = 3;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        anthropicRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
+          body: anthropicBody,
+        });
+        if (anthropicRes.ok) break;
+        if (anthropicRes.status !== 429 && anthropicRes.status !== 529) break;
+        const raHeader = parseInt(anthropicRes.headers.get("retry-after") || "", 10);
+        lastRetryAfter = Number.isFinite(raHeader) ? raHeader : null;
+        if (attempt === maxAttempts) break;
+        try { await anthropicRes.text(); } catch (_) { /* drain */ }
+        const waitMs = lastRetryAfter ? Math.min(lastRetryAfter * 1000, 10_000) : Math.min(1000 * Math.pow(2, attempt - 1), 8000);
+        await new Promise((r) => setTimeout(r, waitMs));
+      }
+      if (!anthropicRes.ok) {
+        const errText = await anthropicRes.text();
+        const isRateLimit = anthropicRes.status === 429;
+        const isOverloaded = anthropicRes.status === 529;
+        const friendly = isRateLimit
+          ? `The AI service is busy right now${lastRetryAfter ? ` — try again in ~${lastRetryAfter}s` : " — try again in a minute"}.`
+          : isOverloaded
+          ? "The AI service is temporarily overloaded — try again in a moment."
+          : `Claude API error ${anthropicRes.status}: ${errText.slice(0, 300)}`;
+        return { ok: false, response: new Response(JSON.stringify({
+          ok: false,
+          error: friendly,
+          error_code: isRateLimit ? "rate_limit" : isOverloaded ? "overloaded" : null,
+          retry_after_s: lastRetryAfter,
+        }), { status: 200, headers: CORS }) };
+      }
+      const claudeJson = await anthropicRes.json();
+      const u = claudeJson?.usage || {};
+      const textOut: string = (claudeJson?.content || [])
+        .filter((b: any) => b.type === "text")
+        .map((b: any) => b.text)
+        .join("\n")
+        .trim();
+      try {
+        const start = textOut.indexOf("{");
+        const end = textOut.lastIndexOf("}");
+        const slice = start >= 0 && end > start ? textOut.slice(start, end + 1) : textOut;
+        return { ok: true, parsed: JSON.parse(slice), usage: u };
+      } catch (_e) {
+        return { ok: false, response: new Response(JSON.stringify({ ok: false, error: "Claude returned non-JSON output", raw: textOut.slice(0, 500) }), { status: 200, headers: CORS }) };
+      }
+    };
 
-    if (!anthropicRes.ok) {
-      const errText = await anthropicRes.text();
-      const isRateLimit = anthropicRes.status === 429;
-      const isOverloaded = anthropicRes.status === 529;
-      const friendly = isRateLimit
-        ? `The AI service is busy right now${lastRetryAfter ? ` — try again in ~${lastRetryAfter}s` : " — try again in a minute"}.`
-        : isOverloaded
-        ? "The AI service is temporarily overloaded — try again in a moment."
-        : `Claude API error ${anthropicRes.status}: ${errText.slice(0, 300)}`;
-      return new Response(JSON.stringify({
-        ok: false,
-        error: friendly,
-        error_code: isRateLimit ? "rate_limit" : isOverloaded ? "overloaded" : null,
-        retry_after_s: lastRetryAfter,
-      }), { status: 200, headers: CORS });
-    }
-
-    const claudeJson = await anthropicRes.json();
-    const usage = claudeJson?.usage || {};
-    const textOut: string = (claudeJson?.content || [])
-      .filter((b: any) => b.type === "text")
-      .map((b: any) => b.text)
-      .join("\n")
-      .trim();
-
-    let parsed: any = {};
-    try {
-      const start = textOut.indexOf("{");
-      const end = textOut.lastIndexOf("}");
-      const slice = start >= 0 && end > start ? textOut.slice(start, end + 1) : textOut;
-      parsed = JSON.parse(slice);
-    } catch (e) {
-      return new Response(JSON.stringify({ ok: false, error: "Claude returned non-JSON output", raw: textOut.slice(0, 500) }), { status: 200, headers: CORS });
-    }
+    const first = await askClaude(MODEL);
+    if (!first.ok) return first.response;
+    let parsed: any = first.parsed;
+    let usage: any = first.usage;
+    let usedModel = MODEL;
 
     // ── FIND PO: validate the chosen order is one of the candidates, and each
     // target_idx is a real item index within it, so a hallucinated order/index
@@ -259,7 +302,25 @@ serve(async (req: Request) => {
       const candList = candidates as Candidate[];
       const candById = new Map<string, Candidate>();
       for (const c of candList) candById.set(String(c.id), c);
-      const chosen = parsed.chosen_id != null ? candById.get(String(parsed.chosen_id)) : null;
+      const rank = (c: string) => (c === "high" ? 3 : c === "medium" ? 2 : 1);
+      const evalPick = (pr: any) => ({
+        ch: pr?.chosen_id != null ? candById.get(String(pr.chosen_id)) : null,
+        cf: pr?.confidence === "high" || pr?.confidence === "medium" || pr?.confidence === "low" ? pr.confidence : "low",
+      });
+      let pick = evalPick(parsed);
+      // Escalate the hard ones: no pick or low confidence → one retry on the stronger
+      // model; adopt its answer only when it's strictly better (found an order the
+      // first pass didn't, or same pick at higher confidence).
+      if ((!pick.ch || pick.cf === "low") && MODEL_FINDPO_RETRY && MODEL_FINDPO_RETRY !== MODEL) {
+        const second = await askClaude(MODEL_FINDPO_RETRY);
+        if (second.ok) {
+          const p2 = evalPick(second.parsed);
+          const better = (p2.ch && !pick.ch) || (p2.ch && rank(p2.cf) > rank(pick.cf));
+          usage = { ...usage, input_tokens: (usage.input_tokens || 0) + (second.usage.input_tokens || 0), output_tokens: (usage.output_tokens || 0) + (second.usage.output_tokens || 0), retried: true };
+          if (better) { parsed = second.parsed; pick = p2; usedModel = MODEL_FINDPO_RETRY; }
+        }
+      }
+      const chosen = pick.ch || null;
       const chosenItems = chosen?.items || [];
       const qtyByIdx = new Map<number, number>();
       for (const b of (bill.items as BillLine[])) qtyByIdx.set(b.idx, Number(b.qty) || 0);
@@ -279,28 +340,9 @@ serve(async (req: Request) => {
         return out;
       });
 
-      const confidence = parsed.confidence === "high" || parsed.confidence === "medium" || parsed.confidence === "low" ? parsed.confidence : "low";
+      const confidence = pick.cf;
 
-      // Best-effort audit (reuses ai_bill_matches; candidates stored under order_lines).
-      if (SUPABASE_URL && SERVICE_ROLE_KEY) {
-        try {
-          const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
-          await admin.from("ai_bill_matches").insert({
-            user_id: userId,
-            doc_number: bill.doc_number || null,
-            po_number: chosen ? String(chosen.id) : null,
-            model: MODEL,
-            bill_lines: bill.items,
-            order_lines: { mode: "find_po", chosen_id: chosen ? String(chosen.id) : null, candidates: candList },
-            mappings: validMappings,
-            input_tokens: usage.input_tokens || null,
-            output_tokens: usage.output_tokens || null,
-            duration_ms: Date.now() - t0,
-          });
-        } catch (_) { /* audit table optional */ }
-      }
-
-      return new Response(JSON.stringify({
+      const responseObj = {
         ok: true,
         mode: "find_po",
         chosen_id: chosen ? String(chosen.id) : null,
@@ -310,7 +352,30 @@ serve(async (req: Request) => {
         mappings: validMappings,
         warnings: parsed.warnings || [],
         usage,
-      }), { status: 200, headers: CORS });
+      };
+
+      // Best-effort audit (reuses ai_bill_matches; candidates stored under order_lines).
+      if (SUPABASE_URL && SERVICE_ROLE_KEY) {
+        try {
+          const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+          await admin.from("ai_bill_matches").insert({
+            user_id: userId,
+            doc_number: bill.doc_number || null,
+            po_number: chosen ? String(chosen.id) : null,
+            model: usedModel,
+            bill_lines: bill.items,
+            order_lines: { mode: "find_po", chosen_id: chosen ? String(chosen.id) : null, candidates: candList },
+            mappings: validMappings,
+            input_tokens: usage.input_tokens || null,
+            output_tokens: usage.output_tokens || null,
+            duration_ms: Date.now() - t0,
+            input_hash: cacheKey,
+            response: responseObj,
+          });
+        } catch (_) { /* audit table optional */ }
+      }
+
+      return new Response(JSON.stringify(responseObj), { status: 200, headers: CORS });
     }
 
     // ── RECONCILE: validate the model's mappings against the closed set — drop
@@ -333,13 +398,27 @@ serve(async (req: Request) => {
       out.order_sku = ol.sku;
       if (m.order_size != null) {
         const sizeKeys = Object.keys(ol.sizes || {});
-        const hit = sizeKeys.find((k) => k === m.order_size) || sizeKeys.find((k) => k.toUpperCase() === String(m.order_size).toUpperCase());
+        const raw = String(m.order_size);
+        let hit = sizeKeys.find((k) => k === raw) || sizeKeys.find((k) => k.toUpperCase() === raw.toUpperCase());
+        // Model habit: mangling a bucket label with its quantity ("QTY" bucket of 2 comes
+        // back as "QTY:2"). Strip a ":<number>" suffix and retry before dropping.
+        if (!hit && /:\d+(\.\d+)?$/.test(raw)) {
+          const base = raw.replace(/:\d+(\.\d+)?$/, "");
+          hit = sizeKeys.find((k) => k.toUpperCase() === base.toUpperCase());
+        }
         if (hit) out.order_size = hit;
         else { out.order_size = null; out.reason = `dropped size: ${m.order_size} not a bucket on ${ol.sku}`; }
       }
       out.changed = !!m.changed;
       return out;
     });
+
+    const responseObj = {
+      ok: true,
+      mappings: validMappings,
+      warnings: parsed.warnings || [],
+      usage,
+    };
 
     // Best-effort audit. Won't fail the request if the table doesn't exist.
     if (SUPABASE_URL && SERVICE_ROLE_KEY) {
@@ -349,23 +428,20 @@ serve(async (req: Request) => {
           user_id: userId,
           doc_number: bill.doc_number || null,
           po_number: bill.po_number || null,
-          model: MODEL,
+          model: usedModel,
           bill_lines: bill.items,
           order_lines: order.lines,
           mappings: validMappings,
           input_tokens: usage.input_tokens || null,
           output_tokens: usage.output_tokens || null,
           duration_ms: Date.now() - t0,
+          input_hash: cacheKey,
+          response: responseObj,
         });
       } catch (_) { /* audit table optional */ }
     }
 
-    return new Response(JSON.stringify({
-      ok: true,
-      mappings: validMappings,
-      warnings: parsed.warnings || [],
-      usage,
-    }), { status: 200, headers: CORS });
+    return new Response(JSON.stringify(responseObj), { status: 200, headers: CORS });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: (e as Error).message }), { status: 200, headers: CORS });
   }

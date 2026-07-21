@@ -2,6 +2,7 @@
 // record (Spec 1, FABLE_HANDOFF_SPECS_2026-07-07). Extracted from App.js so the
 // row shaping, pre-migration fallback, and the Bill History union are unit-testable.
 import { safeNum } from './safeHelpers';
+import { billAnomalyFlags } from './lib/billAnomalies';
 
 const _norm = (v) => String(v == null ? '' : v).trim().toLowerCase();
 
@@ -35,6 +36,21 @@ export const buildAppliedBillRows = (bills, appliedBy) => {
       status: 'pushed',
       portal_status: b.portalStatus || 'success',
       applied_so_ids: soId ? [String(soId)] : null,
+      // How this push got matched — the accept/override telemetry the 2026-07-21 mining
+      // found missing (resolution was NULL on every row, so auto-accept widening couldn't
+      // be sized from data). auto_pushed = pushed with no human click; auto_tied = the
+      // clean-class sweep staged the match; ai_* = the AI reconcile pass touched lines.
+      resolution: {
+        auto_pushed: !!p._auto_pushed,
+        auto_tied: !!p._auto_tied,
+        ai_reconciled: !!p._aiMatched,
+        ai_changed: p._aiChangedCount || 0,
+        overage_ok: !!p._overage_ok,
+        lines: (p._lineMappings || []).length,
+        // Post-push review net (shared rules: src/lib/billAnomalies.js — the daily
+        // anomaly email recomputes these from raw_meta, so old rows work too).
+        flags: billAnomalyFlags(p),
+      },
       // Enough to render this bill's history row on a machine that never saw the
       // PDF. rawText/_wizard/_applyKey are big or transient — stripped, same as holds.
       raw_meta: { ...p, rawText: undefined, _wizard: undefined, _applyKey: undefined },
