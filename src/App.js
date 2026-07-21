@@ -11894,6 +11894,13 @@ export default function App(){
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
                     const _newJobs=recalcJobFulfillment(so,updItems);
                     _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
+                    // Protect the just-received SO from a poll/realtime reload reverting it before the
+                    // debounced [sos] diff-save lands — the same 30s guard the warehouse PULL path uses
+                    // (see _markRecentlyPulled(t.soId) at the desktop Pull button). Receiving went through a
+                    // bare fire-and-forget savSO with none of the pull path's durability, so on a slow
+                    // warehouse device a background reload could clobber the local receipt while the 4×6
+                    // label had already printed — the SO then read "unfulfilled" despite a printed label.
+                    _markRecentlyPulled(so.id);
                     savSO({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                   });
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
@@ -16188,6 +16195,9 @@ export default function App(){
     });
     if(grand===0)return null;
     const _newJobs=recalcJobFulfillment(so,items);
+    // Same 30s poll/realtime-revert guard the pull path uses — receiving on a phone/tablet is the
+    // slowest-connection case, so the local receipt must be held until the diff-save durably lands.
+    _markRecentlyPulled(soId);
     savSO({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()});
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
@@ -17186,6 +17196,9 @@ export default function App(){
                       // Recalculate job item_status after receiving items
                       const _newJobs=recalcJobFulfillment(grpSO,updItems);
                       _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs));
+                      // Same 30s poll/realtime-revert guard the pull path uses (see _markRecentlyPulled
+                      // at the Pull button) — hold the local receipt until the diff-save durably lands.
+                      _markRecentlyPulled(grpSO.id);
                       savSO({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
                     });
                   }
