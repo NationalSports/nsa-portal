@@ -249,6 +249,24 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // e.g. $111.37 F50s landing on a $41.25 sibling line by size alone).
     const sharpPrice = priceChanges.some((pc) => Math.abs(pc.to - pc.from) > Math.max(0.02, 0.25 * Math.max(pc.from, 0.01)));
     if (sharpPrice && confidence === 'high') confidence = 'medium';
+    // Weak-guess demotion (owner case: a $30 adidas pullover "tied" to a $3.48 tee by
+    // color+size — +762% — yet offered as an acceptable Best answer). When EVERY tie rests
+    // on a weak guess tier (color_size / size_only — no SKU, alias, variant, style, bulk,
+    // name, qty or price anchor anywhere) AND some tied line's billed unit price is >50%
+    // off the order cost (the same 1.5×/0.5× ratio the size_only tier already enforces),
+    // this is a coin flip, not a match: flag it so the panel refuses one-click Accept and
+    // presents it as a "nearest guess" instead. An exact-PO anchor exempts (owner rule:
+    // PO match ⇒ right order; the money check still flags the price). weakGapPct is the
+    // largest tied-line gap, for the panel's wording.
+    const weakBasesOnly = ties.length > 0 && ties.every((t) => t.basis === 'color_size' || t.basis === 'size_only');
+    let weakGapPct = 0;
+    ties.forEach((t) => {
+      const bl = bill.items[t.bill_idx] || {}; const it = cand.items[t.target_idx] || {};
+      const bp = _num(bl.unit_price); const oc = _num(it.unit_cost);
+      if (bp > 0 && oc > 0) weakGapPct = Math.max(weakGapPct, Math.abs(bp - oc) / oc * 100);
+    });
+    const weakGuess = weakBasesOnly && weakGapPct > 50 && !poAnchored;
+    if (weakGuess) confidence = 'low';
     const evidence = [];
     if (poAnchored) evidence.push('PO number matches this order EXACTLY — near-certain this is the right order (owner rule)');
     evidence.push(ties.length + ' of ' + payable.length + ' bill line(s) tie to this order' + (poAnchored && ties.length < usable.length ? ' — link the rest below' : ''));
@@ -264,9 +282,10 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (bulkTies) evidence.push(bulkTies + ' sized bill line(s) roll up to the PO’s single bulk line — bought in bulk, billed by size');
     if (overageUnits) evidence.push('⚠ ' + overageUnits + ' unit(s) exceed the order’s open quantity — accept to approve them; push then corrects the order (audit kept)');
     if (priceChanges.length) evidence.push('accepting updates ' + priceChanges.length + ' order cost(s) to the billed price (audit kept)');
+    if (weakGuess) evidence.push('every tie is a color/size-only guess and the billed price is ' + Math.round(weakGapPct) + '% off the order cost — treat this as a hint, not a match');
     const score = coverage * 60 + (poAnchored ? 30 : 0) + (qtyMirror ? 20 : 0) + (tagMatch ? 10 : 0) + (coreDistance <= 1 ? 8 : 0) + strongBases * 2 - (overageUnits ? 4 : 0);
     const unresolved = payable.filter(({ i }) => !ties.some((t) => t.bill_idx === i)).map(({ i }) => i);
-    out.push({ target: cand, coverage, ties, unresolved, poAnchored, qtyMirror, tagMatch, coreDistance, priceChanges, overageUnits, confidence, evidence, score });
+    out.push({ target: cand, coverage, ties, unresolved, poAnchored, qtyMirror, tagMatch, coreDistance, priceChanges, overageUnits, weakGuess, weakGapPct, confidence, evidence, score });
   });
   out.sort((a, b) => b.score - a.score);
   // Ambiguity honesty: a near-tie between two orders drops both to 'medium' at best —
@@ -291,14 +310,14 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
 // ⚡ auto-match AND qualifies for auto-push; the daily anomaly email + resolution
 // flags are the after-the-fact review net.
 export const highConfidenceAutoAccept = (prop) => {
-  if (!prop || prop.confidence !== 'high' || !prop.poAnchored) return false;
+  if (!prop || prop.weakGuess || prop.confidence !== 'high' || !prop.poAnchored) return false;
   if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;
   if (prop.coverage < 1 || prop.overageUnits) return false;
   return true;
 };
 
 export const cleanAutoAccept = (prop, billItems) => {
-  if (!prop || prop.confidence !== 'high' || !prop.poAnchored) return false;
+  if (!prop || prop.weakGuess || prop.confidence !== 'high' || !prop.poAnchored) return false;
   if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;
   if (prop.coverage < 1 || prop.overageUnits) return false;
   if ((prop.priceChanges || []).length) return false;

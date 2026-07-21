@@ -900,3 +900,57 @@ describe('name evidence beats size/qty coincidence', () => {
     expect(props).toHaveLength(0); // no tie at all beats a confidently wrong one
   });
 });
+
+// ── Weak-guess demotion — weak tiers only + huge price gap (the Ultimate365 case) ──
+// Real bill: B01153005 "adidas Ultimate365 QTR ZIP Pullover" @ $30, PO "Sample". The
+// engine tied it to 510000 "Momentec C2 TEE" @ $3.48 on batch NSA 4554 via color_size
+// (+762%) — the money check screamed "BIG GAP" yet the panel still offered an orange
+// Accept. Rule: all-weak-tier ties + a >50% unit-cost gap = a hint, never a Best answer.
+describe('weak-guess demotion — weak-tier ties with a huge price gap never read as acceptable', () => {
+  const teeCand = { kind: 'batch', id: 'B-4554', label: 'NSA 4554', sub: 'Batch PO', raw: { po_number: 'NSA 4554' }, items: [
+    { sku: '510000', name: 'Momentec C2 TEE', color: 'Black', size: 'M', qty: 24, unit_cost: 3.48, po_id: 'NSA 4554' },
+  ] };
+  const pulloverBill = (price) => ({ po_number: 'Sample', items: [
+    { sku: 'B01153005', size: 'M', color: 'Black', qty: 1, unit_price: price, desc: 'ADIDAS ULTIMATE365 QTR ZIP PULLOVER' },
+  ] });
+  test('color_size tie at +762% → weakGuess: low confidence, flagged, auto-accept refused', () => {
+    const p = proposeResolutions(pulloverBill(30), [teeCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
+    expect(p.weakGuess).toBe(true);
+    expect(p.weakGapPct).toBeGreaterThan(700);
+    expect(p.confidence).toBe('low');
+    expect(p.evidence.join(' ')).toMatch(/hint, not a match/);
+    expect(cleanAutoAccept(p, pulloverBill(30).items)).toBe(false);
+    expect(highConfidenceAutoAccept(p)).toBe(false);// the widened auto-push gate must refuse a weak guess too
+  });
+  test('the same weak tie with a small gap stays proposable (no weakGuess demotion)', () => {
+    const p = proposeResolutions(pulloverBill(3.79), [teeCand], { canonSize: canon })[0]; // ~9% off
+    expect(p).toBeTruthy();
+    expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
+    expect(p.weakGuess).toBeFalsy();
+    expect(p.confidence).toBe('medium'); // unanchored full-coverage — unchanged behavior
+  });
+  test('strong-tier tie with the same huge gap keeps existing sharp-price behavior (high → medium, never weakGuess)', () => {
+    const bill = { po_number: 'PO 9000 ZZT', items: [{ sku: '510000', size: 'M', color: 'Black', qty: 24, unit_price: 30 }] };
+    const cand = { kind: 'so', id: 'SO-9000', label: 'SO-9000', raw: { id: 'SO-9000' }, items: [
+      { sku: '510000', name: 'Momentec C2 TEE', color: 'Black', size: 'M', qty: 24, unit_cost: 3.48, so_id: 'SO-9000', item_id: 't1', po_id: 'PO 9000 ZZT' },
+    ] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.ties.map((t) => t.basis)).toEqual(['exact']);
+    expect(p.weakGuess).toBeFalsy();
+    expect(p.confidence).toBe('medium'); // sharp-price demotion from high — today's behavior, unchanged
+    expect(p.evidence.join(' ')).toMatch(/differs sharply/);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false); // price change still blocks AUTO
+  });
+  test('an exact-PO anchor exempts a weak-tier tie from the demotion (owner rule: PO match ⇒ right order)', () => {
+    const bill = { po_number: 'PO 9001 ZZT', items: [{ sku: 'BXX999', size: 'M', color: 'Black', qty: 2, unit_price: 30, desc: 'no tokens' }] };
+    const cand = { kind: 'so', id: 'SO-9001', label: 'SO-9001', raw: { id: 'SO-9001' }, items: [
+      { sku: '510000', name: 'Tee', color: 'Black', size: 'M', qty: 2, unit_cost: 3.48, so_id: 'SO-9001', item_id: 't1', po_id: 'PO 9001 ZZT' },
+    ] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.poAnchored).toBe(true);
+    expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
+    expect(p.weakGuess).toBeFalsy(); // the PO anchor is real order-level evidence; money check still flags the price
+  });
+});
