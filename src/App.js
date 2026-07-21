@@ -11894,15 +11894,15 @@ export default function App(){
                     // stock-pull flow so the Production dashboard and "Ready for Deco" tab reflect received stock.
                     const _newJobs=recalcJobFulfillment(so,updItems);
                     _decoReady.push(...jobsNowReadyForDeco(so.jobs,_newJobs));
-                    // Hold this just-received SO in the poll/realtime merge for 30s — the same guard the
-                    // warehouse PULL path uses (see _markRecentlyPulled(t.soId) at the desktop Pull button).
-                    // The [sos] diff-save self-protects via _dbSavePendingIds once its passive effect fires,
-                    // but that leaves a brief setSOs->effect window (and no post-save tail) where a background
-                    // reload can revert the local receipt while the 4x6 label has already printed — the SO
-                    // then reads "unfulfilled" despite a printed label. Marking before setSOs closes that
-                    // window. (Write durability still rides on the diff-save + outbox — this only stops the revert.)
-                    _markRecentlyPulled(so.id);
-                    savSO({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
+                    // Persist through the result-checked save (savSONow), not fire-and-forget savSO: it
+                    // registers the pending id synchronously, writes directly, marks the SO recently-pulled
+                    // on success (so a background poll/realtime reload can't revert the local receipt for 30s),
+                    // retries via the outbox on failure, and returns a truthful true/false. Receiving used to
+                    // fire-and-forget, so on a slow device a reload could clobber the just-received line while
+                    // the 4x6 label had already printed — the SO then read "unfulfilled" despite a printed
+                    // label. A hard failure now surfaces to the warehouse user instead of failing silently.
+                    Promise.resolve(savSONow({...so,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
+                      .then(ok=>{if(ok===false)nf('⚠️ '+so.id+': receipt did not save to the server — please retry or check your connection','error')});
                   });
                   nf('✅ '+poId+' '+(_batchStatus==='partial'?'partially received':'received')+' — '+_grandRcvd+'/'+totalUnits+' units. SO items updated.');
                   notifyDecoReady(_decoReady);
@@ -16196,10 +16196,11 @@ export default function App(){
     });
     if(grand===0)return null;
     const _newJobs=recalcJobFulfillment(so,items);
-    // Same 30s poll/realtime-revert guard the pull path uses — closes the setSOs->[sos]-effect
-    // window so a reload can't revert the receipt (phone/tablet is the slowest-connection case).
-    _markRecentlyPulled(soId);
-    savSO({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()});
+    // Result-checked save (see the desktop Confirm-Received path): synchronous pending-id + direct
+    // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful result
+    // so a hard save failure surfaces instead of failing silently. Phone/tablet is the slowest link.
+    Promise.resolve(savSONow({...so,items,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
+      .then(ok=>{if(ok===false)nf('⚠️ '+soId+': receipt did not save — please retry','error')});
     acts.forEach(a=>addWhAction(a));
     const decoJobs=jobsNowReadyForDeco(so.jobs,_newJobs);
     // Build the 4×6 receiving label(s) — parity with the desktop "Confirm Received" flow:
@@ -17197,10 +17198,11 @@ export default function App(){
                       // Recalculate job item_status after receiving items
                       const _newJobs=recalcJobFulfillment(grpSO,updItems);
                       _decoReady.push(...jobsNowReadyForDeco(grpSO.jobs,_newJobs));
-                      // Same 30s poll/realtime-revert guard the pull path uses (see _markRecentlyPulled at
-                      // the Pull button) — closes the setSOs->[sos]-effect window so a reload can't revert it.
-                      _markRecentlyPulled(grpSO.id);
-                      savSO({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()});
+                      // Result-checked save (see the Confirm-Received path): synchronous pending-id + direct
+                      // write + recently-pulled-on-success so a reload can't revert the receipt, plus a truthful
+                      // result so a hard save failure surfaces instead of failing silently.
+                      Promise.resolve(savSONow({...grpSO,items:updItems,jobs:_newJobs,updated_at:new Date().toLocaleString()}))
+                        .then(ok=>{if(ok===false)nf('⚠️ '+grpSO.id+': receipt did not save — please retry','error')});
                     });
                   }
 

@@ -543,9 +543,10 @@ const isJobReady = (j, o) => {
 // so honor that before falling back to the full SO item sizes — otherwise a receive after
 // a custom split would clobber both halves' totals with the full item quantity. Receipts are
 // apportioned within each split family (see allocateJobFulfillment) so a slice and its parent
-// never both count the same units, and jobs carrying per-size splits get gi.fulfilled /
-// gi.fulSizes refreshed to the apportioned amounts — stored fulSizes is what the UI's size
-// chips show (and what syncJobs preserves), so it has to track receipts in both directions.
+// never both count the same units. EVERY job item gets its scalar gi.fulfilled refreshed to the
+// apportioned amount (split items also refresh their per-size gi.fulSizes, which the UI's size
+// chips read and syncJobs preserves), so a job's per-line fulfilled never drifts from its
+// fulfilled_units summary the way a warehouse receipt on a non-split line used to leave it.
 // NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
 // which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
 const recalcJobFulfillment = (o, items) => {
@@ -555,15 +556,26 @@ const recalcJobFulfillment = (o, items) => {
     const itemSt = a.fulfilled >= a.total && a.total > 0 ? 'items_received' : a.fulfilled > 0 ? 'partially_received' : 'need_to_order';
     let giChanged = false;
     const newItems = (j.items || []).map((gi, gii) => {
-      if (!gi.sizes || Object.keys(gi.sizes).length === 0) return gi;
       const fs = a.fulSizes[gii] || {};
       const f = Object.keys(fs).reduce((x, sz) => x + fs[sz], 0);
-      const old = gi.fulSizes || {};
-      const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
-      const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
-      if (same) return gi;
+      // Split job items carry a per-size gi.sizes and render fulSizes chips, so refresh BOTH the
+      // size map and the scalar. A plain (non-split) job item has no gi.sizes and only tracks the
+      // scalar gi.fulfilled — refresh just that. It used to be skipped entirely, so gi.fulfilled
+      // froze at its build-time 0 even as receipts arrived: after a warehouse receive the job
+      // summary read e.g. "50 fulfilled" while every line under it still read 0, drifting from
+      // fulfilled_units. OrderEditor.syncJobs already derives gi.fulfilled from receipts — mirror
+      // it here so the recompute and the editor agree instead of one freezing what the other heals.
+      if (gi.sizes && Object.keys(gi.sizes).length > 0) {
+        const old = gi.fulSizes || {};
+        const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
+        const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
+        if (same) return gi;
+        giChanged = true;
+        return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+      }
+      if (safeNum(gi.fulfilled) === f) return gi;
       giChanged = true;
-      return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+      return Object.assign({}, gi, { fulfilled: f });
     });
     if (!giChanged && j.item_status === itemSt && j.fulfilled_units === a.fulfilled && j.total_units === a.total) return j;
     return Object.assign({}, j, { item_status: itemSt, fulfilled_units: a.fulfilled, total_units: a.total, items: newItems });

@@ -1405,6 +1405,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
   });
 
+  test('non-split job items refresh their scalar gi.fulfilled from receipts (no drift from the summary)', () => {
+    // Regression (SO-1393, the 5170 Navy Tees): a plain (non-split) job item was skipped by the
+    // recompute, so after a warehouse receipt the job summary read fulfilled_units=50 while every
+    // line under it still read fulfilled:0. The per-line scalar must track receipts too, matching
+    // OrderEditor.syncJobs, so the summary always equals the sum of its lines.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1393-04', item_status: 'need_to_order', fulfilled_units: 0, total_units: 50,
+        items: [{ item_idx: 0, fulfilled: 0 }, { item_idx: 1, fulfilled: 0 }] }],
+    });
+    const items = [
+      makeSOItem({ sizes: { S: 12, M: 18, L: 13, XL: 3 },
+        po_lines: [{ po_id: 'PO-1', S: 12, M: 18, L: 13, XL: 3, received: { S: 12, M: 18, L: 13, XL: 3 } }] }),
+      makeSOItem({ sizes: { '2XL': 4 },
+        po_lines: [{ po_id: 'PO-1', '2XL': 4, received: { '2XL': 4 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.fulfilled_units).toBe(50);
+    expect(j.items[0].fulfilled).toBe(46);
+    expect(j.items[1].fulfilled).toBe(4);
+    expect(j.items.reduce((a, gi) => a + gi.fulfilled, 0)).toBe(j.fulfilled_units);
+  });
+
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
     // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
     // The job must drop out of items_received so it can be reviewed/split.
@@ -1572,7 +1594,11 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
   });
 
   test('returns same job reference when nothing changed', () => {
-    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] };
+    // The identity fast-path only applies when the job is ALREADY fully computed — including each
+    // line's scalar gi.fulfilled (now that the recompute tracks it, a job whose nested fulfilled is
+    // stale/absent is legitimately "changed" and gets a fresh object). Production jobs always carry
+    // it (buildJobs/syncJobs populate it), so mirror that here with the receipt-correct fulfilled: 15.
+    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0, fulfilled: 15 }] };
     const so = makeSO({ jobs: [job] });
     const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
     expect(recalcJobFulfillment(so, items)[0]).toBe(job);
