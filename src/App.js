@@ -354,10 +354,10 @@ import { VendDetail, TaxCloudSettings, CustModal, AdjModal, StripeCheckoutForm, 
 import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
-import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, ssGetCrossRefs, ssPutCrossRef, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
+import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
-import { mapSsOrderToBill, resolveSsBillLines, planCrossRefs, collectSsLineSkus } from './ssOrders';
+import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, cleanAutoAccept, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
@@ -21779,8 +21779,6 @@ export default function App(){
   const[ssPullFrom,setSsPullFrom]=useState(()=>{try{const v=localStorage.getItem('nsa_ss_pull_from');return v==null?'2026-06-01':v}catch(e){return'2026-06-01'}});
   const[ssPullTo,setSsPullTo]=useState('');
   useEffect(()=>{try{localStorage.setItem('nsa_ss_pull_from',ssPullFrom||'')}catch(e){}},[ssPullFrom]);
-  // CrossRef seeder (admin, dry-run-first): {open, step, plan, progress, result}
-  const[ssXref,setSsXref]=useState({open:false,step:'idle',plan:null,progress:null,result:null});
   const _billReviewBusyRef=useRef(false);// deploy-reload gate: true while unpushed bills sit in review in this tab
   const[reviewSnap,setReviewSnap]=useState(()=>{try{return JSON.parse(localStorage.getItem('nsa_bill_review_session')||'null')}catch(e){return null}});// crash/deploy-reload recovery (Resume banner)
   useEffect(()=>{_billReviewBusyRef.current=billImport.step==='review'&&billImport.parsed.some(b=>!b.portalStatus&&!b.reviewLater)},[billImport]);
@@ -21936,6 +21934,14 @@ export default function App(){
   useEffect(()=>{
     if(supabase&&pg==='import'&&!siQueue.length&&!siQueueLoading)loadSiQueue();
   },[pg,billView]);// eslint-disable-line react-hooks/exhaustive-deps
+  // ── Auto-resolve duplicates (owner: "if duplicates, just auto resolve. Document number
+  // would match right?"). The sweep body lives in rImport scope (it needs _docAlreadyApplied /
+  // _resolveBillWithDisposition, defined there), so rImport re-assigns this ref on every render
+  // and this commit effect fires it. Running per commit of the bills page covers every natural
+  // trigger — list load, holds/ledger load, and right after a successful push marks new doc#s
+  // applied. Idempotent: a resolved bill stops matching the sweep's criteria.
+  const _dupSweepRef=React.useRef(null);
+  useEffect(()=>{if(pg==='import'&&_dupSweepRef.current)_dupSweepRef.current()});
   const[billExpandId,setBillExpandId]=useState(null);// ID of bill with expanded item details (Look at Later or Bill History)
   // Load the server-backed "Look at Later" holds once per import-page visit and merge them into
   // savedBills, so the parked/resolved worklist is the same on every machine (and the pull dedup,
@@ -23696,83 +23702,6 @@ export default function App(){
       nf(bills.length+' bill(s) restored to review — matches re-checked live','success');
     };
 
-    // ── S&S CrossRef seeder (dry-run first) ──────────────────────────────────────
-    // Seeds S&S CrossRef so `yourSku` returns our style on future order lines — promoting S&S
-    // bills from a color+size guess to an exact SKU match (kills the two-styles-same-color case).
-    // Grounded in matched order history: reuses the all-or-nothing resolver, so only fully-
-    // confident orders contribute a mapping and we never teach S&S a wrong pairing.
-    const _ssCrossRefProposals=(orders,styleBySku={})=>{
-      const out=[];let cands=null;
-      (orders||[]).forEach(order=>{
-        let parsed;try{parsed=rematchBill(mapSsOrderToBill(order,{styleBySku}))}catch(e){return}
-        if(!parsed.matchedPO)return;
-        let r;try{r=_ssResolveLineMappings(parsed,cands||(cands=_buildMatchCandidates()))}catch(e){return}
-        if(!r)return;// all-or-nothing: only fully-resolved orders yield proposals
-        (r.items||[]).forEach(it=>{
-          const ssSku=it._vendor_sku;const yourSku=it.sku;// after resolve: sku=our style, _vendor_sku=S&S part #
-          if(ssSku&&yourSku&&String(ssSku).toUpperCase()!==String(yourSku).toUpperCase())
-            out.push({ssSku,yourSku,color:it.color||'',size:it.size||''});
-        });
-      });
-      return out;
-    };
-    const _ssPlanCrossRef=async()=>{
-      setSsXref(x=>({...x,step:'planning',plan:null,result:null,progress:null}));
-      try{
-        const f=ssPullFrom||'';const filters=f?{startDate:f,endDate:new Date().toISOString().slice(0,10)}:{};
-        const orders=await ssGetOrders(filters);
-        // Same style enrichment as the pull: fully-resolved bills are the seeder's ONLY
-        // source of proposals, so disambiguating more lines directly grows the plan.
-        let styleBySku={};
-        try{const _sk=collectSsLineSkus(orders);if(_sk.length)styleBySku=await ssGetProductStyles(_sk)}catch(e){/* optional */}
-        let proposals=_ssCrossRefProposals(orders,styleBySku);
-        // Guard against S&S's CrossRef PUT 500 ("unhandled exception thrown by Customer Web API
-        // controller"): only send an Identifier S&S can actually resolve to a live product.
-        // styleBySku is the GET /Products result for these lines' S&S part numbers, so a proposal
-        // whose ssSku isn't in it is either a discontinued part or a line that already echoed a
-        // yourSku (not a real Sku/SkuID/Gtin) — writing it would 500 and abort the whole batch.
-        // Skip those; the plan is re-runnable, so a deferred mapping is written on a later pass.
-        // Only filter when the lookup returned something — a total lookup failure must not empty
-        // the plan (falls back to the prior behavior, still gated by the first-mapping verify).
-        let unresolved=0;
-        if(proposals.length&&Object.keys(styleBySku).length){
-          const before=proposals.length;
-          proposals=proposals.filter(p=>styleBySku[String(p.ssSku||'').trim().toUpperCase()]);
-          unresolved=before-proposals.length;
-        }
-        if(!proposals.length){setSsXref(x=>({...x,step:'planned',plan:{toWrite:[],alreadySet:[],conflicts:[],orders:orders.length,proposals:0,unresolved}}));nf(unresolved?('All '+unresolved+' candidate mapping(s) reference S&S parts we can’t resolve right now — nothing safe to seed'):'No confidently-matched S&S lines to map yet — nothing to seed','error');return}
-        // What's already on the account for the styles we'd assign (idempotency).
-        const styles=[...new Set(proposals.map(p=>p.yourSku))];
-        let existing=[];
-        try{for(let i=0;i<styles.length;i+=50)existing=existing.concat(await ssGetCrossRefs(styles.slice(i,i+50)))}catch(e){/* GET failed → plan as if none set; PUT stays idempotent via 200/201 */}
-        const plan=planCrossRefs(proposals,existing);
-        setSsXref(x=>({...x,step:'planned',plan:{...plan,orders:orders.length,proposals:proposals.length,unresolved}}));
-        nf('CrossRef plan: '+plan.toWrite.length+' to write · '+plan.alreadySet.length+' already set · '+plan.conflicts.length+' conflict(s)'+(unresolved?' · '+unresolved+' unresolvable skipped':''),'success');
-      }catch(e){setSsXref(x=>({...x,step:'idle'}));nf('CrossRef plan failed: '+(e.message||e),'error')}
-    };
-    const _ssWriteCrossRef=async()=>{
-      const rows=(ssXref.plan&&ssXref.plan.toWrite)||[];
-      if(!rows.length)return;
-      if(!window.confirm('Write '+rows.length+' CrossRef mapping(s) to your LIVE S&S account?\n\nThis assigns your style as `yourSku` on those S&S products. It is idempotent (safe to re-run) and reversible (DELETE CrossRef). The first write is verified before the rest run.'))return;
-      setSsXref(x=>({...x,step:'writing',progress:{done:0,total:rows.length},result:null}));
-      let ok=0,created=0,updated=0,failed=0;const errs=[];let aborted=false;
-      for(let i=0;i<rows.length;i++){
-        const r=rows[i];
-        try{
-          const res=await ssPutCrossRef(r.yourSku,r.ssSku);
-          ok++;if(res.created)created++;if(res.updated)updated++;
-          if(i===0){// verify the very first mapping reads back before trusting the batch (resolves any API-shape doubt live)
-            const back=await ssGetCrossRefs([r.yourSku]);
-            const hit=(back||[]).some(z=>String(z.sku||'').toUpperCase()===String(r.ssSku).toUpperCase());
-            if(!hit)throw new Error('round-trip verify failed — the first mapping did not read back; aborting so a wrong assumption can\'t write a whole batch');
-          }
-        }catch(e){failed++;errs.push((r.ssSku||'?')+'→'+(r.yourSku||'?')+': '+(e.message||e));if(i===0){aborted=true;break}}
-        setSsXref(x=>({...x,progress:{done:i+1,total:rows.length}}));
-        if(i%40===39)await new Promise(res=>setTimeout(res,1100));// stay under S&S's 60 req/min
-      }
-      setSsXref(x=>({...x,step:'done',result:{ok,created,updated,failed,errs,aborted}}));
-      nf(aborted?('CrossRef aborted on the first write — '+(errs[0]&&/500|server|exception/i.test(errs[0])?'S&S\u2019s API errored server-side (their bug, not your data)':'it failed verification')+' — nothing written. Bill pulls are unaffected.'):(ok+' mapping(s) written ('+created+' new · '+updated+' updated)'+(failed?' · '+failed+' failed':'')),aborted||failed?'error':'success');
-    };
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
     // The daily cron does the same server-side; this lets staff refresh on demand + seed testing.
@@ -24092,7 +24021,7 @@ export default function App(){
       setBillImport(x=>({...x,parsed:val?x.parsed.filter(p=>p.id!==billId):x.parsed.map(p=>p.id===billId?{...p,reviewLater:false}:p)}));
       // Un-flagging fully releases the bill (clears reviewLater AND resolution) so _docHeld stops
       // suppressing its doc# on future pulls; flagging parks it.
-      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val,reviewLaterAt:val?Date.now():sb.reviewLaterAt,resolution:val?sb.resolution:undefined}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
+      setSavedBills(prev=>{const updated=prev.map(sb=>sb.id===billId?{...sb,reviewLater:val,reviewLaterAt:val?Date.now():sb.reviewLaterAt,resolution:val?sb.resolution:undefined,dupOverride:val?true:sb.dupOverride}:sb);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       // Mirror to the server hold: flagging parks it (survives the next pull), un-flagging drops it
       // back into the normal flow. _saveBillHold/_deleteBillHold are const-initialized later in the
       // same render body but only invoked here on a user click, so they're always defined by then.
@@ -25178,6 +25107,30 @@ export default function App(){
       sbs.forEach(sb=>_resolveBillWithDisposition(sb.id,'duplicate','Duplicate of '+(_docAppliedWhere(sb.parsed?.doc_number)||'an earlier push'),{quiet:true}));
       nf(sbs.length+' duplicate'+(sbs.length===1?'':'s')+' resolved');
     };
+    // ── Auto-resolve duplicates (owner ask). Any UNPUSHED working-set copy — review list or
+    // Set aside — whose doc # is already applied resolves itself as a duplicate: the same write
+    // as the manual ♻️ button (stamped with where the doc # landed), just quiet, with one
+    // summary toast. The applied copy itself (portalStatus success) is never touched, QB-pushed
+    // wrappers stay visible under Done, and dupOverride (set when a human deliberately re-opens
+    // a bill — true vendor re-bill) exempts it forever. Fired from the component-level commit
+    // effect via _dupSweepRef, so it's ONE sweep covering every trigger point.
+    const _autoResolveDuplicates=()=>{
+      const isDup=(x,wrapper)=>{
+        if(x.dupOverride||x.portalStatus==='success')return false;
+        if(wrapper&&(x.reviewLater||x.qbStatus==='success'))return false;
+        const d=(x.parsed?.doc_number||'').trim();
+        return !!d&&_docAlreadyApplied(d);
+      };
+      const parsedDups=(billImport.parsed||[]).filter(b=>isDup(b,true));
+      const parsedIds=new Set(parsedDups.map(b=>b.id));
+      const parkedDups=savedBills.filter(sb=>sb.reviewLater&&!parsedIds.has(sb.id)&&isDup(sb,false));
+      const all=[...parsedDups,...parkedDups];
+      if(!all.length)return;
+      if(parsedDups.length)setBillImport(x=>({...x,parsed:x.parsed.filter(p=>!parsedIds.has(p.id))}));
+      all.forEach(b=>_resolveBillWithDisposition(b.id,'duplicate','Duplicate of '+(_docAppliedWhere(b.parsed?.doc_number)||'an earlier push')+' — auto-resolved',{quiet:true}));
+      nf(all.length+' duplicate bill'+(all.length===1?'':'s')+' auto-resolved — see history');
+    };
+    _dupSweepRef.current=_autoResolveDuplicates;
 
     // Push one parked bill straight from the Look at Later card, recording why. Failure is
     // loud (the card stays parked); success resolves the card with the given disposition.
@@ -26738,42 +26691,6 @@ export default function App(){
               </button>
             </div>
           </div>
-          {/* CrossRef seeder — admin, dry-run first. Teaches S&S to echo our style back as `yourSku`
-              on future orders, so bill lines match by exact SKU instead of a color+size guess. */}
-          {(cu?.role==='admin'||cu?.role==='super_admin'||cu?.role==='gm')&&<div className="card" style={{gridColumn:'1 / -1',borderColor:'#c4b5fd',background:'#faf5ff'}}>
-            <div className="card-body" style={{padding:'10px 14px'}}>
-              <div style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}} onClick={()=>setSsXref(x=>({...x,open:!x.open}))}>
-                <span style={{fontSize:15}}>🔗</span>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:800,color:'#6d28d9'}}>S&amp;S CrossRef seeder <span style={{fontSize:10,fontWeight:700,color:'#7c3aed',background:'#ede9fe',borderRadius:8,padding:'1px 7px'}}>admin</span> <span style={{fontSize:10,fontWeight:700,color:'#64748b',background:'#f1f5f9',borderRadius:8,padding:'1px 7px'}}>optional</span></div>
-                  <div style={{fontSize:11,color:'#7c3aed',opacity:0.85}}>No longer needed — the portal now learns each S&amp;S SKU ↔ your style the moment you place an order. Use this only if S&amp;S fixes their (currently 500-erroring) CrossRef API.</div>
-                </div>
-                <span style={{fontSize:11,color:'#7c3aed'}}>{ssXref.open?'▲':'▼'}</span>
-              </div>
-              {ssXref.open&&<div style={{marginTop:10,borderTop:'1px solid #e9d5ff',paddingTop:10}}>
-                <div style={{fontSize:11,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'7px 10px',marginBottom:8}}>✓ <b>You don't need to run this.</b> Every S&amp;S order you place now records its SKU→style mapping automatically, so future bills match exactly on their own. This manual seeder writes the same info to S&amp;S's side — but their CrossRef API is currently returning 500s, so it will abort. It's here only for when S&amp;S fixes their endpoint.</div>
-                <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Builds a plan from your matched S&amp;S order history (invoiced from <b>{ssPullFrom||'the last 3 months'}</b>). <b>Nothing writes until you review the plan and click Write.</b> Idempotent + reversible; the first mapping is verified before the rest run.</div>
-                <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-                  <button className="btn btn-sm" style={{fontSize:11,background:'#7c3aed',color:'#fff',border:'none'}} disabled={ssXref.step==='planning'||ssXref.step==='writing'} onClick={_ssPlanCrossRef}>{ssXref.step==='planning'?'Planning…':'1 · Build plan (dry run)'}</button>
-                  {ssXref.step==='planned'&&ssXref.plan&&<button className="btn btn-sm" style={{fontSize:11,background:ssXref.plan.toWrite.length?'#16a34a':'#cbd5e1',color:'#fff',border:'none'}} disabled={!ssXref.plan.toWrite.length} onClick={_ssWriteCrossRef}>2 · Write {ssXref.plan.toWrite.length} to S&amp;S →</button>}
-                  {ssXref.step==='writing'&&ssXref.progress&&<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>Writing {ssXref.progress.done}/{ssXref.progress.total}…</span>}
-                </div>
-                {ssXref.step==='planned'&&ssXref.plan&&<div style={{marginTop:10,fontSize:11}}>
-                  <div style={{color:'#334155',fontWeight:700,marginBottom:4}}>From {ssXref.plan.orders} order(s) · {ssXref.plan.proposals} confident line(s): <span style={{color:'#166534'}}>{ssXref.plan.toWrite.length} to write</span> · <span style={{color:'#64748b'}}>{ssXref.plan.alreadySet.length} already set</span>{ssXref.plan.conflicts.length?<span style={{color:'#b91c1c'}}> · {ssXref.plan.conflicts.length} conflict(s) skipped</span>:null}{ssXref.plan.unresolved?<span style={{color:'#b45309'}}> · {ssXref.plan.unresolved} unresolvable skipped</span>:null}</div>
-                  {ssXref.plan.toWrite.length>0&&<div style={{maxHeight:150,overflow:'auto',border:'1px solid #e9d5ff',borderRadius:6,background:'#fff',padding:'6px 8px'}}>
-                    {ssXref.plan.toWrite.slice(0,50).map((w,i)=><div key={i} style={{color:'#475569',fontFamily:'monospace',fontSize:10}}><b style={{color:'#7c3aed'}}>{w.ssSku}</b> → yourSku <b style={{color:'#166534'}}>{w.yourSku}</b>{w.color||w.size?<span style={{color:'#94a3b8'}}> · {[w.color,w.size].filter(Boolean).join(' ')}</span>:null}</div>)}
-                    {ssXref.plan.toWrite.length>50&&<div style={{color:'#94a3b8',marginTop:2}}>+{ssXref.plan.toWrite.length-50} more…</div>}
-                  </div>}
-                  {ssXref.plan.conflicts.length>0&&<div style={{marginTop:6,color:'#b45309'}}>⚠️ Skipped (one S&amp;S sku resolved to two styles — check the order data): {ssXref.plan.conflicts.slice(0,8).map(c=>c.ssSku).join(', ')}</div>}
-                </div>}
-                {ssXref.step==='done'&&ssXref.result&&<div style={{marginTop:10,fontSize:11,padding:'8px 10px',borderRadius:6,background:(ssXref.result.aborted&&/500|server|exception/i.test((ssXref.result.errs||[])[0]||''))?'#fffbeb':(ssXref.result.aborted||ssXref.result.failed)?'#fef2f2':'#f0fdf4',border:'1px solid '+((ssXref.result.aborted&&/500|server|exception/i.test((ssXref.result.errs||[])[0]||''))?'#fde68a':(ssXref.result.aborted||ssXref.result.failed)?'#fecaca':'#bbf7d0')}}>
-                  <div style={{fontWeight:700,color:(ssXref.result.aborted&&/500|server|exception/i.test((ssXref.result.errs||[])[0]||''))?'#92400e':(ssXref.result.aborted||ssXref.result.failed)?'#b91c1c':'#166534'}}>{ssXref.result.aborted?((ssXref.result.errs&&ssXref.result.errs[0]&&/500|server|exception/i.test(ssXref.result.errs[0])?'Optional step, and S&S’s CrossRef API is down (500 on their end) — nothing was written, which is fine: the portal already learns these mappings when you place orders. Bill pulls and matching are unaffected. — S&S\u2019s API is erroring server-side (a fault on their end, not your data). Nothing was written; bill pulls are unaffected. Retry later or send S&S the support ticket.':'Aborted after the first mapping failed verification — nothing else written.')):('Done — '+ssXref.result.ok+' written ('+ssXref.result.created+' new · '+ssXref.result.updated+' updated)'+(ssXref.result.failed?' · '+ssXref.result.failed+' failed':''))}</div>
-                  {(ssXref.result.errs||[]).slice(0,6).map((e,i)=><div key={i} style={{color:'#b91c1c',fontFamily:'monospace',fontSize:10,marginTop:2}}>{e}</div>)}
-                  <button className="btn btn-sm" style={{fontSize:10,marginTop:6,background:'#fff',border:'1px solid #cbd5e1'}} onClick={_ssPlanCrossRef}>Re-plan (check what's left)</button>
-                </div>}
-              </div>}
-            </div>
-          </div>}
         </div>
 
         {/* Persistent vendor + date filters (owner ask) — always visible; they scope the review
@@ -26999,7 +26916,7 @@ export default function App(){
                 {b._aiError&&!b._aiRunning&&<span title={b._aiError} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:600,border:'1px solid #fecaca'}}>✨ AI: {b._aiError.length>32?b._aiError.slice(0,32)+'…':b._aiError}</span>}
                 {bill.warnings.length>0&&<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>{bill.warnings.length} warning(s)</span>}
                 {b.reviewLater&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#b45309',fontWeight:700,border:'1px solid #fbbf24'}}>🕒 Set aside</span>}
-                {_cardProps[_cardPi]&&!portalPushed&&!b.qbStatus&&<button onClick={()=>_acceptProposal(_cardProps[_cardPi])}
+                {_cardProps[_cardPi]&&!_cardProps[_cardPi].weakGuess&&!portalPushed&&!b.qbStatus&&<button onClick={()=>_acceptProposal(_cardProps[_cardPi])}
                   title={'Accept the best answer — '+(_cardProps[_cardPi].evidence[0]||'')+(_cardProps[_cardPi].confidence!=='high'?' ('+_cardProps[_cardPi].confidence+' confidence — see the panel below)':'')}
                   style={{fontSize:10,padding:'3px 10px',borderRadius:4,cursor:'pointer',fontWeight:800,background:_cardProps[_cardPi].confidence==='high'?'#16a34a':'#d97706',border:'none',color:'#fff'}}>
                   ✓ Accept: {_cardProps[_cardPi].target.label}{_cardProps[_cardPi].overageUnits?' ⚠':''}</button>}
@@ -27283,7 +27200,19 @@ export default function App(){
                     const prop=_props[_pi];
                     const _accept=_acceptProposal;
                     return<div style={{padding:'10px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
-                      {prop&&<div style={{marginBottom:10,padding:'12px 14px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:10,boxShadow:'0 1px 3px rgba(15,23,42,.06)'}}>
+                      {/* Weak guess — engine-flagged (all ties are color/size coin flips AND the
+                          price is way off): NOT an acceptable Best answer. No Accept button — just
+                          the nearest guess, named as such, with the real next steps. */}
+                      {prop&&prop.weakGuess&&<div style={{marginBottom:10,padding:'10px 12px',background:'#fffbeb',border:'1.5px solid #fde68a',borderRadius:10}}>
+                        <div style={{fontSize:12,fontWeight:800,color:'#92400e'}}>No confident match — nearest guess: <span onClick={()=>_peekFromCand(prop.target)} title="See every item on this order — visual check" style={{cursor:'pointer',textDecoration:'underline dotted',textUnderlineOffset:3}}>{prop.target.label}</span> <span style={{fontWeight:600}}>(tied by {prop.ties.every(t=>t.basis==='color_size')?'color+size':'size'} only, price {Math.round(prop.weakGapPct||0)}% off)</span></div>
+                        <div style={{fontSize:11,color:'#a16207',marginTop:2}}>A price gap that big usually means a different product — don’t tie these. Use ✨ Find order or the wizard.</div>
+                        <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}}>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}} disabled={b._aiRunning} onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiRunning?'Searching…':'Find order'}</button>
+                          <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}} onClick={()=>setW({open:true,query:bill.po_number||'',target:null,mappings:{}})}>🧵 Open the wizard…</button>
+                          {_props.length>1&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'4px 10px'}} onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_propIdx:(_pi+1)%_props.length}:pp)}))}>See next guess ▸</button>}
+                        </div>
+                      </div>}
+                      {prop&&!prop.weakGuess&&<div style={{marginBottom:10,padding:'12px 14px',background:'#fff',border:'1.5px solid '+(prop.confidence==='high'?'#86efac':prop.confidence==='medium'?'#fde68a':'#e2e8f0'),borderRadius:10,boxShadow:'0 1px 3px rgba(15,23,42,.06)'}}>
                         <div style={{fontSize:8.5,fontWeight:900,letterSpacing:.8,textTransform:'uppercase',color:'#818cf8',marginBottom:6}}>Our best answer — review and accept</div>
                         <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                           <span style={{width:22,height:22,borderRadius:'50%',display:'inline-flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:900,flex:'0 0 auto',background:prop.confidence==='high'?'#dcfce7':prop.confidence==='medium'?'#fef3c7':'#f1f5f9',color:prop.confidence==='high'?'#16a34a':prop.confidence==='medium'?'#d97706':'#64748b'}}>{prop.confidence==='high'?'✓':'?'}</span>
@@ -27422,15 +27351,27 @@ export default function App(){
                       {fp&&fp.none&&<div style={{marginBottom:10,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,fontSize:11,color:'#92400e'}}>
                         ✨ AI couldn’t confidently match this to an open PO{fp.reason?' — '+fp.reason:'.'} Try matching manually.
                       </div>}
-                      <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,color:'#3730a3'}}>{poMatch?'Matched to '+(poMatch.so_id||poMatch.so?.id||'the order')+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.':'No PO matched automatically — line items parsed and ready.'}</span>
+                      {(()=>{
+                        // Owner feedback: when the Best answer proposes a DIFFERENT order than the
+                        // PO-number match, two buttons at two orders with no explanation read as a
+                        // coin flip. State the disagreement outright and name the by-hand target on
+                        // the button. Weak guesses don't count as a live proposal here.
+                        const _poTgt=poMatch?String(poMatch.so_id||poMatch.so?.id||poMatch.po_number||poMatch.po_id||'the order'):'';
+                        const _live=prop&&!prop.weakGuess?prop:null;
+                        const _sameTgt=_live&&poMatch&&(String(_live.target.id)===String(poMatch.so_id||poMatch.so?.id||'')||String(_live.target.raw?.po_number||'')===String(poMatch.po_number||poMatch.po_id||''));
+                        const _disagree=!!(_live&&poMatch&&!_sameTgt);
+                        return<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                        <span style={{fontSize:12,color:'#3730a3'}}>{_disagree
+                          ?(bill.po_number||'The PO number')+' points at '+_poTgt+', but this bill’s items don’t match anything on it — they fit '+_live.target.label+' (proposal above). Accept the proposal, or match to '+_poTgt+' by hand if the PO is right.'
+                          :poMatch?'Matched to '+_poTgt+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.'
+                          :'No PO matched automatically — line items parsed and ready.'}</span>
                         <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?'🧵 Match lines to the order…':'Match manually…'}</button>
+                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?('🧵 Match to '+_poTgt+' by hand'+(_live?' instead':'')):'Match manually…'}</button>
                         {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
                           :!poMatch&&!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
                             title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
                             onClick={()=>_runAiBillFindPO(b)}>✨ {b._aiTried?'Re-run AI':'Find PO with AI'}</button>}
-                      </div>
+                      </div>;})()}
                     </div>;
                   }
                   const candidates=_buildMatchCandidates();
@@ -27692,7 +27633,7 @@ export default function App(){
               [['lines','🧵 Tie the lines — matched to an order, but the lines need connecting to its items'],
                ['no_order','🔍 No order matched — accept the AI suggestion or find the order'],
                ['over','⚖ Over-billed — open to correct the order from the bill, or accept the overage'],
-               ['dup','♻ Duplicates — already applied once; open to verify, then set aside'],
+               ['dup','♻ Duplicates — kept because you re-opened them (new copies auto-resolve to history)'],
                ['other','⚠ Check these']].forEach(([k,label])=>{
                 if(!_bk[k].length)return;
                 _children.push(<div key={'sh-'+k} style={{fontSize:11,fontWeight:800,color:'#92400e',margin:'10px 0 6px',letterSpacing:.3}}>{label} ({_bk[k].length})</div>);
@@ -27734,7 +27675,7 @@ export default function App(){
             ['overbilled','⚠️','Over-billed','#dc2626','#fef2f2','The bill exceeds what the order says was ordered — reconcile below, then correct the order or accept the overage.'],
             ['noapply','🧩','Won’t apply cleanly','#d97706','#fffbeb','Matched an order, but the lines don’t map — fix the match.'],
             ['nomatch','🔍','No PO match','#4f46e5','#eef2ff','No order found for this bill’s PO number.'],
-            ['duplicate','♻️','Duplicates','#64748b','#f8fafc','This doc # was already applied — confirm and resolve.'],
+            ['duplicate','♻️','Duplicates','#64748b','#f8fafc','Duplicates normally auto-resolve to history the moment their doc # shows as applied — rows here were re-opened on purpose or need the push override.'],
           ];
           const grandTotal=parked.reduce((a,sb)=>a+safeNum(sb.parsed?.doc_total),0);
           const oldestTs=parked.reduce((a,sb)=>Math.min(a,sb.reviewLaterAt||_billTs(sb)||Infinity),Infinity);
@@ -27742,11 +27683,13 @@ export default function App(){
           // Pull a parked bill back into Import & Review, optionally patching parsed (to deep-link
           // the match wizard) and running a follow-up (to kick off the AI PO search) on the wrapper.
           const _moveBackToReview=(sb,extraParsed,after)=>{
-            const wrapper={...sb,selected:true,reviewLater:false,resolution:undefined,portalStatus:sb.portalStatus||null,qbStatus:null,parsed:{...sb.parsed,...(extraParsed||{})}};
+            const wrapper={...sb,selected:true,reviewLater:false,resolution:undefined,dupOverride:true,portalStatus:sb.portalStatus||null,qbStatus:null,parsed:{...sb.parsed,...(extraParsed||{})}};
             setBillImport(x=>({...x,step:'review',parsed:[...x.parsed.filter(pp=>pp.id!==sb.id),wrapper]}));
             // Clear reviewLater AND resolution: the bill is re-entering the active flow, so a lingering
-            // resolution must not keep _docHeld suppressing its doc# on future pulls.
-            setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false,resolution:undefined}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+            // resolution must not keep _docHeld suppressing its doc# on future pulls. dupOverride
+            // marks the re-open DELIBERATE so the duplicate auto-resolver leaves it alone — the
+            // true-vendor-re-bill escape hatch (work it, then push with the existing override).
+            setSavedBills(prev=>{const u=prev.map(s=>s.id===sb.id?{...s,reviewLater:false,resolution:undefined,dupOverride:true}:s);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
             _deleteBillHold(sb.id);// back in the active flow → drop the hold so it's not suppressed from a pull
             setBillView('import');
             if(after)after(wrapper);
@@ -27785,7 +27728,7 @@ export default function App(){
                 ['⚠️','Over-billed','🧵 Reconcile in Review is the easy road now: the Best answer shows the ties and the money check, and accepting the flagged overage lets push correct the order automatically. Or handle it here: ✏️ Correct order from bill, or ⚠️ Accept overage & push with a note.'],
                 ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
                 ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
-                ['♻️','Duplicate','Its doc # was already applied — ♻️ Resolve as duplicate to clear it.'],
+                ['♻️','Duplicate','These clear themselves — a bill whose doc # is already applied auto-resolves to history. Anything still here was re-opened on purpose; push it with the override if it’s a true re-bill.'],
               ];
               return <div style={{marginBottom:16,border:'1px solid '+LGRAY,borderRadius:6,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
                 <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 16px',background:NAVY,backgroundImage:HASH}}>
