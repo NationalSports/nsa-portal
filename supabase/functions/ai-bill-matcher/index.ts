@@ -29,9 +29,28 @@ import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY") || "";
-const MODEL = Deno.env.get("AI_BILL_MATCHER_MODEL") || "claude-sonnet-4-6";
+// Two model tiers, one per pass (2026-07-21 mining, BILL_AI_MINING_2026-07-21.md):
+// RECONCILE is mechanical size-label mapping inside a closed set with server-side
+// validation and a human approve behind it — 83% of its mappings came back high-
+// confidence, so the cheap tier handles it. FIND-PO is genuine judgment (pick the
+// order) and stays on Sonnet. AI_BILL_MATCHER_MODEL still overrides BOTH (existing
+// deploys keep their behavior); the per-pass vars override that.
+const MODEL_GLOBAL = Deno.env.get("AI_BILL_MATCHER_MODEL") || "";
+const MODEL_RECONCILE = Deno.env.get("AI_BILL_MATCHER_MODEL_RECONCILE") || MODEL_GLOBAL || "claude-haiku-4-5-20251001";
+const MODEL_FINDPO = Deno.env.get("AI_BILL_MATCHER_MODEL_FINDPO") || MODEL_GLOBAL || "claude-sonnet-4-6";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL") || "";
 const SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+
+// Stable hash of exactly what the model sees, so a byte-identical re-run (same bill,
+// same order state) replays the stored result instead of re-calling the API. Mined
+// 2026-07-21: 379 of 478 calls (~695k tokens) were such repeats — the client re-sweeps
+// unresolved bills on every pull. Order state that changes (a size gets billed, a
+// candidate list shifts) changes the hash, so staleness self-invalidates.
+async function inputHash(mode: string, contextBlock: string): Promise<string> {
+  const data = new TextEncoder().encode(mode + "\n" + contextBlock);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -184,6 +203,26 @@ serve(async (req: Request) => {
     const userText = isFindPo
       ? `Find which open order this bill belongs to, then map its lines:\n\n${contextBlock}`
       : `Reconcile this bill against the order:\n\n${contextBlock}`;
+    const MODEL = isFindPo ? MODEL_FINDPO : MODEL_RECONCILE;
+
+    // Cache replay: identical inputs → the stored validated result, no API call.
+    // body.force=true bypasses (a human explicitly asking for a fresh opinion).
+    const cacheKey = await inputHash(isFindPo ? "find_po" : "reconcile", contextBlock);
+    if (!body.force && SUPABASE_URL && SERVICE_ROLE_KEY) {
+      try {
+        const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);
+        const { data: hit } = await admin.from("ai_bill_matches")
+          .select("response")
+          .eq("input_hash", cacheKey)
+          .not("response", "is", null)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (hit && hit.response && hit.response.ok) {
+          return new Response(JSON.stringify({ ...hit.response, cached: true }), { status: 200, headers: CORS });
+        }
+      } catch (_) { /* cache is best-effort (e.g. pre-00230 schema) — fall through to a live call */ }
+    }
 
     const anthropicHeaders = {
       "Content-Type": "application/json",
@@ -281,6 +320,18 @@ serve(async (req: Request) => {
 
       const confidence = parsed.confidence === "high" || parsed.confidence === "medium" || parsed.confidence === "low" ? parsed.confidence : "low";
 
+      const responseObj = {
+        ok: true,
+        mode: "find_po",
+        chosen_id: chosen ? String(chosen.id) : null,
+        chosen_kind: chosen?.kind || null,
+        confidence,
+        reason: typeof parsed.reason === "string" ? parsed.reason : "",
+        mappings: validMappings,
+        warnings: parsed.warnings || [],
+        usage,
+      };
+
       // Best-effort audit (reuses ai_bill_matches; candidates stored under order_lines).
       if (SUPABASE_URL && SERVICE_ROLE_KEY) {
         try {
@@ -296,21 +347,13 @@ serve(async (req: Request) => {
             input_tokens: usage.input_tokens || null,
             output_tokens: usage.output_tokens || null,
             duration_ms: Date.now() - t0,
+            input_hash: cacheKey,
+            response: responseObj,
           });
         } catch (_) { /* audit table optional */ }
       }
 
-      return new Response(JSON.stringify({
-        ok: true,
-        mode: "find_po",
-        chosen_id: chosen ? String(chosen.id) : null,
-        chosen_kind: chosen?.kind || null,
-        confidence,
-        reason: typeof parsed.reason === "string" ? parsed.reason : "",
-        mappings: validMappings,
-        warnings: parsed.warnings || [],
-        usage,
-      }), { status: 200, headers: CORS });
+      return new Response(JSON.stringify(responseObj), { status: 200, headers: CORS });
     }
 
     // ── RECONCILE: validate the model's mappings against the closed set — drop
@@ -341,6 +384,13 @@ serve(async (req: Request) => {
       return out;
     });
 
+    const responseObj = {
+      ok: true,
+      mappings: validMappings,
+      warnings: parsed.warnings || [],
+      usage,
+    };
+
     // Best-effort audit. Won't fail the request if the table doesn't exist.
     if (SUPABASE_URL && SERVICE_ROLE_KEY) {
       try {
@@ -356,16 +406,13 @@ serve(async (req: Request) => {
           input_tokens: usage.input_tokens || null,
           output_tokens: usage.output_tokens || null,
           duration_ms: Date.now() - t0,
+          input_hash: cacheKey,
+          response: responseObj,
         });
       } catch (_) { /* audit table optional */ }
     }
 
-    return new Response(JSON.stringify({
-      ok: true,
-      mappings: validMappings,
-      warnings: parsed.warnings || [],
-      usage,
-    }), { status: 200, headers: CORS });
+    return new Response(JSON.stringify(responseObj), { status: 200, headers: CORS });
   } catch (e) {
     return new Response(JSON.stringify({ ok: false, error: (e as Error).message }), { status: 200, headers: CORS });
   }
