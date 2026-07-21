@@ -126,6 +126,72 @@ describe('buildJobs — gap coverage', () => {
     expect(resolved.items).toHaveLength(1);
     expect(unassigned.items).toHaveLength(1);
   });
+
+  // ── Outside-decoration gate (SO-1590 / SO-1573) ──
+  // syncJobs (OrderEditor) skips any decoration routed to an outside decorator; buildJobs must too,
+  // or an outsourced design spawns a phantom in-house job that the dashboard surfaces as
+  // "🎨 Mockup ready for review". Each test uses an art file sitting in needs_approval WITH a mockup —
+  // the exact state that derives art_status 'waiting_approval' and fires that dashboard card — so it
+  // pins that the gate (not merely an empty art file) is what suppresses the job.
+  test('art deco flagged fulfillment:outside spawns NO job (no phantom mockup todo)', () => {
+    const o = {
+      id: 'SO-1590',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front', fulfillment: 'outside' }] }],
+      art_files: [{ id: 'a1', name: '3.5in OLu Football', deco_type: 'screen_print', status: 'needs_approval', mockup_files: ['proof.png'] }],
+    };
+    expect(BL.buildJobs(o)).toEqual([]);
+  });
+
+  test('art deco bundled onto a deco PO (deco_po_id) spawns NO job', () => {
+    const o = {
+      id: 'SO-1590',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front', deco_po_id: 'dpo-1' }] }],
+      art_files: [{ id: 'a1', name: '9in OLu Football', deco_type: 'screen_print', status: 'needs_approval', mockup_files: ['proof.png'] }],
+    };
+    expect(BL.buildJobs(o)).toEqual([]);
+  });
+
+  test('art deco covered by a SO-level deco PO (matching item + type) spawns NO job', () => {
+    const o = {
+      id: 'SO-1573',
+      items: [{ sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'a1', position: 'front' }] }],
+      art_files: [{ id: 'a1', name: '3.5 FPU Track', deco_type: 'screen_print', status: 'needs_approval', mockup_files: ['proof.png'] }],
+      deco_pos: [{ item_idxs: [0], deco_type: 'screen_print' }],
+    };
+    expect(BL.buildJobs(o)).toEqual([]);
+  });
+
+  test('a whole-item deco PO (no deco_type = wildcard) suppresses names/numbers jobs too', () => {
+    const o = {
+      id: 'SO-1573',
+      items: [{ sizes: { S: 5 }, decorations: [
+        { kind: 'numbers', num_method: 'heat_transfer', position: 'back' },
+        { kind: 'names', name_method: 'heat_press', position: 'back' },
+      ] }],
+      art_files: [],
+      deco_pos: [{ item_idxs: [0] }], // no deco_type → '*' wildcard covers the whole item
+    };
+    expect(BL.buildJobs(o)).toEqual([]);
+  });
+
+  test('an outsourced design is dropped, but an in-house design on the same order still builds its job (and still reads waiting_approval)', () => {
+    const o = {
+      id: 'SO-1590',
+      items: [
+        { sku: 'OUT', sizes: { S: 5 }, decorations: [{ kind: 'art', art_file_id: 'aOut', position: 'front', fulfillment: 'outside' }] },
+        { sku: 'IN', sizes: { M: 5 }, decorations: [{ kind: 'art', art_file_id: 'aIn', position: 'front' }] },
+      ],
+      art_files: [
+        { id: 'aOut', name: 'Vendor Decal', deco_type: 'screen_print', status: 'needs_approval', mockup_files: ['p.png'] },
+        { id: 'aIn', name: 'In-house Logo', deco_type: 'screen_print', status: 'needs_approval', mockup_files: ['p.png'] },
+      ],
+    };
+    const jobs = BL.buildJobs(o);
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].art_name).toBe('In-house Logo');
+    // Guard against over-suppression: a genuine in-house mockup must still surface for review.
+    expect(jobs[0].art_status).toBe('waiting_approval');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

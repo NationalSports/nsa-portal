@@ -20,7 +20,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, jobIsLiveForDisplay, scopeRosterToSizes } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
@@ -7311,6 +7311,15 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        // Orphaned frozen job: a released/submitted job is protected from deletion (the dbEngine save-time
+        // wipe guard), so once every line decoration behind it is removed — e.g. an all-outside-deco OMG
+        // store order whose garments ship blank and are decorated off-site (SO-1590) — the row lingers in
+        // so_jobs carrying a stale art_status:'waiting_approval'. syncJobs already drops these from the
+        // editor's Jobs tab via the same jobHasLiveDecorations check (that's why its Jobs count reads 0);
+        // buildJobs returns persisted jobs verbatim, so mirror that retirement here or the dashboard shows
+        // phantom "Mockup ready for review" cards for a job that no longer decorates anything. Gated on
+        // _decosHydrated so a transient partial load (decorations not yet fetched) never hides real todos.
+        if(!jobIsLiveForDisplay(j,so)) return;
         if(j.art_status==='waiting_approval'){
           if(!j.sent_to_coach_at){todos.push({type:'art',priority:1,msg:'🎨 Mockup ready for review: '+j.art_name,detail:tag+' · '+so.id+' · Artist uploaded proof — review & send to coach',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,repId:_repId,action:'Review Mockup',role:'sales',date:j.updated_at||so.updated_at})}
           else{const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'📞 Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id+' · Sent to coach '+daysSinceSent+' days ago',so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
@@ -10417,6 +10426,7 @@ export default function App(){
     sos.forEach(so=>{
       const c=cust.find(x=>x.id===so.customer_id);const tag=c?.name||c?.alpha_tag||so.id;const _repId=c?.primary_rep_id||so.created_by;
       buildJobs(so).forEach(j=>{
+        if(!jobIsLiveForDisplay(j,so)) return; // retire orphaned frozen jobs — see the dashboard To-Do note above
         if(j.art_status==='waiting_approval'){
           if(j.sent_to_coach_at){const _fuDays=portalSettings?.followUpDays||7;const daysSinceSent=Math.floor((new Date()-new Date(j.sent_to_coach_at))/(1000*60*60*24));const _fuAt=j.follow_up_at?new Date(j.follow_up_at):null;const isDue=_fuAt?new Date()>=_fuAt:daysSinceSent>=_fuDays;if(!j.follow_up_auto&&isDue)todos.push({type:'coach_followup',priority:1,msg:'Follow up on art approval ('+daysSinceSent+'d): '+j.art_name,detail:tag+' · '+so.id,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'Follow Up',role:'sales',date:j.sent_to_coach_at})}}
         if(j.coach_approved_at&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete')){const daysAgo=Math.floor((new Date()-new Date(j.coach_approved_at))/(1000*60*60*24));const _coachNote=j.coach_approval_comment?' · Coach note: "'+j.coach_approval_comment.slice(0,80)+(j.coach_approval_comment.length>80?'...':'')+'"':'';if(daysAgo<=7)todos.push({type:'art_approved',priority:3,msg:'Coach approved art: '+j.art_name,detail:tag+' · '+so.id+_coachNote,so,jobId:j.id,jobKey:j.key,jobArtId:j.art_file_id,action:'View',role:'sales',isNotification:true,date:j.coach_approved_at})}
@@ -19689,6 +19699,7 @@ export default function App(){
     const allArtJobs=[];
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
+        if(!jobIsLiveForDisplay(j,so)) return; // retire orphaned frozen jobs — see the dashboard To-Do note above
         // Skip jobs that haven't been explicitly submitted for art — only show on art dashboard if:
         // 1) Art was requested (Request Art button clicked), or 2) artist assigned, or 3) in active artist workflow,
         // 4) or art is approved but needs prod files (repeat art scenario)
@@ -19709,6 +19720,7 @@ export default function App(){
     // Also include art_complete jobs lacking prod files
     sos.forEach(so=>{const c=cust.find(x=>x.id===so.customer_id);
       buildJobs(so).forEach(j=>{
+        if(!jobIsLiveForDisplay(j,so)) return; // retire orphaned frozen jobs — see the dashboard To-Do note above
         if(j.art_status!=='art_complete')return;
         if(_jobNeedsProdFiles(j,so)){
           const afs=jobLiveArtIds(j,so).map(id=>safeArt(so).find(f=>f.id===id)).filter(Boolean);
