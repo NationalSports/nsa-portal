@@ -47,6 +47,34 @@ describe('buildAppliedBillRows', () => {
     const rows = buildAppliedBillRows([bill({ doc_number: 'D1', is_credit: true })], 'u');
     expect(rows[0].is_credit).toBe(true);
   });
+
+  it('records resolution telemetry — auto-push flags, AI touch, mapping count', () => {
+    const [auto] = buildAppliedBillRows([bill({
+      doc_number: 'D3', _auto_tied: true, _auto_pushed: true,
+      _lineMappings: [{ bill_idx: 0 }, { bill_idx: 1 }],
+    })], 'Sam');
+    expect(auto.resolution).toEqual({
+      auto_pushed: true, auto_tied: true, ai_reconciled: false,
+      ai_changed: 0, overage_ok: false, lines: 2, flags: [],
+    });
+    const [manual] = buildAppliedBillRows([bill({
+      doc_number: 'D4', _aiMatched: true, _aiChangedCount: 3, _overage_ok: true,
+    })], 'Sam');
+    expect(manual.resolution).toEqual({
+      auto_pushed: false, auto_tied: false, ai_reconciled: true,
+      ai_changed: 3, overage_ok: true, lines: 0,
+      flags: [{ code: 'overage', detail: expect.any(String) }],
+    });
+  });
+
+  it('stamps the adidas/UA freight>10% anomaly flag on the ledger row', () => {
+    const [r] = buildAppliedBillRows([bill({
+      doc_number: 'D5', vendor: 'ADIDAS US TEAM SERVICES',
+      merchandise_total: 1000, freight: 150, doc_total: 1150,
+    })], 'Sam');
+    expect(r.resolution.flags.map((f) => f.code)).toEqual(['freight_gt10']);
+    expect(r.resolution.flags[0].detail).toContain('15%');
+  });
 });
 
 describe('legacyAppliedBillRows (pre-00184 fallback payload)', () => {

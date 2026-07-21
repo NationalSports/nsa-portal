@@ -59,7 +59,9 @@
   # teamshop-assistant shares the FAQ facts (src/lib/teamshopFaq.js) + order status
   # labels (src/lib/teamshopOrderStatus.js) with the storefront;
   # make sure these files ship inside the function bundles.
-  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js"]
+  # bill-anomaly-digest shares its flag rules with the client's push-time stamping and
+  # the ⚠ Review pill (src/lib/billAnomalies.js).
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -225,6 +227,15 @@
 # SS_DIGEST_EMAIL (optional).
 [functions."ss-orders-sync-cron"]
   schedule = "30 12 * * *"
+
+# Supplier-bill anomaly report — daily at 21:30 UTC (~4:30-5:30 PM ET, after the day's
+# pulls and pushes). Emails accounting + Steve any bill from the last day that looks out
+# of line: adidas/UA freight >10% of merchandise, billed price >25% off the order cost,
+# approved overage, or a document total that doesn't add up — including bills that were
+# AUTO-pushed. Shared rules: src/lib/billAnomalies.js. Nothing anomalous → no email.
+# Env: BILL_ANOMALY_EMAILS (comma list; defaults to accounting@ + Steve).
+[functions."bill-anomaly-digest"]
+  schedule = "30 21 * * *"
 
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once

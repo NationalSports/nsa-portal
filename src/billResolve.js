@@ -303,6 +303,19 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
 // line tied, no ambiguity demotion (confidence stayed high), no overage, no price sync,
 // and every tie's billed unit price equals the order's cost within 2¢. Push — the actual
 // money write — stays a human action; this only stages what Accept would stage.
+// Wider gate (owner, 2026-07-21: "widen to full high-confidence"): exact-PO anchor,
+// every payable line tied, nothing unresolved, no overage — but price changes are
+// ALLOWED (they sync onto the order with audit, and a >25% gap already demoted
+// confidence to medium upstream, so nothing "sharp" can pass). This is what stages
+// ⚡ auto-match AND qualifies for auto-push; the daily anomaly email + resolution
+// flags are the after-the-fact review net.
+export const highConfidenceAutoAccept = (prop) => {
+  if (!prop || prop.weakGuess || prop.confidence !== 'high' || !prop.poAnchored) return false;
+  if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;
+  if (prop.coverage < 1 || prop.overageUnits) return false;
+  return true;
+};
+
 export const cleanAutoAccept = (prop, billItems) => {
   if (!prop || prop.weakGuess || prop.confidence !== 'high' || !prop.poAnchored) return false;
   if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;

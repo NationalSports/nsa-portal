@@ -23,6 +23,7 @@ import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExt
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
+import { billAnomalyFlags } from './lib/billAnomalies';
 import { buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, buildQBSalesOrder, buildQBInvoice, isBookingOrder, bookingDaysUntilShip, itemEditReconciles, itemsWithWipedQty, commissionRepId, isCommissionRep, isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
 import { invokeEdgeFn, buildDocHtml, printDoc, printRawDoc, downloadRawDoc, printQrLabel, printQrLabels, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, sendBrevoEmail, _smsUiEnabled, pdfDecoLabel, getBillingContacts, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, authFetch, _openPdfSmart, mergeArtFileSuperset, barcodeSvg, probeCloudinaryPdfPages } from './utils';
 import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
@@ -358,7 +359,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, cleanAutoAccept, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -1375,6 +1376,30 @@ const extractPdfText=async(file,opts={})=>{
   return{fullText,pages};
   };
   return _withTimeout(_extract(),timeoutMs,'PDF parsing timed out after '+Math.round(timeoutMs/1000)+'s'+(file&&file.name?' ('+file.name+')':'')+' — it may be corrupt, password-protected, or a scanned image with no text layer');
+};
+// Render PDF pages to JPEG images for the vision fallback (scanned bills with no text
+// layer — the Sports Inc "Needs Manual Upload" bucket). ~1400px wide keeps line items
+// legible while the payload stays small; capped pages mirror ai-bill-parse's cap.
+const extractPdfImages=async(file,opts={})=>{
+  const maxPages=opts.maxPages||8;const targetW=opts.targetWidth||1400;
+  const _extract=async()=>{
+    await loadPdfJs();
+    const ab=await file.arrayBuffer();
+    const pdf=await window.pdfjsLib.getDocument({data:ab}).promise;
+    const out=[];
+    for(let i=1;i<=Math.min(pdf.numPages,maxPages);i++){
+      const page=await pdf.getPage(i);
+      const v1=page.getViewport({scale:1});
+      const viewport=page.getViewport({scale:Math.min(3,Math.max(1,targetW/v1.width))});
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.round(viewport.width);canvas.height=Math.round(viewport.height);
+      await page.render({canvasContext:canvas.getContext('2d'),viewport}).promise;
+      const dataUrl=canvas.toDataURL('image/jpeg',0.78);
+      out.push({media_type:'image/jpeg',data:dataUrl.split(',')[1]||''});
+    }
+    return out;
+  };
+  return _withTimeout(_extract(),opts.timeoutMs||45000,'PDF page rendering timed out'+(file&&file.name?' ('+file.name+')':''));
 };
 // ── OMG financial report parsers (work on text from OCR OR a PDF printout) ──
 const _omgAmt=(s)=>{const m=String(s).replace(/[(),]/g,'').match(/-?[\d.]+/);return m?parseFloat(m[0])||0:0;};
@@ -21730,6 +21755,11 @@ export default function App(){
   const[impVendor,setImpVendor]=useState('');// default vendor_id for product import
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
+  const _billImportRef=useRef(null);_billImportRef.current=billImport;// live mirror for async sweeps (post-AI auto-push reads fresh wrappers, not stale closures)
+  // Auto-push (owner rule, 2026-07-21): the ⚡ clean class pushes itself at pull time —
+  // same gates and same money path as the human button. Default ON; toggle in the review
+  // toolbar persists per device. 'off' is the stored sentinel so a cleared store = ON.
+  const[billAutoPush,setBillAutoPush]=useState(()=>{try{return localStorage.getItem('nsa_bill_autopush')!=='off'}catch{return true}});
   const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const _skuAliasesRef=useRef(null);// Map 'vendor|VENDORSKU' → portal SKU (bill_sku_aliases), lazy-loaded once per session
   // Harvest S&S SKU aliases at ORDER time (owner insight, 2026-07-20): placing an S&S order,
@@ -23416,9 +23446,10 @@ export default function App(){
       const poCanon=Object.entries(_pc).sort((a,z)=>z[1]-a[1]).map(e=>e[0])[0]||bill.po_number;
       return{matchedPO,matchedPOSource,lineMappings,poCanon};
     };
-    // Stage Accept automatically for the certain class (cleanAutoAccept gates: PO exact,
-    // full coverage, confidence high, no overage, every billed price = order cost ±2¢).
-    // Push — the actual write — stays a human action, and the card shows ⚡ Auto-matched.
+    // Stage Accept automatically for the high-confidence class (highConfidenceAutoAccept:
+    // PO exact, full coverage, confidence high, no overage; modest ≤25% price changes are
+    // allowed and sync with audit — owner widened the gate 2026-07-21). The card shows
+    // ⚡ Auto-matched; _autoPushSweep may then push it through the same human-button gates.
     const _autoMatchSweep=(results)=>{
       let count=0;
       let cands=null;// built lazily — most pulls have at least one candidate bill, but don't pay for the build if none qualify
@@ -23426,10 +23457,13 @@ export default function App(){
         const bill=p.parsed||{};
         if(p.portalStatus==='success'||p.qbStatus)return p;
         if((bill._lineMappings||[]).length||!(bill.items||[]).length)return p;
-        if(bill.matchedPO&&_billApplyPlan(bill))return p;// already matches cleanly by SKU — normal path
+        // A bill that "matched" but still fails over-billing is NOT on the normal path —
+        // let it into the proposal engine, where the bulk rollup ties sized bill lines to a
+        // bulk order line (the JR9291 shoe class that previously looped through AI forever).
+        if(bill.matchedPO&&_billApplyPlan(bill)&&!_billOverBillingErrors(bill).length)return p;
         if(!cands)cands=_buildMatchCandidates();
         const pr=proposeResolutions(bill,cands,{canonSize:_canonBillSize,maxProposals:1})[0];
-        if(!pr||!cleanAutoAccept(pr,bill.items))return p;
+        if(!pr||!highConfidenceAutoAccept(pr))return p;
         const acc=_propToAccept(bill,pr);
         count++;
         return{...p,parsed:{...bill,matchedPO:acc.matchedPO,matchedPOSource:acc.matchedPOSource,_lineMappings:acc.lineMappings,_core_match:false,
@@ -23485,7 +23519,7 @@ export default function App(){
         results=_annotateVendorKeyAliases(results,_buildVendorKeyAliases());
         const sw=_autoMatchSweep(results);
         results=sw.list;
-        if(sw.count)nf('⚡ '+sw.count+' bill(s) auto-matched — PO exact and every cost equals the order. In Matched, ready to push.','success');
+        if(sw.count)nf('⚡ '+sw.count+' bill(s) auto-matched — PO exact and every line ties (high confidence). In Matched, ready to push.','success');
       }catch(e){console.warn('auto-match sweep',e)}
       // Append mode (queue → review) adds to whatever is already under review instead of replacing it.
       setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
@@ -23494,7 +23528,34 @@ export default function App(){
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
       nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+extraNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      await _autoPushSweep(results);
       _aiReconcilePass(results);
+    };
+
+    // AUTO-PUSH (owner rule, widened 2026-07-21 to "full high-confidence"): any matched
+    // bill that would sail through the human push button with zero problems — exact match
+    // or ⚡ staged proposal, no validation errors, no triage issue — pushes itself, through
+    // the SAME gates and SAME money path as that button (_validateBillForPush →
+    // _applyBillsToPortal; no second copy). Runs at pull time and again after the AI
+    // reconcile pass (AI-relabeled bills come clean a few seconds later). Ledger rows
+    // carry resolution.auto_pushed + anomaly flags; the daily anomaly email is the
+    // after-the-fact review net. Toggle: review-toolbar checkbox (localStorage
+    // 'nsa_bill_autopush', read at decision time so a mid-parse flip wins).
+    const _autoPushSweep=async(bills)=>{
+      try{
+        let autoOn=true;try{autoOn=localStorage.getItem('nsa_bill_autopush')!=='off'}catch(e){}
+        if(!autoOn)return 0;
+        // _ai_parsed = transcribed from a scanned PDF by vision — extraction itself is the
+        // risk there, so those never auto-push regardless of how clean they look.
+        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        if(!autoBills.length)return 0;
+        autoBills.forEach(b=>{b.parsed._auto_pushed=true});
+        const pushed=await _applyBillsToPortal(autoBills);
+        if(pushed)nf('⚡ '+pushed+' bill(s) auto-pushed to the portal (high-confidence match, no exceptions) — spot-check in Bill History','success');
+        const autoFailed=autoBills.filter(b=>b.portalStatus==='error').length;
+        if(autoFailed)nf(autoFailed+' auto-push(es) failed — left in review with the error on the card','error');
+        return pushed;
+      }catch(e){console.warn('bill auto-push',e);return 0}
     };
 
     // Process multiple bill PDFs — each file may contain multiple invoices
@@ -23514,8 +23575,26 @@ export default function App(){
         setBillImport(x=>({...x,progress:{current:fi+1,total:files.length,name:file.name}}));
         await new Promise(r=>setTimeout(r,0));// let React paint the progress before the heavy work
         try{
-          const{fullText:text,pages}=await extractPdfText(file);
-          const bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
+          let text='',pages=[],bills=[];
+          try{
+            const ex=await extractPdfText(file);text=ex.fullText;pages=ex.pages;
+            bills=parseSupplierBill(text,pages);// returns array of bills (one per invoice in the PDF)
+          }catch(exErr){text='';pages=[];bills=[]}// no text layer / timeout → try the vision read below
+          // VISION FALLBACK (owner, 2026-07-21 — the Sports Inc "Needs Manual Upload" bucket):
+          // a scanned PDF has no usable text layer, so the deterministic parser gets nothing.
+          // Render the pages to images and let ai-bill-parse transcribe the invoice into the
+          // SAME parsed shape; downstream matching/validation/push is unchanged. _ai_parsed
+          // bills are excluded from auto-push — a scanned read always gets human eyes.
+          const noLines=!bills.length||bills.every(bb=>!(bb.items||[]).length);
+          if(noLines&&String(text).replace(/\s+/g,'').length<200&&supabase){
+            setBillImport(x=>({...x,progress:{current:fi+1,total:files.length,name:file.name+' — 📷 AI reading scan…'}}));
+            const imgs=await extractPdfImages(file);
+            const d=await invokeEdgeFn(supabase,'ai-bill-parse',{filename:file.name,pages:imgs});
+            if(d?.ok&&Array.isArray(d.bills)&&d.bills.length){
+              bills=d.bills.map(bb=>({...bb,_ai_parsed:true,rawText:'',warnings:[...(bb.warnings||[]),'📷 Read from a scanned PDF by AI — verify lines and totals before pushing']}));
+            }else if(!bills.length)throw new Error(d?.error||'Scanned PDF — the AI read found no invoice on its pages');
+          }
+          if(!bills.length&&!text)throw new Error('PDF has no text layer and could not be read');
           for(let bi=0;bi<bills.length;bi++){
             const parsed=bills[bi];
             // Duplicate doc# already pushed to the Portal (or repeated within this upload): don't bring
@@ -25332,6 +25411,16 @@ export default function App(){
       // "✨ AI suggests: …" with a one-click accept. Nothing applies without the human.
       const unmatched=(bills||[]).filter(b=>b?.parsed&&!_billHasTarget(b.parsed)&&(b.parsed.items||[]).length&&!b._aiFoundPO&&!b._aiTried);
       for(const b of targets){try{await _runAiBillMatch(b)}catch(e){/* leave flagged */}}
+      // Second auto-push pass: bills the AI just relabeled may now be clean. State was
+      // rewritten with NEW wrapper objects, so re-read them via the live mirror ref.
+      if(targets.length){
+        try{
+          await new Promise(r=>setTimeout(r,50));// let React flush the reconciled lines
+          const ids=new Set(targets.map(b=>b.id));
+          const fresh=(((_billImportRef.current||{}).parsed)||[]).filter(b=>ids.has(b.id)&&b.parsed&&b.parsed._aiMatched);
+          if(fresh.length)await _autoPushSweep(fresh);
+        }catch(e){console.warn('post-AI auto-push',e)}
+      }
       for(const b of unmatched){try{await _runAiBillFindPO(b)}catch(e){/* row keeps its Find-order button */}}
     };
 
@@ -26738,6 +26827,9 @@ export default function App(){
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+ready.filter(b=>!b.qbStatus).length+' to QuickBooks'})}
+                  <label title="Push high-confidence matched bills to the portal automatically at pull time (and after the AI pass) — any bill the push button would take with zero problems. Anything with an exception waits for review. Auto-pushed bills are tagged in Bill History and covered by the daily anomaly email." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
+                    <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
+                    ⚡ Auto-push clean bills</label>
                 </div>
               </div>
               {failed>0&&<div style={{marginTop:10,padding:'10px 14px',background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6,fontSize:12,fontWeight:700,color:'#991b1b'}}>
@@ -26907,7 +26999,10 @@ export default function App(){
                 {b.portalMsg&&b.portalStatus==='error'&&<span style={{fontSize:11,fontWeight:600,color:'#dc2626'}}>{b.portalMsg}</span>}
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
-                {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line's billed price equals the order cost to the penny. Push is still up to you." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
+                {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line ties with high confidence (modest price differences sync onto the order with an audit entry)." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
+                {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
+                {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
+                {portalPushed&&(()=>{const _fl=billAnomalyFlags(bill);return _fl.length?<span title={'Pushed, but worth a look:\n• '+_fl.map(f=>f.detail).join('\n• ')+'\n(Also in the daily anomaly email.)'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>⚠ Review · {_fl.map(f=>f.code==='freight_gt10'?'freight':f.code==='sharp_price'?'price':f.code==='total_mismatch'?'total':'overage').join(' · ')}</span>:null})()}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
                 {b._aiRunning&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>✨ AI checking…</span>}
@@ -32034,7 +32129,7 @@ export default function App(){
             if(!_w.length)return null;
             const _rev=_w.filter(t=>t.bot_status==='needs_review').length;
             const _oldest=_w.slice().sort((a,b)=>new Date(a.updated_at||0)-new Date(b.updated_at||0))[0];
-            return<button className="btn btn-sm" onClick={()=>setTodoDetailId(_oldest.id)} title={_w.map(t=>t.title).join('\n')} style={{fontSize:11,background:'#fff1f2',border:'1px solid #fb7185',color:'#be123c',padding:'4px 10px',fontWeight:800,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>🤖 {_rev>0?`${_rev} cart${_rev>1?'s':''} to order`:`${_w.length} waiting`}<span style={{background:'#e11d48',color:'#fff',borderRadius:999,padding:'0 6px',fontSize:10}}>{_w.length}</span></button>})()}
+            return<button className="btn btn-sm" onClick={()=>{setPg('dashboard');setTodoDetailId(_oldest.id)}} title={_w.map(t=>t.title).join('\n')} style={{fontSize:11,background:'#fff1f2',border:'1px solid #fb7185',color:'#be123c',padding:'4px 10px',fontWeight:800,display:'flex',alignItems:'center',gap:5,whiteSpace:'nowrap'}}>🤖 {_rev>0?`${_rev} cart${_rev>1?'s':''} to order`:`${_w.length} waiting`}<span style={{background:'#e11d48',color:'#fff',borderRadius:999,padding:'0 6px',fontSize:10}}>{_w.length}</span></button>})()}
           <button className="btn btn-sm" onClick={()=>setScanModalOpen(true)} style={{fontSize:11,background:'#0f172a',border:'1px solid #334155',color:'#22c55e',padding:'4px 8px'}} title="Scan barcode / QR code"><Icon name="scan" size={14}/></button>
           <button className="btn btn-sm" onClick={()=>setIssueModal({open:true,desc:'',priority:'medium'})} style={{fontSize:11,background:'none',border:'1px solid #fca5a5',color:'#dc2626',position:'relative',padding:'4px 8px'}} title="Report an issue"><Icon name="alert" size={14}/>{openIssueCount>0&&<span style={{position:'absolute',top:-4,right:-4,background:'#dc2626',color:'white',borderRadius:10,padding:'0 5px',fontSize:9,minWidth:16,textAlign:'center',lineHeight:'16px'}}>{openIssueCount}</span>}</button>
           <button className="btn btn-sm" onClick={()=>setActionsMenuOpen(o=>!o)} style={{fontSize:11,background:'linear-gradient(135deg,#1e40af,#1e3a8a)',color:'white',border:'none',padding:'4px 12px',fontWeight:700,display:'flex',alignItems:'center',gap:6,boxShadow:'0 1px 3px rgba(30,64,175,0.3)'}} title="Quick actions"><Icon name="plus" size={12}/> Actions <span style={{fontSize:9,marginLeft:2,opacity:0.85}}>▼</span></button>
@@ -32154,6 +32249,24 @@ export default function App(){
           <textarea className="form-input" rows={3} value={todoModal.description} onChange={e=>setTodoModal(m=>({...m,description:e.target.value}))} placeholder="Details..."/></div>
         {todoModal.bot_payload&&(()=>{
           const bp=todoModal.bot_payload;
+          // Order-status (read-only CLICK tracking) task — a distinct, cart-free preview.
+          // Without this it fell through to the "Add to cart" card (ship-to, delivery date,
+          // ship strategy) which is wrong for a read-only status check and mislabeled the
+          // ship-to (e.g. showed the NSA warehouse on a drop-ship deco order).
+          if(bp.task_type==='track_po_status'){
+            const _pos=Array.isArray(bp.po_numbers)?bp.po_numbers:[];
+            return<div style={{marginBottom:12,border:'1px solid #99f6e4',borderRadius:10,overflow:'hidden'}}>
+              <div style={{padding:'10px 14px',background:'#f0fdfa',borderBottom:'1px solid #99f6e4',display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>📋 Claude · Order status</span>
+                <span className="badge badge-gray">{bp.so_id||todoModal.so_id||''}</span>
+                {_pos.length>0&&<span className="badge badge-blue">{_pos.length} Adidas PO{_pos.length===1?'':'s'} live</span>}
+              </div>
+              <div style={{padding:'10px 14px',fontSize:12,color:'#475569',lineHeight:1.5}}>
+                Reads Adidas CLICK <b>My Orders</b> for {_pos.length>0?<>the open Adidas PO{_pos.length===1?'':'s'} (<span style={{fontFamily:'ui-monospace,monospace'}}>{_pos.join(', ')}</span>)</>:'any open Adidas POs'}, then emails the rep a full status of <b>every</b> PO on this order.
+                <div style={{marginTop:6,color:'#0f766e',fontWeight:600}}>🔒 Read-only — never places an order, fills a cart, or ships anything.</div>
+              </div>
+            </div>;
+          }
           const lines=Array.isArray(bp.lines)?bp.lines:[];
           const totQty=bp.totals?.qty??lines.reduce((a,l)=>a+(l.qty||0),0);
           const dropShip=bp.drop_ship===true||lines.some(l=>l.drop_ship);
@@ -32217,7 +32330,7 @@ export default function App(){
             <div style={{padding:'8px 14px',background:'#f8fafc',borderTop:'1px solid #e2e8f0',fontSize:11,color:'#64748b'}}>Claude adds every item, enters the PO{dropShip?' and delivery address':''}, and fills all sizes — then stops for your approval before submitting.{botAvail?.synced?<span> Availability from the portal's Adidas sync ({(()=>{const h=Math.round((Date.now()-new Date(botAvail.synced))/36e5);return h<1?'under an hour':h+'h'})()} old) — Claude verifies live.</span>:null}</div>
           </div>;
         })()}
-        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&<>
+        {REPS.find(r=>r.id===todoModal.assigned_to)?.role==='bot'&&todoModal.bot_payload?.task_type!=='track_po_status'&&<>
           <div style={{marginBottom:12}}>
             <label className="form-label">📅 Requested delivery date (optional)</label>
             <div style={{display:'flex',gap:6,alignItems:'center'}}>

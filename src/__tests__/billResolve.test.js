@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -758,6 +758,50 @@ describe('cleanAutoAccept auto-match gate', () => {
   });
 });
 
+// ── highConfidenceAutoAccept — the widened gate (owner, 2026-07-21) ──────────
+describe('highConfidenceAutoAccept widened gate', () => {
+  const cand = {
+    kind: 'so', id: 'SO-1527', label: 'SO-1527', raw: { id: 'SO-1527' },
+    items: [
+      { sku: '1390159-410', name: 'UA Rival Full-Zip', color: 'Navy', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' },
+      { sku: '1390160-001', name: 'UA Rival Pant', color: 'Black', size: 'L', qty: 4, unit_cost: 30, so_id: 'SO-1527', item_id: 'a2', po_id: 'PO 13553 STCC' },
+    ],
+  };
+  const baseBill = { po_number: 'PO 13553 STCC', items: [
+    { sku: '1390159-410', size: 'L', qty: 5, unit_price: 42.25 },
+    { sku: '1390160-001', size: 'L', qty: 4, unit_price: 30 },
+  ] };
+  test('accepts a modest price change (≤25%) that cleanAutoAccept refuses', () => {
+    const bill = { ...baseBill, items: baseBill.items.map((l, i) => (i === 0 ? { ...l, unit_price: 45.0 } : l)) }; // +6.5%
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.confidence).toBe('high');
+    expect(p.priceChanges.length).toBe(1);
+    expect(cleanAutoAccept(p, bill.items)).toBe(false);
+    expect(highConfidenceAutoAccept(p)).toBe(true);
+  });
+  test('still refuses a sharp (>25%) price gap — confidence was demoted upstream', () => {
+    const bill = { ...baseBill, items: baseBill.items.map((l, i) => (i === 0 ? { ...l, unit_price: 111.37 } : l)) };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p.confidence).not.toBe('high');
+    expect(highConfidenceAutoAccept(p)).toBe(false);
+  });
+  test('still refuses unresolved lines, overage, and non-anchored proposals', () => {
+    const extra = { ...baseBill, items: [...baseBill.items, { sku: 'UNKNOWN999', size: 'M', qty: 2, unit_price: 10 }] };
+    expect(highConfidenceAutoAccept(proposeResolutions(extra, [cand], { canonSize: canon })[0])).toBe(false);
+    const offPo = { ...baseBill, po_number: 'PO 13554 STCC' };
+    expect(highConfidenceAutoAccept(proposeResolutions(offPo, [cand], { canonSize: canon })[0])).toBe(false);
+    const bulkCand = { kind: 'so', id: 'SO-1527', label: 'SO-1527', raw: { id: 'SO-1527' },
+      items: [{ sku: '1390159-410', name: 'UA Rival Full-Zip', size: 'L', qty: 5, unit_cost: 42.25, so_id: 'SO-1527', item_id: 'a1', po_id: 'PO 13553 STCC' }] };
+    const overBill = { po_number: 'PO 13553 STCC', items: [
+      { sku: 'B199E2655', size: 'L', qty: 5, unit_price: 42.25 },
+      { sku: 'B196E2652', size: 'XS', qty: 4, unit_price: 42.25 },
+    ] };
+    const p = proposeResolutions(overBill, [bulkCand], { canonSize: canon })[0];
+    expect(p.overageUnits).toBeGreaterThan(0);
+    expect(highConfidenceAutoAccept(p)).toBe(false);
+  });
+});
+
 // ── Money honesty: a sharp price gap must not read "Strong match" ─────────────
 // The Adidas F50 case: right ORDER (PO exact) but $111.37 lines landing on $41.25
 // siblings by size alone — accepting would rewrite order costs by 170%.
@@ -878,6 +922,7 @@ describe('weak-guess demotion — weak-tier ties with a huge price gap never rea
     expect(p.confidence).toBe('low');
     expect(p.evidence.join(' ')).toMatch(/hint, not a match/);
     expect(cleanAutoAccept(p, pulloverBill(30).items)).toBe(false);
+    expect(highConfidenceAutoAccept(p)).toBe(false);// the widened auto-push gate must refuse a weak guess too
   });
   test('the same weak tie with a small gap stays proposable (no weakGuess demotion)', () => {
     const p = proposeResolutions(pulloverBill(3.79), [teeCand], { canonSize: canon })[0]; // ~9% off
