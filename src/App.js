@@ -21726,6 +21726,10 @@ export default function App(){
   const[impVendor,setImpVendor]=useState('');// default vendor_id for product import
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
+  // Auto-push (owner rule, 2026-07-21): the ⚡ clean class pushes itself at pull time —
+  // same gates and same money path as the human button. Default ON; toggle in the review
+  // toolbar persists per device. 'off' is the stored sentinel so a cleared store = ON.
+  const[billAutoPush,setBillAutoPush]=useState(()=>{try{return localStorage.getItem('nsa_bill_autopush')!=='off'}catch{return true}});
   const _billParseToken=useRef(0);// bumped to cancel/supersede an in-flight bill parse so a stuck or slow file can be abandoned from the UI
   const _skuAliasesRef=useRef(null);// Map 'vendor|VENDORSKU' → portal SKU (bill_sku_aliases), lazy-loaded once per session
   // Harvest S&S SKU aliases at ORDER time (owner insight, 2026-07-20): placing an S&S order,
@@ -23484,6 +23488,26 @@ export default function App(){
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
       nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+extraNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
+      // AUTO-PUSH (owner rule, 2026-07-21): the ⚡ auto-matched class — exact PO, every line
+      // tied, every billed price = order cost ±2¢, no overage — pushes itself, through the
+      // SAME gates and SAME money path as the human button (_validateBillForPush →
+      // _applyBillsToPortal; no second copy). Anything less than perfectly clean still waits
+      // for a person. Ledger rows carry resolution.auto_pushed for after-the-fact review;
+      // toggle lives in the review toolbar (localStorage 'nsa_bill_autopush', read at
+      // decision time so a mid-parse toggle wins over the render closure).
+      try{
+        let autoOn=true;try{autoOn=localStorage.getItem('nsa_bill_autopush')!=='off'}catch(e){}
+        if(autoOn){
+          const autoBills=results.filter(b=>b.parsed?._auto_tied&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+          if(autoBills.length){
+            autoBills.forEach(b=>{b.parsed._auto_pushed=true});
+            const pushed=await _applyBillsToPortal(autoBills);
+            if(pushed)nf('⚡ '+pushed+' clean bill(s) auto-pushed to the portal (every line = order cost to the penny) — spot-check in Bill History','success');
+            const autoFailed=autoBills.filter(b=>b.portalStatus==='error').length;
+            if(autoFailed)nf(autoFailed+' auto-push(es) failed — left in review with the error on the card','error');
+          }
+        }
+      }catch(e){console.warn('bill auto-push',e)}
       _aiReconcilePass(results);
     };
 
@@ -26833,6 +26857,9 @@ export default function App(){
                 <div style={{marginLeft:'auto',display:'flex',flexDirection:'column',justifyContent:'center',gap:9,padding:'16px 24px',background:'rgba(0,0,0,.16)'}}>
                   {skBtn({bg:RED,fg:'#fff',fs:15,pad:'13px 24px',shadow:'0 8px 22px rgba(150,44,50,.4)',disabled:billImport.uploading||!ready.length,onClick:()=>pushBillsToPortal(),children:<>Push {ready.length} matched → Portal{readyTotal>0?' · '+nsaMoney(readyTotal):''}</>})}
                   {skBtn({bg:'transparent',fg:'#fff',border:'1.5px solid rgba(255,255,255,.4)',fs:12,pad:'8px 20px',title:qbConfig.connected?'Create QuickBooks bills for the same matched pile':'Connect QuickBooks first (button above the list)',disabled:!qbConfig.connected||billImport.uploading||!ready.filter(b=>!b.qbStatus).length,onClick:pushBillsToQB,children:billImport.uploading?'Pushing to QB…':'Push '+ready.filter(b=>!b.qbStatus).length+' to QuickBooks'})}
+                  <label title="When a pulled bill's PO matches an order exactly and every line's billed price equals the order cost to the penny (the ⚡ class), push it to the portal automatically at pull time. Anything less clean always waits for review. Auto-pushed bills are tagged in Bill History." style={{display:'flex',alignItems:'center',gap:7,cursor:'pointer',fontSize:11,color:'rgba(255,255,255,.75)',fontFamily:FD,fontWeight:600,letterSpacing:.4}}>
+                    <input type="checkbox" checked={billAutoPush} onChange={e=>{const on=e.target.checked;setBillAutoPush(on);try{localStorage.setItem('nsa_bill_autopush',on?'on':'off')}catch(err){}}} style={{accentColor:'#6FD59A',margin:0}}/>
+                    ⚡ Auto-push clean bills</label>
                 </div>
               </div>
               {failed>0&&<div style={{marginTop:10,padding:'10px 14px',background:REDBG,border:'1px solid #e6c9cc',borderLeft:'4px solid '+RED,borderRadius:6,fontSize:12,fontWeight:700,color:'#991b1b'}}>
@@ -27005,6 +27032,7 @@ export default function App(){
                 {b.qbMsg&&<span style={{fontSize:11,fontWeight:600,color:b.qbStatus==='success'?'#166534':'#dc2626'}}>{b.qbMsg}</span>}
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line's billed price equals the order cost to the penny. Push is still up to you." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
+                {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically at pull time: PO exact, every line's billed price = order cost to the penny. Tagged in the ledger (resolution.auto_pushed) — spot-check any time." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
                 {b._aiRunning&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>✨ AI checking…</span>}
