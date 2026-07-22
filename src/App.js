@@ -21900,7 +21900,7 @@ export default function App(){
   const[billHistVendor,setBillHistVendor]=useState('all');// Bill History / Look-at-later: filter by vendor
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
-  const[billView,setBillView]=useState('import');// Bills-screen tab: 'import' (the working list) | 'upload' (📄 Upload & Match intake). Legacy deep-link values still arrive and are normalized at render ('sportsinc' → upload, 'later' → import).
+  const[billView,setBillView]=useState('upload');// Bills-screen tab: 'upload' (📄 Upload & Match — the front door) | 'import' (Bills, the EDI/API working list). PDF parse is now primary; EDI keeps running underneath as the confirmation/backstop. Legacy deep-link values still arrive and are normalized at render ('sportsinc' → upload, 'later' → import).
   const[laterCollapse,setLaterCollapse]=useState({});// Look at Later: collapsed bucket keys
   const[billResolveId,setBillResolveId]=useState(null);// Look at Later: bill id with the resolve-disposition chips open
   const[billOverrideModal,setBillOverrideModal]=useState(null);// Look at Later: {id} — accept-overage push, note required
@@ -26885,7 +26885,7 @@ export default function App(){
             separate tabs. no mixing"). Everything money-facing lives on Bills; Upload & Match is
             pure intake and its parsed output lands back on Bills. */}
         {(()=>{const grabN=siQueue.filter(r=>r._t&&r._t.bucket==='grab').length;return<div style={{display:'flex',gap:10,marginBottom:22,flexWrap:'wrap'}}>
-          {[['import','Bills'],['upload','📄 Upload & Match']].map(([id,label])=>{
+          {[['upload','📄 Upload & Match'],['import','Bills']].map(([id,label])=>{
             const n=id==='upload'?grabN:0;
             return <button key={id} onClick={()=>setBillView(id)} style={swStyle(_bv===id)}><span style={{display:'inline-flex',alignItems:'center',gap:8,transform:'skewX(6deg)'}}>{label}{n?<span style={{fontSize:12,opacity:.7}}>{n}</span>:null}</span></button>;})}
         </div>;})()}
