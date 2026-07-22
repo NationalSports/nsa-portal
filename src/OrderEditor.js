@@ -12151,8 +12151,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               // Blanks drop-shipped to an outside decorator ship to the decorator's address, not the
               // customer's. Null when no decorator covers these items (or it has no saved address).
               const _decoDest=isDropShip?decoShipForItems(allLines.map(ln=>ln.lineIdx)):null;
+              // A write-in address stamped on the PO line at creation (Ship To → "✏️ New address")
+              // is the rep's explicit choice — it beats the decorator/customer fallbacks below.
+              const _plWriteIn=isDropShip?(po.ship_to||allLines.map(ln=>o.items[ln.lineIdx]?.po_lines?.[ln.poIdx]?.ship_to).find(st=>st&&(st.line1||st.city))||null):null;
               const _shipTo=(()=>{
                 if(!isDropShip)return{name:_ci.name,sub:_ci.fullAddr};
+                if(_plWriteIn&&(_plWriteIn.line1||_plWriteIn.city)){
+                  const cityLine=[(_plWriteIn.city||'').trim(),[(_plWriteIn.state||'').trim(),(_plWriteIn.zip||'').trim()].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+                  return{name:(_plWriteIn.name||cust?.name||'Customer')+' (Drop Ship)',sub:[_plWriteIn.line1,cityLine].filter(Boolean).join('<br/>')};
+                }
                 if(_decoDest)return{name:_decoDest.name+' (Decorator)',sub:String(_decoDest.addr).replace(/\n/g,'<br/>')};
                 let addr='';
                 if(o.ship_to_id==='custom'&&o.ship_to_custom){addr=o.ship_to_custom}
@@ -12229,7 +12236,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     ]
                   },
                 ],
-                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the '+(_decoDest?'decorator':'customer')+' address above.');return parts.length?parts.join('<br/>'):null})(),
+                notes:(()=>{const parts=[];if(isDPO)parts.push('Deco Type: '+(po.deco_type||'—').replace(/_/g,' '));if(po.notes)parts.push(po.notes);if(isDropShip)parts.push('<strong>DROP SHIP</strong> — Please ship directly to the '+(_plWriteIn&&(_plWriteIn.line1||_plWriteIn.city)?'delivery':_decoDest?'decorator':'customer')+' address above.');return parts.length?parts.join('<br/>'):null})(),
                 footer:isDPO?'Expected return: '+(po.expected_date||'TBD'):'Please confirm receipt and expected ship date.',
                 companyInfo:_ci
               });
