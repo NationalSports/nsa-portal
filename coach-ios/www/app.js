@@ -196,23 +196,35 @@
     }
   }
 
-  // ── Push notifications (scaffold — disabled until backend is ready) ─
+  // ── Push notifications ─────────────────────────────────────────────
+  // Fully wired end to end, but gated OFF (ENABLE_PUSH=false) until an APNs key
+  // is configured on the portal — so a first launch doesn't ask for permission
+  // before there's any notification to deliver. Flip ENABLE_PUSH to true once
+  // the backend is live (see coach-ios/PUSH_NOTIFICATIONS.md).
+  function postPushToken(deviceToken) {
+    if (!deviceToken || !currentTag) return;
+    try {
+      fetch(PORTAL_ORIGIN + '/.netlify/functions/coach-register-push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ alpha_tag: currentTag, token: deviceToken, platform: 'ios' }),
+      }).catch(function () {});
+    } catch (e) {}
+  }
   function registerPush() {
     if (!ENABLE_PUSH) return;
     var Push = plugin('PushNotifications');
     if (!Push) return;
+    Push.addListener('registration', function (token) { postPushToken(token && token.value); });
+    Push.addListener('registrationError', function () { /* non-fatal */ });
+    // Tapping a push (e.g. "your order shipped") can carry a portal tag to open.
+    Push.addListener('pushNotificationActionPerformed', function (action) {
+      var data = action && action.notification && action.notification.data;
+      if (data && (data.portal || data.alpha_tag)) openTeam(data.portal || data.alpha_tag);
+    });
     Push.requestPermissions().then(function (perm) {
       if (perm && perm.receive === 'granted') { Push.register(); }
     }).catch(function () {});
-    Push.addListener('registration', function (token) {
-      // TODO: POST token.value + currentTag to a Supabase edge function so
-      // order-status changes can be pushed to this coach. See README.
-      console.log('[push] device token', token && token.value);
-    });
-    Push.addListener('pushNotificationActionPerformed', function (action) {
-      var data = action && action.notification && action.notification.data;
-      if (data && data.portal) openTeam(data.portal);
-    });
   }
 
   // ── Boot ──────────────────────────────────────────────────────────
