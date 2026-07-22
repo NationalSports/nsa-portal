@@ -2503,6 +2503,14 @@ const _dbDeleteHistInvoice = async (id) => {
     await supabase.from('customer_invoices').delete().eq('id',id);
   }catch(e){console.error('[DB] delete hist invoice:',e)}});
 };
+const _dbDeleteOmgStore = async (id) => {
+  if(!supabase)return;
+  _outboxRemove('omg_stores',id);// a deliberate local delete supersedes any stashed unsaved edit
+  return _dbSavingGuard(async()=>{try{
+    // omg_store_products cascades on delete, so removing the store row is enough.
+    await supabase.from('omg_stores').delete().eq('id',id);
+  }catch(e){console.error('[DB] delete omg store:',e)}});
+};
 // Save-in-progress guard — prevents poll/realtime from loading partial data during delete-and-reinsert
 let _dbSavingCount=0;let _dbLastSaveAt=0;
 const _dbSavingGuard=async(fn)=>{_dbSavingCount++;try{return await fn()}finally{_dbSavingCount--;_dbLastSaveAt=Date.now()}};
@@ -2837,6 +2845,7 @@ export {
   _dbDeleteSO,
   _dbDeleteInvoice,
   _dbDeleteHistInvoice,
+  _dbDeleteOmgStore,
   _dbSavingCount,
   _dbLastSaveAt,
   _dbSavingGuard,
