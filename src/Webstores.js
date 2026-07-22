@@ -1230,9 +1230,33 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
 
   const loadStores = useCallback(async () => {
     setLoading(true); setErr(null); setNeedsMigration(false);
+    // `webstores` is RLS authenticated-only (migration 00134_webstore_rls_lockdown):
+    // a read that fires before the auth token is attached — or after it lapsed while an
+    // idle tab's background refresh was throttled — runs as the anon role, because
+    // supabase-js falls back to the anon key when the client has no session. RLS answers
+    // an anon read with an EMPTY array and NO error, which this loader used to treat as
+    // "0 stores" — blanking the page ("No stores match these filters", every tile 0) while
+    // a still-signed-in second tab showed every store. Confirm a live session (refreshing a
+    // lapsed token) before trusting an empty result. Mirrors utils.js authFetch's guard.
+    let authed = false;
+    try {
+      let { data: sess } = await supabase.auth.getSession();
+      if (!sess?.session) {
+        try { await supabase.auth.refreshSession(); } catch { /* offline / no refresh token */ }
+        ({ data: sess } = await supabase.auth.getSession());
+      }
+      authed = !!sess?.session;
+    } catch { authed = false; }
+
     const { data, error } = await supabase.from('webstores').select('*').eq('source', 'webstore').order('created_at', { ascending: false });
     if (error) {
       if (isMissingTable(error)) setNeedsMigration(true); else setErr(error.message);
+      setStores([]);
+    } else if ((data || []).length === 0 && !authed) {
+      // Still no session → this is a blocked read, not an empty account. Surface a
+      // recoverable prompt (the error card's Retry re-runs loadStores) instead of a
+      // misleading empty page that looks like every store was deleted.
+      setErr('Couldn’t confirm your sign-in, so your webstores didn’t load. Click Retry — if it keeps happening, sign out and back in.');
       setStores([]);
     } else {
       setStores((data || []).filter((s) => s.source !== 'omg' && !s.omg_sale_code));
