@@ -256,6 +256,32 @@ describe('_decoVendorPrice — characterization', () => {
   });
 });
 
+// Screen-print upcharges (dark=underbase, fleece, mesh). These live in the deco_vendor_pricing
+// row and are applied by _decoVendorPrice, but only take effect when the caller passes the flag —
+// the Deco PO builder + per-line Outside-deco editor now do. Guards that wiring's contract.
+describe('_decoVendorPrice — screen-print upcharges (dark/fleece/mesh)', () => {
+  const ssList = [{
+    deco_vendor_id: 'ss', deco_type: 'screen_print',
+    pricing_tiers: { tiers: [{ colors: 1, qty_breaks: [{ min_qty: 1, price: 2.0 }] }] },
+    upcharges: { underbase: 0.10, fleece: 0.15, mesh: 0.25 },
+  }];
+  const p = (params) => _decoVendorPrice(ssList, 'ss', 'screen_print', { qty: 48, colors: 1, ...params });
+
+  test('no flags → base price', () => { expect(p({})).toBe(2.0); });
+  test('dark / underbase adds 10%', () => { expect(p({ underbase: true })).toBe(2.2); });
+  test('fleece adds 15%', () => { expect(p({ fleece: true })).toBe(2.3); });
+  test('mesh adds 25%', () => { expect(p({ mesh: true })).toBe(2.5); });
+  test('upcharges compound multiplicatively (underbase × fleece)', () => {
+    expect(p({ underbase: true, fleece: true })).toBe(2.53); // 2.0 × 1.10 × 1.15
+  });
+  test('embroidery ignores the screen-print upcharge flags', () => {
+    const emList = [{ deco_vendor_id: 'ss', deco_type: 'embroidery',
+      pricing_tiers: { tiers: [{ min_stitches: 0, max_stitches: 999999, qty_breaks: [{ min_qty: 1, price: 5 }] }] },
+      upcharges: { fleece: 0.15 } }];
+    expect(_decoVendorPrice(emList, 'ss', 'embroidery', { qty: 10, fleece: true })).toBe(5);
+  });
+});
+
 // 9. calcOrderTotals: a negative sizes total doesn't go negative on its own — it
 //    fails the `sq>0` check and falls back to est_qty (sq is only used when positive).
 describe('calcOrderTotals — negative sizes total characterization', () => {
