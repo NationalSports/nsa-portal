@@ -39,6 +39,20 @@ export const skuNumBase = (s) => {
   return m ? m[1] : null;
 };
 
+// ── PDF-as-reinforcement cross-check (owner, 2026-07-22: "EDI matches work
+// automatically… the PDF upload just reinforces even though we don't need to see it").
+// A later PDF upload of a bill EDI already pushed is a silent confirmation — normally
+// there is nothing to review. It is worth surfacing ONLY when the PDF's total materially
+// disagrees with what we actually applied. true → keep it visible for review; false →
+// drop it silently (confirmed). Tolerance mirrors the money engine's posture: ignore
+// sub-dollar and sub-2% noise so rounding never raises a false alarm. Returns false when
+// either total is missing/zero — no comparison, so no alarm.
+export const pdfCrossCheckConflict = (pdfTotal, appliedTotal) => {
+  const p = Number(pdfTotal), a = Number(appliedTotal);
+  if (!(p > 0) || !(a > 0)) return false;
+  return Math.abs(p - a) > Math.max(1, a * 0.02);
+};
+
 // ── Vendor gate (owner, 2026-07-21: a Momentec bill proposed rewriting a SanMar item's
 // cost by size-coincidence — "should AT LEAST match to the right company's items") ────
 // Candidate items now carry the PO line's vendor. Weak tiers refuse items from a clearly

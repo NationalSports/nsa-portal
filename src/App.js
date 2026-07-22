@@ -359,7 +359,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -23775,7 +23775,25 @@ export default function App(){
             // Duplicate doc# already pushed to the Portal (or repeated within this upload): don't bring
             // it in at all. It's already applied, so re-importing only surfaces phantom over-billing.
             const dn=(parsed.doc_number||'').trim().toLowerCase();
-            if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){skippedDups.push(parsed.doc_number);continue}
+            // Already on the Portal (or repeated in this batch). By design the PDF upload is a
+            // silent reinforcement of the EDI/auto-pushed bill — normally there's nothing to see,
+            // so a duplicate is dropped. The ONE exception worth surfacing: this PDF's total
+            // disagrees with what we actually pushed. In that case keep it in review as a
+            // read-only flag (it's already applied, so _validateBillForPush blocks any re-push and
+            // it can never double-bill) instead of dropping the disagreement silently.
+            if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){
+              const appliedTot=seenDocs.has(dn)?null:_appliedDocTotal(parsed.doc_number);
+              if(pdfCrossCheckConflict(parsed.doc_total,appliedTot)){
+                const where=_docAppliedWhere(parsed.doc_number);
+                parsed._already_applied=true;
+                parsed.warnings=[...(parsed.warnings||[]),'⚠ Cross-check: this PDF shows $'+safeNum(parsed.doc_total).toFixed(2)+' but the bill already pushed for doc #'+(parsed.doc_number||'').trim()+(where?' ('+where+')':'')+' was $'+safeNum(appliedTot).toFixed(2)+'. Already applied — reference only; review the difference.'];
+                const clabel=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
+                results.push({id:'BILL-'+Date.now()+'-'+idx,file:clabel,text,parsed,selected:false,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
+                idx++;
+              }else{skippedDups.push(parsed.doc_number)}
+              if(dn)seenDocs.add(dn);
+              continue;
+            }
             if(dn)seenDocs.add(dn);
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
             results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
@@ -24966,6 +24984,18 @@ export default function App(){
       if(_appliedLedger.current.has('d|'+d))return 'applied earlier (server ledger — possibly another machine)';
       if(savedBills.some(x=>x.portalStatus==='success'&&(x.parsed?.doc_number||'').trim().toLowerCase()===d))return 'pushed earlier (bill history)';
       return null;
+    };
+
+    // Best-effort local lookup of the doc_total we recorded when a bill was pushed. Used ONLY
+    // to let a later PDF upload silently confirm an already-applied bill and speak up when its
+    // total disagrees (see the dedup branch in processBillPdfs). Same-machine only: the server
+    // ledger dedups cross-machine by key without a local total, so a cross-machine push returns
+    // null here and the PDF drops silently — no comparison, no false alarm.
+    const _appliedDocTotal=(doc)=>{
+      const d=(doc||'').trim().toLowerCase();
+      if(!d)return null;
+      const hit=savedBills.find(sb=>sb.portalStatus==='success'&&(sb.parsed?.doc_number||'').trim().toLowerCase()===d&&safeNum(sb.parsed?.doc_total)>0);
+      return hit?safeNum(hit.parsed.doc_total):null;
     };
 
     // True if a bill with this doc number was already applied to the Portal — checks the
