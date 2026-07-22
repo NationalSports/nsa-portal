@@ -359,7 +359,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -24152,10 +24152,18 @@ export default function App(){
     // custom items carry a placeholder SKU ("CUSTOM") with the real vendor style number in the product
     // name (e.g. "Ultraboost Cleat - KI3709"), so we also accept the bill SKU as a whole token in the
     // item's name — otherwise the bill's real style number reads as a false "no match".
+    // Agron (and some Sports Inc feeds) append a single LETTER suffix to the adidas article
+    // number — "5162436D" / "5161961C" ↔ our "5162436" / "5161961" (owner report 2026-07-22,
+    // and the class billResolve's header already names). skuNumBase (billResolve, shared+tested)
+    // returns the numeric base. Strip it so the clean-push path (_validateBillForPush) and
+    // auto-mapping (_matchLineToItems) tie these EXACTLY, not just via the weaker variant tier.
     const _billSkuMatchesItem=(billSku,item)=>{
       const bs=(billSku||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
       if(!bs)return false;
-      if((item?.sku||'').toUpperCase().replace(/[^A-Z0-9]/g,'')===bs)return true;
+      const is=(item?.sku||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      if(is===bs)return true;
+      const bBase=skuNumBase(bs),iBase=skuNumBase(is);// tolerate the Agron letter suffix either side
+      if((bBase&&(bBase===is||bBase===iBase))||(iBase&&iBase===bs))return true;
       if(bs.length<4)return false;// too short to safely token-match inside a name
       return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
     };
