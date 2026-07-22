@@ -598,21 +598,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       }catch{_poBlockRef.current.reserving=false}
     },[supabase]);
     useEffect(()=>{if(showPO!=null)_reservePoBlock()},[showPO,_reservePoBlock]);
-    // Record every PO number the form DISPLAYS as a claim (owner report 2026-07-22): reps
-    // quote the shown number to the vendor before clicking Create; abandoning the form
-    // orphans it and the vendor's bill later arrives with a PO the portal never owned
-    // ("PO 8050 FPUS", the $6k "PO 3520 CMSF" miss). Bill import reads these claims to
-    // route such bills back to the order that issued the number. Fire-and-forget upsert;
-    // a claim is a breadcrumb, never a PO — nothing applies money from it.
-    useEffect(()=>{
-      if(!supabase||showPO==null||showPO==='select'||preexistingPO)return;
-      const n=poCounter;const tag=String(poAlphaSuffix||cust?.alpha_tag||'').trim();
-      if(!Number.isFinite(n)||n<=0)return;
-      let by='';try{by=JSON.parse(localStorage.getItem('nsa_user')||'{}')?.name||''}catch(e){}
-      supabase.from('po_number_claims')
-        .upsert([{n,alpha_tag:tag,so_id:o?.id||null,customer:cust?.name||null,claimed_by:by||null}],{onConflict:'n,alpha_tag'})
-        .then(({error})=>{if(error)console.warn('[po-claim]',error.message)});
-    },[showPO,poCounter,poAlphaSuffix,preexistingPO]);
     // Block nearly spent (>40 of 50 used) — claim a fresh one so the next mints stay collision-free.
     useEffect(()=>{const b=_poBlockRef.current;if(b.start&&poCounter-b.start>40){b.start=0;b.reserving=false;_reservePoBlock()}},[poCounter,_reservePoBlock]);
     const[pickNotes,setPickNotes]=useState('');const[pickShipDest,setPickShipDest]=useState('in_house');const[pickDecoVendor,setPickDecoVendor]=useState('');const[pickShipAddr,setPickShipAddr]=useState('default');const[pickSel,setPickSel]=useState({});/* selected item indexes for IF multi-select */
@@ -624,6 +609,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     const[rsmTo,setRsmTo]=useState('');const[rsmCustom,setRsmCustom]=useState('');const[rsmName,setRsmName]=useState('Coach');const[rsmSending,setRsmSending]=useState(false);const[rsmCopied,setRsmCopied]=useState(false);
     React.useEffect(()=>{if(rosterSendModal){const contacts=(cust?.contacts||[]).filter(c=>c.email);setRsmTo(contacts.length>0?contacts[0].email:'');setRsmCustom('');setRsmName(contacts.length>0?(contacts[0].name||'Coach'):'Coach');setRsmSending(false);setRsmCopied(false)}},[rosterSendModal]);
     const[preexistingPO,setPreexistingPO]=useState(false);const[preexistingPOId,setPreexistingPOId]=useState('');const[poAlphaSuffix,setPoAlphaSuffix]=useState('');const[poExcluded,setPOExcluded]=useState({});const[poCalcTick,setPoCalcTick]=useState(0);const[poShipTo,setPoShipTo]=useState('warehouse');
+    // Record every PO number the form DISPLAYS as a claim (owner report 2026-07-22): reps
+    // quote the shown number to the vendor before clicking Create; abandoning the form
+    // orphans it and the vendor's bill later arrives with a PO the portal never owned
+    // ("PO 8050 FPUS", the $6k "PO 3520 CMSF" miss). Bill import reads these claims to
+    // route such bills back to the order that issued the number. Fire-and-forget upsert;
+    // a claim is a breadcrumb, never a PO — nothing applies money from it.
+    // (Must sit AFTER preexistingPO/poAlphaSuffix are declared — the dep array is read
+    // during render, so referencing them earlier is a temporal-dead-zone crash.)
+    useEffect(()=>{
+      if(!supabase||showPO==null||showPO==='select'||preexistingPO)return;
+      const n=poCounter;const tag=String(poAlphaSuffix||cust?.alpha_tag||'').trim();
+      if(!Number.isFinite(n)||n<=0)return;
+      let by='';try{by=JSON.parse(localStorage.getItem('nsa_user')||'{}')?.name||''}catch(e){}
+      supabase.from('po_number_claims')
+        .upsert([{n,alpha_tag:tag,so_id:o?.id||null,customer:cust?.name||null,claimed_by:by||null}],{onConflict:'n,alpha_tag'})
+        .then(({error})=>{if(error)console.warn('[po-claim]',error.message)});
+    },[showPO,poCounter,poAlphaSuffix,preexistingPO]);
     const[poShipCustom,setPoShipCustom]=useState({name:'',line1:'',city:'',state:'',zip:''});// drop-ship write-in "new address" (poShipTo==='custom')
     const[poAttention,setPoAttention]=useState('');// drop-ship attention line (e.g. an existing DPO reference for the decorator)
     const[poDropShip,setPoDropShip]=useState(null);// product PO form — In-House(false) vs Drop Ship(true); null = rep hasn't chosen
