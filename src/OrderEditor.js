@@ -24,6 +24,7 @@ import { jobScreenKey, jobGroupKey, isJobReady, allocateJobFulfillment, recalcJo
 import { buildBotCartPayload, buildBotTrackPayload, isBotOwner, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient } from './lib/botTasks';
 import { resolvePriorMockKey, prevArtAutoWireTargets, prevArtDedupKey } from './lib/artIdentity';
 import { buildExistingJobLookups, matchExistingJob, inheritJobWorkflowFields, dropMismatchedFrozenClaims, healFrozenJobArtDrift, mergeJobsArtState } from './lib/syncJobsMatch';
+import { stampSplitRuns } from './lib/splitJobPricing';
 
 // Prefix a line item's display name with its manufacturer/brand (e.g. "PTS30" → "Richardson PTS30").
 // No-ops when brand is empty or the name already leads with the brand, so vendors that
@@ -8777,7 +8778,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
 
       // Manual refresh — rebuild jobs from current items/decorations and persist. Preserves
       // merged/split/released jobs; picks up any newly added items that don't yet have a job.
-      const refreshJobs=()=>{const synced=syncJobs();const updated={...o,jobs:synced,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s'))};
+      const refreshJobs=()=>{const synced=syncJobs();const updated=stampSplitRuns({...o,jobs:synced,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('🔄 Jobs synced — '+synced.length+' job'+(synced.length===1?'':'s'))};
 
       // Split job modal state
       // Split job modal state is at component level (splitModal/setSplitModal)
@@ -8870,13 +8871,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const splitId=j.id+'-'+suffix;
         // New -S job = the backorder. split_open marks it so allocateJobFulfillment lets it claim the
         // item's receipts LAST — the received units stay counted on the original (parent) job.
+        // Both halves are separate press runs from here on — priced_separately makes the design
+        // bill each run at its own qty tier (stampSplitRuns → d.split_runs → dP). Not a rep
+        // choice; a warehouse-fault split can only get combined pricing back via an approved
+        // override request. A fresh split always starts a fresh pricing decision (override null).
         const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__'+suffix,split_from:j.id,split_open:true,item_status:'need_to_order',items:openItems,
-          fulfilled_units:0,total_units:openTotal,
+          fulfilled_units:0,total_units:openTotal,priced_separately:true,price_override:null,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
         // Original job keeps the received units and stays producible.
-        const keepJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepTotal,item_status:'items_received'};
+        const keepJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepTotal,item_status:'items_received',priced_separately:true,price_override:null};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,keepJob,splitJob2);
-        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id);
+        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Backorder split to '+splitId+' ('+openTotal+' units) — '+keepTotal+' received units stay on '+j.id);
       };
 
       // Split job by SKU — separate into one job per garment
@@ -8890,16 +8895,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const keepUnits=keepItems.reduce((a,gi)=>a+gi.units,0);
         const keepFul=keepItems.reduce((a,gi)=>a+gi.fulfilled,0);
         const splitId=j.id+'-B';
+        // Separate press runs → separate qty-tier pricing (see splitByReceived note).
         const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__B',split_from:j.id,items:splitItems,
-          total_units:splitUnits,fulfilled_units:splitFul,
+          total_units:splitUnits,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul};
+        const remainJob={...j,items:keepItems,total_units:keepUnits,fulfilled_units:keepFul,priced_separately:true,price_override:null};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
         // Re-derive both halves from live picks/receipts — the stored gi.fulfilled can lag the
         // PO (e.g. a unit un-received just before the split), and split jobs are preserved
         // verbatim by the job sync, so a stale snapshot here never self-heals (SO-1069).
         const recalcedJobs=recalcJobFulfillment({...o,jobs:newJobs2},safeItems(o));
-        const updated={...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
+        const updated=stampSplitRuns({...o,jobs:recalcedJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Split by SKU! '+splitId+' with '+splitItems.length+' garment(s)');
       };
       // Combine job items sharing the same item_idx+sku — sums units/fulfilled and merges per-size maps.
       // Used when merging jobs back together so a previously size-split item rejoins as a single line.
@@ -9005,16 +9011,25 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(keepItems.length===0||keepTotal===0){nf('Must leave some units on the original job','error');return}
         const existingSplits=jobs.filter(jj=>jj.split_from===j.id).length;
         const splitId=j.id+'-C'+(existingSplits+1);
+        // Separate press runs → separate qty-tier pricing (see splitByReceived note).
         const splitJob2={...j,..._artFields(j),id:splitId,key:j.key+'__split__C'+(existingSplits+1),split_from:j.id,items:splitItems,
-          total_units:splitTotal,fulfilled_units:splitFul,
+          total_units:splitTotal,fulfilled_units:splitFul,priced_separately:true,price_override:null,
           item_status:splitFul>=splitTotal&&splitTotal>0?'items_received':splitFul>0?'partially_received':'need_to_order',
           prod_status:'hold',created_at:new Date().toLocaleDateString()};
-        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepFul,
+        const remainJob={...j,items:keepItems,total_units:keepTotal,fulfilled_units:keepFul,priced_separately:true,price_override:null,
           item_status:keepFul>=keepTotal&&keepTotal>0?'items_received':keepFul>0?'partially_received':'need_to_order'};
         const newJobs2=[...jobs];newJobs2.splice(jIdx,1,remainJob,splitJob2);
-        const updated={...o,jobs:newJobs2,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
+        const updated=stampSplitRuns({...o,jobs:newJobs2,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setSplitModal(null);nf('Custom split! '+splitId+' with '+splitTotal+' units');
       };
       const updJob=(jIdx,k,v)=>{sv('jobs',jobs.map((j,i)=>i===jIdx?{...j,[k]:v}:j))};
+      // Set/clear a split job's pricing-override state and immediately re-stamp + save, so the
+      // order totals react in the same click (an approved override reverts the whole design to
+      // combined-tier pricing; see src/lib/splitJobPricing.js).
+      const _setJobPriceOverride=(jIdx,po)=>{
+        const updJobs=jobs.map((jj,i)=>i===jIdx?{...jj,price_override:po}:jj);
+        const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleString()}).order;
+        setO(updated);onSave(updated);setDirty(false);
+      };
       const prodStatuses=['draft','hold','staging','in_process','completed'];
       const prodLabels={draft:'Draft',hold:'On Hold',staging:'In Line',in_process:'In Process',completed:'Completed'};
       const artLabels=ART_LABELS;
@@ -10921,9 +10936,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const merged={...target,items:mergeItems,total_units:mergeUnits,fulfilled_units:mergeFulfilled,
               art_status:_as.art_status,art_file_id:_as.art_file_id,_art_ids:_as._art_ids,assigned_artist:_as.assigned_artist,
               art_requests:_as.art_requests,art_messages:_as.art_messages,sent_history:_as.sent_history,rejections:_as.rejections,
-              ..._coachFields,_merged:true,split_from:null};
+              ..._coachFields,_merged:true,split_from:null,priced_separately:false,price_override:null};
             const removeIdxs=new Set([...sel.slice(1),..._extraIdxs]);const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
-            const updated={...o,jobs:newJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
+            const updated=stampSplitRuns({...o,jobs:newJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+(sel.length+_extraIdxs.length)+' jobs into '+target.id);
           }}>Merge {mergeMode.selected.length} Selected</button>
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>})()}
@@ -10980,7 +10995,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:'',files:[]})}} title="Send a change straight to the artist — job stays in place; the new art needs approval again">Update</button>}
                   {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();_recallArt(ji,'Update')}} title="Pull the art back completely — use when the design/logo itself is changing">Recall</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}} title="Split job">✂️ Split</button>}
-                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);const updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);const updated={...o,jobs:updJobs,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
+                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
+// If the parent has no remaining split children it's one run again — drop the separate-pricing
+// flag so the design goes back to combined-tier billing (stampSplitRuns clears d.split_runs).
+if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id===j.split_from?{...jj,priced_separately:false,price_override:null}:jj);
+const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
+                {j.priced_separately&&(()=>{const po=j.price_override;const _isAdm=cu?.role==='admin'||cu?.role==='super_admin';
+                  if(po?.status==='approved')return<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#f1f5f9',color:'#475569',marginLeft:3}} title={'Pricing override approved — design bills at the combined qty tier again. Approved by '+(po.approved_by||'admin')+(po.reason?'. Request reason: '+po.reason:'')}>$ Combined ✓</span>;
+                  return<><span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#ede9fe',color:'#6d28d9',marginLeft:3}} title="Split jobs are separate press runs — this design is priced per run (each run bills at its own qty tier, blended into the line's per-piece price)">$ Split-priced</span>
+                  {po?.status==='requested'?<><span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#fef3c7',color:'#92400e',marginLeft:3}} title={'Combined-pricing override requested by '+(po.requested_by||'?')+(po.reason?': '+po.reason:'')}>$ Req</span>
+                    {_isAdm&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 5px',background:'#166534',color:'white',borderRadius:4,marginLeft:3}} title={'Approve — bill this design at the combined qty tier. Reason: '+(po.reason||'—')} onClick={e=>{e.stopPropagation();_setJobPriceOverride(ji,{...po,status:'approved',approved_by:cu?.name||cu?.id||'admin',approved_at:new Date().toLocaleString()});nf('Pricing override approved — '+(j.art_name||j.id)+' bills at the combined tier')}}>✓</button>}
+                    {_isAdm&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 5px',background:'#dc2626',color:'white',borderRadius:4,marginLeft:3}} title="Deny — keep per-run pricing" onClick={e=>{e.stopPropagation();_setJobPriceOverride(ji,{...po,status:'denied',denied_by:cu?.name||cu?.id||'admin',denied_at:new Date().toLocaleString()});nf('Pricing override denied — per-run pricing stays')}}>✕</button>}</>
+                  :<button className="btn btn-sm" style={{fontSize:9,padding:'2px 5px',background:'#b45309',color:'white',borderRadius:4,marginLeft:3}} title={(po?.status==='denied'?'Previous request denied. ':'')+'Request combined pricing for this split (e.g. the split was the warehouse\'s fault) — needs admin approval'} onClick={e=>{e.stopPropagation();const reason=window.prompt('Why should this split bill at the combined price? (e.g. warehouse-fault split)');if(!reason||!reason.trim())return;_setJobPriceOverride(ji,{status:'requested',reason:reason.trim(),requested_by:cu?.name||cu?.id||'',requested_at:new Date().toLocaleString()});nf('Pricing override requested — an admin must approve')}}>$?</button>}</>})()}
               </td>
             </tr>
             {/* Grouped items under this job */}
@@ -11020,6 +11046,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <div className="modal-header"><h2>✂️ Split Job — {j.id}</h2><button className="modal-close" onClick={()=>setSplitModal(null)}>×</button></div>
           <div className="modal-body">
             <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Choose how to split <strong>{j.art_name}</strong> ({j.total_units} total units, {totalReceived} received)</p>
+            <div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:11,color:'#92400e',marginBottom:12}}>
+              💲 <strong>Pricing:</strong> split jobs run as separate press runs, so this design will bill each run at its own quantity tier (blended into the line's per-piece price). If the split is the warehouse's fault, request a pricing override on the job afterwards — an admin can restore combined pricing.
+            </div>
 
             {/* Mode selection */}
             {!splitModal.mode&&<div style={{display:'flex',gap:12,flexDirection:'column'}}>

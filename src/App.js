@@ -1547,6 +1547,10 @@ try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s
 function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
 // Under-12 screen print is an ALL-IN flat charge (mirrors src/pricing.js spFlatShare — keep in sync).
 function spFlatShare(q,c,u=1){const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))return null;const v=SP.pr[0]?.[c-1];if(v==null||!(q>0))return null;const fs=v*u;return{sell:fs/q,cost:rQ(fs/SP.mk)/q}}
+// Split-job screen print: each run priced at its own tier, summed, returned as unrounded
+// per-piece shares (mirrors src/lib/decoPricing.js spRunBlend/decoSplitRuns — keep in sync).
+function spRunBlend(runs,c,u=1){let Q=0,sT=0,cT=0;for(const r0 of runs||[]){const r=safeNum(r0);if(!(r>0))continue;Q+=r;const f=spFlatShare(r,c,u);if(f){sT+=f.sell*r;cT+=f.cost*r;continue}const cc=rQ(spP(r,c,false)*u);sT+=rT(cc*SP.mk)*r;cT+=cc*r}if(!(Q>0)||(runs||[]).filter(r=>safeNum(r)>0).length<2)return null;return{sell:sT/Q,cost:cT/Q}}
+function decoSplitRuns(d,pq){if(!d||!Array.isArray(d.split_runs))return null;const runs=d.split_runs.map(safeNum).filter(r=>r>0);if(runs.length<2)return null;const tot=runs.reduce((a,b)=>a+b,0);const rm=d.reversible?2:1;if(tot*rm===pq)return runs.map(r=>r*rm);if(tot===pq)return runs;return null}
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 // Non-positive stitch counts / quantities are invalid input, not the smallest tier —
 // return 0 like spP does. Synced with businessLogic.js / decoPricing.js copies.
@@ -1565,13 +1569,13 @@ function dP(d,q,artFiles,cq){
   // Art-based decoration: get type from art file
   if(d.kind==='art'&&d.art_file_id&&artFiles){// Art TBD
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
       if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
-    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
     // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
     if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:(d.transfer_code&&d.cost_each!=null)?safeNum(d.cost_each):t.cost}}}}
