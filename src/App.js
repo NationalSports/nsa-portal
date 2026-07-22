@@ -19956,7 +19956,11 @@ export default function App(){
             {af&&(()=>{const fSt=(j.coach_rejected&&(j.art_status==='art_requested'||j.art_status==='art_in_progress'))?'changes_requested':getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u · {j.rep}</span>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u</span>
+            {/* Sales rep this order is for — its own non-truncating chip so it survives on a narrow
+                column instead of being the first token ellipsed off the shared meta line above.
+                The artist asked to see who each job belongs to; this is that answer at a glance. */}
+            <span style={{fontSize:9,fontWeight:700,color:j.rep&&j.rep!=='—'?'#1e40af':'#94a3b8',background:j.rep&&j.rep!=='—'?'#eff6ff':'#f1f5f9',padding:'1px 6px',borderRadius:4,flexShrink:0,whiteSpace:'nowrap'}} title="Sales rep — who this order is for">💼 {j.rep&&j.rep!=='—'?j.rep:'No rep'}</span>
             <span style={{fontSize:10,color:'#94a3b8',transition:'transform 0.15s',transform:isExp?'rotate(180deg)':'rotate(0deg)',flexShrink:0}}>▾</span>
           </div>
         </div>
@@ -21032,6 +21036,8 @@ export default function App(){
             </div>
             <div style={{display:'flex',gap:8,alignItems:'center'}}>
               <span style={{padding:'4px 12px',borderRadius:8,fontSize:11,fontWeight:700,background:SC[j.art_status]?.bg,color:SC[j.art_status]?.c}}>{ART_LABELS[j.art_status]||j.art_status}</span>
+              {/* Rep this order belongs to — mirrors the "Sales Rep" shown on the SO page (primary_rep_id, falling back to created_by) so the artist can see who the job is for without opening the SO. */}
+              {rep&&<span style={{padding:'4px 10px',borderRadius:8,fontSize:11,fontWeight:600,background:'#dbeafe',color:'#1e40af'}} title="Sales rep — who this order is for">💼 Rep: {rep.name}</span>}
               {artist&&<span style={{padding:'4px 10px',borderRadius:8,fontSize:11,fontWeight:600,background:'#ede9fe',color:'#6d28d9'}}>🎨 {artist.name}</span>}
               <button className="modal-close" style={{color:'white',fontSize:20}} onClick={()=>setArtJobDetailModal(null)}>×</button>
             </div>
