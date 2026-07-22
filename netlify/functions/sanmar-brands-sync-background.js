@@ -7,12 +7,16 @@
 //
 // SanMar's API is style-number-gated (no "list by brand" endpoint), so the
 // style set is seeded from:
-//   1. The sanmar_style_seeds table (pulled from sanmarsports.com/products.json)
+//   1. The sanmar_style_seeds table. This sync REFRESHES that table itself at the
+//      start of every run by paging sanmarsports.com/products.json (the dealer's
+//      public Shopify catalog, ~3k+ styles) — so new SanMar styles flow into the
+//      catalog automatically and the seed list can't silently go stale. Best-effort:
+//      a fetch failure just falls back to the seeds already on file.
 //   2. Products already SanMar-sourced in the DB (refresh runs on every sync)
 //   3. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
 //      numbers to add (e.g. "K500,PC61,DT6000,3001C")
 // New (not-yet-synced) styles are processed first so the 15-min budget always
-// makes forward progress; large seed sets converge over a couple of runs.
+// makes forward progress; large seed sets converge over a few runs.
 //
 // Writes:
 //   products        — one row per style+color, id 'smb-{style}-{colorCode}',
@@ -103,12 +107,62 @@ exports.handler = async () => {
     throw lastErr;
   };
 
+  // Refresh sanmar_style_seeds from sanmarsports.com/products.json (the dealer's
+  // public Shopify catalog). `handle` is the style number (e.g. "pc90h" → PC90H),
+  // `vendor` is the brand. Idempotent — upsert on style (PK), never deletes, so a
+  // short/partial pull only adds fewer styles (never loses any). A page that fails
+  // after retries is skipped, not treated as the end, so one flaky page can't
+  // truncate the whole pull. Whole thing is best-effort: on total failure we keep
+  // the seeds already on file.
+  const refreshSeeds = async () => {
+    const seen = new Map(); // STYLE -> brand (vendor as-is; brand filter matches substrings either way)
+    let pages = 0;
+    for (let page = 1; page <= 40; page++) {
+      let ok = false, prods = [];
+      for (let t = 0; t < 4 && !ok; t++) {
+        try {
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 30000);
+          const res = await fetch('https://sanmarsports.com/products.json?limit=250&page=' + page, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (nsa-portal seed sync)' }, signal: ctrl.signal,
+          }).finally(() => clearTimeout(to));
+          if (res.ok) { const d = await res.json(); prods = arr(d && d.products); ok = true; }
+        } catch { /* transient — retry */ }
+        if (!ok) await sleep(1500 * (t + 1));
+      }
+      if (!ok) { console.warn('[sanmar-brands-sync] seed page', page, 'failed after retries — skipping'); continue; }
+      if (!prods.length) break; // a successful, empty page is the real end of the catalog
+      pages++;
+      for (const p of prods) {
+        const style = String(p.handle || '').trim().toUpperCase();
+        if (style && !seen.has(style)) seen.set(style, String(p.vendor || '').trim());
+      }
+      await sleep(300);
+    }
+    if (!seen.size) { console.warn('[sanmar-brands-sync] seed refresh pulled 0 styles — using existing seeds'); return; }
+    const nowIso = new Date().toISOString();
+    const rows = [...seen].map(([style, brand]) => ({ style, brand, source: 'shopify_api', scraped_at: nowIso }));
+    let upserted = 0;
+    for (let j = 0; j < rows.length; j += 500) {
+      const r = await sb('sanmar_style_seeds?on_conflict=style', {
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(rows.slice(j, j + 500)),
+      });
+      if (!r.ok) { console.warn('[sanmar-brands-sync] seed upsert', r.status, (await r.text()).slice(0, 200)); break; }
+      upserted += rows.slice(j, j + 500).length;
+    }
+    console.log('[sanmar-brands-sync] seed refresh: ' + pages + ' pages, ' + upserted + ' styles upserted from sanmarsports.com');
+  };
+
   try {
     // SanMar vendor id
     const vRes = await sb('vendors?api_provider=eq.sanmar&select=id&limit=1');
     const vendors = await vRes.json();
     const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
     if (!vendorId) return { statusCode: 200, body: 'No SanMar vendor configured' };
+
+    // Keep the seed list current before we read it — best-effort, never fatal.
+    try { await refreshSeeds(); } catch (e) { console.warn('[sanmar-brands-sync] seed refresh failed (non-fatal):', e.message); }
 
     // Style list: existing SanMar-sourced products (refresh) + DB seeds + env seed
     const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=sku')).json();
