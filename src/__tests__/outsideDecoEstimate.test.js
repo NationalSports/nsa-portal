@@ -3,7 +3,7 @@
 // its cost should come from the vendor's price list (with dark/fleece/mesh auto-detected), not $0 and
 // not the in-house rate. An actual Deco PO still supersedes it (no double-count). Guards outsideDecoEstAt,
 // decoCostResolved, and calcOrderMargin's use of them.
-const { outsideDecoEstAt, decoCostResolved, decoCostAt, calcOrderMargin } = require('../pricing');
+const { outsideDecoEstAt, decoCostResolved, decoCostAt, calcOrderMargin, outsideDecoSell, OUTSIDE_DECO_MARGIN } = require('../pricing');
 const { outsourcedDecoTypes } = require('../businessLogic');
 
 const VENDORS = [{ id: 'dv_ss', name: 'Silver Screen' }];
@@ -66,6 +66,26 @@ describe('outsideDecoEstAt — vendor price for a soft-outside deco', () => {
     const o = mkOrder();
     o.art_files[0].deco_type = 'embroidery'; o.art_files[0].stitches = 8000;
     expect(estAt(o)).toBeCloseTo(5 * 48, 2); // flat 5/ea, no screen-print upcharges
+  });
+});
+
+describe('outsideDecoSell — charge marked up off vendor cost to the target margin', () => {
+  const marginOf = (cost) => { const sell = outsideDecoSell(cost); return (sell - cost) / sell; };
+  test('default target is 36%', () => { expect(OUTSIDE_DECO_MARGIN).toBe(0.36); });
+  test('mesh jersey cost $3.61 → charge $5.64 (≈36% margin)', () => {
+    expect(outsideDecoSell(3.61)).toBe(5.64);
+    expect(marginOf(3.61)).toBeCloseTo(0.36, 2);
+  });
+  test('base cost $2.89 → charge $4.52 (≈36% margin)', () => {
+    expect(outsideDecoSell(2.89)).toBe(4.52);
+    expect(marginOf(2.89)).toBeCloseTo(0.36, 2);
+  });
+  test('0 / invalid cost → 0 (no charge stamped)', () => {
+    expect(outsideDecoSell(0)).toBe(0);
+    expect(outsideDecoSell(null)).toBe(0);
+  });
+  test('margin is configurable', () => {
+    expect(outsideDecoSell(4, 0.5)).toBe(8); // 50% margin → 2×
   });
 });
 

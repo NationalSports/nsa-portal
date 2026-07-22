@@ -186,6 +186,11 @@ export const decoCostResolved=(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing
   if(!isDecoOutsourced(o,ii,d,outByItem))return decoCostAt(d,q,af,cq,comb);
   return outsideDecoEstAt(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem);
 };
+// Target margin on an outside-decorator's customer charge: sell = vendor cost / (1 - margin).
+// When a deco is routed Outside → a priced vendor, the charge is marked up off the (higher) vendor
+// cost to hit this margin, so routing to a decorator doesn't silently crush the deco's margin.
+export const OUTSIDE_DECO_MARGIN=0.36;
+export const outsideDecoSell=(perCost,margin=OUTSIDE_DECO_MARGIN)=>{const c=safeNum(perCost);return c>0?Math.round((c/(1-margin))*100)/100:0};
 
 // ── calcOrderTotals — single source of truth for order/estimate/SO totals ──
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the

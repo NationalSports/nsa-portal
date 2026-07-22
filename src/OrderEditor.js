@@ -15,7 +15,7 @@ import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
-import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt } from './pricing';
+import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -2584,7 +2584,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
-  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>{if(d.kind!=='art')return d;const nd={...d,fulfillment:val||undefined};if(val==='outside'){if(vendor)nd.vendor=vendor}else{nd.vendor=undefined}return nd})}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator.'+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>{
+    const items=safeItems(e);const afx=e.art_files||[];
+    // Combined art qty per art file (same basis as the live cost display) so the vendor tier matches.
+    const artQ={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)artQ[d.art_file_id]=(artQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)})});
+    const dvRow=(val==='outside'&&vendor)?decoVendors.find(v=>v&&v.name===vendor):null;
+    return{...e,items:items.map((it,x)=>{if(x!==ii)return it;
+      const itQ=(Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0))||safeNum(it.est_qty)||0;
+      return{...it,decorations:safeDecos(it).map(d=>{
+        if(d.kind!=='art')return d;
+        if(val==='outside'){const nd={...d,fulfillment:'outside'};if(vendor)nd.vendor=vendor;
+          // Auto-set the customer charge off the vendor's cost to hit the target margin (OUTSIDE_DECO_MARGIN).
+          if(dvRow){const a=afx.find(f=>f&&f.id===d.art_file_id);const dt=(a&&a.deco_type)||d.deco_type||null;
+            const cq=(d.art_file_id&&artQ[d.art_file_id])||itQ||1;const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
+            const cw=(a&&Array.isArray(a.color_ways)&&d.color_way_id)?a.color_ways.find(c=>c&&c.id===d.color_way_id):null;
+            const inks=(cw&&Array.isArray(cw.inks)&&cw.inks.filter(z=>String(z||'').trim()).length)||((a&&a.ink_colors)?a.ink_colors.split('\n').filter(l=>l.trim()).length:0)||safeNum(d.tbd_colors)||1;
+            const per=dt?_decoVendorPrice(decoVendorPricing,dvRow.id,dt,{qty:cq,colors:inks,stitches:safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||undefined,underbase:sp&&garmentNeedsUnderbase(it.color),fleece:sp&&/fleece|hood|sweat|crew|jogger/i.test(g),mesh:sp&&/\bmesh\b/i.test(g)}):null;
+            const sell=outsideDecoSell(per);if(sell>0){nd.sell_override=sell;nd.sell_each=sell;nd._outside_sell=true}}
+          return nd;}
+        const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
+      })};
+    }),updated_at:new Date().toLocaleString()};
+  });setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
