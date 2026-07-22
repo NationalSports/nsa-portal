@@ -393,6 +393,26 @@ export const mockSlotKeys = (base, decos) => {
   return slots;
 };
 
+// ── Approval-proof fallback for reused / pre-digitized art ──
+// A displayable "proof" file: something a rep/coach can actually look at (image or PDF).
+// Production formats (.dst/.emb/.ai/.eps) never count.
+export const displayableProofFile = (f) =>
+  /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
+// The files that stand in for a mockup when an art file carries NO per-garment mocks at
+// all: the general mockup_files/files bucket (legacy single-design art), else the
+// digitizer's displayable sew-out proof in prod_files (reused library art). This is the
+// same ladder skusMissingMockups accepts and the OrderEditor/CoachPortal approval views
+// render — every mockup display surface (incl. the Art Dashboard slots) must use it so a
+// reused art never renders as "no mockup" on one screen while another screen shows proof.
+// Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
+// general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
+export const artProofFallback = (a) => {
+  const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+  if (hasPerItem) return [];
+  const gen = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
+  return gen.length > 0 ? gen : safeArr(a?.prod_files).filter(displayableProofFile);
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
@@ -495,11 +515,10 @@ export const skusMissingMockups = (job, so) => {
     // displayable image/PDF sitting in prod_files) is what the approval views now show, so it
     // satisfies the gate the same way — matches the prod-files display fallback in
     // OrderEditor/CoachPortal. Non-displayable production files (.dst/.emb/.ai) never count.
-    const _displayableProof = f => /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
     const prodProof = artFiles.flatMap(a => {
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
       if (hasPerItem) return [];
-      return safeArr(a?.prod_files).filter(_displayableProof);
+      return safeArr(a?.prod_files).filter(displayableProofFile);
     });
     if (prodProof.length > 0) return;
     if (mSku) missing.push(mSku);

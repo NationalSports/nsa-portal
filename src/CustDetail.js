@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -1730,7 +1730,26 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const _jAF2=[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
       const _jSkus2=new Set((j.items||[]).map(gi=>gi.sku).filter(Boolean));
       const _mf2Seen=new Set();
-      const mockupFiles2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
+      const _mockupFilesBase2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
+      // The normal lookup misses two cases the approval gate (skusMissingMockups) already
+      // accepts: a garment LINKED to another garment's mock (nothing lives under its own
+      // sku|color key), and reused art with no per-garment mocks anywhere but a displayable
+      // sew-out proof in prod_files. Only consulted when the normal lookup found nothing —
+      // once real mockups exist, they're the source of truth.
+      const _mockLinkFiles2=_mockupFilesBase2.length===0?(()=>{
+        const seen=new Set();const out=[];
+        (j.items||[]).forEach(gi=>{
+          const it=safeItems(so)[gi.item_idx];
+          const gSku=it?.sku||gi.sku||'';const gColor=it?.color||gi.color||'';
+          const srcKey=resolveMockLink(_jAF2,gSku,gColor);
+          if(!srcKey)return;
+          mockLinkSourceFiles(_jAF2,srcKey).forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return;seen.add(u);out.push(f)});
+        });
+        return _filterDisplayable(out);
+      })():[];
+      const _proofFiles2=(_mockupFilesBase2.length===0&&_mockLinkFiles2.length===0)?_filterDisplayable(_jAF2.flatMap(af3=>artProofFallback(af3))):[];
+      const mockupFiles2=[..._mockupFilesBase2,..._mockLinkFiles2,..._proofFiles2];
+      const _mf2ProofOnly=_mockupFilesBase2.length===0&&_mockLinkFiles2.length===0&&_proofFiles2.length>0;
       const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
@@ -1746,6 +1765,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Mockup artwork display */}
           {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
+            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from production files — not a garment mockup</div>}
             {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
                 {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
@@ -2129,7 +2149,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {/* Clickable jobs — artwork proofs */}
               {soJobs.length>0&&<>
                 <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
-                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);const _pmf=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);
+                  const _pmfGen=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                  const _pmfItem=_pmfGen.length===0?_filterDisplayable(Object.values(_paf?.item_mockups||{}).flat()):[];
+                  const _pmf=_pmfGen.length>0?_pmfGen:_pmfItem.length>0?_pmfItem:_filterDisplayable(artProofFallback(_paf));
                   return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
                   {_pmf.length>0&&<div style={{display:'grid',gridTemplateColumns:_pmf.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
                     {_pmf.map((f,fi)=>{const _u=typeof f==='string'?f:(f?.url||'');const _ii=_isImgUrl(_u,f);const _ip=_isPdfUrl(_u,f);const _pt=_ip?_cloudinaryPdfThumb(_u):null;

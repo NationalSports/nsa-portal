@@ -20,7 +20,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
@@ -20106,10 +20106,11 @@ export default function App(){
         </div>
         {/* EXPANDED — full details + actions. Collapsed by default, mirrors production board UX. */}
         {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
-          {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);
+          {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);const proofN=totalMocks===0?artProofFallback(af).length:0;
             return<div style={{marginBottom:4}}>
             {totalMocks>0&&<div style={{fontSize:9,color:'#166534',fontWeight:700,padding:'1px 5px',background:'#dcfce7',borderRadius:3,display:'inline-block',marginBottom:2}}>{totalMocks} mockup{totalMocks!==1?'s':''} uploaded</div>}
-            {totalMocks===0&&<div style={{fontSize:9,color:'#b45309',fontWeight:600}}>No mockups yet</div>}
+            {totalMocks===0&&proofN>0&&<div style={{fontSize:9,color:'#92400e',fontWeight:700,padding:'1px 5px',background:'#fef3c7',borderRadius:3,display:'inline-block',marginBottom:2}} title="Reused/pre-digitized art — no garment mockup, but a displayable proof is on file">♻️ {proofN} proof file{proofN!==1?'s':''} (no mockup yet)</div>}
+            {totalMocks===0&&proofN===0&&<div style={{fontSize:9,color:'#b45309',fontWeight:600}}>No mockups yet</div>}
             {(af.prod_files||[]).length>0&&<div style={{fontSize:9,color:'#d97706'}}>{af.prod_files.length} prod file{af.prod_files.length!==1?'s':''}</div>}
             {af.ink_colors&&<div style={{fontSize:9,color:'#64748b'}}>{af.ink_colors.split('\n').filter(l=>l.trim()).length} color(s): {af.ink_colors.split('\n').filter(l=>l.trim()).slice(0,3).join(', ')}</div>}
           </div>})()}
@@ -20546,7 +20547,9 @@ export default function App(){
                       <button className="btn btn-sm" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>openFile(url)}>Open in new tab</button>
                     </div>
                   </div>})}
-              </>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
+              </>:allArtFiles2.some(a2=>artProofFallback(a2).length>0)?<div style={{width:'100%',maxWidth:600,padding:'10px 14px',borderRadius:10,background:'#fffbeb',border:'1px solid #fde68a',fontSize:12,color:'#92400e',fontWeight:600}}>
+                ♻️ Reused art — no garment mockup yet. The sew-out proof from its production files is shown on each item below.
+              </div>:<div style={{width:'100%',maxWidth:480,minHeight:320,borderRadius:12,background:'white',border:'2px dashed #d1d5db',display:'flex',alignItems:'center',justifyContent:'center',flexDirection:'column'}}>
                 <div style={{fontSize:64,marginBottom:8}}>🎨</div>
                 <div style={{fontSize:13,color:'#94a3b8',fontWeight:600}}>No mockup uploaded yet</div>
               </div>}
@@ -20664,15 +20667,22 @@ export default function App(){
                        :<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_repSlots.map(slot=>{const a=slot.artFile;
                         const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
+                        // Reused/pre-digitized art has no per-garment mocks — the approval gate and the SO
+                        // page accept the general bucket / sew-out proof instead, so the slot must show it
+                        // too rather than an empty upload zone (SO-1638). Read-only: proofs live in
+                        // prod_files/mockup_files, not this slot, so no × here — uploading replaces it.
+                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
+                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)handleMockupUploadForItem(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
                         return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={primary?undefined:pick}>
+                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
+                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
+                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
+                            onClick={(primary||proofPrimary)?undefined:pick}>
                             {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
+                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
                             {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                              :primary?<>
                                {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
@@ -20683,6 +20693,15 @@ export default function App(){
                                  <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup for '+gi.sku+'?'))handleMockupDeleteForItem(url,gi.sku)}} title="Remove">×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
+                             </>
+                             :proofPrimary?<>
+                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:240,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
+                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>{_isPdfUrl(pUrl)?'PDF':'📄'}</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
+                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
+                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
+                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
+                               </div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
@@ -21264,15 +21283,21 @@ export default function App(){
                       return<div style={{display:'flex',gap:10,flexWrap:'wrap',alignItems:'stretch'}}>{_slots.map(slot=>{const a=slot.artFile;
                         const mocks=_dedupMockDupes(slot.primary?_getMocks(a,gi.sku,gi.color):((a?.item_mockups||{})[slot.key]||[]));const primary=mocks[0]||null;const extra=mocks.slice(1);
                         const url=primary?(typeof primary==='string'?primary:(primary?.url||'')):'';const name=primary?fileDisplayName(primary):'';
+                        // Reused/pre-digitized art: no per-garment mocks anywhere, so show the same
+                        // general-bucket / sew-out proof the approval gate + SO page accept, instead of
+                        // an empty upload zone (SO-1638). Read-only here — uploading replaces it.
+                        const proof=(!primary&&slot.primary)?artProofFallback(a):[];const proofPrimary=proof[0]||null;
+                        const pUrl=proofPrimary?(typeof proofPrimary==='string'?proofPrimary:(proofPrimary?.url||'')):'';const pName=proofPrimary?fileDisplayName(proofPrimary):'';
                         const doUpload=(files)=>{if(files&&files.length&&!artJobDetailUploading)startMockupUpload(files,gi.sku,gi.color,slot.artId,slot.key)};
                         const pick=()=>{if(artJobDetailUploading)return;const inp=document.createElement('input');inp.type='file';inp.multiple=true;inp.accept='.pdf,.png,.jpg,.jpeg,.ai,.eps,.svg';inp.onchange=()=>doUpload(Array.from(inp.files));inp.click()};
                         return<div key={slot.key} style={{flex:'1 1 220px',minWidth:200,display:'flex',flexDirection:'column'}}>
-                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':'2px dashed #a78bfa',background:primary?'white':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:primary?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
-                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary)e.currentTarget.style.background='#ede9fe'}}
-                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff'}}
-                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':'#a78bfa';if(!primary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
-                            onClick={primary?undefined:pick}>
+                          <div style={{flex:1,minHeight:150,borderRadius:8,border:primary?'2px solid #7c3aed':proofPrimary?'2px solid #f59e0b':'2px dashed #a78bfa',background:primary?'white':proofPrimary?'#fffbeb':'#faf5ff',overflow:'hidden',display:'flex',flexDirection:'column',cursor:(primary||proofPrimary)?'default':(artJobDetailUploading?'wait':'pointer'),position:'relative'}}
+                            onDragOver={e=>{e.preventDefault();e.currentTarget.style.borderColor='#7c3aed';if(!primary&&!proofPrimary)e.currentTarget.style.background='#ede9fe'}}
+                            onDragLeave={e=>{e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff'}}
+                            onDrop={e=>{e.preventDefault();e.currentTarget.style.borderColor=primary?'#7c3aed':proofPrimary?'#f59e0b':'#a78bfa';if(!primary&&!proofPrimary)e.currentTarget.style.background='#faf5ff';doUpload(Array.from(e.dataTransfer.files))}}
+                            onClick={(primary||proofPrimary)?undefined:pick}>
                             {primary&&<div style={{position:'absolute',top:4,left:4,background:'#7c3aed',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}}>MOCKUP</div>}
+                            {!primary&&proofPrimary&&<div style={{position:'absolute',top:4,left:4,background:'#f59e0b',color:'white',fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:3,zIndex:1}} title="No mockup for this garment yet — showing the approved art's proof file instead">♻️ PROOF</div>}
                             {artJobDetailUploading?<div style={{margin:'auto',fontSize:11,color:'#7c3aed',fontWeight:600}}>Uploading...</div>
                              :primary?<>
                                {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(url)}/>
@@ -21284,6 +21309,16 @@ export default function App(){
                                  <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} onClick={()=>{if(window.confirm('Remove this mockup?'))handleItemMockupDelete(url,gi.sku,gi.color,slot.key)}} title="Remove">×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #f1f5f9',textAlign:'center',fontSize:10,color:'#7c3aed',fontWeight:600,cursor:'pointer'}} onClick={pick}>+ Add / replace</div>
+                             </>
+                             :proofPrimary?<>
+                               {_isImgUrl(pUrl)?<img src={pUrl} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',cursor:'pointer',display:'block'}} onClick={()=>openFile(pUrl)}/>
+                                :_isPdfUrl(pUrl)?<div style={{cursor:'pointer'}} onClick={()=>openFile(pUrl)}>{_cloudinaryPdfThumb(pUrl)?<img src={_cloudinaryPdfThumb(pUrl)} alt={pName} style={{width:'100%',maxHeight:280,objectFit:'contain',background:'white',display:'block'}} onError={e=>{e.target.style.display='none';e.target.nextSibling.style.display='block'}}/>:null}<div style={{display:_cloudinaryPdfThumb(pUrl)?'none':'block',padding:20,textAlign:'center'}}><div style={{fontSize:30}}>PDF</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div></div>
+                                :<div style={{padding:20,textAlign:'center',cursor:'pointer'}} onClick={()=>openFile(pUrl)}><div style={{fontSize:30}}>📄</div><div style={{fontSize:10,color:'#1e40af',marginTop:4,wordBreak:'break-all'}}>{pName}</div></div>}
+                               <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
+                                 <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
+                                 <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
+                               </div>
+                               <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
                              </>
                              :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
                           </div>
