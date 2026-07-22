@@ -990,7 +990,9 @@ describe('vendor gate', () => {
   });
   test('the same candidate still proposes when the bill has no vendor (unknown never blocks)', () => {
     const noVend = { ...momentecBill, vendor: undefined };
-    const props = proposeResolutions(noVend, [sanmarCand], { canonSize: scanCanon });
+    // Same customer tag as the bill so the (separate) tag-mismatch gate stays out of the way.
+    const sameTag = { ...sanmarCand, items: sanmarCand.items.map((it) => ({ ...it, po_id: 'PO 3100 WHGB' })) };
+    const props = proposeResolutions(noVend, [sameTag], { canonSize: scanCanon });
     expect(props.length).toBeGreaterThan(0);
   });
   test('an exact-PO anchor rescues a cross-vendor candidate, with the supplier difference in evidence', () => {
@@ -1013,5 +1015,43 @@ describe('vendor gate', () => {
     expect(props[0].target.id).toBe('SO-1116');
     expect(props[0].poAnchored).toBe(true);
     expect(props[0].ties.length).toBe(3); // SMALL/MEDIU/LARGE all tied despite truncation
+  });
+});
+
+// ── Negative-evidence gates: tag mismatch + date sanity (owner, 2026-07-22) ──
+describe('negative-evidence gates', () => {
+  const mk = (tag, extra) => ({
+    kind: 'so', id: 'SO-' + tag, label: 'SO-' + tag, raw: { id: 'SO-' + tag, ...(extra || {}) },
+    items: [
+      { sku: 'ZZ100', name: 'Practice Tee', size: 'M', qty: 10, unit_cost: 8, so_id: 'SO-' + tag, item_id: 'z1', po_id: 'PO 3132 ' + tag },
+      { sku: 'ZZ100', name: 'Practice Tee', size: 'L', qty: 10, unit_cost: 8, so_id: 'SO-' + tag, item_id: 'z2', po_id: 'PO 3132 ' + tag },
+    ],
+  });
+  test('weak-only ties to a different-tag order are never proposed (the STOV class)', () => {
+    const bill = { po_number: 'PO 3132 TUH', items: [
+      { sku: 'B0FAKE1', desc: 'SOMETHING', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'B0FAKE2', desc: 'SOMETHING', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    expect(proposeResolutions(bill, [mk('STOV')], { canonSize: canon })).toHaveLength(0);
+  });
+  test('strong (exact-SKU) ties survive a tag mismatch but are demoted with evidence', () => {
+    const bill = { po_number: 'PO 3132 TUH', items: [
+      { sku: 'ZZ100', desc: 'Practice Tee', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'ZZ100', desc: 'Practice Tee', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    const p = proposeResolutions(bill, [mk('STOV')], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.confidence).not.toBe('high');
+    expect(p.evidence.join(' ')).toMatch(/DIFFERENT customer/);
+  });
+  test('a bill shipped before the order existed is never weak-proposed; dates absent = gate off', () => {
+    const bill = { po_number: 'PO 9999 QQZ', ship_date: '06/01/2026', items: [
+      { sku: 'B0FAKE1', desc: 'X', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'B0FAKE2', desc: 'X', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    const late = mk('QQZ', { created_at: '2026-07-15T00:00:00Z' });
+    expect(proposeResolutions(bill, [late], { canonSize: canon })).toHaveLength(0);
+    const noDate = mk('QQZ');
+    expect(proposeResolutions(bill, [noDate], { canonSize: canon }).length).toBeGreaterThan(0);
   });
 });

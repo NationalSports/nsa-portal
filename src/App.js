@@ -23652,7 +23652,10 @@ export default function App(){
         if(!autoOn)return 0;
         // _ai_parsed = transcribed from a scanned PDF by vision — extraction itself is the
         // risk there, so those never auto-push regardless of how clean they look.
-        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
+        // (only the total is negative), so an auto-push would ADD what the credit reverses.
+        // Credits always get human eyes; manual push still works.
+        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
         if(!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
         const pushed=await _applyBillsToPortal(autoBills);

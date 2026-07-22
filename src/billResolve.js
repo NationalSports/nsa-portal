@@ -254,6 +254,21 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const qtyMirror = ties.length > 1 && Object.values(_bk).every((b) => b.alloc === b.open);
     const candPo = poParts(((ties.length ? cand.items[ties[0].target_idx] : cand.items.find((it) => poParts(it.po_id).flat === billPo.flat)) || {}).po_id || (cand.raw && cand.raw.po_number) || cand.label);
     const tagMatch = !!(billPo.tag && candPo.tag && billPo.tag === candPo.tag);
+    const strongBasesEarly = ties.filter((t) => /^(exact|alias|variant|style|bulk)/.test(t.basis)).length;
+    // ── Negative-evidence gates (owner, 2026-07-22) ─────────────────────────────
+    // TAG MISMATCH: the PO tag is the CUSTOMER (school code). A bill tagged for one
+    // school weak-tying to another school's order is the wrong-school class (3132 TUH
+    // → 3132 STOV). Weak-only + different tag + no PO anchor → never proposed; with
+    // strong ties it survives (the mined tag-differs retarget class) but demoted below.
+    const tagMismatch = !!(billPo.tag && candPo.tag && billPo.tag !== candPo.tag);
+    if (tagMismatch && !poAnchored && strongBasesEarly === 0) return;
+    // DATE SANITY: a bill shipped/issued before the order existed cannot be that order.
+    // Only fires when both dates parse; 2-day grace absorbs timezone/entry slop.
+    const _pd = (v) => { const d = new Date(String(v || '')); return isNaN(d.getTime()) ? null : d.getTime(); };
+    const billDate = _pd(bill.ship_date) || _pd(bill.doc_date);
+    const orderCreated = _pd(cand.raw && (cand.raw.created_at || cand.raw.created));
+    const billPredatesOrder = !!(billDate && orderCreated && billDate + 2 * 86400000 < orderCreated);
+    if (billPredatesOrder && !poAnchored && strongBasesEarly === 0) return;
     const coreDistance = billPo.core && candPo.core ? editDistance(billPo.core, candPo.core) : 9;
     const strongBases = ties.filter((t) => /^(exact|alias|variant|style|bulk)/.test(t.basis)).length;
     const overageUnits = bucketOver;
@@ -274,6 +289,9 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       coverage === 1 && (qtyMirror || strongBases === ties.length || (tagMatch && coreDistance <= 1) || poAnchored) ? 'high'
       : poAnchored ? 'medium'
       : coverage >= 0.7 || (coverage >= 0.5 && tagMatch) ? 'medium' : 'low';
+    // Negative-evidence demotions: a surviving tag-mismatch or bill-predates-order
+    // proposal is never "high" — real conflicting evidence needs a human.
+    if ((tagMismatch || billPredatesOrder) && confidence === 'high') confidence = 'medium';
     // Money honesty: a "sure" match that would rewrite an order cost by >25% needs eyes —
     // the right ORDER can still have the wrong LINES tied (weak-basis tie + big price gap,
     // e.g. $111.37 F50s landing on a $41.25 sibling line by size alone).
@@ -309,6 +327,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (tagMatch) evidence.push('the bill’s tag “' + billPo.tag + '” matches this order');
     if (coreDistance === 1) evidence.push('the PO number is one digit off (' + billPo.core + ' → ' + candPo.core + ')');
     if (coreDistance === 0 && billPo.tag !== candPo.tag) evidence.push('same PO number, different tag');
+    if (tagMismatch) evidence.push('⚠ the bill’s tag “' + billPo.tag + '” names a DIFFERENT customer than this order (“' + candPo.tag + '”) — confirm the school before accepting');
+    if (billPredatesOrder) evidence.push('⚠ the bill is dated before this order was created — it may belong to an earlier order');
     const bulkTies = ties.filter((t) => t.basis === 'bulk').length;
     if (bulkTies) evidence.push(bulkTies + ' sized bill line(s) roll up to the PO’s single bulk line — bought in bulk, billed by size');
     if (overageUnits) evidence.push('⚠ ' + overageUnits + ' unit(s) exceed the order’s open quantity — accept to approve them; push then corrects the order (audit kept)');
