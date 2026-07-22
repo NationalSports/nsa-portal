@@ -15,8 +15,16 @@
 //   2. Products already SanMar-sourced in the DB (refresh runs on every sync)
 //   3. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
 //      numbers to add (e.g. "K500,PC61,DT6000,3001C")
-// New (not-yet-synced) styles are processed first so the 15-min budget always
-// makes forward progress; large seed sets converge over a few runs.
+// Styles without one of THIS sync's own rows (id 'smb-…') are processed first so
+// the 15-min budget always makes forward progress; already-synced styles refresh
+// afterward. Priority keys off 'smb-' specifically, not any sanmar row, so a style
+// that only has hand-added 'sm-…' rows (e.g. a manual quick-add) still counts as
+// not-yet-synced and gets its full color set built instead of being stuck at the
+// back of the queue forever. Large seed sets converge over several runs.
+//
+// On-demand: POST { "styles": ["PC90H","PC55"] } runs a TARGETED pass over exactly
+// those styles (skips the seed refresh and the S&S cutover) — for backfilling or
+// validating specific styles without waiting for the daily full pass.
 //
 // Writes:
 //   products        — one row per style+color, id 'smb-{style}-{colorCode}',
@@ -76,10 +84,23 @@ function canonicalBrand(name) {
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   const site  = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  // Optional targeted run: POST { "styles": ["PC90H","PC55"] } ingests exactly those
+  // styles and nothing else (skips the seed refresh and the S&S cutover). Used to
+  // backfill / validate specific styles on demand without waiting for the daily pass
+  // to grind through the full ~3k-style queue.
+  let targetStyles = [];
+  try {
+    const body = event && event.body ? JSON.parse(event.body) : null;
+    if (body && Array.isArray(body.styles)) {
+      targetStyles = body.styles.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean);
+    }
+  } catch { /* ignore malformed body — fall through to a normal full run */ }
+  const targeted = targetStyles.length > 0;
   if (!site || !sbUrl || !sbKey) {
     console.error('[sanmar-brands-sync] missing config');
     return { statusCode: 500, body: 'Not configured' };
@@ -162,10 +183,13 @@ exports.handler = async () => {
     if (!vendorId) return { statusCode: 200, body: 'No SanMar vendor configured' };
 
     // Keep the seed list current before we read it — best-effort, never fatal.
-    try { await refreshSeeds(); } catch (e) { console.warn('[sanmar-brands-sync] seed refresh failed (non-fatal):', e.message); }
+    // Skipped on a targeted run (we already know exactly which styles to do).
+    if (!targeted) {
+      try { await refreshSeeds(); } catch (e) { console.warn('[sanmar-brands-sync] seed refresh failed (non-fatal):', e.message); }
+    }
 
     // Style list: existing SanMar-sourced products (refresh) + DB seeds + env seed
-    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=sku')).json();
+    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=id,sku')).json();
     const dbSeeds = await (await sb('sanmar_style_seeds?select=style,brand')).json();
     const styleOf = (sku) => String(sku || '').split('-')[0].trim();
     const seed = (process.env.SANMAR_BRAND_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -173,12 +197,18 @@ exports.handler = async () => {
     // brand recorded are always tried.
     const seedStyles = arr(dbSeeds).filter((r) => !EXCLUDE_BRAND_RE.test(r.brand || '')).map((r) => r.style);
     const existingStyles = arr(existing).map((p) => styleOf(p.sku)).filter(Boolean);
-    const existingSet = new Set(existingStyles);
-    // New (not-yet-synced) styles go first so first-time ingest wins the 15-min
+    // Prioritise by THIS sync's own rows (id 'smb-…'), not by any sanmar row. A style
+    // that only has hand-added 'sm-…' rows (a different id scheme, e.g. from a manual
+    // quick-add or an old catalog import) has never been through this sync and still
+    // needs its full color set built — but it *looks* "already synced" if we key off
+    // every sanmar row, so it gets sorted to the back and, at ~200 styles/run, never
+    // reached. Keying off 'smb-' keeps those styles in the priority (new) bucket.
+    const smbSet = new Set(arr(existing).filter((p) => String(p.id).startsWith('smb-')).map((p) => styleOf(p.sku)).filter(Boolean));
+    // New (no smb- row yet) styles go first so first-time ingest wins the 15-min
     // budget; already-synced styles refresh afterward and roll forward run to run.
-    const newStyles = [...seedStyles, ...seed].filter((s) => s && !existingSet.has(s));
-    const styles = [...new Set([...newStyles, ...existingStyles])];
-    console.log('[sanmar-brands-sync] styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
+    const newStyles = [...seedStyles, ...seed].filter((s) => s && !smbSet.has(s));
+    const styles = targeted ? targetStyles : [...new Set([...newStyles, ...existingStyles])];
+    console.log('[sanmar-brands-sync]', targeted ? 'TARGETED run —' : 'styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
     if (!styles.length) {
       return { statusCode: 200, body: JSON.stringify({ message: 'No brand styles to sync. Add SanMar style numbers to SANMAR_BRAND_STYLES env var (e.g. "K500,PC61,DT6000,3001C") to seed the catalog.', styles: 0 }) };
     }
@@ -305,8 +335,10 @@ exports.handler = async () => {
     // from S&S → SanMar). Scoped to synced brands only, so a brand we didn't
     // reach this run keeps its existing rows — no empty gap. Boxercraft stays on
     // S&S because SanMar doesn't carry it (never enters syncedBrands).
+    // Skipped on a targeted run: a handful of styles is not a full brand pass, so
+    // it must not retire that brand's S&S rows wholesale.
     let ssRetired = 0;
-    if (syncedBrands.size) {
+    if (!targeted && syncedBrands.size) {
       const inList = [...syncedBrands].map((b) => '"' + String(b).replace(/"/g, '') + '"').join(',');
       const cr = await sb('products?inventory_source=eq.ss_activewear&is_active=eq.true&brand=in.(' + inList + ')', {
         method: 'PATCH', headers: { Prefer: 'return=representation', 'Content-Type': 'application/json' },
@@ -317,7 +349,7 @@ exports.handler = async () => {
     }
 
     console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', ssRetired, 'S&S rows retired,', errors.length, 'errors');
-    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
+    return { statusCode: 200, body: JSON.stringify({ targeted, styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
   } catch (e) {
     console.error('[sanmar-brands-sync]', e);
     return { statusCode: 500, body: e.message };
