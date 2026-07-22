@@ -23622,6 +23622,27 @@ export default function App(){
         // Order-aware tier: resolve vendor part numbers (SanMar Unique_Key) we captured at order
         // time to our style, so those lines tie exactly instead of falling through to color+size.
         results=_annotateVendorKeyAliases(results,_buildVendorKeyAliases());
+        // Claimed-but-never-created PO numbers (owner report 2026-07-22): the Create-PO
+        // form records every number it DISPLAYS (po_number_claims). If this bill's PO
+        // was issued from an order but never created — the "PO 8050 FPUS" class — point
+        // the reviewer at that order. Annotation only; matching and push are unchanged.
+        try{
+          const unmatchedPo=results.filter(b=>b?.parsed&&!_billHasTarget(b.parsed)&&(b.parsed.po_number||b.parsed._po_raw));
+          if(supabase&&unmatchedPo.length){
+            const pps=unmatchedPo.map(b=>poParts(b.parsed._po_raw||b.parsed.po_number)).filter(pp=>pp.core);
+            const cores=[...new Set(pps.map(pp=>parseInt(pp.core,10)))].filter(Number.isFinite);
+            if(cores.length){
+              const{data:claims}=await supabase.from('po_number_claims').select('n,alpha_tag,so_id,customer,claimed_by,claimed_at').in('n',cores.slice(0,100));
+              const cmap=new Map();(claims||[]).forEach(c=>cmap.set(c.n+'|'+String(c.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,''),c));
+              if(cmap.size)results=results.map(b=>{
+                const p=b?.parsed;if(!p||_billHasTarget(p))return b;
+                const pp=poParts(p._po_raw||p.po_number);if(!pp.core)return b;
+                const c=cmap.get(parseInt(pp.core,10)+'|'+pp.tag);
+                return c?{...b,parsed:{...p,_claimed_po:c}}:b;
+              });
+            }
+          }
+        }catch(e){console.warn('po claims lookup',e)}
         const sw=_autoMatchSweep(results);
         results=sw.list;
         if(sw.count)nf('⚡ '+sw.count+' bill(s) auto-matched — PO exact and every line ties (high confidence). In Matched, ready to push.','success');
@@ -27164,6 +27185,7 @@ export default function App(){
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
                 {!!(bill._auto_hold&&bill._auto_hold.length)&&!portalPushed&&<span title={'Matched, but held out of auto-push:\n• '+bill._auto_hold.join('\n• ')+'\nReview and push manually — the button works as always.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {bill._auto_hold.length===1?bill._auto_hold[0].split(' — ')[0].split(' (')[0]:bill._auto_hold.length+' reasons'}</span>}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
+                {bill._claimed_po&&!bill.matchedPO&&<span title={'This PO number was ISSUED by the Create-PO form from '+(bill._claimed_po.so_id||'an order')+(bill._claimed_po.customer?' ('+bill._claimed_po.customer+')':'')+(bill._claimed_po.claimed_by?' by '+bill._claimed_po.claimed_by:'')+(bill._claimed_po.claimed_at?' on '+String(bill._claimed_po.claimed_at).slice(0,10):'')+' — but the PO was never created in the portal. Open that order to create it, or use Match manually to tie this bill to its items.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>🎫 Issued from {bill._claimed_po.so_id||'an order'} — never created</span>}
                 {portalPushed&&(()=>{const _fl=billAnomalyFlags(bill);return _fl.length?<span title={'Pushed, but worth a look:\n• '+_fl.map(f=>f.detail).join('\n• ')+'\n(Also in the daily anomaly email.)'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>⚠ Review · {_fl.map(f=>f.code==='freight_gt10'?'freight':f.code==='sharp_price'?'price':f.code==='total_mismatch'?'total':'overage').join(' · ')}</span>:null})()}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
                 {tri&&tri.errs.length>0&&<span title={tri.errs.join('\n')} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef2f2',color:'#b91c1c',fontWeight:700,border:'1px solid #fecaca'}}>⚠️ {tri.errs.length} problem{tri.errs.length>1?'s':''}</span>}
