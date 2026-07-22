@@ -3058,7 +3058,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       // order) lands at 'waiting_approval' — not yet sent to coach — so the rep gets a one-click
       // Approve / Send to Coach / send-back-to-artist choice instead of it silently going to
       // "Art Approved". Existing jobs keep their human-advanced status via the merge below.
-      const _newArtSt=(!existing&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
+      // EXCEPT store-pull SOs (OMG pull / webstore batch): there the sale IS the customer's
+      // approval — createOmgSO and batchOrders stamp the art 'approved' by design — so the
+      // re-confirm gate must not drag every store job back into the artist/coach pipeline
+      // (it generated phantom "Mockup ready for review — Artist uploaded proof" to-dos, SO-1590).
+      const _isStoreSO=!!(o.omg_store_id||o.webstore_id||o.source==='webstore');
+      const _newArtSt=(!existing&&!_isStoreSO&&(PROD_FILES_STATUSES.includes(j.art_status)||j.art_status==='art_complete'))?'waiting_approval':j.art_status;
       // Preserve human-advanced states; 'needs_art' is the auto-computed default and
       // must be re-derived so a fixed art file immediately unlocks to art_complete.
       // (_healUnresolvedArt below still downgrades a preserved completed-ish status
@@ -9360,7 +9365,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>
               <div style={{fontSize:12,color:'#1e3a8a',marginTop:4}}>The mockup will be sent to you for approval when ready.</div>
             </div>}
-            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();const mockups=[..._mf,..._im].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
+            {j.art_status==='waiting_approval'&&(()=>{const artFile2=safeArt(o).find(a=>a.id===j.art_file_id);const _jobArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jobArtIds.add(d.art_file_id)})});const _jobArtFiles=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);const _mf=_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));const _im=_filterDisplayable(_jobArtFiles.flatMap(af3=>Object.values(af3?.item_mockups||{}).flat()));const _seen=new Set();/* reused library art often has NO mocks anywhere — the digitizer's sew-out JPG/PDF in prod_files is the only proof, so fall back to it (mirrors the Changes-Requested banner + per-item generalMocks) */const _mAll=[..._mf,..._im];const _mPool=_mAll.length>0?_mAll:_filterDisplayable(_jobArtFiles.flatMap(af3=>af3?.prod_files||[]));const mockups=_mPool.filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});const _stca=j.sent_to_coach_at?new Date(j.sent_to_coach_at):null;
               // Send the job's art back to the artist for a redo. Shared by the "Request Update"
               // box below and the per-garment "send to artist" button in the Reuse-a-mock panel,
               // so the pullback semantics can't drift apart (audit M1/A5): the redo covers EVERY
@@ -9404,7 +9409,21 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {/* Per-item: mockup + decoration spec + size grid + production files (mirrors Art Dashboard) */}
               {(()=>{
                 const _colorMap2={'Navy':'#001f3f','Gold':'#FFD700','White':'#ffffff','Red':'#dc2626','Black':'#000','Silver':'#C0C0C0','Royal':'#4169e1','Cardinal':'#8C1515','Green':'#166534','Orange':'#EA580C','Navy 2767':'#001f3f','PMS 286':'#0033A0','PMS 032':'#EF3340','PMS 877':'#C0C0C0','Maroon':'#800000'};
-                if(itemDetails.length===0)return null;
+                // A job with NO garment rows (e.g. reused art whose deco was never pointed at a
+                // garment) still needs to SHOW the art being approved — a blank banner reading
+                // "approved on a previous order" with nothing to look at was a dead end (SO-1573).
+                if(itemDetails.length===0)return<div style={{marginBottom:12}}>
+                  <div style={{padding:'8px 12px',marginBottom:8,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,fontSize:11,color:'#9a3412',fontWeight:600}}>⚠️ This job isn't linked to any garments yet — point a garment's decoration at “{j.art_name||'this art'}” on the Items tab so the approval covers the right product.</div>
+                  {mockups.length>0?<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    {mockups.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);return<div key={fi} onClick={()=>setMockupLightbox(url)} title="Click to enlarge" style={{cursor:'pointer',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white',width:160}}>
+                      {_isImgUrl(url,f)?<img src={url} alt={name} style={{width:160,height:160,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :_isPdfUrl(url,f)&&_cloudinaryPdfThumb(url)?<img src={_cloudinaryPdfThumb(url)} alt={name} style={{width:160,height:160,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                      :<div style={{width:160,height:160,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,background:'#fafafa'}}><span style={{fontSize:26}}>📄</span><span style={{fontSize:10,color:'#1e40af',padding:'0 6px',textAlign:'center',wordBreak:'break-all'}}>{name}</span></div>}
+                      <div style={{padding:'3px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{name}</div>
+                    </div>})}
+                  </div>
+                  :<div style={{padding:12,background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,fontSize:12,color:'#9a3412'}}>No mockup or production files on this art yet — check the Art Library tab.</div>}
+                </div>;
                 // ── Mock links ── default per-garment; a garment can be linked to use the same
                 // mockup as another garment. Mirrors the Art Dashboard modal.
                 const _jobArts=[..._jobArtIds].map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
