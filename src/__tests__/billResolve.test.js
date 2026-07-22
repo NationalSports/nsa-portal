@@ -1055,3 +1055,41 @@ describe('negative-evidence gates', () => {
     expect(proposeResolutions(bill, [noDate], { canonSize: canon }).length).toBeGreaterThan(0);
   });
 });
+
+// ── autoPushSafety — the unattended direct-path gate (Fable audit, 2026-07-22) ──
+describe('autoPushSafety direct-path gate', () => {
+  const { autoPushSafety } = require('../billResolve');
+  const base = { poExact: true, pricePairs: [], billVendor: '', targetVendors: [], docTotal: 100 };
+  test('clean exact-PO bill with sane prices passes', () => {
+    expect(autoPushSafety({ ...base, pricePairs: [{ bill_unit: 10, unit_cost: 10 }, { bill_unit: 12.4, unit_cost: 10 }] })).toEqual([]); // +24% is within the staged path bound
+  });
+  test('a >25% per-line price gap blocks (the SanMar 64000 / S&S AT101 class)', () => {
+    const r = autoPushSafety({ ...base, pricePairs: [{ bill_unit: 15, unit_cost: 35 }] });
+    expect(r.length).toBe(1);
+    expect(r[0]).toMatch(/sharply/);
+  });
+  test('an unattended FIRST cost write (order cost 0 → billed >2¢) blocks', () => {
+    expect(autoPushSafety({ ...base, pricePairs: [{ bill_unit: 5.25, unit_cost: 0 }] }).length).toBe(1);
+  });
+  test('prefix/memo (non-exact) PO matches never auto-push', () => {
+    expect(autoPushSafety({ ...base, poExact: false })[0]).toMatch(/not exact/);
+  });
+  test('negative document total (credit-like, PDF-parsed credits have no is_credit) blocks', () => {
+    expect(autoPushSafety({ ...base, docTotal: -128.52 })[0]).toMatch(/credit-like/);
+  });
+  test('vendor mismatch blocks; placeholder vendor ids and unknowns never block', () => {
+    expect(autoPushSafety({ ...base, billVendor: 'MOMENTEC BRANDS', targetVendors: ['SanMar'] }).length).toBe(1);
+    expect(autoPushSafety({ ...base, billVendor: 'AGRON INC.', targetVendors: ['v1777312659133'] })).toEqual([]);
+    expect(autoPushSafety({ ...base, billVendor: 'OUTDOOR CAP CO INC A', targetVendors: ['ns_115'] })).toEqual([]);
+    expect(autoPushSafety({ ...base, billVendor: '', targetVendors: ['SanMar'] })).toEqual([]);
+  });
+  test('vendorsCompatible treats internal vendor-record ids as unknown (fixes the proposal-path false block too)', () => {
+    expect(vendorsCompatible('AGRON INC.', 'v1777312659133')).toBe(true);
+    expect(vendorsCompatible('WILSON SPORTING GOODS CO', 'ns_166')).toBe(true);
+    expect(vendorsCompatible('MOMENTEC BRANDS', 'SANMAR')).toBe(false); // real mismatch still blocks
+  });
+  test('reasons dedupe — many sharp lines yield distinct messages only', () => {
+    const r = autoPushSafety({ ...base, pricePairs: [{ bill_unit: 15, unit_cost: 35 }, { bill_unit: 15, unit_cost: 35 }] });
+    expect(r.length).toBe(1);
+  });
+});
