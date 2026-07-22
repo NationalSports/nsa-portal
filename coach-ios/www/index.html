@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- viewport-fit=cover lets us paint into the notch / home-indicator safe areas. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="color-scheme" content="light" />
+  <title>NSA Team Portal</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ── ENTRY VIEW ─────────────────────────────────────────────────────
+       Native-feeling first screen. The launched app has no ?portal=<tag>
+       (that only exists on the emailed link), so the coach enters their
+       team code here, or arrives via a deep link that fills it in. -->
+  <section id="entry" class="view entry" hidden>
+    <div class="entry-card">
+      <img class="entry-logo" src="img/nsa-logo.png" alt="National Sports Apparel" />
+      <h1 class="entry-title">Team Portal</h1>
+      <p class="entry-sub">Enter your team code to view orders, invoices, artwork approvals, and your team store.</p>
+
+      <form id="teamForm" class="entry-form" autocomplete="off">
+        <label class="entry-label" for="teamInput">Team code or portal link</label>
+        <input
+          id="teamInput"
+          class="entry-input"
+          type="text"
+          inputmode="text"
+          autocapitalize="none"
+          autocorrect="off"
+          spellcheck="false"
+          placeholder="e.g. eagles-baseball"
+          aria-describedby="teamHint" />
+        <p id="teamError" class="entry-error" hidden></p>
+        <button id="teamGo" class="entry-btn" type="submit">Open My Portal</button>
+        <p id="teamHint" class="entry-hint">
+          The code is in the portal link your NSA rep emailed you — the part after
+          <code>portal=</code>. You can also paste the whole link.
+        </p>
+      </form>
+
+      <button id="recentBtn" class="entry-recent" type="button" hidden></button>
+
+      <a class="entry-help" href="mailto:hello@nationalsportsapparel.com?subject=Team%20Portal%20access">
+        Don't have a code? Contact your rep
+      </a>
+    </div>
+    <div class="entry-footer">National Sports Apparel · California's Largest Independent Team Dealer</div>
+  </section>
+
+  <!-- ── PORTAL VIEW ────────────────────────────────────────────────────
+       Native top chrome + the hosted coach portal embedded in an iframe. -->
+  <section id="portal" class="view portal" hidden>
+    <header class="topbar">
+      <div class="topbar-team" id="topbarTeam">Team Portal</div>
+      <div class="topbar-actions">
+        <button id="refreshBtn" class="topbar-btn" type="button" aria-label="Refresh">&#8635;</button>
+        <button id="switchBtn" class="topbar-btn topbar-btn-text" type="button">Switch team</button>
+      </div>
+    </header>
+    <div class="frame-wrap">
+      <div id="frameLoading" class="frame-loading"><span class="spinner"></span></div>
+      <iframe
+        id="portalFrame"
+        class="portal-frame"
+        title="NSA Team Portal"
+        allow="clipboard-write; payment; camera; encrypted-media"
+        referrerpolicy="no-referrer-when-downgrade"></iframe>
+    </div>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>
