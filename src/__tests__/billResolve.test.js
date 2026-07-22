@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -952,5 +952,106 @@ describe('weak-guess demotion — weak-tier ties with a huge price gap never rea
     expect(p.poAnchored).toBe(true);
     expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
     expect(p.weakGuess).toBeFalsy(); // the PO anchor is real order-level evidence; money check still flags the price
+  });
+});
+
+// ── Vendor gate — the Momentec→SanMar wrong-cost class (owner, 2026-07-21) ────
+describe('vendor gate', () => {
+  test('vendorsCompatible: containment, token overlap, stop-words, unknowns', () => {
+    expect(vendorsCompatible('Momentec', 'MOMENTEC BRANDS')).toBe(true);
+    expect(vendorsCompatible('MOMENTEC BRANDS', 'SANMAR')).toBe(false);
+    expect(vendorsCompatible('SCHUTT SPORTS', 'WILSON SPORTING GOODS CO')).toBe(false); // generic tokens don't match
+    expect(vendorsCompatible('', 'SANMAR')).toBe(true);   // unknown never blocks
+    expect(vendorsCompatible('S&S Activewear', '')).toBe(true);
+  });
+  const sanmarCand = {
+    kind: 'so', id: 'SO-1153', label: 'SO-1153', raw: { id: 'SO-1153' },
+    items: ['S', 'M', 'L', '2XL'].map((size, i) => ({
+      sku: '1717', name: 'Comfort Colors Heavyweight Tee', size, qty: 50, unit_cost: 5.18,
+      so_id: 'SO-1153', item_id: 'c' + i, po_id: 'PO 3100 CLHS', vendor: 'SANMAR',
+    })),
+  };
+  const momentecBill = { po_number: 'PO 3432 WHGB', vendor: 'MOMENTEC BRANDS', items: [
+    { sku: '560RW', desc: 'LADIES REVERSIBLE MESH JERSEY', size: 'SMALL', qty: 14, unit_price: 5.86 },
+    { sku: '560RW', desc: 'LADIES REVERSIBLE MESH JERSEY', size: 'MEDIU', qty: 14, unit_price: 5.86 },
+    { sku: '560RW', desc: 'LADIES REVERSIBLE MESH JERSEY', size: 'LARGE', qty: 5, unit_price: 5.86 },
+  ] };
+  // Mirrors App._canonBillSize's truncated-word branch (scanned bills cut columns mid-word).
+  const scanCanon = (s) => {
+    const t = String(s || '').toUpperCase().trim();
+    if (/^SMAL{1,2}$/.test(t)) return 'S';
+    if (/^MEDIU?M?$/.test(t)) return 'M';
+    if (/^LARGE?$/.test(t) || t === 'LARG') return 'L';
+    return t;
+  };
+  test('a Momentec bill never proposes a SanMar-only order by size coincidence', () => {
+    const props = proposeResolutions(momentecBill, [sanmarCand], { canonSize: scanCanon });
+    expect(props).toHaveLength(0); // unanchored cross-vendor candidate is dropped outright
+  });
+  test('the same candidate still proposes when the bill has no vendor (unknown never blocks)', () => {
+    const noVend = { ...momentecBill, vendor: undefined };
+    // Same customer tag as the bill so the (separate) tag-mismatch gate stays out of the way.
+    const sameTag = { ...sanmarCand, items: sanmarCand.items.map((it) => ({ ...it, po_id: 'PO 3100 WHGB' })) };
+    const props = proposeResolutions(noVend, [sameTag], { canonSize: scanCanon });
+    expect(props.length).toBeGreaterThan(0);
+  });
+  test('an exact-PO anchor rescues a cross-vendor candidate, with the supplier difference in evidence', () => {
+    const anchored = { ...sanmarCand, items: sanmarCand.items.map((it) => ({ ...it, po_id: 'PO 3432 WHGB' })) };
+    const props = proposeResolutions(momentecBill, [anchored], { canonSize: scanCanon });
+    expect(props.length).toBeGreaterThan(0);
+    expect(props[0].poAnchored).toBe(true);
+    expect(props[0].evidence.join(' ')).toMatch(/supplier differs/);
+  });
+  test('same-vendor candidate wins normally, and truncated scan sizes tie via canon', () => {
+    const momCand = {
+      kind: 'so', id: 'SO-1116', label: 'SO-1116', raw: { id: 'SO-1116' },
+      items: [
+        { sku: '506CRW', name: 'Ladies Microfiber Reversible Jersey', size: 'S', qty: 14, unit_cost: 5.06, so_id: 'SO-1116', item_id: 'm1', po_id: 'PO 3432 WHGB', vendor: 'Momentec' },
+        { sku: '506CRW', name: 'Ladies Microfiber Reversible Jersey', size: 'M', qty: 14, unit_cost: 5.06, so_id: 'SO-1116', item_id: 'm2', po_id: 'PO 3432 WHGB', vendor: 'Momentec' },
+        { sku: '506CRW', name: 'Ladies Microfiber Reversible Jersey', size: 'L', qty: 5, unit_cost: 5.06, so_id: 'SO-1116', item_id: 'm3', po_id: 'PO 3432 WHGB', vendor: 'Momentec' },
+      ],
+    };
+    const props = proposeResolutions(momentecBill, [momCand, sanmarCand], { canonSize: scanCanon });
+    expect(props[0].target.id).toBe('SO-1116');
+    expect(props[0].poAnchored).toBe(true);
+    expect(props[0].ties.length).toBe(3); // SMALL/MEDIU/LARGE all tied despite truncation
+  });
+});
+
+// ── Negative-evidence gates: tag mismatch + date sanity (owner, 2026-07-22) ──
+describe('negative-evidence gates', () => {
+  const mk = (tag, extra) => ({
+    kind: 'so', id: 'SO-' + tag, label: 'SO-' + tag, raw: { id: 'SO-' + tag, ...(extra || {}) },
+    items: [
+      { sku: 'ZZ100', name: 'Practice Tee', size: 'M', qty: 10, unit_cost: 8, so_id: 'SO-' + tag, item_id: 'z1', po_id: 'PO 3132 ' + tag },
+      { sku: 'ZZ100', name: 'Practice Tee', size: 'L', qty: 10, unit_cost: 8, so_id: 'SO-' + tag, item_id: 'z2', po_id: 'PO 3132 ' + tag },
+    ],
+  });
+  test('weak-only ties to a different-tag order are never proposed (the STOV class)', () => {
+    const bill = { po_number: 'PO 3132 TUH', items: [
+      { sku: 'B0FAKE1', desc: 'SOMETHING', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'B0FAKE2', desc: 'SOMETHING', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    expect(proposeResolutions(bill, [mk('STOV')], { canonSize: canon })).toHaveLength(0);
+  });
+  test('strong (exact-SKU) ties survive a tag mismatch but are demoted with evidence', () => {
+    const bill = { po_number: 'PO 3132 TUH', items: [
+      { sku: 'ZZ100', desc: 'Practice Tee', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'ZZ100', desc: 'Practice Tee', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    const p = proposeResolutions(bill, [mk('STOV')], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.confidence).not.toBe('high');
+    expect(p.evidence.join(' ')).toMatch(/DIFFERENT customer/);
+  });
+  test('a bill shipped before the order existed is never weak-proposed; dates absent = gate off', () => {
+    const bill = { po_number: 'PO 9999 QQZ', ship_date: '06/01/2026', items: [
+      { sku: 'B0FAKE1', desc: 'X', size: 'M', qty: 10, unit_price: 8 },
+      { sku: 'B0FAKE2', desc: 'X', size: 'L', qty: 10, unit_price: 8 },
+    ] };
+    const late = mk('QQZ', { created_at: '2026-07-15T00:00:00Z' });
+    expect(proposeResolutions(bill, [late], { canonSize: canon })).toHaveLength(0);
+    const noDate = mk('QQZ');
+    expect(proposeResolutions(bill, [noDate], { canonSize: canon }).length).toBeGreaterThan(0);
   });
 });

@@ -23652,7 +23652,10 @@ export default function App(){
         if(!autoOn)return 0;
         // _ai_parsed = transcribed from a scanned PDF by vision — extraction itself is the
         // risk there, so those never auto-push regardless of how clean they look.
-        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
+        // (only the total is negative), so an auto-push would ADD what the credit reverses.
+        // Credits always get human eyes; manual push still works.
+        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
         if(!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
         const pushed=await _applyBillsToPortal(autoBills);
@@ -24058,6 +24061,11 @@ export default function App(){
       // apparel size ends letter-then-digit, so this can't clobber a real one (and "3T"/"18M" are
       // digit-then-letter, untouched).
       if(/[A-Za-z]\d$/.test(s))s=s.slice(0,-1);
+      // Truncated size WORDS from scanned/vision-read bills whose columns cut mid-word:
+      // "MEDIU"→M, "SMAL"→S, "LARG"→L ("EXTRA" alone stays — ambiguous XL vs XS).
+      if(/^SMAL{1,2}$/i.test(s))return 'S';
+      if(/^MEDIU?M?$/i.test(s))return 'M';
+      if(/^LARGE?$/i.test(s)||/^LARG$/i.test(s))return 'L';
       return normSzName(s);// "OSFM"→"OSFA", "MED"→"M", etc.
     };
     // Numeric size keys on a po_line (its size buckets), excluding bookkeeping fields.
@@ -24309,7 +24317,7 @@ export default function App(){
         const customers=Array.from(new Set((sb.source_pos||[]).map(sp=>sp.customer).filter(Boolean)));
         const items=[];
         (sb.source_pos||[]).forEach(sp=>(sp.items||[]).forEach(it=>{
-          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||''})});
+          Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||'',vendor:sb.vendor_name||''})});
         }));
         const totalQty=items.reduce((a,it)=>a+it.qty,0);
         out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds});
@@ -24324,7 +24332,9 @@ export default function App(){
             const billedQty=(po.billed||{})[k]||0;
             const openQty=v-billedQty;
             if(openQty<=0)return;
-            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it)});
+            // vendor: the PO line's supplier — lets the proposal engine refuse cross-vendor
+            // size-coincidence ties (billResolve vendor gate, 2026-07-21).
+            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it),vendor:String(po.vendor||'')});
           });
         }));
         if(!items.length)return;
