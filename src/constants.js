@@ -468,6 +468,22 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54',
   ...INFANT_SIZES];
+// ── Size ordering for display (shared) ──
+// Order size labels by the canonical SZ_ORD run, but KEEP any non-standard/custom labels —
+// vendor sizes like "Womens X-Large", "Unisex Large", "Mens 2X-Large" — sorting them to the end
+// instead of dropping them. A plain `SZ_ORD.filter(...)` silently omits every label not in
+// SZ_ORD, which hid ordered units from the Sales Order / Production Sheet / Invoice printouts
+// (a line ordered S/M/L/Womens-XL/Womens-2XL printed only S/M/L while the total still read 12).
+const _szCompare=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return (ia===-1?999:ia)-(ib===-1?999:ib)};
+// Union of the size labels present across one or more size maps (pass their flattened keys),
+// ordered for display with custom/unrecognized labels last.
+export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);
+// "qty size" breakdown string for a line item's sizes map, e.g. "1 S, 5 M, 3 L, 2 Womens X-Large".
+// Footwear renders "qty/size" (e.g. "2/10.5"); apparel renders "qty size". Custom labels are kept.
+export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(sizes||{})
+  .filter(([,v])=>Number(v)>0)
+  .sort((a,b)=>_szCompare(a[0],b[0]))
+  .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':'XS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
   'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',
