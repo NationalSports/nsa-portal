@@ -359,7 +359,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -23655,7 +23655,53 @@ export default function App(){
         // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
         // (only the total is negative), so an auto-push would ADD what the credit reverses.
         // Credits always get human eyes; manual push still works.
-        const autoBills=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        if(!candidates.length)return 0;
+        // DIRECT-PATH SAFETY GATE (Fable audit, 2026-07-22): _validateBillForPush checks
+        // neither price nor vendor, and the $0-freight auto-mapping path can rewrite order
+        // unit_cost with no cap. Before the unattended write, run each bill through
+        // autoPushSafety (billResolve): exact-PO only, no credit-shaped totals, every
+        // would-apply line's price within the same 25% bound the staged path enforces,
+        // vendors compatible. Blocked bills stay in review with the reason on the card —
+        // the human push button is unchanged.
+        const autoBills=[];
+        for(const b of candidates){
+          const p=b.parsed;
+          try{
+            const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
+            const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
+            const poExact=!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc;
+            // Price pairs from what the push would ACTUALLY apply: staged mappings if
+            // present, else the same auto-mappings _applyBillsToPortal would build.
+            let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
+            let tItems=[];
+            if(p.matchedPOSource==='so_po'){
+              tItems=_soPoTargetItems(p);
+              if(!pairs&&safeNum(p.freight)<=0)pairs=_soPoAutoMappings(p)||[];
+              if(!pairs){
+                // freight-carried path: no mappings — pair each bill line with its
+                // BEST (closest-priced) SKU-matched target so size upcharges on
+                // multi-cost lines don't false-block.
+                pairs=[];
+                (p.items||[]).filter(it=>it&&it.sku&&it.qty>0&&safeNum(it.unit_price)>0).forEach(it=>{
+                  const ms=tItems.filter(t=>_billSkuMatchesItem((it.sku||'').toUpperCase(),t));
+                  if(!ms.length)return;
+                  const best=ms.reduce((a,t)=>Math.abs(safeNum(t.unit_cost)-safeNum(it.unit_price))<Math.abs(safeNum(a.unit_cost)-safeNum(it.unit_price))?t:a);
+                  pairs.push({bill_unit:safeNum(it.unit_price),unit_cost:safeNum(best.unit_cost)});
+                });
+              }
+            }
+            const reasons=autoPushSafety({
+              poExact,
+              pricePairs:pairs||[],
+              billVendor:String(p.vendor||p.supplier||''),
+              targetVendors:[...new Set(tItems.map(t=>String(t.vendor||'')).filter(Boolean))],
+              docTotal:safeNum(p.doc_total),
+            });
+            if(reasons.length){p._auto_hold=reasons;continue}
+            autoBills.push(b);
+          }catch(e){console.warn('auto-push safety check failed — holding bill for review',e);p._auto_hold=['safety check errored — review manually'];}
+        }
         if(!autoBills.length)return 0;
         autoBills.forEach(b=>{b.parsed._auto_pushed=true});
         const pushed=await _applyBillsToPortal(autoBills);
@@ -24495,7 +24541,7 @@ export default function App(){
         Object.entries(po).forEach(([k,v])=>{
           if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
           if(v<=0)return;
-          items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:v-((po.billed||{})[k]||0),ordered:v,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||''});
+          items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:v-((po.billed||{})[k]||0),ordered:v,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',vendor:String(po.vendor||'')});
         });
       }));
       return items;
@@ -27116,6 +27162,7 @@ export default function App(){
                 {poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>PO Matched</span>}
                 {bill._auto_tied&&!portalPushed&&!b.qbStatus&&<span title="Matched automatically: the PO matched an order exactly and every line ties with high confidence (modest price differences sync onto the order with an audit entry)." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #6ee7b7'}}>⚡ Auto-matched</span>}
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
+                {!!(bill._auto_hold&&bill._auto_hold.length)&&!portalPushed&&<span title={'Matched, but held out of auto-push:\n• '+bill._auto_hold.join('\n• ')+'\nReview and push manually — the button works as always.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {bill._auto_hold.length===1?bill._auto_hold[0].split(' — ')[0].split(' (')[0]:bill._auto_hold.length+' reasons'}</span>}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
                 {portalPushed&&(()=>{const _fl=billAnomalyFlags(bill);return _fl.length?<span title={'Pushed, but worth a look:\n• '+_fl.map(f=>f.detail).join('\n• ')+'\n(Also in the daily anomaly email.)'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>⚠ Review · {_fl.map(f=>f.code==='freight_gt10'?'freight':f.code==='sharp_price'?'price':f.code==='total_mismatch'?'total':'overage').join(' · ')}</span>:null})()}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}

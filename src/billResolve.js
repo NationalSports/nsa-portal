@@ -37,7 +37,13 @@ const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 // bill's is never proposed. Unknown/empty vendors never block (labels are inconsistent),
 // and an exact-PO anchor still overrides (the ORDER is proven right; vendor strings vary).
 const _V_STOP = new Set(['SPORTS', 'SPORTING', 'GOODS', 'INC', 'LLC', 'CO', 'COMPANY', 'CORP', 'BRANDS', 'USA', 'THE', 'TEAM', 'SERVICES', 'MFG', 'MANUFACTURING', 'ACTIVEWEAR', 'APPAREL']);
+// Internal vendor-record ids ("v1777312659133", "ns_115") appear as po_line vendor values
+// on real orders (audit 2026-07-22: 11 of 35 pushed-bill vendor pairs were these). They are
+// database keys, not supplier names — comparing them to a bill's vendor string would false-
+// block legitimate matches, so they count as UNKNOWN.
+const _isVendorPlaceholder = (v) => /^(v\d{6,}|ns[_ ]?\d+)$/i.test(String(v || '').trim());
 export const vendorsCompatible = (a, b) => {
+  if (_isVendorPlaceholder(a) || _isVendorPlaceholder(b)) return true;
   const norm = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
   const A = norm(a), B = norm(b);
   if (!A || !B) return true; // unknown never blocks
@@ -360,6 +366,42 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
 // confidence to medium upstream, so nothing "sharp" can pass). This is what stages
 // ⚡ auto-match AND qualifies for auto-push; the daily anomaly email + resolution
 // flags are the after-the-fact review net.
+// ── Direct-path auto-push safety (Fable audit, 2026-07-22) ───────────────────
+// The staged/proposal route is price- and vendor-gated (sharpPrice demotion + vendor
+// gate above), but a bill that PO-matches at PARSE time auto-pushes through
+// _validateBillForPush, which checks neither price nor vendor — and at $0 freight its
+// auto-mappings can silently REWRITE order unit_cost with no cap (App.js priceSync).
+// Audit found a reachable, unguarded path (47 auto-pushes in prod; worst mapping gap
+// +103%, though no >25% cost REWRITE had fired yet). This gate closes it for the
+// UNATTENDED path only — the human push button keeps today's behavior (the money-check
+// UI is their gate, and intentional price syncs are a feature).
+// Returns [] when safe, else dedup'd blocker reasons.
+export const autoPushSafety = ({ poExact, pricePairs, billVendor, targetVendors, docTotal }) => {
+  const reasons = new Set();
+  // Only an EXACT normalized PO match may push unattended. Parse-time matching also
+  // accepts prefix and memo-substring hits (first-match-wins, no _core_match flag) —
+  // fine for staging a human review, not for an unattended money write.
+  if (!poExact) reasons.add('PO match is not exact (prefix/memo) — needs a person');
+  // Credit-shaped totals: PDF-parsed bills never set is_credit, so the is_credit
+  // filter alone can't be trusted. A negative total is credit-like regardless of source.
+  if (_num(docTotal) < 0) reasons.add('negative document total (credit-like) — needs a person');
+  // Mirror of the staged path's sharpPrice rule: any line billed >25% off the order's
+  // cost (or >2¢ where the order has no cost — an unattended first-cost write) waits.
+  (pricePairs || []).forEach((m) => {
+    const bu = _num(m && m.bill_unit); const oc = _num(m && m.unit_cost);
+    if (bu > 0 && Math.abs(bu - oc) > Math.max(0.02, 0.25 * Math.max(oc, 0.01))) {
+      reasons.add('billed price differs sharply from the order cost (' + oc.toFixed(2) + ' → ' + bu.toFixed(2) + ')');
+    }
+  });
+  // Vendor gate for the direct path (the staged path already has one). Placeholder
+  // vendor ids count as unknown via vendorsCompatible.
+  const tv = (targetVendors || []).filter(Boolean);
+  if (billVendor && tv.length && !tv.some((v) => vendorsCompatible(billVendor, v))) {
+    reasons.add('supplier differs — bill from ' + billVendor + ', order lines from ' + tv.join('/'));
+  }
+  return [...reasons];
+};
+
 export const highConfidenceAutoAccept = (prop) => {
   if (!prop || prop.weakGuess || prop.confidence !== 'high' || !prop.poAnchored) return false;
   if (!(prop.ties || []).length || (prop.unresolved || []).length) return false;
