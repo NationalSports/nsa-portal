@@ -3556,6 +3556,19 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button style={{background:'none',border:'none',cursor:'pointer',color:'#64748b',fontSize:10,textDecoration:'underline',padding:0}} onClick={()=>{if(window.confirm('Change customer for '+o.id+'? This will update pricing tier.'))selC(null);setCust(null)}}>change</button></div>
             <div style={{fontSize:13,color:'#64748b'}}>Tier {cust.adidas_ua_tier} | {o.default_markup||1.65}x | Tax: {(isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate)?(((isSO&&o.tax_rate!=null?o.tax_rate:cust.tax_rate))*100).toFixed(3)+'%':'N/A'}</div></div>}
           {isSO&&o.estimate_id&&onViewEstimate&&<div style={{fontSize:11,color:'#7c3aed'}}>From: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewEstimate(o.estimate_id)} title="Open source estimate">{o.estimate_id}</span></div>}
+          {/* Linked invoice(s) for this SO — number, click-through to the invoice page, and paid/unpaid
+              status, so the rep sees billing state on the main order page instead of digging into the
+              Costs tab. Mirrors the badge mapping used by the Transactions tab's Invoices list. Only
+              renders once the SO has actually been invoiced. */}
+          {isSO&&(()=>{const _soInvs=(allInvoices||[]).filter(iv=>iv.so_id===o.id);if(_soInvs.length===0)return null;
+            return<div style={{fontSize:11,color:'#64748b',marginTop:2,display:'flex',flexWrap:'wrap',gap:6,alignItems:'center'}}>
+              <span style={{fontWeight:600}}>Invoice{_soInvs.length>1?'s':''}:</span>
+              {_soInvs.map(iv=>{const _paid=iv.status==='paid';const _partial=iv.status==='partial';
+                return<span key={iv.id} style={{display:'inline-flex',alignItems:'center',gap:3}}>
+                  <a href={window.location.pathname+'?'+new URLSearchParams({inv:iv.id}).toString()} title="Open invoice" onClick={e=>{if(e.ctrlKey||e.metaKey||e.shiftKey||e.button===1)return;if(onNavInvoice){e.preventDefault();onNavInvoice(iv)}}} style={{fontFamily:'monospace',fontWeight:700,color:'#1e40af',textDecoration:'underline',textDecorationStyle:'dotted',cursor:onNavInvoice?'pointer':'default'}}>{iv.id}</a>
+                  <span className={`badge ${_paid?'badge-green':_partial?'badge-amber':'badge-blue'}`} style={{fontSize:9}}>{_paid?'Paid':_partial?'Partial':'Open'}</span>
+                </span>;})}
+            </div>;})()}
           {isSO&&o.omg_store_id&&onNavOmgStore&&<div style={{fontSize:11,color:'#166534'}}>🏪 <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={onNavOmgStore} title="Open the linked OMG store">OMG Store</span></div>}
           {isE&&linkedSO&&onViewSO&&<div style={{fontSize:11,color:'#7c3aed'}}>Converted to: <span style={{cursor:'pointer',textDecoration:'underline',fontWeight:600}} onClick={()=>onViewSO(linkedSO.id)} title="Open sales order">{linkedSO.id}</span></div>}
           <div style={{fontSize:11,color:'#94a3b8',marginTop:2}}>By {REPS.find(r=>r.id===o.created_by)?.name} · {o.created_at}</div>
