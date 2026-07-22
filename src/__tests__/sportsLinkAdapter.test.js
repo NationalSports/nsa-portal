@@ -285,3 +285,37 @@ describe('parseSiPoString stopword collision (characterization)', () => {
     expect(r.tags).toEqual([]);
   });
 });
+
+// ── Document-level dealer discount (Agron 25% off list; owner report 2026-07-22) ──
+const { siDiscountFactor } = require('../sportsLink');
+describe('document-level dealer discount', () => {
+  test('siDiscountFactor derives the factor from gross line total vs net merch total', () => {
+    expect(siDiscountFactor(260, 195)).toBe(0.75);   // the real Agron bill
+    expect(siDiscountFactor(100, 100)).toBe(1);        // no discount
+    expect(siDiscountFactor(100, 0)).toBe(1);          // missing merch total → leave as-is
+    expect(siDiscountFactor(0, 195)).toBe(1);          // no gross → leave as-is
+    expect(siDiscountFactor(100, 30)).toBe(1);         // >50% off is out of the sane band → don't apply, flag for review
+    expect(siDiscountFactor(100, 101)).toBe(1);        // net above gross (credit/data quirk) → leave as-is
+  });
+  test('the real Agron bill: line unit_price becomes our NET cost, list preserved', () => {
+    const bill = mapSportsLinkDocToBill({
+      poNumber: 'PO 16950 LPUMS', siDocNumber: 24632739, supplierDocNumber: '100984970',
+      supplier: 'AGRON INC.', merchandiseTotal: 195, docTotal: 211.79, freightAmount: 15.11, svcHandleCharge: 1.68,
+      lines: [{ supplierItemNumber: '5159406', description: 'STADIUM 4 BACKPACK', quantityShipped: 8, netPrice: 32.5, listPrice: 32.5, extension: 260 }],
+    });
+    expect(bill._doc_discount_pct).toBe(25);
+    expect(bill.items[0].unit_price).toBeCloseTo(24.38, 2); // 32.50 × 0.75, matches our order cost
+    expect(bill.items[0].extension).toBeCloseTo(195, 2);
+    expect(bill.items[0]._list_unit).toBe(32.5);            // audit trail kept
+    expect(bill.merchandise_total).toBe(195);               // already net, unchanged
+  });
+  test('a normal (undiscounted) bill is untouched — no _list_unit, factor 1', () => {
+    const bill = mapSportsLinkDocToBill({
+      poNumber: 'PO 3000 ABC', supplier: 'SANMAR', merchandiseTotal: 100,
+      lines: [{ supplierItemNumber: 'X', quantityShipped: 4, netPrice: 25, extension: 100 }],
+    });
+    expect(bill._doc_discount_pct).toBe(0);
+    expect(bill.items[0].unit_price).toBe(25);
+    expect(bill.items[0]._list_unit).toBeUndefined();
+  });
+});
