@@ -7175,11 +7175,19 @@ export default function App(){
         }
       });
       // Completed deco jobs → ready to ship (respecting ship preference)
-      // Multi-job workflow: only ship after ALL jobs on the same item(s) are completed/shipped
+      // Multi-deco workflow: only ship a garment once ALL decorations on the same item(s) are
+      // completed/shipped (see the sibling check below). Split slices are the exception — a split
+      // family (a parent job + the slices peeled off it, e.g. a backorder or a per-size split)
+      // partitions ONE decoration's units into disjoint batches, so a completed batch ships on its
+      // own and must NOT be gated by an unfinished sibling slice of the same decoration.
       const shipPref=so.ship_preference||'ship_as_ready';
       const shipDateReady=shipPref!=='ship_on_date'||!so.ship_on_date||(new Date(so.ship_on_date)<=new Date());
       const deliverDateReady=shipPref!=='deliver_on_date'||!so.deliver_on_date||(new Date(so.deliver_on_date)<=new Date());
       const allJobs=safeJobs(so);
+      // Resolve a job's split-family root by walking split_from (guarded against cycles). Two jobs
+      // in the same family share a root; they're batches of the same decoration, not separate decos.
+      const _jobById={};allJobs.forEach(j2=>{if(j2&&j2.id)_jobById[j2.id]=j2});
+      const _splitRoot=(jj)=>{let cur=jj,guard=0;const seen={};while(cur&&cur.split_from&&_jobById[cur.split_from]&&!seen[cur.id]&&guard++<64){seen[cur.id]=1;cur=_jobById[cur.split_from]}return(cur&&cur.id)||jj.id};
       allJobs.forEach(j=>{
         if(j.prod_status==='completed'||j.prod_status==='shipped'){
           // Calculate remaining unshipped units for this job
@@ -7187,9 +7195,12 @@ export default function App(){
           const remainingUnits=j.total_units-jobTotalShipped;
           if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
           else {
-            // Check if all sibling jobs (sharing any item_idx) are also done
+            // Check if all sibling jobs (a different decoration sharing any item_idx) are also done.
+            // Split-family siblings are excluded — they're disjoint batches of THIS decoration, not
+            // another deco layer, so an unfinished backorder/split slice can't hold this batch back.
             const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+            const jRoot=_splitRoot(j);
+            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&_splitRoot(j2)!==jRoot&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
@@ -16476,10 +16487,28 @@ export default function App(){
       });
       return m;
     };
+    // Units still committed to not-yet-ready jobs (hold/ready/staging/in_process) on an SO, keyed
+    // by SKU|color → size → qty. A completed job can share a line item with a backorder or split
+    // slice that isn't decorated/received yet; those units must be held back from the completed
+    // batch's shippable quantity so Ready to Ship never offers goods that aren't actually done.
+    const whHeldBySku=(so)=>{
+      const held={};
+      safeJobs(so).forEach(j=>{
+        const st=j.prod_status;
+        if(st==='completed'||st==='shipped'||st==='draft')return;// only jobs still in production hold units
+        (j.items||[]).forEach(gi=>{
+          const key=(gi.sku||'')+'|'+(gi.color||'');const sizes=gi.sizes||gi.fulSizes||{};
+          if(!held[key])held[key]={};
+          Object.entries(sizes).forEach(([sz,v])=>{held[key][sz]=(held[key][sz]||0)+safeNum(v)});
+        });
+      });
+      return held;
+    };
     const whRemainingItems=(soMap,readyIdxBySo)=>{
       const allItems=[];const seen=new Set();
       Object.entries(soMap).forEach(([soId,so])=>{
         const readyIdx=readyIdxBySo?.[soId];
+        const heldBySku=whHeldBySku(so);
         // Calculate already-shipped quantities per SKU+color for this SO
         const shippedBySz={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
           const key2=it.sku+'|'+(it.color||'');if(!shippedBySz[key2])shippedBySz[key2]={};
@@ -16496,8 +16525,8 @@ export default function App(){
         mergedOrder.forEach(m=>{
           const key=soId+'|'+m.sku+'|'+(m.color||'');
           if(seen.has(key))return;
-          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};
-          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+          const itemKey=m.sku+'|'+(m.color||'');const shipped=shippedBySz[itemKey]||{};const held=heldBySku[itemKey]||{};
+          const remainSz={};Object.entries(m.sizes).forEach(([sz,v])=>{const rem=safeNum(v)-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
           const qty=Object.values(remainSz).reduce((a,v)=>a+v,0);
           if(qty<=0)return;
           seen.add(key);
@@ -17537,6 +17566,8 @@ export default function App(){
                         const key=it.sku+'|'+(it.color||'');if(!shippedBySz[key])shippedBySz[key]={};
                         Object.entries(it.sizes||{}).forEach(([sz,v])=>{shippedBySz[key][sz]=(shippedBySz[key][sz]||0)+safeNum(v)});
                       })});
+                      // Held-back units (backorder / split slices still in production) — subtracted below so partly-ready items show only their ready quantity.
+                      const heldBySku=whHeldBySku(so);
                       // Merge duplicate items by SKU+color before rendering (ready-to-ship items only)
                       const readyIdx=readyIdxBySo[soId];
                       const mergedItems=[];const seenItems={};
@@ -17548,8 +17579,8 @@ export default function App(){
                       });
                       return<table style={{fontSize:11,width:'100%',borderCollapse:'collapse'}}><tbody>
                       {mergedItems.map((item,ii)=>{
-                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};
-                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz]);if(rem>0)remainSz[sz]=rem});
+                        const key=item.sku+'|'+(item.color||'');const shipped=shippedBySz[key]||{};const held=heldBySku[key]||{};
+                        const remainSz={};Object.entries(item.sizes).forEach(([sz,v])=>{const rem=v-safeNum(shipped[sz])-safeNum(held[sz]);if(rem>0)remainSz[sz]=rem});
                         const totalQty=Object.values(remainSz).reduce((a,v)=>a+v,0);
                         if(totalQty<=0)return null;
                         const szStr=Object.entries(remainSz).filter(([,v])=>v>0).sort((a,b)=>{const ai=SZ_ORD.indexOf(a[0].toUpperCase()),bi2=SZ_ORD.indexOf(b[0].toUpperCase());return(ai<0?99:ai)-(bi2<0?99:bi2)}).map(([sz,v])=>sz+':'+v).join('  ');
