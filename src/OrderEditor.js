@@ -15,7 +15,7 @@ import MomentecOrderModal from './MomentecOrderModal';
 import QuickMockBuilder from './QuickMockBuilder';
 // Lazy so the uniform designer only loads when a rep opens it.
 const UniformBuilder = React.lazy(() => import('./uniform/ProBuilder'));
-import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt } from './pricing';
+import { dP, decoSplitQty, rQ, rT, normSzName, showSz, spP, emP, npP, SP, EM, NP, DTF, TWA, TWN, POSITIONS, _decoVendorPrice, mergeColors, auTierDisc, isAU, auCostMult, isAdidasPriced, linkedArtCostQty, decoCostAt, decoCostResolved, outsideDecoEstAt, outsideDecoSell } from './pricing';
 import { sendBrevoEmail, sendBrevoSms, fileUpload, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, openFile, buildDocHtml, printDoc, printQrLabel, downloadQrLabel, downloadQrSheet, openDocPDF, downloadDoc, buildPdfAttachment, nextInvId, _brevoKey, _smsUiEnabled, getBillingContacts, pdfDecoLabel, invokeEdgeFn, enrichAiLinesWithVendors, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, mergeArtGroupFiles } from './utils';
 import { sanmarGetProduct, sanmarGetPricing, sanmarGetInventory, sanmarGetPromoInventory, ssApiCall, momentecStyleV2, richardsonGetStockInventory, richardsonSearchStyles } from './vendorApis';
 import { getRichardsonLevel4Price } from './richardsonPrices';
@@ -2584,7 +2584,28 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const setItemUnderbase=(ii,v)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>d.kind==='art'?{...d,underbase:v,sell_override:null}:d)}:it),updated_at:new Date().toLocaleString()}));setDirty(true)};
   // Routing (in-house ↔ outside) is an item-level soft flag on the art decos. 'outside' produces it
   // via a decorator (no in-house job; cost from the deco PO). Cascades to every art deco on the item.
-  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>({...e,items:safeItems(e).map((it,x)=>x===ii?{...it,decorations:safeDecos(it).map(d=>{if(d.kind!=='art')return d;const nd={...d,fulfillment:val||undefined};if(val==='outside'){if(vendor)nd.vendor=vendor}else{nd.vendor=undefined}return nd})}:it),updated_at:new Date().toLocaleString()}));setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator.'+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
+  const setItemFulfillment=(ii,val,vendor)=>{setO(e=>{
+    const items=safeItems(e);const afx=e.art_files||[];
+    // Combined art qty per art file (same basis as the live cost display) so the vendor tier matches.
+    const artQ={};items.forEach(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id)artQ[d.art_file_id]=(artQ[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)})});
+    const dvRow=(val==='outside'&&vendor)?decoVendors.find(v=>v&&v.name===vendor):null;
+    return{...e,items:items.map((it,x)=>{if(x!==ii)return it;
+      const itQ=(Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0))||safeNum(it.est_qty)||0;
+      return{...it,decorations:safeDecos(it).map(d=>{
+        if(d.kind!=='art')return d;
+        if(val==='outside'){const nd={...d,fulfillment:'outside'};if(vendor)nd.vendor=vendor;
+          // Auto-set the customer charge off the vendor's cost to hit the target margin (OUTSIDE_DECO_MARGIN).
+          if(dvRow){const a=afx.find(f=>f&&f.id===d.art_file_id);const dt=(a&&a.deco_type)||d.deco_type||null;
+            const cq=(d.art_file_id&&artQ[d.art_file_id])||itQ||1;const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
+            const cw=(a&&Array.isArray(a.color_ways)&&d.color_way_id)?a.color_ways.find(c=>c&&c.id===d.color_way_id):null;
+            const inks=(cw&&Array.isArray(cw.inks)&&cw.inks.filter(z=>String(z||'').trim()).length)||((a&&a.ink_colors)?a.ink_colors.split('\n').filter(l=>l.trim()).length:0)||safeNum(d.tbd_colors)||1;
+            const per=dt?_decoVendorPrice(decoVendorPricing,dvRow.id,dt,{qty:cq,colors:inks,stitches:safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||undefined,underbase:sp&&garmentNeedsUnderbase(it.color),fleece:sp&&/fleece|hood|sweat|crew|jogger/i.test(g),mesh:sp&&/\bmesh\b/i.test(g)}):null;
+            const sell=outsideDecoSell(per);if(sell>0){nd.sell_override=sell;nd.sell_each=sell;nd._outside_sell=true}}
+          return nd;}
+        const nd={...d,fulfillment:undefined,vendor:undefined};if(d._outside_sell){delete nd.sell_override;delete nd.sell_each;delete nd._outside_sell}return nd;
+      })};
+    }),updated_at:new Date().toLocaleString()};
+  });setDirty(true);nf(val==='outside'?('🎨 Outside'+(vendor?' · '+vendor:'')+' — produced by a decorator'+(vendor?', charge set to a 36% margin.':'.')+(isSO?' Add a Deco PO to bundle & cost it.':' Carries to the sales order, where you bundle the Deco PO.')):'🏭 In-house')};
   // The order's chosen outside decorator, inferred from any item already flagged outside (or a deco PO).
   // The order's outside garment decorator: first from item-level "Outside" routing, else from an
   // existing deco PO. Skip Topstar digitizing/vector POs — that's an art-file service, not a
@@ -2743,7 +2764,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     }else if(it._sizeCosts&&sq>0){const sizes=safeSizes(it);Object.entries(sizes).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)cost+=n*(it._sizeCosts[sz]||safeNum(it.nsa_cost))})}
     else{cost+=q*safeNum(it.nsa_cost)}
     // Sell always counts; in-house cost only when NOT covered by a deco PO / outside flag.
-    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;if(!isDecoOutsourced(o,ii,d,outByItem))cost+=decoCostAt(d,q,af,cq,costArtQty)});
+    safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*dp.sell;cost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem)});
     });
     // Outside-deco POs live at SO level (so.deco_pos), not under items
     (o.deco_pos||[]).forEach(dp=>{const bc=safeNum(dp._bill_cost);if(bc>0){cost+=bc;return}cost+=safeNum(dp.qty||0)*safeNum(dp.unit_cost||0)});
@@ -2790,10 +2811,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     safeItems(o).forEach((it,ii)=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const q=sq>0?sq:safeNum(it.est_qty);if(!q)return;
       if(it.is_promo){
         if(!it.is_free_promo){const _szs=safeSizes(it);promoRev+=it._sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):q*safeNum(it.unit_sell);promoCost+=it._sizeCosts&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0):q*safeNum(it.nsa_cost);origPromoRev+=it._pre_promo_sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._pre_promo_sizeSells[sz]||safeNum(it._pre_promo_sell||it.unit_sell)):a},0):q*safeNum(it._pre_promo_sell||it.unit_sell);}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);if(!isDecoOutsourced(o,ii,d,outByItem))promoCost+=decoCostAt(d,q,af,cq,costArtQty);origPromoRev+=eq*dp.sell});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);promoRev+=eq*rQ(dp.sell*1.25);promoCost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem);origPromoRev+=eq*dp.sell});
       }else{
         if(!it.is_free_promo){const _szs=safeSizes(it);normalRev+=it._sizeSells&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeSells[sz]||safeNum(it.unit_sell)):a},0):q*safeNum(it.unit_sell);normalCost+=it._sizeCosts&&sq>0?Object.entries(_szs).reduce((a,[sz,v])=>{const n=safeNum(v);return n>0?a+n*(it._sizeCosts[sz]||safeNum(it.nsa_cost)):a},0):q*safeNum(it.nsa_cost);}
-        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;if(!isDecoOutsourced(o,ii,d,outByItem))normalCost+=decoCostAt(d,q,af,cq,costArtQty)});
+        safeDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);normalRev+=eq*dp.sell;normalCost+=decoCostResolved(o,ii,d,q,af,cq,costArtQty,decoVendors,decoVendorPricing,outByItem)});
       }});
     // Shipping: use original (pre-promo) revenue for base to avoid inflation, then apply 25% to promo portion
     const origTotalRev=origPromoRev+normalRev;
@@ -4145,7 +4166,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _itemInvoicedQty=_itemInvoicedMap.get(soLineKey(item,idx))||0;
       const _itemFullyInvoiced=_itemInvoicedQty>0&&_itemInvoicedQty>=qty;
       // Line-level deco cost uses the same outsourced gate as header totals (SO-1397).
-      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=isDecoOutsourced(o,idx,d,outsourcedByItemCost)?0:decoCostAt(d,qty,af,cq,costArtQty);dR+=dr;dC+=dc;
+      let dR=0,dC=0;const decoBreak=[];safeDecos(item).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:qty;const dp=dP(d,qty,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?qty*2:qty);const pds=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;const dr=eq*pds;const dc=decoCostResolved(o,idx,d,qty,af,cq,costArtQty,decoVendors,decoVendorPricing,outsourcedByItemCost);dR+=dr;dC+=dc;
         const artF=d.kind==='art'?af.find(f=>f.id===d.art_file_id):null;const label=d.kind==='art'?(artF?artF.deco_type?.replace('_',' '):d.position)+(d.reversible?' (Rev)':''):'Numbers @ '+d.position+(d.front_and_back?' (F+B)':'')+(d.reversible?' (Rev)':'');
         decoBreak.push({label,sell:pds,cost:eq>0?dc/eq:dp.cost,rev:dr,costTot:dc,margin:dr-dc,pct:dr>0?((dr-dc)/dr*100):0})});
       const pRev=(()=>{if(item._sizeSells&&szQty>0){let r=0;Object.entries(safeSizes(item)).forEach(([sz,v])=>{const n=safeNum(v);if(n>0)r+=n*(item._sizeSells[sz]||item.unit_sell)});return r}return qty*item.unit_sell})();
@@ -4526,7 +4547,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const promoDecoSell=item.is_promo&&o.promo_applied?rQ(dp.sell*1.25):dp.sell;
             const eq=dp._nq!=null?dp._nq:(deco.reversible?qty*2:qty);const decoTotal=eq*promoDecoSell;
             // COST combines across manually-linked jobs sharing this screen (costArtQty); sell is untouched.
-            const decoCostTotal=decoCostAt(deco,qty,af,cq,costArtQty);const decoUnitCost=eq>0?decoCostTotal/eq:dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
+            // Line display: show the outside-vendor estimate when soft-routed to a priced vendor, else the
+            // in-house reference cost (a deco already on a Deco PO keeps showing the in-house ref, not $0 —
+            // its real cost lives on the PO; header totals/margin use the strict decoCostResolved accounting).
+            const _est=outsideDecoEstAt(o,idx,deco,qty,af,cq,decoVendors,decoVendorPricing,outsourcedByItemCost);const _outsideEst=_est>0?deco.vendor:null;
+            const decoCostTotal=_est>0?_est:decoCostAt(deco,qty,af,cq,costArtQty);const decoUnitCost=eq>0?decoCostTotal/eq:dp.cost;const decoMargin=decoTotal-decoCostTotal;const decoMPct=decoTotal>0?Math.round(decoMargin/decoTotal*100):0;
             const decoCardStyle={padding:'10px 12px',marginBottom:4,borderRadius:6,background:di%2===0?'#fafbfc':'#f8f9fb',borderLeft:'3px solid '+(deco.kind==='art'?'#3b82f6':deco.kind==='numbers'?'#22c55e':deco.kind==='names'?'#f59e0b':deco.kind==='outside_deco'?'#7c3aed':deco.kind==='twill'?'#0d9488':'#94a3b8')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
               const _itemMock=(artF?.item_mockups||{})[item.sku+'|'+(item.color||'')];const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';const _thumb=_itemMockUrl||(artF?pickCwAsset(artF,{kind:'web_logo',colorWayId:deco.color_way_id}):'')||deco.web_url||'';
@@ -4600,7 +4625,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {/* Per-design status badge on the design's own row; Underbase is a garment-level toggle in the item bar */}
                   {artF&&!(artF.name&&artF.name.startsWith('ART TBD'))&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
                   <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                    <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}</span>
+                    <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
                     {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}
                     <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
@@ -4633,7 +4658,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(()=>{const m=(deco.front_and_back?2:1)*(deco.reversible?2:1);return <span style={{fontSize:11,color:filledNums>0?'#166534':'#64748b',fontWeight:filledNums>0?600:400}}>{filledNums}/{qty} assigned{m>1?' (×'+m+')':''}</span>})()}
                 {filledNums===0&&<span style={{display:'inline-flex',alignItems:'center',gap:3,fontSize:11,color:'#64748b'}}>or Qty: <input type="number" min="0" style={{width:48,border:'1px solid #d1d5db',borderRadius:3,padding:'2px 4px',fontSize:12,fontWeight:600,textAlign:'center'}} value={deco.num_qty||''} placeholder="—" onChange={e=>uD(idx,di,'num_qty',parseInt(e.target.value)||0)}/></span>}
                 <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
-                  <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}</span>
+                  <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                   <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
                   {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}
                   <span style={{fontSize:10,color:decoMPct>0?'#166534':'#dc2626',fontWeight:600}}>{decoMPct}%</span>
@@ -4794,13 +4819,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <div style={{marginLeft:'auto'}}><button onClick={()=>rmD(idx,di)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626'}}><Icon name="x" size={14}/></button></div></div>
               <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:6,padding:'8px 10px',background:'#faf5ff',borderRadius:6,border:'1px solid #ede9fe'}}>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Vendor</span>
-                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>{const vn=e.target.value;uD(idx,di,'vendor',vn);const dv=decoVendors.find(v=>v.name===vn);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,deco.deco_type||'embroidery',{qty});if(cost!==null)uD(idx,di,'cost_each',cost)}}}>
+                  <select className="form-select" style={{width:160,fontSize:12}} value={deco.vendor||''} onChange={e=>{const vn=e.target.value;uD(idx,di,'vendor',vn);const dv=decoVendors.find(v=>v.name===vn);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,deco.deco_type||'embroidery',{qty,colors:deco.colors,underbase:deco.dark,fleece:deco.fleece,mesh:deco.mesh});if(cost!==null)uD(idx,di,'cost_each',cost)}}}>
                     <option value="">Select vendor...</option>{DECO_VENDORS.map(dv=><option key={dv} value={dv}>{dv}</option>)}</select></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#7c3aed'}}>Deco Type</span>
-                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>{const dt=e.target.value;uD(idx,di,'deco_type',dt);if(deco.vendor){const dv=decoVendors.find(v=>v.name===deco.vendor);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty});if(cost!==null)uD(idx,di,'cost_each',cost)}}}}>
+                  <select className="form-select" style={{width:120,fontSize:12}} value={deco.deco_type||'embroidery'} onChange={e=>{const dt=e.target.value;uD(idx,di,'deco_type',dt);if(deco.vendor){const dv=decoVendors.find(v=>v.name===deco.vendor);if(dv){const cost=_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty,colors:deco.colors,underbase:deco.dark,fleece:deco.fleece,mesh:deco.mesh});if(cost!==null)uD(idx,di,'cost_each',cost)}}}}>
                     {['embroidery','screen_print','dtf','heat_transfer','sublimation','vinyl'].map(t=><option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}</select></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#dc2626'}}>Cost /ea</span><$In value={deco.cost_each||0} onChange={v=>uD(idx,di,'cost_each',v)} w={60}/></div>
                 <div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#166534'}}>Sell /ea{item.is_promo&&o.promo_applied?' +25%':''}</span><$In value={item.is_promo&&o.promo_applied?rQ((deco.sell_each||0)*1.25):(deco.sell_each||0)} onChange={v=>{const base=item.is_promo&&o.promo_applied?rQ(v/1.25):v;uDM(idx,di,{sell_each:base,sell_override:base})}} w={60}/></div>
+                {(deco.deco_type||'embroidery')==='screen_print'&&<div style={{display:'flex',flexDirection:'column',gap:2}}><span style={{fontSize:10,fontWeight:600,color:'#b45309'}}>Upcharges</span>
+                  <div style={{display:'flex',gap:8,alignItems:'center',height:28}}>{[['dark','Dark'],['fleece','Fleece'],['mesh','Mesh']].map(([k,label])=><label key={k} style={{display:'flex',alignItems:'center',gap:3,fontSize:11,cursor:'pointer',color:'#92400e'}}><input type="checkbox" checked={!!deco[k]} onChange={e=>{const dvv=decoVendors.find(v=>v.name===deco.vendor);const flags={underbase:deco.dark,fleece:deco.fleece,mesh:deco.mesh};flags[k==='dark'?'underbase':k]=e.target.checked;const c=dvv?_decoVendorPrice(decoVendorPricing,dvv.id,'screen_print',{qty,colors:deco.colors,...flags}):null;uDM(idx,di,{[k]:e.target.checked,...(c!==null?{cost_each:c}:{})})}}/>{label}</label>)}</div></div>}
                 <div style={{display:'flex',flexDirection:'column',gap:2,flex:1}}><span style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Notes</span>
                   <input className="form-input" style={{fontSize:11,padding:'4px 6px'}} value={deco.notes||''} onChange={e=>uD(idx,di,'notes',e.target.value)} placeholder="Thread colors, instructions..."/></div>
               </div>
@@ -7702,6 +7729,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const _initialSel=allItems.filter(it=>_dpoFlaggedOut.size>0?_dpoFlaggedOut.has(it._idx):true);
         const _initialDpoQty=_initialSel.reduce((a,it)=>a+Object.values(safeSizes(it)).reduce((b,v)=>b+safeNum(v),0),0);
         const _initialDpoStitches=Math.max(0,...(_initialSel.flatMap(it=>safeDecos(safeItems(o)[it._idx]||{}).filter(d=>d.kind==='art').map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0})).filter(n=>n>0)),0);
+        // Screen-print upcharges auto-detected from the garments (overridable via the checkboxes below):
+        // fleece = hoodies/sweatshirts/sweatpants; mesh = mesh garments. Dark comes from garment color.
+        const _isFleeceGarment=(it)=>/fleece|hood|sweat|crew|jogger/i.test((it?.name||'')+' '+(it?.sku||''));
+        const _isMeshGarment=(it)=>/\bmesh\b/i.test((it?.name||'')+' '+(it?.sku||''));
+        const _initialDark=_initialSel.some(it=>garmentNeedsUnderbase(it.color));
+        const _initialFleece=_initialSel.some(it=>_isFleeceGarment(it));
+        const _initialMesh=_initialSel.some(it=>_isMeshGarment(it));
         const _initialDpoCost=dv?_decoVendorPrice(decoVendorPricing,dv.id,'embroidery',{qty:_initialDpoQty,stitches:_initialDpoStitches}):null;
         const _recalcDpo=()=>{
           let qty=0;const selected=[];
@@ -7712,8 +7746,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const _selDecos=selected.flatMap(vi=>safeDecos(safeItems(o)[allItems[vi]?._idx]||{}).filter(d=>d.kind==='art'));
           const _cols=Math.max(1,...(_selDecos.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return a&&a.ink_colors?a.ink_colors.split('\n').filter(l=>l.trim()).length:safeNum(d.tbd_colors)||0}).filter(n=>n>0)),1);
           const _st=Math.max(0,...(_selDecos.map(d=>{const a=af.find(f=>f.id===d.art_file_id);return safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||0}).filter(n=>n>0)),0);
-          const _ub=dt==='screen_print'&&selected.some(vi=>garmentNeedsUnderbase(allItems[vi]?.color));
-          const price=dv?_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty,colors:_cols,stitches:_st,underbase:_ub}):null;
+          // Screen-print upcharges. The checkboxes (auto-seeded, rep-overridable) win when present;
+          // otherwise fall back to garment auto-detection. _decoVendorPrice ignores these for non-SP.
+          const _darkEl=document.getElementById('dpo-dark-'+poId);
+          const _fleeceEl=document.getElementById('dpo-fleece-'+poId);
+          const _meshEl=document.getElementById('dpo-mesh-'+poId);
+          const _ub=dt==='screen_print'&&(_darkEl?_darkEl.checked:selected.some(vi=>garmentNeedsUnderbase(allItems[vi]?.color)));
+          const _fleece=dt==='screen_print'&&(_fleeceEl?_fleeceEl.checked:selected.some(vi=>_isFleeceGarment(allItems[vi])));
+          const _mesh=dt==='screen_print'&&(_meshEl?_meshEl.checked:selected.some(vi=>_isMeshGarment(allItems[vi])));
+          const price=dv?_decoVendorPrice(decoVendorPricing,dv.id,dt,{qty,colors:_cols,stitches:_st,underbase:_ub,fleece:_fleece,mesh:_mesh}):null;
           // Qty defaults to the sum of checked items, but if nothing's checked (e.g. an in-house
           // DTF order not tied to specific SO items) leave a manually-typed value alone.
           const qtyEl=document.getElementById('dpo-total-qty');
@@ -7735,9 +7776,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <div style={{marginBottom:12}}><label style={{display:'flex',alignItems:'center',gap:8,fontSize:13,cursor:'pointer'}}><input type="checkbox" checked={preexistingPO} onChange={e=>{setPreexistingPO(e.target.checked);if(!e.target.checked)setPreexistingPOId('')}}/><span style={{fontWeight:600,color:'#d97706'}}>Preexisting PO</span><span style={{fontSize:11,color:'#64748b'}}>— Apply an existing PO number (bypasses sequential numbering)</span></label></div>
             <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:12,marginBottom:16}}>
               <div><label className="form-label">PO Number</label><div style={{display:'flex',gap:4,alignItems:'stretch'}}>{preexistingPO?<input className="form-input" value={preexistingPOId} onChange={e=>setPreexistingPOId(e.target.value)} placeholder="e.g. PO7514" style={{color:'#d97706',fontWeight:700,borderColor:'#f59e0b',flex:1}}/>:<input className="form-input" value={autoPoId} readOnly style={{color:'#7c3aed',fontWeight:700,flex:1}}/>}<button type="button" className="btn btn-sm btn-secondary" title="Copy PO number" onClick={()=>{const v=preexistingPO?preexistingPOId:autoPoId;if(!v)return;(navigator.clipboard?navigator.clipboard.writeText(v):Promise.reject()).then(()=>nf('📋 Copied '+v)).catch(()=>{window.prompt('Copy:',v)})}} style={{padding:'0 10px',fontSize:12}}>📋</button></div></div>
-              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={()=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcDpo()}}>
+              <div><label className="form-label">Deco Type</label><select className="form-select" id={'dpo-type-'+poId} defaultValue="embroidery" onChange={e=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';const ur=document.getElementById('dpo-upcharge-row-'+poId);if(ur)ur.style.display=e.target.value==='screen_print'?'flex':'none';_recalcDpo()}}>
                 <option value="embroidery">Embroidery</option><option value="screen_print">Screen Print</option><option value="dtf">DTF</option><option value="heat_transfer">Heat Transfer</option><option value="sublimation">Sublimation</option></select></div>
               <div><label className="form-label">Expected Return</label><input className="form-input" type="date" id={'dpo-date-'+poId}/></div>
+            </div>
+            <div id={'dpo-upcharge-row-'+poId} style={{display:'none',gap:14,alignItems:'center',flexWrap:'wrap',marginBottom:12,padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
+              <span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>Screen-print upcharges</span>
+              {[['dark','Dark / underbase',_initialDark],['fleece','Fleece',_initialFleece],['mesh','Mesh',_initialMesh]].map(([k,label,def])=>(
+                <label key={k} style={{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',color:'#92400e'}}>
+                  <input type="checkbox" id={'dpo-'+k+'-'+poId} defaultChecked={def} onChange={()=>{const ucEl=document.getElementById('dpo-unit-cost');if(ucEl)ucEl.dataset.auto='1';_recalcDpo()}}/>
+                  {label}
+                </label>))}
+              <span style={{fontSize:10,color:'#a16207'}}>auto-detected from the garments · adjust as needed</span>
             </div>
             <div style={{fontSize:11,fontWeight:700,color:'#475569',marginBottom:2}}>Items covered by this PO</div>
             <div style={{fontSize:11,color:'#94a3b8',marginBottom:6}}>Optional — leave everything unchecked for an in-house order (e.g. DTF transfers) not tied to specific SO items, and type the qty below.</div>

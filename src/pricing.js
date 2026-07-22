@@ -3,7 +3,7 @@ import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
 import { safeNum, safeJobs } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
-import { isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogic';
 // Default deco pricing tables + pure calculators live in src/lib/decoPricing.js (CJS,
 // shared verbatim with netlify/functions/quickorder-quote.js — same dual-consumer
 // pattern as src/lib/opsRecap.js). This file layers the localStorage nsa_settings
@@ -153,6 +153,45 @@ export const decoCostAt=(d,q,af,localCq,combinedQty)=>{
   return eq*safeNum(dp.cost);
 };
 
+// ── Outside-decorator cost estimate ──
+// When an ART decoration is soft-routed Outside → a vendor that has a price list (deco_vendor_pricing)
+// but is NOT yet on an actual Deco PO, estimate its cost from that vendor's matrix so cost/margin
+// reflect the real outsourced cost instead of $0. Dark/fleece/mesh are auto-detected from the garment,
+// same rules as the Deco PO builder. Mirrors decoCostAt (eq × per-piece, priced at the cq tier).
+// Returns 0 when it does not apply — not outside, no vendor, no matching price row, or an actual PO
+// already covers it (that PO's cost is summed separately, so this stays 0 to avoid double-counting).
+const _ssFleece=g=>/fleece|hood|sweat|crew|jogger/i.test(g||'');
+const _ssMesh=g=>/\bmesh\b/i.test(g||'');
+const _artInkCount=(a,d)=>{
+  if(a&&Array.isArray(a.color_ways)&&d&&d.color_way_id){const cw=a.color_ways.find(c=>c&&c.id===d.color_way_id);if(cw&&Array.isArray(cw.inks)){const n=cw.inks.filter(x=>String(x||'').trim()).length;if(n>0)return n}}
+  if(a&&a.ink_colors){const n=a.ink_colors.split('\n').filter(l=>l.trim()).length;if(n>0)return n}
+  return safeNum(d&&d.tbd_colors)||1;
+};
+export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem)=>{
+  if(!d||d.kind!=='art'||d.fulfillment!=='outside'||!d.vendor)return 0;
+  const dt=decoConcreteType(o,d);if(!dt)return 0;
+  if(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id)return 0; // on an actual Deco PO → counted there
+  const _dv=(decoVendors||[]).find(v=>v&&v.name===d.vendor);const vid=_dv&&_dv.id;if(!vid)return 0;
+  const a=(af||[]).find(f=>f&&f.id===d.art_file_id);
+  const it=(o&&Array.isArray(o.items)?o.items[ii]:null)||{};
+  const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
+  const per=_decoVendorPrice(decoVendorPricing,vid,dt,{qty:cq,colors:_artInkCount(a,d),stitches:safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||undefined,underbase:sp&&garmentNeedsUnderbase(it.color),fleece:sp&&_ssFleece(g),mesh:sp&&_ssMesh(g)});
+  if(per==null)return 0;
+  return (d.reversible?q*2:q)*per;
+};
+// Resolved per-decoration cost for a cost walk: in-house cost when produced in-house, else the
+// outside-vendor estimate (0 when an actual Deco PO already covers it — that PO cost is summed
+// separately). Drop-in for the `if(!isDecoOutsourced)cost+=decoCostAt(...)` guard the walks used.
+export const decoCostResolved=(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing,outByItem)=>{
+  if(!isDecoOutsourced(o,ii,d,outByItem))return decoCostAt(d,q,af,cq,comb);
+  return outsideDecoEstAt(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem);
+};
+// Target margin on an outside-decorator's customer charge: sell = vendor cost / (1 - margin).
+// When a deco is routed Outside → a priced vendor, the charge is marked up off the (higher) vendor
+// cost to hit this margin, so routing to a decorator doesn't silently crush the deco's margin.
+export const OUTSIDE_DECO_MARGIN=0.36;
+export const outsideDecoSell=(perCost,margin=OUTSIDE_DECO_MARGIN)=>{const c=safeNum(perCost);return c>0?Math.round((c/(1-margin))*100)/100:0};
+
 // ── calcOrderTotals — single source of truth for order/estimate/SO totals ──
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the
 // editor agree. Returns { rev, ship, tax, grand }.
@@ -200,7 +239,7 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
 // Mirrors calcOrderTotals' revenue walk and adds a parallel cost walk (catalog/size
 // cost + deco cost). Lighter than the Reports page (which prefers actual PO costs) — a
 // reasonable at-a-glance gross margin. Returns { rev, cost, margin, pct }.
-export const calcOrderMargin=(o,allOrders)=>{
+export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
   if(!o)return{rev:0,cost:0,margin:0,pct:0};
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
@@ -222,7 +261,7 @@ export const calcOrderMargin=(o,allOrders)=>{
     if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
     else{cost+=q*_sNum(it.nsa_cost)}
     // Sell always counts (customer still pays); in-house cost is suppressed when a deco PO covers it.
-    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);if(!isDecoOutsourced(o,ii,d,outByItem))cost+=decoCostAt(d,q,af,cq,comb)})
+    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=decoCostResolved(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing,outByItem)})
   });
   // SO-level decoration POs (outside-deco + Topstar) are a real cost the customer is billed for.
   // calcTotals and the Reports page already count these; include them here too so the dashboard

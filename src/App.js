@@ -7681,7 +7681,7 @@ export default function App(){
         let rev=0,cost=0,shipRev=0,orders=0;const custSet=new Set();const perRep=new Map();
         // Shipping charged offsets shipping cost (mirrors calcOrderMargin/calcGP): margin runs on
         // rev+shipRev. `rev` stays product+deco sales for the Revenue tile and Avg Order.
-        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos);rev+=m.rev;cost+=m.cost;shipRev+=safeNum(m.shipRev);orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0,shipRev:0};pr.rev+=m.rev;pr.cost+=m.cost;pr.shipRev+=safeNum(m.shipRev);perRep.set(id,pr)}});
+        periodSOs.forEach(so=>{const m=calcOrderMargin(so,sos,decoVendors,decoVendorPricing);rev+=m.rev;cost+=m.cost;shipRev+=safeNum(m.shipRev);orders++;if(so.customer_id)custSet.add(so.customer_id);const id=repOf(so);if(id){const pr=perRep.get(id)||{rev:0,cost:0,shipRev:0};pr.rev+=m.rev;pr.cost+=m.cost;pr.shipRev+=safeNum(m.shipRev);perRep.set(id,pr)}});
         const marginBase=rev+shipRev,margin=marginBase-cost,pct=marginBase>0?Math.round(margin/marginBase*100):0,avg=orders>0?rev/orders:0;
         let topRep=null,topRevV=0;perRep.forEach((v,id)=>{if(v.rev>topRevV){topRevV=v.rev;topRep=id}});
         const marginRows=[...perRep.entries()].map(([id,v])=>{const mb=v.rev+v.shipRev;return{label:repName(id),rev:v.rev,pct:mb>0?Math.round((mb-v.cost)/mb*100):0}}).filter(r=>r.rev>0).sort((a,b)=>b.pct-a.pct);
