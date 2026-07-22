@@ -8,6 +8,7 @@ import { searchVendorCatalogs, vendorColorToProductRow } from './vendorCatalogSe
 import { NSA, pantoneHex } from './constants';
 import { CatalogKitStyles, KitScope, DISPLAY, BODY, FilterBtn, ShowMore } from './ui/catalogKit';
 import { fetchStockMap, foldScale, foldedQty, foldedSoon, sizeRank } from './lib/storeInventory';
+import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { ART_PLACEMENTS, placementById } from './lib/artPlacements';
 import { normalizeWebLogos, pickCwAsset, isCommissionRep } from './businessLogic';
 import { normSzName } from './pricing';
@@ -1687,6 +1688,39 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     return { ...p, sku: skuClean, product_id, vendor_id, cost, _cost_source };
   }, []);
 
+  // Live availability for the OMG review rows, keyed by product_id || 'omgtmp:'+index to
+  // match the review table's stock.get(key) lookup.
+  //
+  // DB-synced feeds (adidas CLICK / Agron / UA / Nike + NSA in-house) come from fetchStockMap.
+  // Supplier-API vendors (SanMar / S&S / Richardson / Momentec) are pulled LIVE per style+color
+  // via fetchVendorSizeInventory — the same source the App.js OMG pull uses. The synced view
+  // couldn't serve these: it keys SanMar/S&S stock by {style}-{color} (e.g. "ST420-Black"),
+  // while the OMG report hands over the bare style ("ST420"), so the exact-SKU match found
+  // nothing and every in-stock item read "⚠ out of stock". The live API also covers styles the
+  // nightly sync hasn't ingested yet. offset lets a single-row re-resolve reuse this by its index.
+  const omgBuildStock = useCallback(async (resolved, vendList, offset = 0) => {
+    const keyOf = (p, i) => p.product_id || ('omgtmp:' + (offset + i));
+    const map = await fetchStockMap(resolved.map((p, i) => ({ id: keyOf(p, i), sku: p.sku }))).catch(() => new Map());
+    await Promise.allSettled(resolved.map(async (p, i) => {
+      const vRec = (vendList || []).find((v) => v.id === p.vendor_id);
+      const src = vendorInvSource(vRec, { brand: p.manufacturer });
+      if (!['ss', 'sm', 'rs', 'mt'].includes(src)) return; // DB-synced / in-house — fetchStockMap already covered it
+      let inv;
+      try { inv = await fetchVendorSizeInventory(src, { sku: p.sku, color: p.color, sizes: p.sizes, available_sizes: Object.keys(p.sizes || {}) }); }
+      catch { return; } // API miss → keep whatever the synced view had
+      const sizeStock = {};
+      for (const [sz, q] of Object.entries(inv.sizes || {})) { const n = Number(q) || 0; if (n > 0) { const k = normSzName(String(sz).trim()); sizeStock[k] = (sizeStock[k] || 0) + n; } }
+      if (!Object.keys(sizeStock).length && !inv.nextAvail) return; // nothing live → don't clobber the DB result
+      map.set(keyOf(p, i), {
+        units: Object.values(sizeStock).reduce((a, q) => a + q, 0),
+        sizes: Object.keys(sizeStock).sort((a, b) => sizeRank(a) - sizeRank(b)),
+        sizeStock,
+        incoming: !Object.keys(sizeStock).length && !!inv.nextAvail,
+      });
+    }));
+    return map;
+  }, []);
+
   // Step 1 → 2: fetch the OMG report, parse it, resolve every item's cost/vendor + live stock,
   // and hand off to the review table. Nothing is written to the database yet.
   const omgFetchReport = useCallback(async (urlRaw) => {
@@ -1709,14 +1743,14 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
       setOmgVendList(vl); setOmgMomentecDiscount(discount);
       const resolved = await Promise.all(rawItems.map((p) => _omgResolveOne(p, vl, discount)));
       let stock = new Map();
-      try { stock = await fetchStockMap(resolved.map((p, i) => ({ id: p.product_id || ('omgtmp:' + i), sku: p.sku }))); } catch { /* show without stock */ }
+      try { stock = await omgBuildStock(resolved, vl); } catch { /* show without stock */ }
       setOmgItems(resolved.map((p) => ({ ...p, _included: true })));
       setOmgStock(stock);
       setOmgName(storeName);
       setOmgCustomerId('');
       setOmgStep('review');
     } catch (e) { flash('Failed: ' + e.message); } finally { setOmgFetching(false); }
-  }, [flash, _omgResolveOne]);
+  }, [flash, _omgResolveOne, omgBuildStock]);
 
   // A staff-edited SKU re-sources cost/vendor and re-checks live stock for that one row.
   const omgResolveRow = useCallback(async (index, newSku) => {
@@ -1727,12 +1761,12 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     const resolved = await _omgResolveOne({ ...cur, sku: skuClean }, omgVendList, omgMomentecDiscount);
     setOmgItems((prev) => prev.map((p, i) => (i === index ? { ...resolved, _included: p._included, _resolving: false } : p)));
     try {
-      const st = await fetchStockMap([{ id: resolved.product_id || ('omgtmp:' + index), sku: resolved.sku }]);
+      const st = await omgBuildStock([resolved], omgVendList, index);
       const key = resolved.product_id || ('omgtmp:' + index);
       const hit = st.get(key);
       if (hit) setOmgStock((prevStock) => { const m = new Map(prevStock || []); m.set(key, hit); return m; });
     } catch { /* keep old stock display */ }
-  }, [omgItems, omgVendList, omgMomentecDiscount, _omgResolveOne]);
+  }, [omgItems, omgVendList, omgMomentecDiscount, _omgResolveOne, omgBuildStock]);
 
   // Step 2 → don't create the store yet. Hand off to the SAME settings form "+ New Store" uses
   // (delivery, fundraising, coach contact, decoration mode, etc.), pre-filled with the reviewed
