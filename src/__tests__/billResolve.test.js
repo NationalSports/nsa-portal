@@ -1093,3 +1093,44 @@ describe('autoPushSafety direct-path gate', () => {
     expect(r.length).toBe(1);
   });
 });
+
+// ── skuNumBase — Agron letter-suffix stripping (owner report 2026-07-22) ──
+describe('skuNumBase (Agron suffix)', () => {
+  const { skuNumBase } = require('../billResolve');
+  test('strips a single trailing letter from a numeric article base', () => {
+    expect(skuNumBase('5162436D')).toBe('5162436');
+    expect(skuNumBase('5161961C')).toBe('5161961');
+    expect(skuNumBase('5162436')).toBeNull();       // no suffix → not applicable
+  });
+  test('never touches real alphanumeric SKUs', () => {
+    expect(skuNumBase('JX4499')).toBeNull();          // ends in a digit
+    expect(skuNumBase('R25TFM')).toBeNull();          // letters throughout
+    expect(skuNumBase('1390159-410')).toBeNull();     // ends in a digit
+    expect(skuNumBase('B00708043')).toBeNull();       // S&S B-number, ends in digit
+    expect(skuNumBase('510000')).toBeNull();          // pure digits, no suffix
+    expect(skuNumBase('AT101')).toBeNull();           // base too short / not the pattern
+    expect(skuNumBase('5162436DD')).toBeNull();       // two trailing letters → not the pattern
+  });
+});
+
+// ── pdfCrossCheckConflict — silent PDF reinforcement of an EDI-pushed bill (owner 2026-07-22) ──
+describe('pdfCrossCheckConflict (PDF reinforces EDI, speak up only on disagreement)', () => {
+  const { pdfCrossCheckConflict } = require('../billResolve');
+  it('is silent when the PDF total matches what was pushed', () => {
+    expect(pdfCrossCheckConflict(100, 100)).toBe(false);
+    expect(pdfCrossCheckConflict(100.5, 100)).toBe(false);   // sub-dollar noise
+    expect(pdfCrossCheckConflict(1000, 1015)).toBe(false);   // within 2%
+  });
+  it('surfaces a real disagreement', () => {
+    expect(pdfCrossCheckConflict(120, 100)).toBe(true);      // 20% high
+    expect(pdfCrossCheckConflict(80, 100)).toBe(true);       // 20% low
+    expect(pdfCrossCheckConflict(102.5, 100)).toBe(true);    // >$1 and >2%
+  });
+  it('never alarms when a total is missing or zero (no comparison)', () => {
+    expect(pdfCrossCheckConflict(0, 100)).toBe(false);
+    expect(pdfCrossCheckConflict(100, 0)).toBe(false);
+    expect(pdfCrossCheckConflict(100, null)).toBe(false);
+    expect(pdfCrossCheckConflict(undefined, 100)).toBe(false);
+    expect(pdfCrossCheckConflict(NaN, 100)).toBe(false);
+  });
+});

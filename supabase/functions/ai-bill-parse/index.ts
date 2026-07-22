@@ -40,13 +40,14 @@ For each invoice, extract:
 - items: one entry per line item — { "sku": the vendor's item/style number as printed, "desc": the description, "color": color if printed else "", "size": size if printed else "", "qty": quantity shipped/billed (number), "unit_price": unit price (number), "extension": the line total (number) }. Split size-breakdown rows into one item per size when the invoice prints per-size quantities. Skip pure header/subtotal rows.
 - merchandise_total: the goods subtotal before freight/tax.
 - freight: shipping/freight charges (0 if none).
+- si_upcharge: the "SI Upcharge" / service-handling charge if printed (Sports Inc invoices), else 0.
 - doc_total: the invoice grand total as printed.
 - warnings: short notes about anything unreadable, ambiguous, or unusual.
 
 Cross-check before answering: the sum of item extensions should be close to merchandise_total, and merchandise_total + freight (+ any other printed charges — note them in warnings) should be close to doc_total. If they don't reconcile, transcribe what is printed anyway and add a warning saying which numbers disagree.
 
 Return STRICT JSON only — no prose, no markdown fences:
-{ "bills": [ { "doc_number": string, "po_number": string, "supplier": string, "doc_date": string, "due_date": string, "tracking": string, "is_credit": boolean, "items": [...], "merchandise_total": number, "freight": number, "doc_total": number, "warnings": string[] } ] }`;
+{ "bills": [ { "doc_number": string, "po_number": string, "supplier": string, "doc_date": string, "due_date": string, "tracking": string, "is_credit": boolean, "items": [...], "merchandise_total": number, "freight": number, "si_upcharge": number, "doc_total": number, "warnings": string[] } ] }`;
 
 const num = (v: unknown) => { const n = typeof v === "number" ? v : parseFloat(String(v)); return isNaN(n) ? 0 : n; };
 
@@ -117,7 +118,7 @@ serve(async (req: Request) => {
       })).filter((it: any) => it.qty > 0 || it.unit_price > 0 || it.extension > 0),
       merchandise_total: num(b?.merchandise_total),
       freight: num(b?.freight),
-      si_upcharge: 0,
+      si_upcharge: num(b?.si_upcharge),
       doc_total: num(b?.doc_total),
       warnings: (Array.isArray(b?.warnings) ? b.warnings : []).map((w: any) => String(w)).slice(0, 12),
     })).filter((b: any) => b.doc_number || b.items.length);

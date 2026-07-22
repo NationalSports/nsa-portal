@@ -30,6 +30,29 @@ export const descStyleToken = (desc) => {
 };
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
+// Agron (and some Sports Inc feeds) append a single LETTER suffix to the adidas article
+// number: "5162436D"/"5161961C" ↔ our "5162436"/"5161961". Returns the numeric base when a
+// SKU is 5+ digits followed by exactly one letter, else null. Only fires on a numeric base,
+// so real alphanumeric SKUs (JX4499, R25TFM, 1390159-410, B00708043) are never stripped.
+export const skuNumBase = (s) => {
+  const m = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/^(\d{5,})[A-Z]$/);
+  return m ? m[1] : null;
+};
+
+// ── PDF-as-reinforcement cross-check (owner, 2026-07-22: "EDI matches work
+// automatically… the PDF upload just reinforces even though we don't need to see it").
+// A later PDF upload of a bill EDI already pushed is a silent confirmation — normally
+// there is nothing to review. It is worth surfacing ONLY when the PDF's total materially
+// disagrees with what we actually applied. true → keep it visible for review; false →
+// drop it silently (confirmed). Tolerance mirrors the money engine's posture: ignore
+// sub-dollar and sub-2% noise so rounding never raises a false alarm. Returns false when
+// either total is missing/zero — no comparison, so no alarm.
+export const pdfCrossCheckConflict = (pdfTotal, appliedTotal) => {
+  const p = Number(pdfTotal), a = Number(appliedTotal);
+  if (!(p > 0) || !(a > 0)) return false;
+  return Math.abs(p - a) > Math.max(1, a * 0.02);
+};
+
 // ── Vendor gate (owner, 2026-07-21: a Momentec bill proposed rewriting a SanMar item's
 // cost by size-coincidence — "should AT LEAST match to the right company's items") ────
 // Candidate items now carry the PO line's vendor. Weak tiers refuse items from a clearly

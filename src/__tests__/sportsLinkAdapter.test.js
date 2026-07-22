@@ -319,3 +319,74 @@ describe('document-level dealer discount', () => {
     expect(bill.items[0]._list_unit).toBeUndefined();
   });
 });
+
+// ── applySiDocumentDiscount / siExpectedUpcharge / earlyPayFreightWaiver (owner 2026-07-22:
+// close the remaining manual touches — discounts on the PDF path, the 0.8% SI fee,
+// the rare Rawlings/TCK early-pay freight waiver) ──
+const { applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver } = require('../sportsLink');
+
+describe('applySiDocumentDiscount (shared EDI + PDF discount rewrite)', () => {
+  test('the real Agron shape: list lines + net merch total → net line costs, list kept', () => {
+    const items = [{ unit_price: 32.5, extension: 260 }];
+    const { discFactor, docDiscountPct } = applySiDocumentDiscount(items, 195);
+    expect(discFactor).toBe(0.75);
+    expect(docDiscountPct).toBe(25);
+    expect(items[0].unit_price).toBeCloseTo(24.38, 2);
+    expect(items[0]._list_unit).toBe(32.5);
+  });
+  test('no discount → items untouched, factor 1', () => {
+    const items = [{ unit_price: 25, extension: 100 }];
+    const { discFactor, docDiscountPct } = applySiDocumentDiscount(items, 100);
+    expect(discFactor).toBe(1);
+    expect(docDiscountPct).toBe(0);
+    expect(items[0].unit_price).toBe(25);
+    expect(items[0]._list_unit).toBeUndefined();
+  });
+  test('A4-style 5% document discount', () => {
+    const items = [{ unit_price: 10, extension: 100 }];
+    const { docDiscountPct } = applySiDocumentDiscount(items, 95);
+    expect(docDiscountPct).toBe(5);
+    expect(items[0].unit_price).toBeCloseTo(9.5, 2);
+  });
+});
+
+describe('siExpectedUpcharge (0.8% of pre-discount subtotal, fill-when-missing)', () => {
+  test('0.8% of gross, rounded to cents', () => {
+    expect(siExpectedUpcharge(100)).toBe(0.8);
+    expect(siExpectedUpcharge(260)).toBe(2.08);   // Agron gross (not the 195 net)
+    expect(siExpectedUpcharge(1234.56)).toBe(9.88);
+  });
+  test('no basis → 0 (caller flags instead of computing)', () => {
+    expect(siExpectedUpcharge(0)).toBe(0);
+    expect(siExpectedUpcharge(-5)).toBe(0);
+    expect(siExpectedUpcharge(null)).toBe(0);
+  });
+});
+
+describe('earlyPayFreightWaiver (Rawlings/TCK early-pay detection — flag, never decide)', () => {
+  const rawlingsBill = (over = {}) => ({
+    supplier: 'RAWLINGS SPORTING GOODS CO INC', freight: 15.5,
+    rawText: 'TERMS NET 30\nDISCOUNT DATE 08/15/2026 FREIGHT ALLOWED IF PAID', ...over,
+  });
+  test('Rawlings with freight and a discount-date signal → eligible with the date', () => {
+    const w = earlyPayFreightWaiver(rawlingsBill());
+    expect(w.eligible).toBe(true);
+    expect(w.payByDate).toBe('08/15/2026');
+    expect(w.freightAmount).toBe(15.5);
+  });
+  test('TCK matches; other vendors never do', () => {
+    expect(earlyPayFreightWaiver(rawlingsBill({ supplier: 'TWIN CITY KNITTING CO' })).eligible).toBe(true);
+    expect(earlyPayFreightWaiver(rawlingsBill({ supplier: 'AGRON INC.' })).eligible).toBe(false);
+    expect(earlyPayFreightWaiver(rawlingsBill({ supplier: 'SANMAR' })).eligible).toBe(false);
+  });
+  test('no freight, or no early-pay signal → not eligible', () => {
+    expect(earlyPayFreightWaiver(rawlingsBill({ freight: 0 })).eligible).toBe(false);
+    expect(earlyPayFreightWaiver(rawlingsBill({ rawText: 'TERMS NET 30' })).eligible).toBe(false);
+    expect(earlyPayFreightWaiver(null).eligible).toBe(false);
+  });
+  test('EDI doc (no rawText) with a freight allowance is the same signal', () => {
+    const w = earlyPayFreightWaiver({ supplier: 'RAWLINGS SPORTING GOODS CO INC', freight: 12, rawText: '', _freight_allowance: 12 });
+    expect(w.eligible).toBe(true);
+    expect(w.payByDate).toBe('');
+  });
+});
