@@ -30,6 +30,23 @@ export const descStyleToken = (desc) => {
 };
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
+// ── Vendor gate (owner, 2026-07-21: a Momentec bill proposed rewriting a SanMar item's
+// cost by size-coincidence — "should AT LEAST match to the right company's items") ────
+// Candidate items now carry the PO line's vendor. Weak tiers refuse items from a clearly
+// different supplier, and an unanchored candidate whose known vendors ALL differ from the
+// bill's is never proposed. Unknown/empty vendors never block (labels are inconsistent),
+// and an exact-PO anchor still overrides (the ORDER is proven right; vendor strings vary).
+const _V_STOP = new Set(['SPORTS', 'SPORTING', 'GOODS', 'INC', 'LLC', 'CO', 'COMPANY', 'CORP', 'BRANDS', 'USA', 'THE', 'TEAM', 'SERVICES', 'MFG', 'MANUFACTURING', 'ACTIVEWEAR', 'APPAREL']);
+export const vendorsCompatible = (a, b) => {
+  const norm = (v) => String(v || '').toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+  const A = norm(a), B = norm(b);
+  if (!A || !B) return true; // unknown never blocks
+  if (A === B || A.includes(B) || B.includes(A)) return true;
+  const at = A.split(' ').filter((t) => t.length >= 4 && !_V_STOP.has(t));
+  const bt = new Set(B.split(' ').filter((t) => t.length >= 4 && !_V_STOP.has(t)));
+  return at.some((t) => bt.has(t));
+};
+
 // ── PO string anatomy ────────────────────────────────────────────────────────
 // Portal POs look like "PO 3131 TUH" (number + customer alpha tag). Bills mangle
 // them every way we've seen: spacing dropped, "PO" prefix dropped, tag glued on,
@@ -74,13 +91,16 @@ export const looksPrePortalGlued = (po) => {
 // Ties ONE bill line to ONE candidate item, unambiguous-only, strongest signal first.
 // Returns {idx, basis} or null. `items` are wizard-candidate items
 // ({sku,name,color,size,qty(open),unit_cost,...}); qty>0 assumed (builder filters).
-const tieLine = (bl, items, canon) => {
+const tieLine = (bl, items, canon, billVendor) => {
   const sku = _ns(bl.sku); const size = canon(bl.size); const color = _ns(bl.color);
   // _alias_sku: a learned vendor-number → portal-SKU mapping (bill_sku_aliases, written
   // every time a pushed bill taught us the vendor's numbering). Trusted like an exact SKU.
   const asku = _ns(bl._alias_sku);
   const style = _ns(bl._ss_style) || descStyleToken(bl.desc); const price = _num(bl.unit_price);
   const sizeOk = (it) => !size || canon(it.size) === size;
+  // Weak tiers (no SKU/style evidence) refuse a target from a clearly different supplier —
+  // size/price coincidences across vendors are exactly the Momentec→SanMar wrong-cost class.
+  const vendOk = (it) => vendorsCompatible(billVendor, it.vendor);
   const only = (list) => {
     const seen = new Map();
     list.forEach((x) => { const k = (x.it.item_id || _ns(x.it.sku)) + '|' + (x.it.po_id || '') + '|' + canon(x.it.size); if (!seen.has(k)) seen.set(k, x); });
@@ -93,12 +113,12 @@ const tieLine = (bl, items, canon) => {
     ['alias', asku ? idx.filter(({ it }) => _ns(it.sku) === asku && sizeOk(it)) : []],
     ['variant', idx.filter(({ it }) => { const t = _ns(it.sku); return sku.length >= 5 && t.length >= 5 && t !== sku && (sku.startsWith(t) || t.startsWith(sku) || sku.includes(t) || t.includes(sku)) && sizeOk(it); })],
     ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
-    ['color_size', color && size ? idx.filter(({ it }) => _ns(it.color) === color && canon(it.size) === size) : []],
-    ['size_price', size && price > 0 ? idx.filter(({ it }) => canon(it.size) === size && Math.abs(_num(it.unit_cost) - price) <= 0.02) : []],
+    ['color_size', color && size ? idx.filter(({ it }) => vendOk(it) && _ns(it.color) === color && canon(it.size) === size) : []],
+    ['size_price', size && price > 0 ? idx.filter(({ it }) => vendOk(it) && canon(it.size) === size && Math.abs(_num(it.unit_cost) - price) <= 0.02) : []],
     // size_only carries a price sanity check: same size but a >50% price gap is almost
     // certainly a DIFFERENT product (a $115.50 Predator cleat is not a $41.25 Supernova
     // in the same size) — leave it for the name/PO tiers or the human instead of guessing.
-    ['size_only', size ? idx.filter(({ it }) => { const oc = _num(it.unit_cost); return canon(it.size) === size && !(price > 0 && oc > 0 && (price > oc * 1.5 || price < oc * 0.5)); }) : []],
+    ['size_only', size ? idx.filter(({ it }) => { const oc = _num(it.unit_cost); return vendOk(it) && canon(it.size) === size && !(price > 0 && oc > 0 && (price > oc * 1.5 || price < oc * 0.5)); }) : []],
   ];
   for (const [basis, list] of tiers) {
     if (!list.length) continue;
@@ -132,14 +152,24 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
   const noMoney = (bl) => _num(bl.unit_price) <= 0 && _num(bl.extension) <= 0;
   if (!usable.length) return [];
   const billPo = poParts(bill._po_raw || bill.po_number);
+  const billVend = String(bill.vendor || bill.supplier || '');
   const out = [];
   (candidates || []).forEach((cand) => {
     if (!cand || !Array.isArray(cand.items) || !cand.items.length) return;
+    // Exact-PO anchor decided up front: it both rescues a cross-vendor candidate (the
+    // ORDER is proven right, labels vary) and drives the anchored tie tiers below.
+    const poAnchored = !!(billPo.flat && cand.items.some((it) => poParts(it.po_id).flat === billPo.flat));
+    // Vendor gate: an unanchored candidate whose known item vendors ALL differ from the
+    // bill's supplier is never proposed — a Momentec bill must not tie SanMar lines by
+    // size coincidence. Unknown vendors (either side) never block.
+    const candVendors = [...new Set(cand.items.map((it) => String(it.vendor || '')).filter(Boolean))];
+    const vendorCompat = !billVend || !candVendors.length || candVendors.some((v) => vendorsCompatible(billVend, v));
+    if (!vendorCompat && !poAnchored) return;
     const used = new Set(); // an order item-size bucket absorbs ONE bill line per proposal
     const ties = [];
     usable.forEach(({ bl, i }) => {
       const avail = cand.items.map((it, ti) => ({ it, ti })).filter(({ ti }) => !used.has(ti));
-      const hit = tieLine(bl, avail.map((a) => a.it), canon);
+      const hit = tieLine(bl, avail.map((a) => a.it), canon, billVend);
       if (!hit) return;
       const realIdx = avail[hit.idx].ti;
       used.add(realIdx);
@@ -170,7 +200,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // assignment stays open. Inside that anchor we can afford looser, still unambiguous-
     // only tiers over the PO's own buckets — worst case is a line landing on a sibling
     // line of the RIGHT order, and every tie remains human-reviewed before Accept.
-    const poAnchored = !!(billPo.flat && cand.items.some((it) => poParts(it.po_id).flat === billPo.flat));
+    // (poAnchored computed above, before the vendor gate.)
     if (poAnchored) {
       const remainingBuckets = () => cand.items.map((it, ti) => ({ it, ti }))
         .filter(({ it, ti }) => poParts(it.po_id).flat === billPo.flat && !ties.some((t) => t.target_idx === ti && t.basis !== 'bulk'));
@@ -269,6 +299,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (weakGuess) confidence = 'low';
     const evidence = [];
     if (poAnchored) evidence.push('PO number matches this order EXACTLY — near-certain this is the right order (owner rule)');
+    if (!vendorCompat) evidence.push('⚠ supplier differs — bill from ' + billVend + ', order lines from ' + candVendors.join('/') + ' (kept only because the PO matches)');
     evidence.push(ties.length + ' of ' + payable.length + ' bill line(s) tie to this order' + (poAnchored && ties.length < usable.length ? ' — link the rest below' : ''));
     if (qtyMirror) evidence.push('quantities mirror the order’s open amounts exactly');
     if (strongBases) evidence.push(strongBases + ' line(s) tie by SKU/style, not guesswork');
