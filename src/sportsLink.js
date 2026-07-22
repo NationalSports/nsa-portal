@@ -173,6 +173,58 @@ export const siDiscountFactor = (grossExt, merchTotal) => {
   return f >= 0.5 && f < 1 ? Math.round(f * 1e6) / 1e6 : 1; // sane band; else leave list (bill just flags for review)
 };
 
+// Push a document-level dealer discount down onto line costs — the ONE implementation,
+// shared by the EDI adapter (mapSportsLinkDocToBill) and the PDF-parse path so the line
+// rewrite (_list_unit preservation, rounding, _doc_discount_pct) never drifts between
+// them. Mutates items in place when a discount is present; no-op (factor 1) when
+// gross ≈ net. Returns { discFactor, docDiscountPct }.
+export const applySiDocumentDiscount = (items, merchandiseTotal) => {
+  const grossExt = (items || []).reduce((a, it) => a + _siNum(it && it.extension), 0);
+  const discFactor = siDiscountFactor(grossExt, merchandiseTotal);
+  const docDiscountPct = discFactor !== 1 ? Math.round((1 - discFactor) * 1000) / 10 : 0;
+  if (discFactor !== 1) {
+    items.forEach((it) => {
+      it._list_unit = it.unit_price;
+      it._list_extension = it.extension;
+      it.unit_price = Math.round(it.unit_price * discFactor * 100) / 100;
+      it.extension = Math.round(it.extension * discFactor * 100) / 100;
+    });
+  }
+  return { discFactor, docDiscountPct };
+};
+
+// SI service upcharge (owner, 2026-07-22: "0.008 of the subtotal excluding shipping —
+// all Sports Inc invoices"). Verified against 1,000+ live si_documents: the charge is
+// 0.8% of the GROSS (pre-dealer-discount) merchandise subtotal, no flat minimum — which
+// is why discounted vendors (Agron) read ~1.03% of NET while UA/Rawlings/A4 sit at
+// 0.80% on the nose. Used as a FILL when a Sports Inc bill is missing the printed
+// upcharge (PDF/vision parses); never overwrites a printed or EDI-supplied value —
+// the invoice of record wins.
+export const siExpectedUpcharge = (grossMerch) => {
+  const g = _siNum(grossMerch);
+  return g > 0 ? Math.round(g * 0.008 * 100) / 100 : 0;
+};
+
+// Early-pay freight waiver (owner, 2026-07-22): Rawlings and TCK sometimes waive
+// shipping if the bill is paid on/before an early date printed on it. Rare. This
+// DETECTS the situation — waiver-capable supplier, real freight, an early-pay signal
+// in the document text — and returns it for a human decision; it never waives on its
+// own (payment timing lives outside the portal).
+const _SI_WAIVER_SUPPLIERS = new Set(['RAWLINGS SPORTING GOODS CO INC', 'TWIN CITY KNITTING CO']);
+export const earlyPayFreightWaiver = (bill) => {
+  if (!bill) return { eligible: false };
+  const supKey = _siSupplierKey(bill.supplier || bill.vendor);
+  const waiverSupplier = [..._SI_WAIVER_SUPPLIERS].some((s) => supKey === s || (supKey && (s.includes(supKey) || supKey.includes(s))));
+  const freightAmount = _siNum(bill.freight);
+  if (!waiverSupplier || freightAmount <= 0) return { eligible: false };
+  const text = String(bill.rawText || '');
+  const m = text.match(/(?:DISCOUNT\s+DATE|FREIGHT\s+ALLOW\w*|TERMS\s+DISCOUNT)[^\d]{0,40}(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  // EDI docs carry no rawText; a freightAllowance field on the raw doc is the same signal.
+  const ediSignal = _siNum(bill._freight_allowance) > 0;
+  if (!m && !ediSignal) return { eligible: false };
+  return { eligible: true, payByDate: m ? m[1] : '', freightAmount };
+};
+
 // Adapter: a SportsLink document → the Portal's parsed-supplier-bill object.
 //
 // Emits the exact shape App.js's parseSingleInvoice() produces, so the existing
@@ -197,19 +249,9 @@ export const mapSportsLinkDocToBill = (doc) => {
     };
   });
   // Push the document-level dealer discount down onto the line costs so each unit_price
-  // equals our true net cost (see siDiscountFactor). _list_unit/_list_extension keep the
-  // pre-discount list for display/audit; merchandise_total already carries the net.
-  const grossExt = items.reduce((a, it) => a + _siNum(it.extension), 0);
-  const discFactor = siDiscountFactor(grossExt, doc?.merchandiseTotal);
-  const docDiscountPct = discFactor !== 1 ? Math.round((1 - discFactor) * 1000) / 10 : 0;
-  if (discFactor !== 1) {
-    items.forEach((it) => {
-      it._list_unit = it.unit_price;
-      it._list_extension = it.extension;
-      it.unit_price = Math.round(it.unit_price * discFactor * 100) / 100;
-      it.extension = Math.round(it.extension * discFactor * 100) / 100;
-    });
-  }
+  // equals our true net cost (see siDiscountFactor / applySiDocumentDiscount — shared
+  // with the PDF-parse path). merchandise_total already carries the net.
+  const { docDiscountPct } = applySiDocumentDiscount(items, doc?.merchandiseTotal);
   // Net inbound freight = freight charge less any freight allowance.
   const freightNet = _siNum(doc.freightAmount) - _siNum(doc.freightAllowance);
   // doc_number is the dedup key against bills already on the Portal. We mirror the value
@@ -243,6 +285,7 @@ export const mapSportsLinkDocToBill = (doc) => {
     tracking: String(doc.trackingNumber || '').trim(),
     merchandise_total: _siNum(doc.merchandiseTotal),
     freight: freightNet > 0 ? +freightNet.toFixed(2) : _siNum(doc.freightAmount),
+    _freight_allowance: _siNum(doc.freightAllowance), // early-pay waiver signal (earlyPayFreightWaiver)
     si_upcharge: +(_siNum(doc.siUpcharge) + _siNum(doc.svcHandleCharge)).toFixed(2),
     doc_total: _siNum(doc.docTotal),
     is_credit: !!doc.isCredit,

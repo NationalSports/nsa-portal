@@ -356,7 +356,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
-import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString } from './sportsLink';
+import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, looksPrePortalGlued, poParts } from './billResolve';
@@ -21901,6 +21901,8 @@ export default function App(){
   const[billHistTime,setBillHistTime]=useState('all');// Bill History / Look-at-later: filter by time range (all|today|7d|30d)
   const[billPushModal,setBillPushModal]=useState(null);// {cleanBills:[...],problemBills:[{bill,errs}]} — styled push-problems dialog
   const[billView,setBillView]=useState('upload');// Bills-screen tab: 'upload' (📄 Upload & Match — the front door) | 'import' (Bills, the EDI/API working list). PDF parse is now primary; EDI keeps running underneath as the confirmation/backstop. Legacy deep-link values still arrive and are normalized at render ('sportsinc' → upload, 'later' → import).
+  const[billStepMode,setBillStepMode]=useState(true);// To Review as a stepper: ONE bill needing a decision at a time (owner: "step by step process, not a mass of bills"). "See all" flips to the classic sectioned list. A view over existing state — no separate queue.
+  const[billStepIdx,setBillStepIdx]=useState(0);// current position in the needs-decision queue (clamped at render)
   const[laterCollapse,setLaterCollapse]=useState({});// Look at Later: collapsed bucket keys
   const[billResolveId,setBillResolveId]=useState(null);// Look at Later: bill id with the resolve-disposition chips open
   const[billOverrideModal,setBillOverrideModal]=useState(null);// Look at Later: {id} — accept-overage push, note required
@@ -23343,11 +23345,33 @@ export default function App(){
         }
       }
       bill.items=itemLines;
+      // Document-level dealer discount (Agron -25%, A4 -5%, and any other vendor SI
+      // discounts this way): lines print LIST, merchandise_total is NET. Same shared
+      // helper as the EDI adapter (applySiDocumentDiscount) pushes the discount onto
+      // each line so unit_price is our true cost — no per-vendor table; the factor
+      // comes from the bill's own gross/net, so "random miscellaneous ones" self-correct.
+      const grossItemsSum=bill.items.reduce((a,it)=>a+it.extension,0);// pre-discount (list) sum — also the SI-upcharge basis
+      const _isSiDoc=/SI\s+DOCUMENT|SI\s+UPCHARGE|SI\s+STORE|SPORTS,?\s+INC/i.test(fullText);// document-level discounts + the 0.8% upcharge are Sports Inc billing conventions — never rewrite a direct-vendor PDF on a parse glitch
+      let _pdfDiscF=1;
+      if(_isSiDoc){
+        const{discFactor,docDiscountPct}=applySiDocumentDiscount(bill.items,bill.merchandise_total);
+        _pdfDiscF=discFactor;
+        if(docDiscountPct>0)bill._doc_discount_pct=docDiscountPct;
+      }
       if(bill.items.length>0&&bill.merchandise_total>0){
-        const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);
+        const itemsSum=bill.items.reduce((a,it)=>a+it.extension,0);// post-discount — a real discount no longer false-flags
         if(Math.abs(itemsSum-bill.merchandise_total)>1){
           bill.warnings.push('Item total ($'+itemsSum.toFixed(2)+') differs from merchandise total ($'+bill.merchandise_total.toFixed(2)+')')}}
+      // SI service upcharge fill (owner: 0.8% of the pre-discount subtotal, every Sports
+      // Inc invoice). Only when the parse found NO printed upcharge — the invoice of
+      // record always wins — and only on documents that are recognizably Sports Inc.
+      if(!(bill.si_upcharge>0)&&_isSiDoc){
+        const grossBasis=grossItemsSum>0?grossItemsSum:(bill.merchandise_total>0&&_pdfDiscF?bill.merchandise_total/_pdfDiscF:0);
+        const exp=siExpectedUpcharge(grossBasis);
+        if(exp>0){bill.si_upcharge=exp;bill._si_upcharge_computed=true;bill.warnings.push('SI upcharge $'+exp.toFixed(2)+' filled at 0.8% of subtotal (not printed on the parse) — verify against the invoice')}
+      }
       // Infer freight from doc_total - merchandise_total - si_upcharge if not explicitly found
+      // (runs AFTER the upcharge fill so inferred freight never absorbs the upcharge)
       if(!bill.freight&&bill.doc_total&&bill.merchandise_total&&bill.doc_total>bill.merchandise_total){
         const diff=Math.round((bill.doc_total-bill.merchandise_total-(bill.si_upcharge||0))*100)/100;
         if(diff>0&&diff<bill.merchandise_total*0.5){bill.freight=diff;bill.warnings.push('Freight $'+diff.toFixed(2)+' inferred from doc total minus merchandise')}
@@ -23676,7 +23700,9 @@ export default function App(){
         // is_credit = a credit memo — some vendors print credit lines as POSITIVE quantities
         // (only the total is negative), so an auto-push would ADD what the credit reverses.
         // Credits always get human eyes; manual push still works.
-        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
+        // earlyPayFreightWaiver: Rawlings/TCK sometimes waive freight on early payment —
+        // rare, but it's a human money decision (keep vs waive), so those never auto-push.
+        const candidates=(bills||[]).filter(b=>b&&b.parsed&&!b.parsed._ai_parsed&&!b.parsed.is_credit&&!earlyPayFreightWaiver(b.parsed).eligible&&_billIsReadyToPush(b)&&!_billTriage(b)?.issue&&!_validateBillForPush(b.parsed).length);
         if(!candidates.length)return 0;
         // DIRECT-PATH SAFETY GATE (Fable audit, 2026-07-22): _validateBillForPush checks
         // neither price nor vendor, and the $0-freight auto-mapping path can rewrite order
@@ -27223,6 +27249,14 @@ export default function App(){
                 {bill._auto_pushed&&portalPushed&&<span title="Pushed automatically: high-confidence match with no exceptions. Tagged in the ledger (resolution.auto_pushed); anything odd shows in the ⚠ Review pill and the daily anomaly email." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#047857',color:'#fff',fontWeight:700,border:'1px solid #065f46'}}>⚡ Auto-pushed</span>}
                 {!!(bill._auto_hold&&bill._auto_hold.length)&&!portalPushed&&<span title={'Matched, but held out of auto-push:\n• '+bill._auto_hold.join('\n• ')+'\nReview and push manually — the button works as always.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fff7ed',color:'#9a3412',fontWeight:700,border:'1px solid #fed7aa'}}>⚡ Held · {bill._auto_hold.length===1?bill._auto_hold[0].split(' — ')[0].split(' (')[0]:bill._auto_hold.length+' reasons'}</span>}
                 {bill._ai_parsed&&<span title="This bill was transcribed from a scanned PDF by AI (no text layer). Verify the lines and totals against the PDF before pushing — scanned reads never auto-push." style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>📷 AI-read scan</span>}
+                {bill._doc_discount_pct>0&&<span title={'Sports Inc document-level dealer discount: line prices shown were reduced '+bill._doc_discount_pct+'% from list (derived from this bill’s own gross vs net totals — Agron 25%, A4 5%, etc.). Unit prices are your true cost.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #a7f3d0'}}>−{bill._doc_discount_pct}% dealer</span>}
+                {bill._si_upcharge_computed&&<span title={'The SI upcharge wasn’t printed on the parse, so it was filled at 0.8% of the pre-discount subtotal: $'+safeNum(bill.si_upcharge).toFixed(2)+'. Verify against the invoice.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>SI fee 0.8% est.</span>}
+                {!portalPushed&&!bill._freight_waived&&!bill._freight_kept&&(()=>{const wv=earlyPayFreightWaiver(bill);return wv.eligible?<span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:10,padding:'2px 8px',borderRadius:4,background:'#eff6ff',color:'#1d4ed8',fontWeight:700,border:'1px solid #bfdbfe'}}>
+                  🚚 Freight {nsaMoney(wv.freightAmount)} waived if paid{wv.payByDate?' by '+wv.payByDate:' early'}:
+                  <button onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,parsed:{...pp.parsed,_freight_kept:true}}:pp)}))} title="Keep the freight on the bill (not paying early)" style={{fontSize:9,padding:'2px 7px',borderRadius:3,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid #93c5fd',color:'#1d4ed8'}}>Keep</button>
+                  <button onClick={()=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,parsed:{...pp.parsed,freight:0,doc_total:Math.max(0,Math.round((safeNum(pp.parsed.doc_total)-wv.freightAmount)*100)/100),_freight_waived:{date:wv.payByDate,amount:wv.freightAmount}}}:pp)}))} title={'Zero the freight — you’re paying '+(wv.payByDate?'by '+wv.payByDate:'early')+' so '+nsaMoney(wv.freightAmount)+' is waived (kept on the audit trail)'} style={{fontSize:9,padding:'2px 7px',borderRadius:3,cursor:'pointer',fontWeight:700,background:'#1d4ed8',border:'1px solid #1d4ed8',color:'#fff'}}>Waive</button>
+                </span>:null})()}
+                {bill._freight_waived&&<span title={'Freight '+nsaMoney(bill._freight_waived.amount)+' waived (early pay'+(bill._freight_waived.date?' by '+bill._freight_waived.date:'')+')'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#ecfdf5',color:'#047857',fontWeight:700,border:'1px solid #a7f3d0'}}>🚚 Freight waived</span>}
                 {bill._claimed_po&&!bill.matchedPO&&<span title={'This PO number was ISSUED by the Create-PO form from '+(bill._claimed_po.so_id||'an order')+(bill._claimed_po.customer?' ('+bill._claimed_po.customer+')':'')+(bill._claimed_po.claimed_by?' by '+bill._claimed_po.claimed_by:'')+(bill._claimed_po.claimed_at?' on '+String(bill._claimed_po.claimed_at).slice(0,10):'')+' — but the PO was never created in the portal. Open that order to create it, or use Match manually to tie this bill to its items.'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#f5f3ff',color:'#6d28d9',fontWeight:700,border:'1px solid #ddd6fe'}}>🎫 Issued from {bill._claimed_po.so_id||'an order'} — never created</span>}
                 {portalPushed&&(()=>{const _fl=billAnomalyFlags(bill);return _fl.length?<span title={'Pushed, but worth a look:\n• '+_fl.map(f=>f.detail).join('\n• ')+'\n(Also in the daily anomaly email.)'} style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fffbeb',color:'#92400e',fontWeight:700,border:'1px solid #fde68a'}}>⚠ Review · {_fl.map(f=>f.code==='freight_gt10'?'freight':f.code==='sharp_price'?'price':f.code==='total_mismatch'?'total':'overage').join(' · ')}</span>:null})()}
                 {bill.po_number&&!poMatch&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:700}}>PO Not Found</span>}
@@ -27376,6 +27410,9 @@ export default function App(){
                     <label style={{fontSize:10,fontWeight:600,marginLeft:8}}>Tracking</label>
                     <input className="form-input" style={{width:140,fontSize:11,padding:'3px 6px'}} value={bill.tracking}
                       onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,tracking:e.target.value}}:p)}))}/>
+                    <label style={{fontSize:10,fontWeight:600,marginLeft:8}} title="Carried to QuickBooks as the bill's due date">Due</label>
+                    <input className="form-input" placeholder="MM/DD/YYYY" style={{width:100,fontSize:11,padding:'3px 6px'}} value={bill.due_date||''}
+                      onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,due_date:e.target.value}}:p)}))}/>
                   </div>
                 </div>
                 {/* Line items */}
@@ -27942,6 +27979,27 @@ export default function App(){
             const _aiN=_inReview?billImport.parsed.filter(b=>b._aiRunning).length:0;
             _children.push(<React.Fragment key="h-toreview">{secHead({dot:RED,title:'⚠ To Review',count:reviewN+_bk.failed.length+_parkedBills.length,note:'Each row shows its one fix'+(_aiN?' · ✨ AI working on '+_aiN:''),mt:false})}</React.Fragment>);
             if(_vtHidden)_children.push(<div key="vt-hidden" style={{fontSize:11,fontWeight:700,color:'#b45309',margin:'0 0 8px'}}>{_vtHidden} bill(s) hidden by the vendor/date filters above — pushing still includes them.</div>);
+            // STEP MODE (owner directive): work the queue ONE bill at a time, worst-first —
+            // failed pushes, then each fix-shaped bucket. Pure view over the same _bk buckets;
+            // "See all" shows the classic sectioned list unchanged.
+            const _stepLabels={failed:'Push failed — retry the save',lines:'🧵 Tie the lines to the order’s items',no_order:'🔍 No order matched — accept the AI suggestion or find it',over:'⚖ Over-billed — correct the order or accept the overage',dup:'♻ Duplicate — you re-opened this one',other:'⚠ Check this one'};
+            const _stepQ=[..._bk.failed.map(x=>[...x,'failed']),..._bk.lines.map(x=>[...x,'lines']),..._bk.no_order.map(x=>[...x,'no_order']),..._bk.over.map(x=>[...x,'over']),..._bk.dup.map(x=>[...x,'dup']),..._bk.other.map(x=>[...x,'other'])];
+            if(billStepMode&&_stepQ.length){
+              const si2=Math.min(billStepIdx,_stepQ.length-1);
+              const[sb2,sbi2,skind2]=_stepQ[si2];
+              const _stepGo=(ni)=>{const t2=_stepQ[Math.min(Math.max(ni,0),_stepQ.length-1)];setBillStepIdx(Math.min(Math.max(ni,0),_stepQ.length-1));if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}));};
+              _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:6,flexWrap:'wrap'}}>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:15,textTransform:'uppercase',letterSpacing:.4,color:'#92400e'}}>Bill {si2+1} of {_stepQ.length}</span>
+                <span style={{fontSize:12,fontWeight:700,color:'#b45309',flex:1,minWidth:180}}>{_stepLabels[skind2]}</span>
+                <span style={{display:'flex',gap:6}}>
+                  <button disabled={si2===0} onClick={()=>_stepGo(si2-1)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:si2===0?'not-allowed':'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:NAVY,opacity:si2===0?0.5:1}}>‹ Back</button>
+                  <button disabled={si2>=_stepQ.length-1} onClick={()=>_stepGo(si2+1)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:si2>=_stepQ.length-1?'not-allowed':'pointer',fontWeight:700,background:NAVY,border:'1px solid '+NAVY,color:'#fff',opacity:si2>=_stepQ.length-1?0.5:1}}>Skip ›</button>
+                  <button onClick={()=>setBillStepMode(false)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>See all ({_stepQ.length})</button>
+                </span>
+              </div>);
+              _children.push(renderBillCard(sb2,sbi2));
+            }else{
+            if(_stepQ.length>1&&!billStepMode)_children.push(<div key="step-on" style={{margin:'0 0 8px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fcd34d',color:'#92400e'}}>▸ Step through one at a time</button></div>);
             if(_bk.failed.length){
               _children.push(<React.Fragment key="h-failed">{secHead({dot:'#dc2626',title:'Push failed — retry',count:_bk.failed.length,note:'The order save didn’t confirm. ↻ Retry each row.',mt:false})}</React.Fragment>);
               _bk.failed.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
@@ -27956,6 +28014,7 @@ export default function App(){
                 _children.push(<div key={'sh-'+k} style={{fontSize:11,fontWeight:800,color:'#92400e',margin:'10px 0 6px',letterSpacing:.3}}>{label} ({_bk[k].length})</div>);
                 _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
               });
+            }
             }
             if(_inReview&&!reviewN&&!_bk.failed.length)_children.push(<div key="rev-empty" style={{padding:'12px 16px',marginBottom:6,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,fontSize:12.5,fontWeight:600,color:'#166534'}}>Nothing needs review — everything from the pull is matched or already done.</div>);
             // 🕒 Set aside — the parked-bill workspace folds into To Review (no separate tab)
