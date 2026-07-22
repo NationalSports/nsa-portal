@@ -727,6 +727,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
+  // Deep-link: emails/texts can point straight at one estimate (?est=<id>) or art
+  // proof (?so=<id>&job=<id>) instead of the portal home. The params ride on the
+  // portal's own URL when it's opened directly; embedded in the marketing /coach
+  // iframe (which forwards only the portal tag) they're recovered from the parent
+  // page URL via document.referrer. Applied once, as soon as the target record has
+  // loaded, then locked so it never fights the coach's own navigation.
+  const _deepLinked=useRef(false);
+  useEffect(()=>{
+    if(_deepLinked.current)return;
+    let sp=null;try{sp=new URLSearchParams(window.location.search);}catch(_){}
+    const _param=k=>{const v=sp&&sp.get(k);if(v)return v;try{const r=document.referrer||'';const qi=r.indexOf('?');if(qi>=0)return new URLSearchParams(r.slice(qi)).get(k);}catch(_){}return null;};
+    const estId=_param('est'),soId=_param('so'),jobId=_param('job');
+    if(!estId&&!soId){_deepLinked.current=true;return;}
+    if(estId){const e=(ests||[]).find(x=>x.id===estId);if(e){setEstView(e);setUpdateRequestSent(false);setUpdateRequestText('');setPage('orders');_deepLinked.current=true;}return;}
+    const s=(sos||[]).find(x=>x.id===soId);
+    if(s){setSoView(s);const j=jobId?(safeJobs(s)||[]).find(jj=>jj.id===jobId):null;if(j){setJobView({job:j,so:s});setComment('');}setPage('orders');_deepLinked.current=true;}
+  },[sos,ests]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
   // A sub-team's own colors drive the theme; its parent department's colors only
@@ -1695,8 +1712,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const _apArts=jArtIds.map(id=>safeArt(liveSO).find(a=>a.id===id)).filter(Boolean);const _apDeco=_apArts[0]?.deco_type||j.deco_type;const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)||artDstOnFile(a)))?'art_complete':prodFilesStatusFor(_apDeco);/* artDstOnFile: at coach-approve time the art status hasn't flipped to 'approved' yet, so the status-gated .dst check alone would route a fully-digitized job into upload_emb_files anyway */
                 // Pin the approval to the artwork on screen: every mock URL in view must still
                 // exist server-side, or the approve conflicts instead of recording an approval
-                // for an image the artist has since replaced.
-                const _sm=new Set();const _seenMocks=[...mockups,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
+                // for an image the artist has since replaced. Pin ONLY the fields the RPC's
+                // guard pools cover (mockup_files / files / item_mockups) — NOT the prod_files
+                // fallback the display `mockups` uses when a job has no mockup. The server never
+                // pools prod_files, so pinning those URLs 409'd every approval of a prod-files-
+                // only proof with NSA_MOCKS_CHANGED even though the artist never touched the art.
+                const _pinMocks=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
+                const _sm=new Set();const _seenMocks=[..._pinMocks,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
                 // Rep to notify: creator → customer's primary rep → monitored inbox, so a rep
                 // missing an email never silently swallows the decision (mirrors the estimate path).
                 const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);

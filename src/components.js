@@ -213,9 +213,13 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nationalsportsapparel.com/coach?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
+    // instead of the portal home — the coach portal opens the matching view on load.
+    const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
+    const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag+_dl:'';
+    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
+    const portalUrl2=portalLink;
     setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
