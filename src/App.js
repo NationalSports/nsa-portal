@@ -30,6 +30,7 @@ import { buildWorkOrderDoc, pairRoster } from './lib/workOrderSheet';
 import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedArtCostQty, decoSplitQty } from './pricing';
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
+import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -4139,79 +4140,89 @@ export default function App(){
   // Deep-link precedence over the saved-record resume lives in this ref (declared here so
   // the handler below can claim it before it strips the deep-link param from the URL).
   const _resumeDone=React.useRef(false);
-  // Handle ?so= / ?est= / ?cust= deep links to open a specific record in a new tab
+  // ─── Record-level URL routing state (see src/lib/recordRoute.js) ───
+  // _bootRecordDone: the one-time boot that opens the record named in the initial URL has run.
+  // _routePop: the pending state change came from a Back/Forward (popstate) — don't re-push.
+  // _routePrev: the last route we wrote {pg, rec}, so we can tell an open from a close.
+  const _bootRecordDone=React.useRef(false);
+  const _routePop=React.useRef(false);
+  const _routePrev=React.useRef(null);
+  // Boot: open the record named in the initial URL (?so=/?est=/?cust=/?inv=/?vend=/?prod=,
+  // plus the one-shot ?po=/?if=/?so_tab=/?st=/?comm=/?month= email variants). Runs ONCE, once
+  // its data has loaded. Unlike before, the record param is KEPT in the URL (not stripped) so a
+  // refresh re-opens it and the Back button has a real entry to return to — it's the page's
+  // address now. Only the one-shot params are consumed. A deep-link still wins over the saved
+  // resume (it claims _resumeDone up front).
   React.useEffect(()=>{
-    if(dbLoading)return;
+    if(_bootRecordDone.current||dbLoading)return;
+    if(typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('portal')){_bootRecordDone.current=true;return;}
     try{
       const p=new URLSearchParams(window.location.search);
       const soId=p.get('so');const estId=p.get('est');const custId=p.get('cust');const invId=p.get('inv');const vendId=p.get('vend');const prodId=p.get('prod');const poId=p.get('po');const ifId=p.get('if');
-      // A deep-link always wins over the saved-record resume. Claim precedence up front:
-      // this effect deletes the param from the URL after resolving, and the resume effect
-      // (which runs after this one) would then no longer see it and would restore the last
-      // record instead — reopening e.g. SO-1141 instead of the SO-1047 the email linked to.
+      // Wait until the collection a present deep-link needs has loaded, so we don't mark the
+      // boot done (and give up on the record) before it can be resolved.
+      const needWait=((soId||poId||ifId)&&!sos.length)||(estId&&!ests.length)||(custId&&!cust.length)||(invId&&!invs.length)||(vendId&&!vend.length)||(prodId&&!prod.length);
+      if(needWait)return;
       if(soId||estId||custId||invId||vendId||prodId||poId||ifId)_resumeDone.current=true;
-      const u=new URL(window.location);let changed=false;
-      if(soId&&sos.length>0){
+      // What the URL should settle to once the record is open (drives the canonical rewrite below).
+      let bootPg=_pgFromUrl()||'dashboard';let bootRecParam=null;let bootRecId=null;
+      if(soId){
         const so=sos.find(s=>s.id===soId);
         // so_tab lets an email deep-link land on a specific SO tab (e.g. the ops digest's
         // "Create PO" link opens straight to Items for a short-on-pull order).
         const soTab=p.get('so_tab');
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);if(soTab)setESOTab(soTab);setPg('orders')}
-        u.searchParams.delete('so');u.searchParams.delete('so_tab');changed=true;
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);if(soTab)setESOTab(soTab);setPg('orders');bootPg='orders';bootRecParam='so';bootRecId=so.id;}
       }
-      if(poId&&sos.length>0){
+      if(!bootRecParam&&poId){
         const so=sos.find(s=>(s.items||[]).some(it=>(it.po_lines||[]).some(pl=>pl.po_id===poId))||(s.deco_pos||[]).some(dp=>dp.po_id===poId));
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setESOOpenPO(poId);setPg('orders')}
-        u.searchParams.delete('po');changed=true;
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setESOOpenPO(poId);setPg('orders');bootPg='orders';bootRecParam='so';bootRecId=so.id;}
       }
-      if(ifId&&sos.length>0){
+      if(!bootRecParam&&ifId){
         const so=sos.find(s=>(s.items||[]).some(it=>(it.pick_lines||[]).some(pl=>pl.pick_id===ifId)));
-        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setESOTab('items');setPg('orders')}
-        u.searchParams.delete('if');changed=true;
+        if(so){const c2=cust.find(cc=>cc.id===so.customer_id);setESO(so);setESOC(c2);setESOTab('items');setPg('orders');bootPg='orders';bootRecParam='so';bootRecId=so.id;}
       }
-      if(estId&&ests.length>0){
+      if(estId){
         const est=ests.find(x=>x.id===estId);
-        if(est){const c2=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c2);setPg('estimates')}
-        u.searchParams.delete('est');changed=true;
+        if(est){const c2=cust.find(cc=>cc.id===est.customer_id);setEEst(est);setEEstC(c2);setPg('estimates');bootPg='estimates';bootRecParam='est';bootRecId=est.id;}
       }
-      if(custId&&cust.length>0){
+      if(custId){
         const c2=cust.find(cc=>cc.id===custId||cc.alpha_tag===custId);
-        if(c2){setSelC(c2);setPg('customers')}
-        u.searchParams.delete('cust');changed=true;
+        if(c2){setSelC(c2);setPg('customers');bootPg='customers';bootRecParam='cust';bootRecId=c2.id;}
       }
-      if(invId&&invs.length>0){
+      if(invId){
         const inv=invs.find(x=>x.id===invId);
-        if(inv){setViewInvoice(inv);setPg('invoices')}
-        u.searchParams.delete('inv');changed=true;
+        if(inv){setViewInvoice(inv);setPg('invoices');bootPg='invoices';bootRecParam='inv';bootRecId=inv.id;}
       }
-      if(vendId&&vend.length>0){
+      if(vendId){
         const v=vend.find(x=>x.id===vendId);
-        if(v){setSelV(v);setPg('vendors')}
-        u.searchParams.delete('vend');changed=true;
+        if(v){setSelV(v);setPg('vendors');bootPg='vendors';bootRecParam='vend';bootRecId=v.id;}
       }
-      if(prodId&&prod.length>0){
+      if(prodId){
         const pr=prod.find(x=>x.id===prodId);
-        if(pr){setSelP(pr);setPg('products')}
-        u.searchParams.delete('prod');changed=true;
+        if(pr){setSelP(pr);setPg('products');bootPg='products';bootRecParam='prod';bootRecId=pr.id;}
       }
       // Sales Tools sub-tab deep link (used by the rep ops digest email CTA, e.g. ?pg=sales_tools&st=myday).
       const stParam=p.get('st');
-      if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam)){
-        setStTab(stParam);u.searchParams.delete('st');changed=true;
-      }
-      // Commissions deep link (monthly commission-report-reminder email): open a
-      // sub-tab (?comm=adminDash) and/or a month (?month=YYYY-MM). ?pg=commissions
-      // itself is applied by the pg initializer; here we set the tab + month.
+      if(stParam&&['myday','quotes','numbers','size_sort','reorder','deco_calc','mockup','vectorizer'].includes(stParam))setStTab(stParam);
+      // Commissions deep link (monthly commission-report-reminder email): open a sub-tab
+      // (?comm=adminDash) and/or a month (?month=YYYY-MM). ?pg=commissions is applied by the
+      // pg initializer; here we set the tab + month.
       const commParam=p.get('comm');
-      if(commParam&&['statement','pipeline','promo','ytd','byCustomer','monthly','adminDash'].includes(commParam)){
-        setCommTab(commParam);u.searchParams.delete('comm');changed=true;
-      }
+      if(commParam&&['statement','pipeline','promo','ytd','byCustomer','monthly','adminDash'].includes(commParam))setCommTab(commParam);
       const monthParam=p.get('month');
-      if(monthParam&&/^\d{4}-\d{2}$/.test(monthParam)){
-        setCommMonth(monthParam);u.searchParams.delete('month');changed=true;
-      }
-      if(changed)window.history.replaceState({},'',u);
+      if(monthParam&&/^\d{4}-\d{2}$/.test(monthParam))setCommMonth(monthParam);
+      // Canonicalize the URL: keep the record deep-link (so refresh/Back stays on it), drop the
+      // one-shot params we just consumed, and make sure ?pg= matches the record's section. This
+      // is a replaceState — it just tidies the entry we loaded into, it doesn't add history.
+      const u=new URL(window.location);
+      ['so_tab','po','if','st','comm','month'].forEach(k=>u.searchParams.delete(k));
+      if(bootPg==='dashboard')u.searchParams.delete('pg');else u.searchParams.set('pg',bootPg);
+      ['so','est','cust','vend','prod','inv'].forEach(k=>u.searchParams.delete(k));
+      if(bootRecParam&&bootRecId)u.searchParams.set(bootRecParam,bootRecId);
+      window.history.replaceState({},'',u);
+      _routePrev.current={pg:bootPg,rec:_recKeyOf(bootRecParam,bootRecId)};
     }catch{}
+    _bootRecordDone.current=true;
   },[sos,ests,cust,invs,vend,prod,dbLoading]); // eslint-disable-line
   // Handle the #anchor part of a ?pg=<id>#anchor deep link — used by the so-health-alert
   // email to land users on the System Health card (?pg=backup#system-health). The page id
@@ -4233,31 +4244,8 @@ export default function App(){
       }
     }catch{}
   },[dbLoading]); // eslint-disable-line
-  // Keep ?pg=<id> in sync with the current page. Writing the URL on every page change lets
-  // a refresh stay put and gives the browser back/forward buttons a history entry per section.
-  // Changes that originate from back/forward (popstate) must NOT push a new entry — the
-  // _pgPop flag suppresses that. The first sync uses replaceState so we don't bury the
-  // initial entry. 'dashboard' clears the param to keep the default URL clean.
-  const _pgPop=React.useRef(false);
-  const _pgFirst=React.useRef(true);
-  React.useEffect(()=>{
-    if(_pgPop.current){_pgPop.current=false;_pgFirst.current=false;return;}
-    try{
-      const u=new URL(window.location);
-      const cur=u.searchParams.get('pg')||'dashboard';
-      if(cur!==pg){
-        if(pg==='dashboard')u.searchParams.delete('pg');else u.searchParams.set('pg',pg);
-        const url=u.pathname+u.search+u.hash;
-        if(_pgFirst.current)window.history.replaceState({pg},'',url);else window.history.pushState({pg},'',url);
-      }
-    }catch{}
-    _pgFirst.current=false;
-  },[pg]);
-  React.useEffect(()=>{
-    const onPop=()=>{const v=_pgFromUrl()||'dashboard';if(v!==pg){_pgPop.current=true;setPg(v)}};
-    window.addEventListener('popstate',onPop);
-    return()=>window.removeEventListener('popstate',onPop);
-  },[pg]);
+  // The URL router (section ?pg= + the open record) is defined together further down, once the
+  // invoice view-state it depends on has been declared — search "Record-level URL router".
   React.useEffect(()=>{_saveAppState('inv_pos',invPOs)},[invPOs]);
   React.useEffect(()=>{const cur=JSON.stringify(invAdjLog);if(_invAdjLogApplied.current!==cur)_setAppStateDirtyUntil('inv_adj_log',Date.now()+12000);_saveAppState('inv_adj_log',invAdjLog)},[invAdjLog]);
   React.useEffect(()=>{_saveAppState('inv_po_counter',invPOCounter)},[invPOCounter]);
@@ -12360,6 +12348,70 @@ export default function App(){
   const[invEditModal,setInvEditModal]=useState(null);// {inv, memo, due_date}
   const[invSendModalDirect,setInvSendModalDirect]=useState(null);// {inv, email, msg}
   const[pdBulkModal,setPdBulkModal]=useState(null);// past-due bulk email modal: {customers, options, message, sending, progress}
+
+  // ─────────────────────────── Record-level URL router ───────────────────────────
+  // Keeps the URL in lock-step with (section + open record) so every record is its own
+  // address and its own Back/Forward entry, and a refresh reopens exactly what was open.
+  // Declared here (not up top) because it reads viewInvoice, which is declared just above.
+  //   • _recParam/_recId: the one record param that belongs to the current section, if open.
+  //   • Opening a record pushes a history entry; closing it (record→none, same section)
+  //     replaces, so the in-app "Back to list" button doesn't leave a dead-end entry.
+  //   • popstate (real Back/Forward) reconciles state FROM the URL and is flagged so the
+  //     sync effect below doesn't bounce a new entry back onto the stack.
+  const _recParam=REC_PARAM_FOR_PG[pg]||null;
+  const _recId=pg==='orders'?(eSO&&eSO.id):pg==='estimates'?(eEst&&eEst.id):pg==='customers'?(selC&&selC.id):pg==='vendors'?(selV&&selV.id):pg==='products'?(selP&&selP.id):pg==='invoices'?(viewInvoice&&viewInvoice.id):null;
+  React.useEffect(()=>{
+    if(typeof window==='undefined')return;
+    if(new URLSearchParams(window.location.search).get('portal'))return;// public coach portal owns its URL
+    const key=_recKeyOf(_recParam,_recId);
+    // Until the initial-URL record has been opened by the boot effect, don't touch the URL —
+    // otherwise we'd strip the very ?so=/?inv= the boot is about to read.
+    if(!_bootRecordDone.current){_routePrev.current={pg,rec:key};return;}
+    // This change came from Back/Forward — the URL is already correct; just record it.
+    if(_routePop.current){_routePop.current=false;_routePrev.current={pg,rec:key};return;}
+    try{
+      let target=buildRouteSearch(window.location.search,pg,_recParam,_recId);
+      if(pg!=='webstores'){
+        // ?store=/?tab=/?order= belong to the Webstores section (managed inside Webstores.js).
+        // Drop them when we leave so they can't leak into another section's URL.
+        const tp=new URLSearchParams(target.replace(/^\?/,''));
+        let stripped=false;['store','tab','order'].forEach(k=>{if(tp.has(k)){tp.delete(k);stripped=true}});
+        if(stripped){const s=tp.toString();target=s?'?'+s:'';}
+      }
+      if(target!==window.location.search){
+        const prev=_routePrev.current;
+        const isClose=!!(prev&&prev.pg===pg&&prev.rec&&!key);// closed a record without switching section
+        const url=window.location.pathname+target+window.location.hash;
+        if(isClose)window.history.replaceState({},'',url);else window.history.pushState({},'',url);
+      }
+      _routePrev.current={pg,rec:key};
+    }catch{/* history unavailable — non-fatal */}
+  },[pg,_recParam,_recId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Back/Forward: reconcile section + open record FROM the URL. Opens/closes records by id
+  // using the same resolution as the boot deep-link. Sets _routePop so the effect above
+  // doesn't push the change back onto the history stack as a new entry.
+  const _applyRouteFromUrl=React.useCallback(()=>{
+    try{
+      if(typeof window==='undefined')return;
+      const p=new URLSearchParams(window.location.search);
+      if(p.get('portal'))return;
+      let changed=false;
+      const targetPg=_pgFromUrl()||'dashboard';
+      if(targetPg!==pg){setPg(targetPg);changed=true;}
+      const soId=p.get('so')||null;if(soId!==(eSO?eSO.id:null)){if(soId){const so=sos.find(s=>s.id===soId);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id)||null);changed=true;}}else{setESO(null);setESOTab(null);setESOScrollItem(null);setESOScrollJob(null);setESOScrollJobRef(null);setESOOpenPO(null);changed=true;}}
+      const estId=p.get('est')||null;if(estId!==(eEst?eEst.id:null)){if(estId){const e=ests.find(x=>x.id===estId);if(e){setEEst(e);setEEstC(cust.find(c=>c.id===e.customer_id)||null);changed=true;}}else{setEEst(null);changed=true;}}
+      const custId=p.get('cust')||null;if(custId!==(selC?selC.id:null)){if(custId){const c2=cust.find(x=>x.id===custId);if(c2){setSelC(c2);changed=true;}}else{setSelC(null);changed=true;}}
+      const vendId=p.get('vend')||null;if(vendId!==(selV?selV.id:null)){if(vendId){const v=vend.find(x=>x.id===vendId);if(v){setSelV(v);changed=true;}}else{setSelV(null);changed=true;}}
+      const prodId=p.get('prod')||null;if(prodId!==(selP?selP.id:null)){if(prodId){const pr=prod.find(x=>x.id===prodId);if(pr){setSelP(pr);changed=true;}}else{setSelP(null);changed=true;}}
+      const invId=p.get('inv')||null;if(invId!==(viewInvoice?viewInvoice.id:null)){if(invId){const iv=invs.find(x=>x.id===invId);if(iv){setViewInvoice(iv);changed=true;}}else{setViewInvoice(null);changed=true;}}
+      if(changed)_routePop.current=true;
+    }catch{/* noop */}
+  },[pg,eSO,eEst,selC,selV,selP,viewInvoice,sos,ests,cust,vend,prod,invs]); // eslint-disable-line react-hooks/exhaustive-deps
+  React.useEffect(()=>{
+    const onPop=()=>_applyRouteFromUrl();
+    window.addEventListener('popstate',onPop);
+    return()=>window.removeEventListener('popstate',onPop);
+  },[_applyRouteFromUrl]);
 
   // Split invoice helper — creates two invoices from one based on selected item indices
   const splitInvoice=(inv,selIndices,splitMemo)=>{

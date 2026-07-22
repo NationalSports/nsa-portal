@@ -1386,22 +1386,82 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     await loadDetail(store);
   }, [loadDetail]);
 
-  // Deep-link: the store-closed email's "Process the store" button and the rep daily
+  // Deep-link boot: the store-closed email's "Process the store" button and the rep daily
   // digest's store/order links land here — ?pg=webstores&store=<id>[&tab=<tab>][&order=<id>].
   // Once the store list is loaded, open that store on the requested tab (defaulting to
-  // catalog), remember any order to auto-open in the Orders tab, then strip the params so
-  // a refresh / back-nav doesn't re-trigger it.
-  const _deepLinked = useRef(false);
+  // catalog) and auto-open any linked order in the Orders tab. The params are KEPT in the URL
+  // (not stripped) so the open store is a real address: a refresh reopens exactly this store
+  // (and order), and the Back button has an entry to return to. Runs once; the sync effect
+  // below keeps the URL in step from here on.
+  const _deepLinked = useRef(false);   // boot has run
+  const _wsRoutePrev = useRef(null);   // last route we wrote: "storeId|tab|order"
+  const _wsRoutePop = useRef(false);   // the pending change came from Back/Forward — don't re-push
   useEffect(() => {
-    if (_deepLinked.current || loading || !stores.length) return;
+    if (_deepLinked.current || loading) return;
     let id = null, tabParam = null, orderParam = null;
     try { const p = new URLSearchParams(window.location.search); id = p.get('store'); tabParam = p.get('tab'); orderParam = p.get('order'); } catch { /* */ }
-    if (!id) return;
+    if (id) {
+      if (!stores.length) return; // wait for the store list before giving up on the deep-link
+      const store = stores.find((s) => s.id === id);
+      const resolvedTab = DEEP_LINK_TABS.has(tabParam) ? tabParam : 'catalog';
+      if (store) {
+        openStore(store, { tab: DEEP_LINK_TABS.has(tabParam) ? tabParam : undefined, focusOrder: orderParam || undefined });
+        // Canonicalize (keep the deep-link, normalize ?tab=) — replaceState, no new entry.
+        try { const u = new URL(window.location); u.searchParams.set('store', store.id); u.searchParams.set('tab', resolvedTab); if (orderParam) u.searchParams.set('order', orderParam); else u.searchParams.delete('order'); window.history.replaceState({}, '', u); } catch { /* */ }
+        _wsRoutePrev.current = store.id + '|' + resolvedTab + '|' + (orderParam || '');
+      } else {
+        try { const u = new URL(window.location); ['store', 'tab', 'order'].forEach((k) => u.searchParams.delete(k)); window.history.replaceState({}, '', u); } catch { /* */ }
+      }
+    }
     _deepLinked.current = true;
-    const store = stores.find((s) => s.id === id);
-    if (store) openStore(store, { tab: DEEP_LINK_TABS.has(tabParam) ? tabParam : undefined, focusOrder: orderParam || undefined });
-    try { const u = new URL(window.location); ['store', 'tab', 'order'].forEach((k) => u.searchParams.delete(k)); window.history.replaceState({}, '', u); } catch { /* */ }
   }, [stores, loading, openStore]);
+
+  // Keep ?store=/?tab=/?order= in step with the open store so it stays its own address and
+  // history entry: opening (or switching) a store pushes an entry; changing tab or closing
+  // the store replaces (a tab is a sub-view, not a new page). Gated on the boot above so it
+  // can't strip the initial deep-link before that opens it.
+  useEffect(() => {
+    if (typeof window === 'undefined' || !_deepLinked.current) return;
+    const key = sel ? (sel.id + '|' + (tab || 'catalog') + '|' + (focusOrderId || '')) : '';
+    if (_wsRoutePop.current) { _wsRoutePop.current = false; _wsRoutePrev.current = key; return; }
+    try {
+      const u = new URL(window.location);
+      if (sel) { u.searchParams.set('store', sel.id); u.searchParams.set('tab', tab || 'catalog'); if (focusOrderId) u.searchParams.set('order', focusOrderId); else u.searchParams.delete('order'); }
+      else { ['store', 'tab', 'order'].forEach((k) => u.searchParams.delete(k)); }
+      const target = u.pathname + u.search + u.hash;
+      if (target !== (window.location.pathname + window.location.search + window.location.hash)) {
+        const prev = _wsRoutePrev.current;
+        const prevStore = prev ? prev.split('|')[0] : '';
+        const opening = !prevStore && sel;                       // list -> store
+        const switching = prevStore && sel && prevStore !== sel.id; // store A -> store B
+        if (opening || switching) window.history.pushState({}, '', target);
+        else window.history.replaceState({}, '', target);         // tab change / close
+      }
+      _wsRoutePrev.current = key;
+    } catch { /* history unavailable — non-fatal */ }
+  }, [sel, tab, focusOrderId]);
+
+  // Back/Forward: reconcile the open store / tab / order FROM the URL. Flags _wsRoutePop so
+  // the sync effect above records the change instead of pushing it back onto the stack.
+  const _applyWsRoute = useCallback(() => {
+    try {
+      const p = new URLSearchParams(window.location.search);
+      const storeId = p.get('store') || null;
+      const tabParam = p.get('tab');
+      const orderParam = p.get('order') || null;
+      let changed = false;
+      if (storeId !== (sel ? sel.id : null)) {
+        if (storeId) { const store = stores.find((s) => s.id === storeId); if (store) { openStore(store, { tab: DEEP_LINK_TABS.has(tabParam) ? tabParam : undefined, focusOrder: orderParam || undefined }); changed = true; } }
+        else { setSel(null); setDetail(null); changed = true; }
+      } else if (sel && tabParam && DEEP_LINK_TABS.has(tabParam) && tabParam !== tab) { setTab(tabParam); changed = true; }
+      if (changed) _wsRoutePop.current = true;
+    } catch { /* noop */ }
+  }, [sel, tab, stores, openStore]);
+  useEffect(() => {
+    const onPop = () => _applyWsRoute();
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [_applyWsRoute]);
 
   // ── writes ──────────────────────────────────────────────────────────
   // When a store is launched, email the coach/director the polished launch email
