@@ -7287,6 +7287,44 @@ export default function App(){
     if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(repId)}
     return true;
   };
+  // Helper: is this message "for me" — tagged/authored, my dept, or on one of my orders.
+  // Powers the Messages page "My Messages" default view (deliberately broad: includes every
+  // thread on my orders). Notifications use the narrower _buildMyConvoKeys below instead.
+  const _isMsgForMe=(m)=>{
+    // Everyone sees messages they are tagged in or authored
+    if((m.tagged_members||[]).includes(cu.id))return true;
+    if(m.author_id===cu.id)return true;
+    // Warehouse: see @warehouse dept messages or personally tagged (already handled above)
+    if(cu.role==='warehouse')return m.dept==='warehouse';
+    // For roles that care about customer/rep assignment:
+    const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
+    const est2=ests.find(e=>e.id===m.entity_id);
+    const entity=so||est2;
+    if(!entity)return false;
+    const c=cust.find(x=>x.id===entity.customer_id);
+    const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
+    // Admin/GM: see their customer orders + tagged (tagged handled above)
+    if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return msgRepId===cu.id;
+    // Rep: see messages on their customer orders
+    if(cu.role==='rep')return msgRepId===cu.id;
+    // CSR: see messages on orders where their assigned rep is involved
+    if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
+    // Other roles: only tagged/authored (already handled above)
+    return false;
+  };
+  // Helper: does this message directly mention/tag the current user (also catches legacy
+  // text @mentions on messages saved without tagged_members).
+  const _msgMentionsMe=(m)=>{
+    if((m.tagged_members||[]).includes(cu.id))return true;
+    if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}
+    return false;
+  };
+  // Helper: conversation key — one thread per entity (Sales Order / Estimate / Job); matches
+  // the Messages page grouping so a reply in the order's Messages tab is the same conversation.
+  const _convoKeyOf=(m)=>(m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id);
+  // Helper: notification scope — a conversation "includes me" if I'm tagged/@mentioned in it or
+  // have posted in it. `myKeys` is the pre-built Set of such conversation keys for the message set.
+  const _buildMyConvoKeys=(list)=>{const s=new Set();for(const m of list){if(m.author_id===cu.id||_msgMentionsMe(m))s.add(_convoKeyOf(m))}return s};
 
   // DASHBOARD
   function rDash(){
@@ -28884,41 +28922,15 @@ export default function App(){
     const allM=mHideClosed?allMRaw.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cStatus=calcSOStatus(so);return!closedStatuses.has(cStatus)&&!closedStatuses.has(so.status)}):allMRaw;
     // Entity type filter
     const entityFiltered=mEntityF==='all'?allM:allM.filter(m=>(m.entity_type||'so')===mEntityF);
-    // Person-specific message filter: role-based filtering
-    const _isMsgForMe=(m)=>{
-      // Everyone sees messages they are tagged in or authored
-      if((m.tagged_members||[]).includes(cu.id))return true;
-      if(m.author_id===cu.id)return true;
-      // Warehouse: see @warehouse dept messages or personally tagged (already handled above)
-      if(cu.role==='warehouse')return m.dept==='warehouse';
-      // For roles that care about customer/rep assignment:
-      const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);
-      const est2=ests.find(e=>e.id===m.entity_id);
-      const entity=so||est2;
-      if(!entity)return false;
-      const c=cust.find(x=>x.id===entity.customer_id);
-      const msgRepId=c?.primary_rep_id||(so?.created_by)||(est2?.created_by);
-      // Admin/GM: see their customer orders + tagged (tagged handled above)
-      if(cu.role==='admin'||cu.role==='super_admin'||cu.role==='gm')return msgRepId===cu.id;
-      // Rep: see messages on their customer orders
-      if(cu.role==='rep')return msgRepId===cu.id;
-      // CSR: see messages on orders where their assigned rep is involved
-      if(cu.role==='csr'){const myReps=getRepsForCsr(cu.id);return myReps.includes(msgRepId)}
-      // Other roles: only tagged/authored (already handled above)
-      return false;
-    };
+    // Person-specific "for me" filter is the shared App-scope _isMsgForMe helper
+    // (same predicate powers the sidebar notification badge).
     const unread=entityFiltered.filter(m=>!(m.read_by||[]).includes(cu.id));
-    const _isMentioned=(m)=>{
-      if((m.tagged_members||[]).includes(cu.id))return true;
-      // Also check message text for @mentions (handles imported/legacy messages without tagged_members)
-      if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}
-      return false;
-    };
+    const _isMentioned=_msgMentionsMe;// shared App-scope helper (also drives the sidebar @-badge)
     const mentions=entityFiltered.filter(_isMentioned);
     // ── Conversation grouping: one thread per entity (Sales Order / Estimate / Job) ──
     // Every message that shares an entity (entity_id / so_id) is one conversation, so a
     // reply typed in the order's Messages tab shows up connected here — and vice-versa.
-    const groupKey=(m)=>(m.entity_type||'so')+'::'+(m.entity_id||m.so_id||m.id);
+    const groupKey=_convoKeyOf;// shared App-scope helper (also keys the sidebar notification badge)
     const convoMap=new Map();
     for(const m of entityFiltered){const k=groupKey(m);if(!convoMap.has(k))convoMap.set(k,[]);convoMap.get(k).push(m)}
     let convos=[...convoMap.values()].map(arr=>{
@@ -32225,9 +32237,12 @@ export default function App(){
         if(!canAccess(item.id))return null;
         const _closedSt=new Set(['complete','shipped','closed']);
         const _sidebarMsgs=item.id==='messages'?msgs.filter(m=>{const so=sos.find(s=>s.id===m.so_id||s.id===m.entity_id);if(!so&&(m.entity_type||'so')==='so')return true;if(!so)return true;const cSt=calcSOStatus(so);return!_closedSt.has(cSt)&&!_closedSt.has(so.status)}):[];
-        const ubadge=_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;
-        const _isSidebarMention=(m)=>{if((m.tagged_members||[]).includes(cu.id))return true;if(m.text){const t=m.text.toLowerCase();const fn=(cu.name||'').split(' ')[0].toLowerCase();const full=(cu.name||'').toLowerCase();if(fn&&(t.includes('@'+fn)||t.includes('@'+full)))return true}return false};
-        const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_isSidebarMention(m)).length:0;
+        // Notify only for conversations that include me — I'm tagged/@mentioned in the thread
+        // or have posted in it. NOT every unread message on every order I happen to own: a
+        // thread between two other people on my order isn't a notification for me.
+        const _myKeys=item.id==='messages'?_buildMyConvoKeys(_sidebarMsgs):null;
+        const ubadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_myKeys.has(_convoKeyOf(m))).length:0;
+        const mentionBadge=item.id==='messages'?_sidebarMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)&&_msgMentionsMe(m)).length:0;
         return<a key={item.id} href={item.external?item.href:_newTabHref({pg:item.id})} target={item.external?'_blank':undefined} rel={item.external?'noreferrer':undefined} className={`sidebar-link ${pg===item.id?'active':''}`} style={{textDecoration:'none',color:'inherit'}}
           onClick={ev=>{if(item.external)return;if(ev.ctrlKey||ev.metaKey||ev.shiftKey||ev.button===1)return;ev.preventDefault();if(dirtyRef.current&&!window.confirm('You have unsaved changes. Leave without saving?'))return;dirtyRef.current=false;setPg(item.id);setQ('');setSelC(null);setSelV(null);setEEst(null);setESO(null);setViewInvoice(null);setMobileMenuOpen(false)}}><Icon name={item.icon}/>{item.label}{item.id==='messages'&&mentionBadge>0&&<span style={{background:'#f59e0b',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>@{mentionBadge}</span>}{item.id==='messages'&&ubadge>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{ubadge}</span>}{item.id==='batch_pos'&&batchPOs.length>0&&<span style={{background:'#7c3aed',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{batchPOs.length}</span>}{item.id==='issues'&&openIssueCount>0&&<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:'auto'}}>{openIssueCount}</span>}</a>})}</nav>
       <div className="sidebar-user"><div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:600,color:'#e2e8f0'}}>{cu.name}</div><div>{cu.role}</div></div><div style={{display:'flex',gap:4}}><button onClick={()=>setMobileMode(true)} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Switch to mobile view">📱 Mobile</button><button onClick={handleLogout} style={{background:'none',border:'1px solid #475569',borderRadius:6,padding:'3px 8px',color:'#94a3b8',cursor:'pointer',fontSize:10}} title="Log out">↪ Out</button></div></div></div></div>
