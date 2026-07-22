@@ -1970,9 +1970,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const addSingle = useCallback(async ({ product, price, fundraise, image_url, takes_number, takes_name, name_upcharge, transfer_codes, num_transfer_sets, decorations, category, kit_name, required, options }) => {
     // Seed the global default add-on options (Store defaults) when none were set on the item.
     const opts = (Array.isArray(options) && options.length) ? options : (Array.isArray(wsSettings?.default_options) ? wsSettings.default_options : []);
-    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], decorations: decorations || [], category: category || null, kit_name: kit_name || null, required: !!required, options: opts, active: true, sort_order: (detail?.catalog?.length || 0) };
+    // Auto-group: if this store already carries the same style/family, attach this color to
+    // that existing card (shared variant_group_id) instead of dropping in a separate row — so
+    // adding colors one at a time (or via the AI builder / picker fallback, which add one
+    // product at a time) still lands as a single item with a color picker. styleKey() strips
+    // the trailing color token, so SanMar (same style name) and adidas "… ROYBLU/WHITE"
+    // siblings both match. The explicit "copy to a new item" action uses copyToNewItem, so it
+    // is unaffected and can still force a separate card.
+    const _cat = detail?.catalog || [];
+    const _stock = detail?.stockByWp || {};
+    const _styleOf = (nm) => styleKey(String(nm || ''));
+    const _newKey = _styleOf(product.name || product.sku);
+    const _twin = _newKey ? _cat
+      .filter((c) => c.kind !== 'bundle' && c.product_id !== product.id && _styleOf(_stock[c.id]?.name || c.display_name || c.sku) === _newKey)
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))[0] : null;
+    const _groupId = _twin ? (_twin.variant_group_id || _twin.id) : null;
+    const row = { store_id: sel.id, kind: 'single', product_id: product.id, sku: product.sku, retail_price: Number(price) || 0, fundraise_amount: Number(fundraise) || 0, image_url: image_url || null, takes_number: !!takes_number, takes_name: !!takes_name, name_upcharge: Number(name_upcharge) || 0, transfer_codes: transfer_codes || [], num_transfer_sets: takes_number ? (num_transfer_sets || []) : [], decorations: decorations || [], category: category || null, kit_name: kit_name || null, required: !!required, options: opts, active: true, sort_order: (detail?.catalog?.length || 0), ...(_groupId ? { variant_group_id: _groupId } : {}) };
     const { error } = await supabase.from('webstore_products').insert(row);
     if (error) { flash('Error: ' + error.message); return; }
+    // Promote a previously-standalone twin so both rows share its id as the group key.
+    if (_twin && !_twin.variant_group_id) await supabase.from('webstore_products').update({ variant_group_id: _twin.id }).eq('id', _twin.id);
     flash('Added ' + (product.name || product.sku)); loadDetail(sel);
   }, [sel, detail, wsSettings, flash, loadDetail]);
 
@@ -5756,6 +5773,24 @@ function CatalogTab({ tabsNode, catalog, bundleItems, stockByWp, costByPid = {},
               <datalist id="bulk-cat-list">{allCats.map((c) => <option key={c} value={c} />)}</datalist>
               <button style={{ ...gBtn('#2563eb'), opacity: !n ? 0.4 : 1 }} disabled={!n} onClick={async () => { await applyBulk({ category: (bulkCat || '').trim() || null }, true); setBulkCat(''); }}>Move</button>
             </div>
+            <span style={sep} />
+            <button style={{ ...gBtn('#7c3aed'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Combine the selected same-style / same-family colors into one item (one card with a color picker)" onClick={async () => {
+              const selReps = repsList.filter((r) => bulkSel.has(r.id));
+              if (!selReps.length || !onBulkUpdate) return;
+              const rows = selReps.flatMap((r) => colorsForRep(r.id));
+              const nameOf = (row) => stockByWp[row.id]?.name || row.display_name || row.sku || '';
+              const byStyle = new Map();
+              for (const row of rows) { const k = styleKey(nameOf(row)) || row.id; if (!byStyle.has(k)) byStyle.set(k, []); byStyle.get(k).push(row); }
+              const updates = [];
+              for (const grpRows of byStyle.values()) {
+                if (grpRows.length < 2) continue;
+                const primaryId = [...grpRows].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0))[0].id;
+                for (const row of grpRows) { if ((row.variant_group_id || null) !== primaryId) updates.push({ id: row.id, fields: { variant_group_id: primaryId } }); }
+              }
+              if (!updates.length) { window.alert('Nothing to merge — the selected items are already grouped, or none of them share a style.'); return; }
+              await onBulkUpdate(updates);
+              setBulkSel(new Set()); setMode(null);
+            }}>Merge</button>
             <span style={sep} />
             <button style={{ ...gBtn('#b45309'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Hide from the store (stays here as Archived)" onClick={() => applyBulk({ active: false }, true)}>Archive</button>
             <button style={{ ...gBtn('#15803d'), opacity: !n ? 0.4 : 1 }} disabled={!n} title="Show in the store again" onClick={() => applyBulk({ active: true }, true)}>Restore</button>
