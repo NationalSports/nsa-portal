@@ -166,6 +166,32 @@ If review pushes back, the fastest lever is adding more native surface
 
 ---
 
+## Catalogs & "Send photos to your rep"
+
+Two features live in the app top bar:
+
+- **Catalogs** — opens the brand catalog hub
+  (`nationalsportsapparel.com/catalog/`, built in the `nsa-website` repo) in the
+  in-app browser (`@capacitor/browser`). Pure link-out; no setup.
+- **📷 Send to rep** — the coach picks or takes photos; the app downscales them
+  in-browser and posts to `netlify/functions/coach-send-rep-image.js`, which
+  re-verifies the team's `alpha_tag`, resolves the team's assigned rep
+  (`customers.primary_rep_id → team_members.email`, falling back to
+  `COACH_REP_EMAIL` / a shared inbox), and emails the photos + note via Brevo.
+  Images are attached to the email, not stored — same pattern as
+  `catalog-order-request.js`. Uses the existing `BREVO_API_KEY`.
+
+The photo picker is a plain `<input type="file" accept="image/*">`, which
+WKWebView renders as the native Camera / Photo Library sheet — so it needs two
+usage strings in Xcode → target → **Info** (or `Info.plist`):
+
+```
+NSCameraUsageDescription       = Take photos to send to your NSA rep.
+NSPhotoLibraryUsageDescription = Attach photos from your library to send to your NSA rep.
+```
+
+Without these, iOS silently blocks the camera/library and the picker looks broken.
+
 ## Changing what the app loads
 
 `www/app.js` → `PORTAL_ORIGIN` (default `https://nsa-portal.netlify.app`).

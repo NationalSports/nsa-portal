@@ -206,6 +206,74 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ── SEND-TO-REP SHEET ──────────────────────────────────────────── */
+.rep-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(15, 26, 56, 0.55);
+  padding: 0;
+}
+.rep-modal[hidden] { display: none; }
+.rep-sheet {
+  width: 100%;
+  max-width: 520px;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px calc(var(--safe-bottom) + 18px);
+  box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.3);
+  animation: sheetUp 0.22s ease-out;
+}
+@keyframes sheetUp { from { transform: translateY(24px); opacity: 0.6; } to { transform: translateY(0); opacity: 1; } }
+.rep-title {
+  font-family: var(--font-display);
+  font-weight: 800;
+  font-size: 24px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--navy);
+}
+.rep-sub { font-size: 13.5px; color: var(--text-light); margin-top: 3px; }
+.rep-thumbs { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0 4px; }
+.rep-thumbs:empty { display: none; }
+.rep-thumb { width: 66px; height: 66px; border-radius: 10px; object-fit: cover; border: 1px solid var(--mid-gray); }
+.rep-note {
+  width: 100%;
+  margin-top: 12px;
+  font-family: var(--font-body);
+  font-size: 16px;
+  color: var(--text);
+  border: 2px solid var(--mid-gray);
+  border-radius: 11px;
+  padding: 12px;
+  resize: none;
+}
+.rep-note:focus { outline: none; border-color: var(--navy); }
+.rep-status { margin-top: 12px; font-size: 14px; font-weight: 600; }
+.rep-status.ok { color: var(--green); }
+.rep-status.err { color: var(--red); }
+.rep-actions { display: flex; gap: 10px; margin-top: 16px; }
+.rep-btn {
+  flex: 1;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  border: none;
+  border-radius: 11px;
+  padding: 14px 12px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.rep-btn-primary { background: var(--red); color: #fff; }
+.rep-btn-primary:active { background: var(--red-bright); }
+.rep-btn-primary:disabled { opacity: 0.5; }
+.rep-btn-ghost { flex: 0 0 auto; background: var(--light-gray); color: var(--navy); padding-left: 18px; padding-right: 18px; }
+
 @media (prefers-color-scheme: dark) {
   /* The entry card stays light for brand consistency; only the exposed
      safe-area backdrop shifts so it doesn't flash white in dark mode. */

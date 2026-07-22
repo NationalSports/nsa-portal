@@ -18,6 +18,11 @@
   // Origin that actually serves the coach portal. Matches the iframe src the
   // marketing site's /coach page uses (see nsa-website/public/coach.html).
   var PORTAL_ORIGIN = 'https://nsa-portal.netlify.app';
+  var MARKETING_ORIGIN = 'https://nationalsportsapparel.com';
+  // Brand catalog hub (nsa-website/public/catalog/index.html) and the endpoint
+  // that emails photos to the team's rep (netlify/functions/coach-send-rep-image.js).
+  var CATALOG_URL = MARKETING_ORIGIN + '/catalog/';
+  var SEND_IMAGE_URL = PORTAL_ORIGIN + '/.netlify/functions/coach-send-rep-image';
   // Custom URL scheme registered in the iOS app (Info.plist). Links like
   // nsateam://open?portal=<tag> open the app directly. Universal Links on
   // nationalsportsapparel.com/coach?portal=<tag> are handled the same way.
@@ -178,6 +183,119 @@
   elSwitch.addEventListener('click', function () {
     prefGet(STORE_KEY).then(function (saved) { showEntry(saved || currentTag); });
   });
+
+  // ── Catalogs ───────────────────────────────────────────────────────
+  var elCatalogs = document.getElementById('catalogsBtn');
+  function openCatalogs() {
+    var Browser = plugin('Browser');
+    if (Browser && Browser.open) {
+      Browser.open({ url: CATALOG_URL, presentationStyle: 'popover' }).catch(function () { window.open(CATALOG_URL, '_blank'); });
+    } else {
+      window.open(CATALOG_URL, '_blank');
+    }
+  }
+  if (elCatalogs) elCatalogs.addEventListener('click', openCatalogs);
+
+  // ── Send photos to rep ─────────────────────────────────────────────
+  var elPhoto = document.getElementById('photoBtn');
+  var elRepFile = document.getElementById('repFile');
+  var elRepModal = document.getElementById('repModal');
+  var elRepThumbs = document.getElementById('repThumbs');
+  var elRepNote = document.getElementById('repNote');
+  var elRepSub = document.getElementById('repSheetSub');
+  var elRepStatus = document.getElementById('repStatus');
+  var elRepCancel = document.getElementById('repCancel');
+  var elRepMore = document.getElementById('repMore');
+  var elRepSend = document.getElementById('repSend');
+  var MAX_PHOTOS = 6;
+  var repImages = []; // { name, content(base64), dataUrl }
+
+  // Shrink a picked photo in-browser (like catalog-order-request.js) so the
+  // payload stays small: longest side ≤ 1600px, JPEG q0.82.
+  function downscaleImage(file, maxDim, quality) {
+    return new Promise(function (resolve) {
+      try {
+        var url = URL.createObjectURL(file);
+        var img = new Image();
+        img.onload = function () {
+          URL.revokeObjectURL(url);
+          var w = img.width || 1, h = img.height || 1;
+          var scale = Math.min(1, maxDim / Math.max(w, h));
+          var cw = Math.max(1, Math.round(w * scale)), ch = Math.max(1, Math.round(h * scale));
+          var canvas = document.createElement('canvas');
+          canvas.width = cw; canvas.height = ch;
+          canvas.getContext('2d').drawImage(img, 0, 0, cw, ch);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        };
+        img.onerror = function () { URL.revokeObjectURL(url); resolve(null); };
+        img.src = url;
+      } catch (e) { resolve(null); }
+    });
+  }
+  function updateRepSub() {
+    elRepSub.textContent = repImages.length
+      ? repImages.length + ' photo' + (repImages.length > 1 ? 's' : '') + ' ready' + (repImages.length >= MAX_PHOTOS ? ' (max)' : '')
+      : 'No photos selected';
+    elRepSend.disabled = repImages.length === 0;
+  }
+  function addFiles(fileList) {
+    var files = Array.prototype.slice.call(fileList || []).filter(function (f) { return /^image\//.test(f.type); });
+    files = files.slice(0, Math.max(0, MAX_PHOTOS - repImages.length));
+    if (!files.length) { if (repImages.length) elRepModal.hidden = false; return; }
+    var jobs = files.map(function (f) {
+      return downscaleImage(f, 1600, 0.82).then(function (dataUrl) {
+        if (!dataUrl) return;
+        repImages.push({
+          name: ((f.name || 'photo').replace(/[^\w.\- ]+/g, '').slice(0, 60) || 'photo') + (/\.(jpe?g|png|heic|webp)$/i.test(f.name || '') ? '' : '.jpg'),
+          content: dataUrl.split(',')[1],
+          dataUrl: dataUrl,
+        });
+        var im = document.createElement('img');
+        im.className = 'rep-thumb'; im.src = dataUrl; im.alt = '';
+        elRepThumbs.appendChild(im);
+      });
+    });
+    Promise.all(jobs).then(function () {
+      updateRepSub();
+      elRepStatus.hidden = true; elRepStatus.textContent = '';
+      elRepModal.hidden = false;
+    });
+  }
+  function resetRepSheet() {
+    repImages = []; elRepThumbs.innerHTML = ''; elRepNote.value = '';
+    elRepStatus.hidden = true; elRepStatus.textContent = ''; updateRepSub();
+  }
+  function sendRepImages() {
+    if (!repImages.length || !currentTag) return;
+    elRepSend.disabled = true;
+    elRepStatus.hidden = false; elRepStatus.className = 'rep-status'; elRepStatus.textContent = 'Sending…';
+    fetch(SEND_IMAGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        alpha_tag: currentTag,
+        note: (elRepNote.value || '').slice(0, 1200),
+        images: repImages.map(function (i) { return { name: i.name, content: i.content }; }),
+      }),
+    })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
+      .then(function (res) {
+        if (!res || !res.ok) throw new Error((res && res.error) || 'send failed');
+        elRepStatus.className = 'rep-status ok'; elRepStatus.textContent = 'Sent to your rep ✓';
+        setTimeout(function () { elRepModal.hidden = true; resetRepSheet(); }, 1200);
+      })
+      .catch(function () {
+        elRepStatus.className = 'rep-status err';
+        elRepStatus.textContent = 'Couldn’t send — check your connection and try again.';
+        elRepSend.disabled = false;
+      });
+  }
+  function pickPhotos() { if (elRepFile) { elRepFile.value = ''; elRepFile.click(); } }
+  if (elPhoto) elPhoto.addEventListener('click', pickPhotos);
+  if (elRepMore) elRepMore.addEventListener('click', pickPhotos);
+  if (elRepFile) elRepFile.addEventListener('change', function (e) { addFiles(e.target.files); });
+  if (elRepCancel) elRepCancel.addEventListener('click', function () { elRepModal.hidden = true; resetRepSheet(); });
+  if (elRepSend) elRepSend.addEventListener('click', sendRepImages);
 
   // ── Deep links ────────────────────────────────────────────────────
   function handleUrl(url) {

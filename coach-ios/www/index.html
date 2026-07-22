@@ -55,8 +55,10 @@
     <header class="topbar">
       <div class="topbar-team" id="topbarTeam">Team Portal</div>
       <div class="topbar-actions">
+        <button id="catalogsBtn" class="topbar-btn topbar-btn-text" type="button">Catalogs</button>
+        <button id="photoBtn" class="topbar-btn" type="button" aria-label="Send a photo to your rep" title="Send a photo to your rep">&#128247;</button>
         <button id="refreshBtn" class="topbar-btn" type="button" aria-label="Refresh">&#8635;</button>
-        <button id="switchBtn" class="topbar-btn topbar-btn-text" type="button">Switch team</button>
+        <button id="switchBtn" class="topbar-btn" type="button" aria-label="Switch team" title="Switch team">&#8646;</button>
       </div>
     </header>
     <div class="frame-wrap">
@@ -69,6 +71,25 @@
         referrerpolicy="no-referrer-when-downgrade"></iframe>
     </div>
   </section>
+
+  <!-- ── SEND-TO-REP SHEET ──────────────────────────────────────────────
+       Coach picks/takes photos (logo, a design they like, a sizing question)
+       and sends them straight to their NSA rep. -->
+  <input id="repFile" type="file" accept="image/*" multiple hidden />
+  <div id="repModal" class="rep-modal" hidden>
+    <div class="rep-sheet">
+      <h3 class="rep-title">Send to your rep</h3>
+      <p class="rep-sub" id="repSheetSub">No photos selected</p>
+      <div id="repThumbs" class="rep-thumbs"></div>
+      <textarea id="repNote" class="rep-note" rows="3" placeholder="Add a note (optional) — e.g. &quot;Can we get this in navy?&quot;"></textarea>
+      <div id="repStatus" class="rep-status" hidden></div>
+      <div class="rep-actions">
+        <button id="repCancel" class="rep-btn rep-btn-ghost" type="button">Cancel</button>
+        <button id="repMore" class="rep-btn rep-btn-ghost" type="button">Add more</button>
+        <button id="repSend" class="rep-btn rep-btn-primary" type="button">Send to rep</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>
