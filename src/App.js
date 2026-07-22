@@ -420,6 +420,7 @@ import {
   _dbDeleteSO,
   _dbDeleteInvoice,
   _dbDeleteHistInvoice,
+  _dbDeleteOmgStore,
   _dbSavingCount,
   _dbLastSaveAt,
   _dbSavingGuard,
@@ -4456,7 +4457,15 @@ export default function App(){
   const[aiInvPoWizOpen,setAiInvPoWizOpen]=useState(false);
   const[poF,setPOF]=useState({status:'all',vendor:'all',rep:'all',search:'',sort:'date_desc',booking:false});
   // OMG Team Stores
-  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);const[omgFocusOrder,setOmgFocusOrder]=useState(null);const[wsoCtx,setWsoCtx]=useState({});const[omgItemBuyers,setOmgItemBuyers]=useState({});const[omgExpandedProd,setOmgExpandedProd]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
+  const[omgFilter,setOmgFilter]=useState(()=>{try{const u=JSON.parse(localStorage.getItem('nsa_user')||'null');return{rep:u?.id||'all',status:'all',search:'',dateRange:'30d'}}catch{return{rep:'all',status:'all',search:'',dateRange:'30d'}}});const[omgSel,setOmgSel]=useState(null);
+  // Remove a brought-in OMG store that never became a Sales Order — pulls it out of this
+  // section entirely (omg_store_products cascades in the DB, so only the store row needs deleting).
+  const deleteOmgStore=(s)=>{
+    if(!window.confirm(`Delete "${s.store_name}"${s._omg_sale_code?` (${s._omg_sale_code})`:''}? This removes it from OMG Team Stores permanently.`))return;
+    setOmgStores(p=>p.filter(x=>x.id!==s.id));
+    if(omgSel?.id===s.id)setOmgSel(null);
+    _dbDeleteOmgStore(s.id);
+  };const[omgFocusOrder,setOmgFocusOrder]=useState(null);const[wsoCtx,setWsoCtx]=useState({});const[omgItemBuyers,setOmgItemBuyers]=useState({});const[omgExpandedProd,setOmgExpandedProd]=useState(null);const[omgDetailLoading,setOmgDetailLoading]=useState(false);const[omgCustEdit,setOmgCustEdit]=useState(null);const[omgBulkSel,setOmgBulkSel]=useState(()=>new Set());const[omgBulkArt,setOmgBulkArt]=useState('');
   // Order counts keyed by OMG sale code — loaded from webstore_orders when the OMG page is visited.
   // This picks up orders that were imported via the player report upload in the Parent Order Portal.
   const[omgWsoCounts,setOmgWsoCounts]=useState({});
@@ -16283,6 +16292,9 @@ export default function App(){
             </div>
             <div style={{flex:'0 0 100px',textAlign:'right',fontSize:11}}>
               {linkedSO?<span style={{color:'#166534',fontWeight:700,background:'#dcfce7',padding:'3px 7px',borderRadius:4}}>✅ {linkedSO.id}</span>:s.status==='closed'?<span style={{color:'#92400e',fontWeight:700,background:'#fef3c7',padding:'3px 7px',borderRadius:4}}>⚠️ Pull</span>:null}
+            </div>
+            <div style={{flex:'0 0 30px',textAlign:'right'}}>
+              <button type="button" title="Delete this store" onClick={e=>{e.stopPropagation();deleteOmgStore(s)}} style={{background:'none',border:'none',color:'#94a3b8',cursor:'pointer',fontSize:14,padding:4}}>🗑</button>
             </div>
           </div>})}
         {filtered.length===0&&<div style={{padding:32,textAlign:'center',color:'#94a3b8',fontSize:13}}>No stores match the current filters</div>}
