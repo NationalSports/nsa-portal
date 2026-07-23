@@ -299,3 +299,64 @@ describe('garmentsNeedingMockCheck', () => {
     expect(garmentsNeedingMockCheck(job, so)).toEqual([]);
   });
 });
+
+// SO-1023 repro: a legacy single-design art whose ONE approved mock lives in the shared
+// mockup_files bucket (no per-item mocks) kept showing "Check Mock" once the SAME design was
+// later mocked per-garment on a sibling order — a false nag normal approval could never clear,
+// because there was nothing per-item to write. The general/proof fallback (which the approval
+// gate and every display surface already honor) must satisfy the garment here too.
+describe('garmentsNeedingMockCheck — legacy general mock / sew-out proof is not "needs check"', () => {
+  const legacyCase = (art) => {
+    const so = {
+      items: [{ sku: 'JP4674', color: 'Black', decorations: [{ kind: 'art', art_file_id: art.id }] }],
+      art_files: [art],
+    };
+    const job = { _art_ids: [art.id], art_file_id: art.id, items: [{ item_idx: 0, sku: 'JP4674', color: 'Black' }] };
+    return { job, so };
+  };
+  const priorSameDesign = {
+    '3.5in s crest 2 pallet||screen_print': [{ from: 'JP4674|Black', files: [{ url: 'http://x/prior.png' }] }],
+  };
+
+  test('general mockup_files bucket satisfies the garment even when the same design was mocked per-garment elsewhere', () => {
+    const art = { id: 'af-legacy', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [{ url: 'http://x/crest.png', name: 'crest.png' }] };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
+  });
+
+  test('a displayable sew-out proof in prod_files satisfies the garment too', () => {
+    const art = { id: 'af-proof', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [], prod_files: [{ url: 'http://x/sewout.pdf' }] };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toEqual([]);
+  });
+
+  test('a dismissed proof does NOT satisfy — the garment still needs its mock checked', () => {
+    // proof_dismissed makes the stand-in stop counting (matches skusMissingMockups & the display),
+    // so the reused-art check must surface again.
+    const art = { id: 'af-dismissed', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [{ url: 'http://x/crest.png' }], proof_dismissed: true };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toHaveLength(1);
+  });
+
+  test('an EMPTY reused clone (no mock of any kind) still flags so the rep can pick a prior mock', () => {
+    const art = { id: 'af-empty', name: '3.5in S Crest 2 Pallet', deco_type: 'screen_print', item_mockups: {}, mockup_files: [] };
+    const { job, so } = legacyCase(art);
+    expect(garmentsNeedingMockCheck(job, so, priorSameDesign)).toHaveLength(1);
+  });
+
+  test('mixed art (per-item mocks for siblings + a stray general bucket) still flags the un-mocked garment', () => {
+    // FRIARS repro: JN0400/KV2196 have per-item mocks, JX4452 has none. Because the art carries
+    // per-item mocks, the general bucket no longer stands in (wrong-colorway class) — so JX4452 is
+    // genuinely missing and must be checked.
+    const art = {
+      id: 'af-mixed', name: 'FRIARS', deco_type: 'screen_print',
+      item_mockups: { 'JN0400|Black': [{ url: 'http://x/jn.png' }], 'KV2196|Black': [{ url: 'http://x/kv.png' }] },
+      mockup_files: [{ url: 'http://x/general.png' }],
+    };
+    const so = { items: [{ sku: 'JX4452', color: 'Black,White', decorations: [{ kind: 'art', art_file_id: 'af-mixed' }] }], art_files: [art] };
+    const job = { _art_ids: ['af-mixed'], art_file_id: 'af-mixed', items: [{ item_idx: 0, sku: 'JX4452', color: 'Black,White' }] };
+    const res = garmentsNeedingMockCheck(job, so);
+    expect(res).toHaveLength(1);
+    expect(res[0].sku).toBe('JX4452');
+  });
+});
