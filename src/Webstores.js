@@ -1659,11 +1659,26 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   const _omgResolveOne = useCallback(async (p, vendList, momentecDiscount) => {
     const skuClean = (p.sku || '').trim().toUpperCase();
     if (!skuClean) return { ...p, sku: skuClean, product_id: null, vendor_id: null, cost: 0, _cost_source: '' };
-    let product_id = null, vendor_id = null, cost = 0, _cost_source = '';
+    let product_id = null, vendor_id = null, cost = 0, _cost_source = '', resolvedSku = skuClean;
     const { data: rows } = await supabase.from('products').select('id,sku,brand,vendor_id,nsa_cost').ilike('sku', skuClean).limit(1);
-    const catMatch = rows && rows[0];
+    let catMatch = rows && rows[0];
+    // OMG reports carry a STYLE number ("ST420") + a color name, but the catalog and the live
+    // stock table (inventory_unified) are keyed per color ("ST420-TrueRoyal"). A bare style
+    // matches neither, which made every SanMar/S&S item read "out of stock" and "not linked".
+    // Resolve this row's color variant and adopt its exact SKU so cost, the catalog link, AND
+    // stock all land on the right row.
+    if (!catMatch && p.color) {
+      const { data: variants } = await supabase.from('products').select('id,sku,brand,vendor_id,nsa_cost,color').ilike('sku', skuClean + '-%').limit(500);
+      const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const want = norm(p.color);
+      const hits = (variants || []).filter((v) => norm(v.color) === want || norm(String(v.sku).slice(skuClean.length + 1)) === want);
+      // Prefer the canonical CamelCase SKU (what inventory is keyed by) over any all-uppercase
+      // duplicate left behind by an older manual add.
+      catMatch = hits.find((v) => /[a-z]/.test(v.sku)) || hits[0] || null;
+    }
     if (catMatch) {
       product_id = catMatch.id;
+      resolvedSku = catMatch.sku || skuClean;
       if (catMatch.vendor_id) vendor_id = catMatch.vendor_id;
       const catCost = parseFloat(catMatch.nsa_cost) || 0;
       if (catCost > 0) { cost = catCost; _cost_source = 'catalog'; }
@@ -1685,7 +1700,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
         if (vid) vendor_id = vid;
       }
     }
-    return { ...p, sku: skuClean, product_id, vendor_id, cost, _cost_source };
+    return { ...p, sku: resolvedSku, product_id, vendor_id, cost, _cost_source };
   }, []);
 
   // Live availability for the OMG review rows, keyed by product_id || 'omgtmp:'+index to
