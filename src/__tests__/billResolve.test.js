@@ -1113,6 +1113,30 @@ describe('skuNumBase (Agron suffix)', () => {
   });
 });
 
+// ── detailLinesReconcile — AI-read vendor detail lines vs the SI summary total (owner 2026-07-23) ──
+describe('detailLinesReconcile (trust AI detail lines only when they sum to the SI total)', () => {
+  const { detailLinesReconcile } = require('../billResolve');
+  const lines = (...exts) => exts.map(e => ({ extension: e }));
+  it('reconciles when the AI lines sum to the summary merch total', () => {
+    expect(detailLinesReconcile(lines(414.57, 197.34), 611.91).reconciled).toBe(true);
+    expect(detailLinesReconcile(lines(1679.01), 1679.01).reconciled).toBe(true);
+    expect(detailLinesReconcile(lines(100, 100.5), 200).reconciled).toBe(true); // sub-$2 rounding ok
+  });
+  it('does NOT reconcile a real disagreement (flag for a human)', () => {
+    expect(detailLinesReconcile(lines(500), 611.91).reconciled).toBe(false);
+    expect(detailLinesReconcile(lines(700, 200), 611.91).reconciled).toBe(false);
+  });
+  it('never reconciles when a side is missing/zero', () => {
+    expect(detailLinesReconcile([], 611.91).reconciled).toBe(false);
+    expect(detailLinesReconcile(lines(611.91), 0).reconciled).toBe(false);
+    expect(detailLinesReconcile(null, 100).reconciled).toBe(false);
+  });
+  it('reports the sums for the warning message', () => {
+    const r = detailLinesReconcile(lines(100, 50), 160);
+    expect(r.lineSum).toBe(150); expect(r.merchTotal).toBe(160); expect(r.diff).toBe(-10);
+  });
+});
+
 // ── pdfCrossCheckConflict — silent PDF reinforcement of an EDI-pushed bill (owner 2026-07-22) ──
 describe('pdfCrossCheckConflict (PDF reinforces EDI, speak up only on disagreement)', () => {
   const { pdfCrossCheckConflict } = require('../billResolve');
