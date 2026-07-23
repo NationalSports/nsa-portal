@@ -407,6 +407,12 @@ export const displayableProofFile = (f) =>
 // Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
 // general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
 export const artProofFallback = (a) => {
+  // A rep/artist can explicitly clear the sew-out proof from a garment slot when it isn't a
+  // usable stand-in (wrong colorway, needs a real mockup). proof_dismissed makes the prod-file
+  // proof stop standing in for a mockup on every surface — this display fallback AND the
+  // approval gate (skusMissingMockups) — so the slot reverts to an empty upload zone. It's a
+  // non-destructive display flag: the prod files themselves (incl. .dst/.emb machine files) stay.
+  if (a?.proof_dismissed) return [];
   const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
   if (hasPerItem) return [];
   const gen = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
@@ -516,6 +522,10 @@ export const skusMissingMockups = (job, so) => {
     // satisfies the gate the same way — matches the prod-files display fallback in
     // OrderEditor/CoachPortal. Non-displayable production files (.dst/.emb/.ai) never count.
     const prodProof = artFiles.flatMap(a => {
+      // Respect an explicit proof dismissal (see artProofFallback): a cleared proof no longer
+      // satisfies the gate, so approval requires a real mockup — keeping the gate consistent with
+      // what every display surface now shows for this art (an empty upload slot).
+      if (a?.proof_dismissed) return [];
       const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
       if (hasPerItem) return [];
       return safeArr(a?.prod_files).filter(displayableProofFile);
