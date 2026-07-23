@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -24731,11 +24731,19 @@ export default function App(){
       const coreOf=s=>{const m=stripPO(s).match(/^([0-9]{3,})(?![0-9])/);return m?m[1]:null};
       const core=(opts?.noCoreTier||/^P[O0]\d/i.test((bill.po_number||'').trim()))?null:coreOf(poLc);
       if(core){
+        // Vendor gate on the number-only tier (owner 2026-07-23: an S&S bill "8574CUMBBCK" got
+        // number-matched onto Adidas order "PO8574SBBV sp" — a bare-number coincidence across a
+        // DIFFERENT supplier). A mangled-tag typo (the class this tier recovers) comes from the
+        // SAME vendor that filled the order, so a KNOWN-incompatible vendor means the number
+        // collision is a coincidence, not a typo — drop it. Unknown/placeholder vendors never
+        // block (labels vary), consistent with the proposal engine's vendor gate.
+        const _billVend=String(bill.vendor||bill.supplier||'').trim();
+        const _vendOk=(hv)=>!_billVend||!hv||vendorsCompatible(_billVend,String(hv));
         const hits=[];
-        submittedBatches.forEach(sb=>{if(sb.po_number&&coreOf(sb.po_number.toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'batch',canon:sb.po_number,m:sb})});
-        invPOs.forEach(p=>{if(p.po_number&&coreOf(p.po_number.toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'inv_po',canon:p.po_number,m:p})});
+        submittedBatches.forEach(sb=>{if(sb.po_number&&coreOf(sb.po_number.toLowerCase().replace(/\s+/g,''))===core&&_vendOk(sb.vendor_name))hits.push({kind:'batch',canon:sb.po_number,m:sb})});
+        invPOs.forEach(p=>{if(p.po_number&&coreOf(p.po_number.toLowerCase().replace(/\s+/g,''))===core&&_vendOk(p.vendor||p.vendor_name))hits.push({kind:'inv_po',canon:p.po_number,m:p})});
         for(const so of sos)for(const it of (so.items||[]))for(const po of (it.po_lines||[])){
-          if(po.po_id&&coreOf((po.po_id||'').toLowerCase().replace(/\s+/g,''))===core)hits.push({kind:'so_po',canon:po.po_id,m:{so_id:so.id,po_id:po.po_id,po,item:it,so}});
+          if(po.po_id&&coreOf((po.po_id||'').toLowerCase().replace(/\s+/g,''))===core&&_vendOk(po.vendor))hits.push({kind:'so_po',canon:po.po_id,m:{so_id:so.id,po_id:po.po_id,po,item:it,so}});
         }
         // Distinct OWNERS, not just distinct PO strings: several size lines of the same PO on the
         // same SO are one candidate, but the same po_id text on two different SOs (hand-typed —
