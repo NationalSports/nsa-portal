@@ -109,6 +109,62 @@ describe('parseNetSuitePdf', () => {
   });
 });
 
+describe('parseNetSuitePdf — negative-quantity return lines and signed totals (2026-07-18 fix)', () => {
+  test('a negative-quantity return line is captured as its own line item (qty -2, negative amount), not swallowed into the prior item description', () => {
+    const r = parseNetSuitePdf(soText([
+      '12\tJP4674 : JP4674-S\t$20.00\t$240.00',
+      'Adidas Creator Tee - Black - S',
+      '-2\tKJ3537-9\t$61.75\t-$123.50',
+      'Adidas Adizero Impact 3.0 BSB White/Navy/Navy - 9',
+    ]), 'so', []);
+    const items = r.lineItems.filter(i => !i.isDecoration);
+    expect(items).toHaveLength(2);
+
+    const original = items.find(i => i.sku === 'JP4674');
+    expect(original).toBeTruthy();
+    expect(original.sizes).toEqual({ S: 12 }); // untouched by the return line
+    expect(original.description).not.toMatch(/KJ3537|Adizero/); // not swallowed into this item's description
+
+    const ret = items.find(i => i.sku === 'KJ3537');
+    expect(ret).toBeTruthy();
+    expect(ret.quantity).toBe(-2);
+    expect(ret.sizes).toEqual({ '9': -2 });
+    expect(ret.amount).toBeCloseTo(-123.5);
+  });
+
+  test('Subtotal/Total lines keep their sign whether parenthesized or minus-prefixed', () => {
+    const text = [
+      'National Sports Apparel LLC',
+      'Sales Order',
+      '#SO135636',
+      '5/12/2026',
+      'Bill To\tShip To',
+      'Servite Baseball',
+      'Quantity\tItem\tRate\tAmount',
+      '-2\tJP4674 : JP4674-S\t$20.00\t-$40.00',
+      'Adidas Creator Tee - Black - S',
+      'Subtotal\t($40.00)',
+      'Total\t-$40.00',
+    ].join('\n');
+    const r = parseNetSuitePdf(text, 'so', []);
+    expect(r.subtotal).toBe(-40);
+    expect(r.total).toBe(-40);
+  });
+
+  test('a normal positive doc still parses identically (no sign regression)', () => {
+    const r = parseNetSuitePdf(soText([
+      '12\tJP4674 : JP4674-S\t$20.00\t$240.00',
+      'Adidas Creator Tee - Black - S',
+    ]), 'so', []);
+    const items = r.lineItems.filter(i => !i.isDecoration);
+    expect(items).toHaveLength(1);
+    expect(items[0].quantity).toBe(12);
+    expect(items[0].amount).toBe(240);
+    expect(r.subtotal).toBe(1000);
+    expect(r.total).toBe(1077.5);
+  });
+});
+
 describe('parseNetSuitePdfMulti', () => {
   test('splits pages by document number', () => {
     const p1 = soText(['12\tJP4674-S\t$20.00\t$240.00', 'Adidas Creator Tee - Black - S']);

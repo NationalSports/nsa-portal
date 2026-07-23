@@ -34,12 +34,9 @@ export function normalizeUniformDiscount(value) {
 
 export function customerUniformDiscount(customer) {
   if (!customer || typeof customer !== 'object') return 0;
-  return normalizeUniformDiscount(
-    customer.uniform_discount_percent
-      ?? customer.custom_uniform_discount_percent
-      ?? customer.coach_uniform_discount_percent
-      ?? 0,
-  );
+  // Only customers.uniform_discount_percent exists in the schema; the server
+  // (_uniformPricing.js) reads the same single column, so no other fallbacks.
+  return normalizeUniformDiscount(customer.uniform_discount_percent ?? 0);
 }
 
 export function calculateUniformPrice({

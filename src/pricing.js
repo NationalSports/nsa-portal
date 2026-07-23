@@ -3,28 +3,24 @@ import { EXTRA_SIZES, SZ_NORM, CATEGORIES } from './constants';
 import { safeNum, safeJobs } from './safeHelpers';
 // Outsourced gate — same switch Costs tab / syncJobs use. Keep cost walks from counting
 // in-house decoCostAt on decorations already covered by a deco PO (SO-1397 double-count).
-import { isDecoOutsourced, outsourcedDecoTypes } from './businessLogic';
+import { isDecoOutsourced, outsourcedDecoTypes, decoConcreteType, decoIsOutsourced, garmentNeedsUnderbase } from './businessLogic';
+// Default deco pricing tables + pure calculators live in src/lib/decoPricing.js (CJS,
+// shared verbatim with netlify/functions/quickorder-quote.js — same dual-consumer
+// pattern as src/lib/opsRecap.js). This file layers the localStorage nsa_settings
+// overrides on top and re-exports the same public API it always had, so every
+// importer (App.js, OrderEditor.js, ...) is unchanged.
+import * as DECO from './lib/decoPricing';
 
 // ── Utility helpers ──
-export const rQ=v=>Math.round(v*4)/4;
-export const rT=v=>Math.round(v*10)/10;
+export const rQ=DECO.rQ;
+export const rT=DECO.rT;
 
-// ── Adidas/UA/NB tier discount off retail ──
-// Standard schedule is A=40% / B=35% / C=30% off. Items imported from Lockerroom
-// (products.pricing_group === 'lockerroom') use a reduced schedule: A=35% / B=30% / C=25%.
-// Footwear discounts 5% less than apparel at each tier (A=35% / B=30% / C=25%).
-const _TIER_STD={A:0.40,B:0.35,C:0.30};
-const _TIER_LOCKERROOM={A:0.35,B:0.30,C:0.25};
-const _TIER_FOOTWEAR={A:0.35,B:0.30,C:0.25};
-export const auTierDisc=(tier,pricingGroup,category)=>{const tbl=category==='Footwear'?_TIER_FOOTWEAR:(pricingGroup==='lockerroom'?_TIER_LOCKERROOM:_TIER_STD);return tbl[tier]!=null?tbl[tier]:tbl.B;};
+// ── Adidas/UA/NB tier discount off retail ── (see decoPricing.js for schedules)
+export const auTierDisc=DECO.auTierDisc;
 // ── Brands that auto-calc cost off retail (MSRP) instead of cost×markup ──
-// Agron is an Adidas bag distributor — its product ships on the Adidas contract, so it
-// prices identically to Adidas (cost = retail × 0.5 × 0.75).
-export const isAdidasPriced=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='agron'};
-export const isAU=b=>{const l=(b||'').toLowerCase();return l==='adidas'||l==='under armour'||l==='new balance'||l==='agron'};
-// Auto cost from retail. Apparel/OSFA: Adidas/Agron ×0.5×0.75 (0.375), UA/NB ×0.5×0.85 (0.425).
-// Footwear: Adidas/Agron ×0.55×0.75 (0.4125), UA/NB ×0.55×0.85 (0.4675).
-export const auCostMult=(brand,isFootwear)=>{const adi=isAdidasPriced(brand);return isFootwear?(adi?0.55*0.75:0.55*0.85):(adi?0.375:0.425)};
+export const isAdidasPriced=DECO.isAdidasPriced;
+export const isAU=DECO.isAU;
+export const auCostMult=DECO.auCostMult;
 // Gender/audience qualifiers that OMG (and some vendors) prepend to a size
 // label — e.g. "Mens S", "Women's Large", "Youth M". The size itself is the
 // same garment size, so strip the qualifier and normalize the bare size.
@@ -35,7 +31,7 @@ export const auCostMult=(brand,isFootwear)=>{const adi=isAdidasPriced(brand);ret
 const _ADULT_QUAL=/^(?:MEN|MENS|MEN'S|WOMEN|WOMENS|WOMEN'S|LADIES|LADIES'|LADY|ADULT|UNISEX)\s+(.+)$/;
 const _YOUTH_QUAL=/^(?:YOUTH|YTH|BOYS|BOY'S|GIRLS|GIRL'S|JUNIOR|JUNIORS|JR)\s+(.+)$/;
 const _YOUTH_SZ={'XS':'YXS','S':'YS','SMALL':'YS','SM':'YS','M':'YM','MEDIUM':'YM','MD':'YM','L':'YL','LARGE':'YL','LG':'YL','XL':'YXL','XLARGE':'YXL','X-LARGE':'YXL'};
-export const normSzName=s=>{if(!s)return s;const u=s.toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
+export const normSzName=s=>{if(!s)return s;const u=String(s).toUpperCase().trim();if(SZ_NORM[u])return SZ_NORM[u];let m=u.match(_ADULT_QUAL);if(m){const r=m[1].trim();return SZ_NORM[r]||r}m=u.match(_YOUTH_QUAL);if(m){const r=m[1].trim();return _YOUTH_SZ[r]||SZ_NORM[r]||r}return u};
 export const showSz=(s,inv)=>{const c=['S','M','L','XL','2XL'];if(c.includes(s))return true;return!EXTRA_SIZES.includes(s)||(inv||0)>0};
 
 // ── Deco vendor price lookup ──
@@ -70,13 +66,15 @@ export const _decoVendorPrice=(pricingList,vendorId,decoType,params={})=>{
 };
 
 // ── Pricing data (mutable, overridden from localStorage) ──
-// _v bumps when default values change so cached localStorage from older versions is ignored.
-// _v 3: bracket-0 3-color raised 70→80 and bracket 0 now BILLS as an all-in flat charge (see spFlatShare).
-export let SP={_v:3,bk:[{min:1,max:11},{min:12,max:23},{min:24,max:35},{min:36,max:47},{min:48,max:71},{min:72,max:107},{min:108,max:143},{min:144,max:215},{min:216,max:499},{min:500,max:99999}],pr:{0:[50,60,80,null,null],1:[3.33,4.33,5.33,6,null],2:[2.33,3,4,4.67,5.33],3:[2.13,2.83,3.17,4,5],4:[1.97,2.57,2.83,3.33,4],5:[1.83,2.33,2.63,3,3.5],6:[1.67,2.13,2.47,2.67,3.17],7:[1.5,2,2.33,2.5,2.83],8:[1.4,1.9,2.07,2.2,2.67],9:[1.27,1.83,1.93,2.07,2.5]},mk:1.5,ub:0.15};
-// fl = minimum per-piece sell price (floor). Sell never drops below it; tiers already above it keep their higher price.
-export let EM={_v:4,sb:[10000,15000,20000,999999],qb:[6,24,48,99999],pr:[[4.8,5.1,4.8,4.5],[5.4,5.1,4.8,4.8],[6,5.7,5.4,5.4],[7.2,7.5,7.2,6]],mk:1.6,fl:8};
-export let NP={bk:[10,50,99999],co:[4,3,3],se:[7,6,5],tc:3};
-export let DTF=[{label:'4" Sq & Under',cost:2.5,sell:4.5},{label:'Front Chest (12"x4")',cost:4.5,sell:7.5}];
+// Defaults come from decoPricing.js (the single source of truth); the bindings stay
+// mutable `export let` so the nsa_settings override below can replace them and every
+// importer sees the overridden tables (live ESM bindings), exactly as before.
+export let SP=DECO.SP;
+export let EM=DECO.EM;
+export let NP=DECO.NP;
+export let DTF=DECO.DTF;
+export let TWA=DECO.TWA;
+export let TWN=DECO.TWN;
 
 // ── Configurable lists ──
 export let POSITIONS=['Front','Back','Left Chest','Right Chest','Left Sleeve','Right Sleeve','Collar','Yoke','Left Leg','Right Leg','Other'];
@@ -84,55 +82,32 @@ export let CONTACT_ROLES=['Primary','Billing','Shipping','Coach','Athletic Direc
 
 // ── Load settings overrides from localStorage ──
 // Only honor cached SP/EM if they match the current schema version (_v); otherwise use the new defaults.
-try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
+try{const _s=JSON.parse(localStorage.getItem('nsa_settings')||'{}');if(_s.SP&&_s.SP._v===SP._v)SP=_s.SP;if(_s.EM&&_s.EM._v===EM._v)EM=_s.EM;if(_s.NP)NP=_s.NP;if(_s.DTF)DTF=_s.DTF;if(_s.TWA)TWA=_s.TWA;if(_s.TWN)TWN=_s.TWN;if(_s.POSITIONS)POSITIONS=_s.POSITIONS;if(_s.CONTACT_ROLES)CONTACT_ROLES=_s.CONTACT_ROLES}catch{}
 
 // ── Pricing calculators ──
+// Thin wrappers over the pure calculators in decoPricing.js. The tables object is
+// rebuilt on EVERY call (not captured at module load) so the localStorage-overridden
+// bindings above are always the ones that price — identical behavior to the old
+// inline calculators that closed over the mutable module bindings.
+const _tables=()=>({SP,EM,NP,DTF,TWA,TWN});
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
-export function spP(q,c,s=true){const bi=SP.bk.findIndex(b=>q>=b.min&&q<=b.max);if(bi<0||c<1||c>5)return 0;const v=SP.pr[bi]?.[c-1];if(v==null)return 0;if(bi===0)return s?v:rQ(v/SP.mk);return s?rT(v*SP.mk):v}
-// Under-12 screen print is an ALL-IN charge for the whole run ($50/$60/$80 for 1/2/3 colors), not a
-// per-piece rate — billing used to multiply the flat value per piece (EST-1308 showed $46.75/pc on a
-// small line). Returns the flat sell/cost as UNROUNDED per-piece shares of the priced qty so every
-// caller's `eq × value` reconstructs the exact flat total (multi-line art runs prorate it across
-// lines); null outside bracket 0. Underbase scales the flat charge like it scales the tiers.
-export function spFlatShare(q,c,u=1){const b0=SP.bk[0];if(!(q>=b0.min&&q<=b0.max))return null;const v=SP.pr[0]?.[c-1];if(v==null||!(q>0))return null;const fs=v*u;return{sell:fs/q,cost:rQ(fs/SP.mk)/q}}
+export function spP(q,c,s=true){return DECO.spP(_tables(),q,c,s)}
+// Under-12 screen print is an ALL-IN flat charge — see decoPricing.spFlatShare (EST-1308).
+export function spFlatShare(q,c,u=1){return DECO.spFlatShare(_tables(),q,c,u)}
+// Split-job screen print: price each production run's qty at its own tier and blend — see
+// decoPricing.spRunBlend/decoSplitRuns (jobs split with priced_separately).
+export function spRunBlend(runs,c,u=1){return DECO.spRunBlend(_tables(),runs,c,u)}
+export const decoSplitRuns=DECO.decoSplitRuns;
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
-export function emP(st,q,s=true){const si=EM.sb.findIndex(b=>st<=b);const qi=EM.qb.findIndex(b=>q<=b);if(si<0||qi<0)return 0;const v=EM.pr[si][qi];return s?Math.max(rT(v*EM.mk),EM.fl||0):v}
-export function npP(q,tw=false,s=true){const bi=NP.bk.findIndex(b=>q<=b);if(bi<0)return 0;return s?(NP.se[bi]+(tw?rQ(NP.tc*1.65):0)):(NP.co[bi]+(tw?NP.tc:0))}
+export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}
+export function npP(q,tw=false,s=true){return DECO.npP(_tables(),q,tw,s)}
+// Tackle twill: chest/logo by TWA index; jersey number by TWN size × color. Wrap the pure calcs.
+export function twaP(idx,s=true){return DECO.twaP(_tables(),idx,s)}
+export function twnP(size,tw=false,s=true){return DECO.twnP(_tables(),size,tw,s)}
 // Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
 // null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
-export const decoSplitQty=(d)=>(d&&d.split_group&&d.split_sizes)?Object.values(d.split_sizes).reduce((a,v)=>a+safeNum(v),0):null;
-export function dP(d,q,artFiles,cq){
-  // Split-art designs bill at their own per-size allocation. cq (the combined tier qty) is
-  // already summed per design by the artQty builders, so price the design at its share, then
-  // stamp the billed qty (_nq) so every caller's `eq` multiplies by the design's pieces — not
-  // the full line. Non-split decos are untouched (decoSplitQty → null).
-  const _r=_dPInner(d,q,artFiles,cq);
-  const _sq=decoSplitQty(d);
-  if(_sq!=null&&d.kind==='art'&&_r&&_r._nq==null)_r._nq=_sq*(d.reversible?2:1);
-  return _r;
-}
-function _dPInner(d,q,artFiles,cq){
-  const _revMult=d.reversible?2:1;
-  // cq (from artQty) already incorporates the reversible ×2; only apply _revMult as fallback
-  const pq=cq!=null?cq:q*_revMult;
-  if(d.kind==='art'&&d.art_file_id&&artFiles){
-    if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-      if(tType==='embroidery'){const c=emP(d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-      if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}};
-      return{sell:d.sell_override||0,cost:0}}
-    const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
-    const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
-    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-    if(art.deco_type==='embroidery'){const c=emP(art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-    if(art.deco_type==='dtf'||art.deco_type==='heat_press'){const t=DTF[art.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}}}
-  if(d.type==='screen_print'){const u=d.underbase?1+SP.ub:1;const f=spFlatShare(q,d.colors||1,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(q,d.colors||1,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
-  if(d.type==='embroidery'){const c=emP(d.stitches||8000,q,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
-  if(d.kind==='numbers'||d.type==='number_press'){if(d.num_method==='sublimated'){const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const useQty=nq||safeNum(d.num_qty)||0;const mult=(d.front_and_back?2:1)*(d.reversible?2:1);return{sell:safeNum(d.sell_override)||0,cost:0,_nq:useQty*mult}}const nq=d.roster?Object.values(d.roster).flat().filter(v=>v&&v.trim()).length:0;const hasAssigned=nq>0;const useQty=hasAssigned?nq:(safeNum(d.num_qty)||q);const mult=(d.front_and_back?2:1)*(d.reversible?2:1);const fnq=useQty*mult;return{sell:d.sell_override!=null?d.sell_override:npP(fnq||1,d.two_color,true),cost:npP(fnq||1,d.two_color,false),_nq:fnq}};
-  if(d.kind==='names'){if(d.name_method==='sublimated')return{sell:safeNum(d.sell_override)||0,cost:0};const nc=d.names?Object.values(d.names).flat().filter(v=>v&&v.trim()).length:0;const useNc=nc||safeNum(d.name_qty)||0;const se=safeNum(d.sell_override||d.sell_each||6);const co=safeNum(d.cost_each||3);return{sell:useNc>0?rQ(useNc*se/q):se,cost:useNc>0?rQ(useNc*co/q):co}};
-  if(d.type==='dtf'){const t=DTF[d.dtf_size||0];return{sell:d.sell_override||t.sell,cost:t.cost}}
-  if(d.kind==='outside_deco')return{sell:d.sell_override||safeNum(d.sell_each),cost:safeNum(d.cost_each)};
-  return{sell:0,cost:0}}
+export const decoSplitQty=DECO.decoSplitQty;
+export function dP(d,q,artFiles,cq){return DECO.dP(_tables(),d,q,artFiles,cq)}
 
 // ── Combined costing for linked jobs that share a screen ──
 // When a rep MANUALLY links jobs that carry the same artwork (so_jobs.link_group), they run
@@ -182,6 +157,45 @@ export const decoCostAt=(d,q,af,localCq,combinedQty)=>{
   return eq*safeNum(dp.cost);
 };
 
+// ── Outside-decorator cost estimate ──
+// When an ART decoration is soft-routed Outside → a vendor that has a price list (deco_vendor_pricing)
+// but is NOT yet on an actual Deco PO, estimate its cost from that vendor's matrix so cost/margin
+// reflect the real outsourced cost instead of $0. Dark/fleece/mesh are auto-detected from the garment,
+// same rules as the Deco PO builder. Mirrors decoCostAt (eq × per-piece, priced at the cq tier).
+// Returns 0 when it does not apply — not outside, no vendor, no matching price row, or an actual PO
+// already covers it (that PO's cost is summed separately, so this stays 0 to avoid double-counting).
+const _ssFleece=g=>/fleece|hood|sweat|crew|jogger/i.test(g||'');
+const _ssMesh=g=>/\bmesh\b/i.test(g||'');
+const _artInkCount=(a,d)=>{
+  if(a&&Array.isArray(a.color_ways)&&d&&d.color_way_id){const cw=a.color_ways.find(c=>c&&c.id===d.color_way_id);if(cw&&Array.isArray(cw.inks)){const n=cw.inks.filter(x=>String(x||'').trim()).length;if(n>0)return n}}
+  if(a&&a.ink_colors){const n=a.ink_colors.split('\n').filter(l=>l.trim()).length;if(n>0)return n}
+  return safeNum(d&&d.tbd_colors)||1;
+};
+export const outsideDecoEstAt=(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem)=>{
+  if(!d||d.kind!=='art'||d.fulfillment!=='outside'||!d.vendor)return 0;
+  const dt=decoConcreteType(o,d);if(!dt)return 0;
+  if(decoIsOutsourced(outByItem&&outByItem[ii],dt)||d.deco_po_id)return 0; // on an actual Deco PO → counted there
+  const _dv=(decoVendors||[]).find(v=>v&&v.name===d.vendor);const vid=_dv&&_dv.id;if(!vid)return 0;
+  const a=(af||[]).find(f=>f&&f.id===d.art_file_id);
+  const it=(o&&Array.isArray(o.items)?o.items[ii]:null)||{};
+  const g=(it.name||'')+' '+(it.sku||'');const sp=dt==='screen_print';
+  const per=_decoVendorPrice(decoVendorPricing,vid,dt,{qty:cq,colors:_artInkCount(a,d),stitches:safeNum(a&&a.stitches)||safeNum(d.tbd_stitches)||undefined,underbase:sp&&garmentNeedsUnderbase(it.color),fleece:sp&&_ssFleece(g),mesh:sp&&_ssMesh(g)});
+  if(per==null)return 0;
+  return (d.reversible?q*2:q)*per;
+};
+// Resolved per-decoration cost for a cost walk: in-house cost when produced in-house, else the
+// outside-vendor estimate (0 when an actual Deco PO already covers it — that PO cost is summed
+// separately). Drop-in for the `if(!isDecoOutsourced)cost+=decoCostAt(...)` guard the walks used.
+export const decoCostResolved=(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing,outByItem)=>{
+  if(!isDecoOutsourced(o,ii,d,outByItem))return decoCostAt(d,q,af,cq,comb);
+  return outsideDecoEstAt(o,ii,d,q,af,cq,decoVendors,decoVendorPricing,outByItem);
+};
+// Target margin on an outside-decorator's customer charge: sell = vendor cost / (1 - margin).
+// When a deco is routed Outside → a priced vendor, the charge is marked up off the (higher) vendor
+// cost to hit this margin, so routing to a decorator doesn't silently crush the deco's margin.
+export const OUTSIDE_DECO_MARGIN=0.36;
+export const outsideDecoSell=(perCost,margin=OUTSIDE_DECO_MARGIN)=>{const c=safeNum(perCost);return c>0?Math.round((c/(1-margin))*100)/100:0};
+
 // ── calcOrderTotals — single source of truth for order/estimate/SO totals ──
 // Mirrors the calculation in OrderEditor's `totals` memo so list views and the
 // editor agree. Returns { rev, ship, tax, grand }.
@@ -192,15 +206,15 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
   // Aggregate art quantities so volume-priced art uses the combined qty
   const artQty={};
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
   let rev=0;
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(!it.is_free_promo){
       if(it._sizeSells&&sq>0){
@@ -229,11 +243,11 @@ export const calcOrderTotals=(o,custTaxRate=0)=>{
 // Mirrors calcOrderTotals' revenue walk and adds a parallel cost walk (catalog/size
 // cost + deco cost). Lighter than the Reports page (which prefers actual PO costs) — a
 // reasonable at-a-glance gross margin. Returns { rev, cost, margin, pct }.
-export const calcOrderMargin=(o,allOrders)=>{
+export const calcOrderMargin=(o,allOrders,decoVendors,decoVendorPricing)=>{
   if(!o)return{rev:0,cost:0,margin:0,pct:0};
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
-  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);const q=sq>0?sq:_sNum(it.est_qty);if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
+  items.forEach(it=>{const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));if(!q)return;_sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}})});
   // Combined deco-cost tier qty for manually-linked jobs sharing a screen across orders. Empty
   // (no combine) when allOrders is omitted, so existing single-arg callers are unchanged.
   const comb=linkedArtCostQty(o,artQty,allOrders);
@@ -241,8 +255,8 @@ export const calcOrderMargin=(o,allOrders)=>{
   const outByItem=outsourcedDecoTypes(o);
   let rev=0,cost=0;
   items.forEach((it,ii)=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(!it.is_free_promo){
       if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)rev+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))})}
@@ -251,7 +265,7 @@ export const calcOrderMargin=(o,allOrders)=>{
     if(it._sizeCosts&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)cost+=n*(it._sizeCosts?.[sz]||_sNum(it.nsa_cost))})}
     else{cost+=q*_sNum(it.nsa_cost)}
     // Sell always counts (customer still pays); in-house cost is suppressed when a deco PO covers it.
-    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);if(!isDecoOutsourced(o,ii,d,outByItem))cost+=decoCostAt(d,q,af,cq,comb)})
+    _sDecos(it).forEach(d=>{const cq=d.kind==='art'&&d.art_file_id?artQty[d.art_file_id]:q;const dp=dP(d,q,af,cq);const eq=dp._nq!=null?dp._nq:(d.reversible?q*2:q);rev+=eq*_sNum(dp.sell);cost+=decoCostResolved(o,ii,d,q,af,cq,comb,decoVendors,decoVendorPricing,outByItem)})
   });
   // SO-level decoration POs (outside-deco + Topstar) are a real cost the customer is billed for.
   // calcTotals and the Reports page already count these; include them here too so the dashboard
@@ -278,8 +292,8 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   const items=_sItems(o);const af=_sArt(o);
   const artQty={};
   items.forEach(it=>{
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     _sDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id){artQty[d.art_file_id]=(artQty[d.art_file_id]||0)+(decoSplitQty(d)!=null?decoSplitQty(d):q)*(d.reversible?2:1)}});
   });
@@ -289,8 +303,8 @@ export const calcQualifyingSpend=(o,minMargin=0.2)=>{
   let total=0;
   items.forEach((it,ii)=>{
     if(it.is_free_promo)return;
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     let rev=0,cost=0;
     if(it._sizeSells&&sq>0){
@@ -362,8 +376,8 @@ export const calcAdidasItemSpend=(o)=>{
   items.forEach(it=>{
     if(it.is_free_promo)return;
     if(!isAdidasPriced(it.brand))return;
-    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+_sNum(v),0);
-    const q=sq>0?sq:_sNum(it.est_qty);
+    const sq=Object.values(_sSizes(it)).reduce((a,v)=>a+Math.max(0,_sNum(v)),0);
+    const q=sq>0?sq:Math.max(0,_sNum(it.est_qty));
     if(!q)return;
     if(it._sizeSells&&sq>0){Object.entries(_sSizes(it)).forEach(([sz,v])=>{const n=_sNum(v);if(n>0)total+=n*(it._sizeSells?.[sz]||_sNum(it.unit_sell))});}
     else{total+=q*_sNum(it.unit_sell);}

@@ -141,6 +141,15 @@ describe('_matchRestoreItem', () => {
     expect(_matchRestoreItem({ item_index: 1, sku: 'TEE', color: 'Green' }, items)).toBe(-1);
     expect(_matchRestoreItem({ item_index: 0, sku: 'GONE' }, items)).toBe(-1);
   });
+  test('positional match also refuses a known DIFFERENT color (SO-1165 IF auto-assign)', () => {
+    // Old TEE/Navy row whose index now holds TEE/Red: must NOT attach positionally —
+    // it re-matches the actual Navy line instead.
+    expect(_matchRestoreItem({ item_index: 0, sku: 'TEE', color: 'navy' }, items)).toBe(2);
+    // No color-compatible candidate anywhere → unmatchable, never a silent wrong attach.
+    expect(_matchRestoreItem({ item_index: 0, sku: 'TEE', color: 'Green' }, items)).toBe(-1);
+    // Skuless rows trust position only while the color doesn't contradict.
+    expect(_matchRestoreItem({ item_index: 0, sku: '', color: 'Green' }, items)).toBe(-1);
+  });
 });
 
 // ── Queued per-entity save: latest-wins coalescing ───────────────────

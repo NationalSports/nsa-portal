@@ -14,10 +14,34 @@
 //
 // Degrades gracefully: with no ANTHROPIC_API_KEY it returns ok:false + a reason
 // so the builder can show a friendly message instead of breaking. Kept auth-free
-// so the standalone /uniform-builder demo works for logged-out coaches; the only
-// side effect is a single bounded Claude call (no DB writes).
+// so the standalone /uniform-builder demo works for logged-out coaches; spend is
+// bounded by daily per-IP and global caps (app_counters).
 
-const { corsHeaders } = require('./_shared');
+const crypto = require('crypto');
+const { corsHeaders, getSupabaseAdmin } = require('./_shared');
+
+// Auth-free endpoint → bound the spend. Daily per-IP and global caps tracked in
+// app_counters (service role; read-bump is approximate under races, which is
+// fine for abuse control). Fails OPEN so a counters hiccup never breaks the
+// builder — the cap is a cost ceiling, not a security boundary.
+const AI_DAILY_LIMIT = Number(process.env.UNIFORM_AI_DAILY_LIMIT || 400);
+const AI_DAILY_IP_LIMIT = Number(process.env.UNIFORM_AI_DAILY_IP_LIMIT || 40);
+async function underAiBudget(event) {
+  try {
+    const sb = getSupabaseAdmin();
+    const day = new Date().toISOString().slice(0, 10);
+    const ip = String(event.headers['x-nf-client-connection-ip'] || event.headers['x-forwarded-for'] || '').split(',')[0].trim() || 'unknown';
+    const ipKey = `uniform_ai:${day}:ip:${crypto.createHash('sha256').update(ip).digest('hex').slice(0, 16)}`;
+    const dayKey = `uniform_ai:${day}:all`;
+    const bump = async (key) => {
+      const { data } = await sb.from('app_counters').select('value').eq('key', key).maybeSingle();
+      const next = (Number(data && data.value) || 0) + 1;
+      await sb.from('app_counters').upsert({ key, value: next });
+      return next;
+    };
+    return (await bump(ipKey)) <= AI_DAILY_IP_LIMIT && (await bump(dayKey)) <= AI_DAILY_LIMIT;
+  } catch (_e) { return true; }
+}
 
 const MODEL = process.env.UNIFORM_AI_MODEL || 'claude-haiku-4-5';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
@@ -169,6 +193,10 @@ exports.handler = async (event) => {
   // Optional context the wizard sends: sport/program, the coach's declared team
   // colors, and the shop's print-pattern library (names only — images stay
   // client-side).
+  if (!(await underAiBudget(event))) {
+    return { statusCode: 429, headers, body: JSON.stringify({ ok: false, reason: 'rate_limited', error: 'AI design is taking a breather — try again tomorrow or design it by hand.' }) };
+  }
+
   const ctx = (body.context && typeof body.context === 'object') ? body.context : {};
   const teamColors = Array.isArray(ctx.teamColors) ? ctx.teamColors.filter((c) => /^#[0-9a-fA-F]{6}$/.test(c)).slice(0, 6) : [];
   const prints = Array.isArray(ctx.printPatterns)

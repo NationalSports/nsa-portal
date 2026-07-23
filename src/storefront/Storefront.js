@@ -3,9 +3,34 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Elements, PaymentElement, AddressElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from '../lib/supabase';
-import { placementById } from '../lib/artPlacements';
+import { DecoOverlay } from '../lib/decoOverlay';
 import { foldScale, foldedQty, foldedSoon, regularSize } from '../lib/storeInventory';
 import { normSzName } from '../pricing';
+
+// Route SanMar garment photos through a Cloudinary transform that trims to the
+// garment (on its white studio background) and pads to a uniform 4:5 frame, so
+// every product is framed identically and an applied team logo lands at the same
+// spot instead of drifting with each photo's crop. Only SanMar-hosted images are
+// wrapped (the Cloudinary account's fetch allowlist covers those hosts); a store's
+// own uploaded mockup or another vendor's image passes through untouched. f_jpg
+// keeps the output decodable everywhere. Cloud name matches utils' CLOUDINARY_CLOUD.
+const _CLD_GARMENT = 'https://res.cloudinary.com/dwlyljyuz/image/fetch/e_trim:10/c_pad,w_800,h_1000,b_white,f_jpg,q_auto/';
+function normGarment(url) {
+  if (!url || typeof url !== 'string') return url;
+  let host; try { host = new URL(url).hostname; } catch (e) { return url; }
+  if (!/(?:^|\.)cdn[pm]\.sanmar\.com$/i.test(host)) return url;
+  return _CLD_GARMENT + encodeURIComponent(url);
+}
+// How to frame a garment photo that carries a placed logo. A DECORATED item must render
+// exactly like the placement editor — RAW photo, object-fit:contain, 4:5 box — so the logo
+// lands where the rep dragged it (normGarment's trim+pad reframes the photo and pushes the
+// logo off). An UNDECORATED item has nothing to align, so it keeps the uniform normGarment+
+// cover look (avoids letterboxing plain catalog garments). `baked` mocks already have the art
+// in the photo, so they count as undecorated here. Returns { src, fit } for the <img>.
+const _hasLiveDeco = (decos) => Array.isArray(decos) && decos.some((d) => d && !d.baked);
+const garmentFrame = (url, decos) => _hasLiveDeco(decos)
+  ? { src: url, fit: 'contain' }
+  : { src: normGarment(url), fit: 'cover' };
 
 // Stripe publishable key is fetched at runtime from the server so changing
 // it in Netlify env vars takes effect without a rebuild.
@@ -173,6 +198,11 @@ const etaOf = (p) => [p.earliest_eta, p.vendor_eta].filter(Boolean).sort()[0] ||
 // never tracked — every offered size stays sellable. track_inventory=false opts a tracked
 // item out, so it keeps selling all sizes regardless of stock.
 const isTracked = (p) => p.track_inventory !== false && !!p.inventory_source && p.inventory_source !== 'manual';
+// A tracked drop-ship item whose stock has NEVER synced (no warehouse rows, no vendor
+// rows — both maps null, not zero) sells every size: the vendor backorders anyway, and a
+// style added from the live vendor search shouldn't read "sold out" until the nightly
+// sync catches up. Synced-and-zero still reads sold out. Checkout mirrors this rule.
+const hasStockData = (p) => p.size_stock != null || p.vendor_size_stock != null;
 // Tidy scraped vendor copy for display: drop empty "LABEL: N/A" spec fields
 // (common in the Adidas feed) and squeeze the leftover separators/whitespace.
 function cleanDesc(s) {
@@ -649,7 +679,7 @@ function HeroOpen({ store, theme, lead, goBundle, scrollGrid, products = [], com
             <SkewBtn theme={theme} variant="outlineLight" onClick={scrollGrid}>Shop the Collection</SkewBtn>
           </div>
           <div style={{ display: 'flex', gap: 'clamp(20px,4vw,40px)', marginTop: 34, flexWrap: 'wrap' }}>
-            {[['No', 'Minimums'], ['Top', 'Brands'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
+            {[['No', 'Minimums'], ['Delivery', store.delivery_mode === 'deliver_club' ? 'To coach' : 'To home'], ['4–5wk', 'Team Delivery']].map(([n, l]) => (
               <div key={l}>
                 <div style={{ fontFamily: DISPLAY, fontWeight: 800, fontSize: 26, color: '#fff', lineHeight: 1 }}>{n}</div>
                 <div style={{ fontSize: 12.5, color: 'rgba(255,255,255,0.7)', fontWeight: 600, letterSpacing: 0.4, marginTop: 4 }}>{l}</div>
@@ -810,7 +840,7 @@ function GarmentTile({ theme, store, kind = 'top', badge, catLabel }) {
 function stockBadge(p, theme) {
   const ink = theme ? theme.ink : NEUTRAL.ink;
   if (p.kind === 'bundle') return { text: 'Package', color: '#fff', bg: ink };
-  if (!isTracked(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked
+  if (!isTracked(p) || !hasStockData(p)) return { text: 'In stock', color: '#fff', bg: STOCK.in }; // made-to-order / not tracked / stock not synced yet
   if (effOnHand(p) > 0) return { text: 'In stock', color: '#fff', bg: STOCK.in };
   if (isIncoming(p)) { return { text: 'Low stock', color: '#fff', bg: STOCK.low }; }
   return { text: 'Sold out', color: '#fff', bg: theme ? theme.primary : '#8C1D40' };
@@ -824,29 +854,8 @@ function bundleBadge(count, theme) {
 // gear (jersey / shorts / hood …) instead of a generic placeholder. Layout
 // adapts to the piece count: 2 side-by-side, 3 as one hero + two stacked, 4 in
 // a 2×2. Thin white gaps separate the tiles into a clean "kit" composition.
-// Per-color web-logo override (mirrors the store builder): a deco's cw_by_color maps a
-// lowercased garment color -> the web logo to show for that color (e.g. a white logo on a
-// black tee); falls back to the placed art_url.
-const decoUrlForColor = (d, colorName) => {
-  const k = String(colorName || '').trim().toLowerCase();
-  const v = d && d.cw_by_color && k && d.cw_by_color[k]; // bare url (legacy) or { url, color_way_id }
-  return (typeof v === 'string' ? v : (v && v.url) || '') || (d && d.art_url) || '';
-};
-// Applied logo art (from webstore_products.decorations) composited on the
-// garment image at its placement — the on-screen mock shoppers see. colorName picks the
-// per-color web logo so the right color way shows for the active variant.
-function DecoOverlay({ decorations, side = 'front', colorName }) {
-  if (!Array.isArray(decorations)) return null;
-  // Skip `baked` decorations — their logo is already rendered into the garment image (a
-  // Quick Mock), so overlaying it again would double-stamp. They're retained on the record
-  // only so the store→SO conversion still knows what art to print.
-  return <>{decorations.filter((d) => d && !d.baked && (d.side || 'front') === side && decoUrlForColor(d, colorName)).map((d, i) => {
-    const pl = placementById(d.placement);
-    // A decoration may carry its own x/y/w (editable placement) overriding the preset.
-    const x = d.x != null ? d.x : pl.x, y = d.y != null ? d.y : pl.y, w = d.w != null ? d.w : pl.w;
-    return <img key={i} src={decoUrlForColor(d, colorName)} alt="" loading="lazy" style={{ position: 'absolute', left: `${x}%`, top: `${y}%`, width: `${w}%`, transform: 'translate(-50%,-50%)', pointerEvents: 'none', filter: 'drop-shadow(0 1px 2px rgba(0,0,0,.2))', zIndex: 1 }} />;
-  })}</>;
-}
+// decoUrlForColor + DecoOverlay moved to src/lib/decoOverlay.js (shared with the
+// Team Shop placement picker) — imported at the top of this file, rendering unchanged.
 
 // Sample number/name on the garment mockup so shoppers see an item is personalized.
 // Default back placement; the real value is entered at checkout. Mirrors the builder.
@@ -876,7 +885,7 @@ function BundleCollage({ comps, theme }) {
   const n = tiles.length;
   const Tile = ({ c, style }) => (
     <div style={{ position: 'relative', overflow: 'hidden', background: '#EEF1F6', ...style }}>
-      <img className="sf-img" src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+      <img className="sf-img" src={normGarment(c.img)} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
       <DecoOverlay decorations={c.decorations} colorName={c.color} />
     </div>
   );
@@ -947,8 +956,12 @@ function Card({ store, theme, p, colorRows = [], bundleItems = [], compInfo = {}
         {hasCollage
           ? <BundleCollage comps={comps} theme={theme} />
           : p.image_front_url
-            ? <div style={{ position: 'absolute', inset: '10%', width: '80%', height: '80%' }}>
-                <img className="sf-img" src={p.image_front_url} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+            ? <div style={{ position: 'absolute', inset: 0 }}>
+                {/* WYSIWYG: render the garment the SAME way the item-editor placement stage
+                    does — raw photo, object-fit:contain, full 4:5 box, no inset — so a logo
+                    lands on the exact spot the rep placed it. (normGarment/cover reframed the
+                    photo and pushed placements off; the editor is the source of truth.) */}
+                {(() => { const gf = garmentFrame(p.image_front_url, p.decorations); return <img className="sf-img" src={gf.src} alt={p.name} style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: gf.fit, display: 'block' }} />; })()}
                 {!isBundle && <DecoOverlay decorations={p.decorations} colorName={p.color} />}
               </div>
             : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
@@ -1031,10 +1044,10 @@ function ShowcaseCard({ store, theme, p, bundleItems = [], compInfo = {}, wpById
         {comps.map((c, i) => (
           <div key={i} style={{ flex: '1 1 0', minWidth: 120, padding: '14px 12px 16px', borderRight: i < comps.length - 1 ? `1px solid ${theme.line}` : 'none', textAlign: 'center' }}>
             <div style={{ width: '100%', aspectRatio: '1 / 1', background: theme.warm, borderRadius: 4, overflow: 'hidden', marginBottom: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {/* Inner 4:5 frame = the frame placements are authored against. object-fit
-                  cover fills the frame exactly like the art editor's garment stage, so the
-                  inherited decoration overlay lands where it was placed. */}
-              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}><img src={c.img} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /><DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
+              {/* Inner 4:5 frame = the frame placements are authored against. A decorated
+                  garment renders raw + object-fit:contain, exactly like the art editor's
+                  garment stage, so the inherited decoration overlay lands where it was placed. */}
+              {c.img ? <div style={{ position: 'relative', height: '92%', aspectRatio: '4 / 5', borderRadius: 3, overflow: 'hidden' }}>{(() => { const gf = garmentFrame(c.img, c.decorations); return <img src={gf.src} alt="" style={{ width: '100%', height: '100%', objectFit: gf.fit, display: 'block' }} />; })()}<DecoOverlay decorations={c.decorations} colorName={c.color} /></div> : <GarmentTile theme={theme} store={store} kind="top" />}
             </div>
             <div style={{ fontFamily: DISPLAY, fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: theme.ink, lineHeight: 1.2 }}>{c.name}</div>
           </div>
@@ -1100,10 +1113,11 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
   const sizesFor = (c) => {
     const offered = Array.isArray(c.sizes_offered) && c.sizes_offered.length ? c.sizes_offered.map(_offeredKey) : null;
     const scale = foldScale(c.available_sizes).filter((s) => !offered || offered.includes(String(s).toUpperCase()));
-    if (!isTracked(c)) {
+    if (!isTracked(c) || !hasStockData(c)) {
       // Sizes the rep explicitly offered that aren't part of the catalog product's own
       // scale (an apparel item switched to footwear sizing, or 3XL/4XL added). For a
-      // made-to-order item these always sell — checkout's stock guard skips them too.
+      // made-to-order item (or a drop-ship style whose stock hasn't synced yet) these
+      // always sell — checkout's stock guard skips them too.
       const prodScale = foldScale(c.available_sizes).map((s) => String(s).toUpperCase());
       const extras = (Array.isArray(c.sizes_offered) ? c.sizes_offered : []).filter((o) => !prodScale.includes(_offeredKey(o)));
       return [...scale, ...extras]; // not inventory-tracked → every offered size sells
@@ -1169,7 +1183,7 @@ function ProductPage({ store, theme, product: rep, colorRows = [], isOpen, onAdd
       <div className="sf-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1.05fr) minmax(0,0.95fr)', gap: 44, alignItems: 'start' }}>
         <div className="sf-pdp-media">
           <div style={{ position: 'relative', width: '100%', maxWidth: 420, margin: '0 auto', aspectRatio: '4 / 5', background: theme.warm, borderRadius: 8, border: `1px solid ${theme.line}`, overflow: 'hidden', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {imgUrl ? <img src={imgUrl} alt={p.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
+            {imgUrl ? (() => { const gf = garmentFrame(imgUrl, p.decorations); return <img src={gf.src} alt={p.name} style={{ width: '100%', height: '100%', objectFit: gf.fit }} />; })() : <GarmentTile theme={theme} store={store} kind={garmentKind(p)} />}
             <DecoOverlay decorations={p.decorations} side={img === 'back' ? 'back' : 'front'} colorName={p.color} />
             {img === 'back' && <PersoMock takesNumber={p.takes_number} takesName={p.takes_name} decorations={p.decorations} />}
           </div>
@@ -1345,7 +1359,7 @@ function BundlePage({ store, theme, product: p, components, compInfo = {}, produ
               <div key={c.id} style={{ background: theme.paper, border: `1px solid ${theme.line}`, borderRadius: 6, overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 2px 12px rgba(0,0,0,0.06)', transition: 'border-color .2s ease' }}>
                 {/* Full-width item image */}
                 <div style={{ position: 'relative', width: '100%', aspectRatio: '4/5', background: theme.warm, overflow: 'hidden', flexShrink: 0 }}>
-                  {compImg(c) ? <><img src={compImg(c)} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: 'cover' }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></> : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
+                  {compImg(c) ? (() => { const gf = garmentFrame(compImg(c), meta(c).decorations); return <><img src={gf.src} alt={compName(c)} style={{ width: '100%', height: '100%', objectFit: gf.fit }} /><DecoOverlay decorations={meta(c).decorations} colorName={meta(c).color} /></>; })() : <GarmentTile theme={theme} store={store} kind={garmentKind({ name: compName(c) })} />}
                   {/* Step badge — top-left */}
                   <div style={{ position: 'absolute', top: 12, left: 12, width: 32, height: 32, borderRadius: '50%', display: 'grid', placeItems: 'center', fontFamily: DISPLAY, fontWeight: 800, fontSize: 15, background: complete ? theme.accent : theme.ink, color: complete ? theme.ink : '#fff', boxShadow: '0 2px 6px rgba(0,0,0,0.25)', zIndex: 2 }}>{complete ? '✓' : i + 1}</div>
                   {/* Required badge — top-right */}

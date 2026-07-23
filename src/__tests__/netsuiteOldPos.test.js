@@ -25,4 +25,14 @@ describe('netsuiteOldPos', () => {
     expect(isPrePortalNetsuitePo(null)).toBe(false);
     expect(isPrePortalNetsuitePo(undefined)).toBe(false);
   });
+
+  // CHARACTERIZATION — pins current behavior, not a spec. The set stores '033126' as a literal
+  // string (from the raw NetSuite export), and isPrePortalNetsuitePo does a straight Set.has()
+  // with no numeric normalization. So the exact stored form matches, but a numerically-equal
+  // value with the leading zero stripped does NOT — a future "normalize to a number/strip
+  // leading zeros" refactor would silently break this lookup for core 033126.
+  test('CHARACTERIZATION: leading-zero core matches only in its exact stored string form', () => {
+    expect(isPrePortalNetsuitePo('033126')).toBe(true);
+    expect(isPrePortalNetsuitePo('33126')).toBe(false); // numerically identical, but not stored this way
+  });
 });

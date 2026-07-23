@@ -1,13 +1,15 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef } from 'react';
-import { SZ_ORD, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind } from './safeHelpers';
+import { SZ_ORD, sizeBreakdownStr, pantoneHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, artDstOnFile } from './constants';
+import { statusChipLabel } from './lib/teamshopOrderStatus';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, skusMissingMockups, realInkLines, soLineKey, jobItemDecoIdxs, jobItemDecosOfKind, artProofFallback } from './safeHelpers';
 import { calcSOStatus } from './components';
 import { dP, rQ, SP, calcOrderTotals, calcAdidasItemSpend } from './pricing';
 import { _portalAction, isUrl, fileDisplayName, _isImgUrl, _isPdfUrl, _cloudinaryPdfThumb, _filterDisplayable, printDoc, buildDocHtml, pdfDecoLabel, getBillingContacts, invokeEdgeFn, cloudUpload } from './utils';
 import { StripePaymentModal } from './modals';
 import { loadStripe } from '@stripe/stripe-js';
 import { supabase } from './lib/supabase';
+import { supabaseCoach } from './lib/supabaseCoach';
 import Papa from 'papaparse';
 import { CatalogKitStyles, KitScope, DISPLAY } from './ui/catalogKit';
 import { fetchStockMap } from './lib/storeInventory';
@@ -98,11 +100,49 @@ const cpShade = (hex, pct) => {
     return `rgb(${f(r)},${f(g)},${f(b)})`;
   } catch { return hex; }
 };
-// Resolve a {primary, accent} header theme from a customer's school colors.
+// CP_HEX as RGB triples, for nearest-family matching of a raw Pantone hex.
+const CP_HEX_RGB = Object.fromEntries(Object.entries(CP_HEX).map(([f, h]) => {
+  const n = h.replace('#', '');
+  return [f, [parseInt(n.slice(0, 2), 16), parseInt(n.slice(2, 4), 16), parseInt(n.slice(4, 6), 16)]];
+}));
+// Map one saved Pantone color (customer.pantone_colors entry: {code,name,hex})
+// to a catalog color-family name. The color NAME wins over the hex, so a
+// mis-stored swatch still resolves — e.g. "1815 Cardinal" → Cardinal even though
+// its saved hex is a placeholder grey. Numeric codes ("458") fall to the nearest
+// family by the canonical Pantone hex.
+function cpPantoneFamily(entry) {
+  if (!entry) return null;
+  const label = `${entry.code || ''} ${entry.name || ''}`.trim();
+  const named = Object.keys(CP_HEX).find((f) => new RegExp(`\\b${f}\\b`, 'i').test(label));
+  if (named) return named;
+  const hex = pantoneHex(entry.code) || entry.hex;
+  if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) return null;
+  const h = hex.replace('#', ''), rgb = [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+  let best = null, bestD = Infinity;
+  for (const [f, c] of Object.entries(CP_HEX_RGB)) {
+    const d = (rgb[0] - c[0]) ** 2 + (rgb[1] - c[1]) ** 2 + (rgb[2] - c[2]) ** 2;
+    if (d < bestD) { bestD = d; best = f; }
+  }
+  return best;
+}
+// The catalog color-families a customer effectively carries for portal theming:
+// the explicit family picker (school_colors) when set, otherwise derived from the
+// team's saved Pantone colors (pantone_colors). Most customers only ever fill the
+// "School Colors (Pantone)" card, so without this fallback the portal ignores
+// their real colors and paints the NSA navy/red default instead.
+function cpEffectiveFamilies(customer) {
+  const explicit = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  if (explicit.length) return explicit;
+  const pan = Array.isArray(customer && customer.pantone_colors) ? customer.pantone_colors : [];
+  const fams = [];
+  for (const p of pan) { const f = cpPantoneFamily(p); if (f && !fams.includes(f)) fams.push(f); }
+  return fams;
+}
+// Resolve a {primary, accent} header theme from a customer's colors.
 // primary is always a dark, readable banner color (a dark team color or the NSA
 // navy default); accent is the team's brightest color (or a tonal fallback).
 function cpTeamTheme(customer, supplement) {
-  const own = Array.isArray(customer && customer.school_colors) ? customer.school_colors.filter((f) => CP_HEX[f]) : [];
+  const own = cpEffectiveFamilies(customer);
   // Parent-department colors the team doesn't already carry — used to fill the
   // accent only (e.g. a sub-team borrows the school's gold), never the primary.
   const sup = Array.isArray(supplement) ? supplement.filter((f) => CP_HEX[f] && !own.includes(f)) : [];
@@ -136,20 +176,20 @@ function CoachStore({ customer, storeIds }) {
     (async () => {
       const ids = _storeIdKey ? _storeIdKey.split(',') : [];
       if (!ids.length) { setLoaded(true); return; }
-      const { data: ws, error } = await supabase.from('webstores').select('*').in('customer_id', ids);
+      const { data: ws, error } = await supabase.from('coach_webstores').select('*').in('customer_id', ids);
       if (cancel) return;
       if (error || !ws || !ws.length) { setLoaded(true); return; }
       setStores(ws);
       const out = {};
       for (const s of ws) {
         const [o, r] = await Promise.all([
-          supabase.from('webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
+          supabase.from('coach_webstore_orders').select('*').eq('store_id', s.id).order('created_at', { ascending: false }),
           supabase.from('webstore_roster').select('*').eq('store_id', s.id),
         ]);
         const orders = o.data || [];
         const orderIds = orders.map((x) => x.id);
         let items = [];
-        if (orderIds.length) { const it = await supabase.from('webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
+        if (orderIds.length) { const it = await supabase.from('coach_webstore_order_items').select('*').in('order_id', orderIds); items = it.data || []; }
         out[s.id] = { orders, items, roster: r.data || [] };
       }
       if (!cancel) { setData(out); setLoaded(true); }
@@ -444,7 +484,13 @@ function CoachStoreCard({ store: s, d }) {
   // ── KPIs ──
   const playersN = new Set(d.items.map((i) => (i.player_name || '').trim().toLowerCase()).filter(Boolean)).size;
   const units = d.items.filter((i) => !i.is_bundle_parent).reduce((a, i) => a + (Number(i.qty) || 0), 0);
-  const fundraising = active.reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  // Collected keys off payment_mode (NOT status === 'paid') so batching/shipping
+  // never drops it from "collected"; refunded orders owe nothing, so they're
+  // excluded from both collected and pending. Same rule as Webstores.js
+  // fundPaid/fundPending — keep in sync.
+  const fundLive = active.filter((o) => o.status !== 'refunded');
+  const fundraising = fundLive.filter((o) => o.payment_mode === 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
+  const fundPending = fundLive.filter((o) => o.payment_mode !== 'paid').reduce((a, o) => a + (Number(o.fundraise_amt) || 0), 0);
   const sales = active.reduce((a, o) => a + (Number(o.total) || 0), 0);
   const paidCount = active.filter((o) => o.payment_mode === 'paid').length;
   const fundGoal = Number(s.fundraise_goal) || 0;
@@ -496,15 +542,15 @@ function CoachStoreCard({ store: s, d }) {
 
   return (
     <div style={{ marginBottom: 20 }}>
-      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 10, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
+      <div style={{ background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 16, overflow: 'hidden', boxShadow: '0 2px 12px rgba(0,0,0,.06)' }}>
         {/* Navy header */}
-        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
+        <div style={{ backgroundImage: `${_cpHash}, linear-gradient(180deg, ${_CPD.navy} 0%, ${_CPD.navyDark} 100%)`, color: '#fff', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', borderBottom: `3px solid ${_CPD.red}` }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             <span style={{ display: 'inline-flex', opacity: 0.92 }}>{bagIcon}</span>
             <span style={{ ...disp, fontWeight: 800, fontSize: 20, letterSpacing: '.01em', textTransform: 'uppercase' }}>{s.name}</span>
             {closeStr && <span style={{ fontSize: 12, opacity: 0.6, whiteSpace: 'nowrap' }}>· {closeStr}</span>}
           </div>
-          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 4, padding: '8px 15px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
+          <a href={cpShopHref(s.slug)} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.04em', textTransform: 'uppercase', color: '#fff', border: '1px solid rgba(255,255,255,.5)', borderRadius: 8, padding: '8px 16px', whiteSpace: 'nowrap' }}>Visit store ↗</a>
         </div>
 
         {/* KPI strip */}
@@ -514,6 +560,7 @@ function CoachStoreCard({ store: s, d }) {
           <Kpi label="Items" value={units} />
           <Kpi label="Sales" value={_cpMoney0(sales)} />
           <Kpi label="Fundraising" value={_cpMoney0(fundraising)} green />
+          {fundPending > 0.005 && <Kpi label="Fundraise pending" value={_cpMoney0(fundPending)} />}
           <Kpi label="Paid / Tab" value={`${paidCount} / ${active.length - paidCount}`} />
         </div>
 
@@ -535,7 +582,7 @@ function CoachStoreCard({ store: s, d }) {
           {/* Search */}
           <div style={{ position: 'relative', maxWidth: 360, marginBottom: 12 }}>
             <span style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: _CPD.textLight, display: 'inline-flex' }}><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 4, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search player, parent, email or order #…" style={{ width: '100%', padding: '9px 12px 9px 34px', border: `1px solid ${_CPD.midGray}`, borderRadius: 10, fontSize: 14, color: _CPD.text, outline: 'none', background: '#fff', boxSizing: 'border-box' }} />
           </div>
 
           {/* Status filter chips */}
@@ -543,7 +590,7 @@ function CoachStoreCard({ store: s, d }) {
             {chipDefs.map(([key, label]) => {
               const on = filter === key; const isBack = key === 'backordered';
               return (
-                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 11px', borderRadius: 4, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
+                <button key={key} onClick={() => setFilter(key)} style={{ ...disp, cursor: 'pointer', fontWeight: 700, fontSize: 12, letterSpacing: '.03em', textTransform: 'uppercase', padding: '6px 13px', borderRadius: 999, border: `1px solid ${on ? (isBack ? _CPD.red : _CPD.navy) : _CPD.midGray}`, background: on ? (isBack ? _CPD.red : _CPD.navy) : '#fff', color: on ? '#fff' : (isBack ? _CPD.red : _CPD.navy) }}>{label} <span style={{ opacity: 0.6, ...tnum }}>{countFor(key)}</span></button>
               );
             })}
           </div>
@@ -568,21 +615,21 @@ function CoachStoreCard({ store: s, d }) {
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap' }}>
                       <span style={{ width: 8, height: 8, borderRadius: 999, background: row.statusTone, flex: '0 0 auto' }} />
                       <span style={{ ...disp, fontWeight: 700, fontSize: 13, letterSpacing: '.02em', textTransform: 'uppercase', color: row.statusTone }}>{row.statusLabel}</span>
-                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 6px', borderRadius: 3 }}>{row.backCount} backordered</span>}
+                      {row.hasBack && <span style={{ ...disp, fontWeight: 700, fontSize: 10, letterSpacing: '.03em', textTransform: 'uppercase', color: _CPD.red, background: 'rgba(150,44,50,.10)', border: '1px solid rgba(150,44,50,.25)', padding: '2px 8px', borderRadius: 999 }}>{row.backCount} backordered</span>}
                     </span>
                   </div>
 
                   {open[row.id] && (
                     <div style={{ padding: '4px 10px 18px' }}>
                       {/* Contact / order meta band */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, marginBottom: 12 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 24, padding: '13px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 12, marginBottom: 12 }}>
                         {[['Order', row.no, tnum], ['Ordered', row.date], ['Ordered by', row.buyerName], ['Email', row.buyerEmail ? <a href={`mailto:${row.buyerEmail}`}>{row.buyerEmail}</a> : '—'], ['Phone', row.buyerPhone, tnum], ['Delivery', row.delivery]].map(([lbl, val, extra]) => (
                           <div key={lbl}><div style={{ ...eyebrow, marginBottom: 3 }}>{lbl}</div><div style={{ fontSize: 14, color: _CPD.text, fontWeight: lbl === 'Order' || lbl === 'Ordered by' ? 700 : 400, ...(lbl === 'Order' ? { color: _CPD.navy } : {}), ...(extra || {}) }}>{val}</div></div>
                         ))}
                       </div>
 
                       {/* Priced line items */}
-                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 6, overflow: 'hidden', background: '#fff' }}>
+                      <div style={{ border: `1px solid ${_CPD.lightGray}`, borderRadius: 12, overflow: 'hidden', background: '#fff' }}>
                         <div style={{ display: 'grid', gridTemplateColumns: LN, columnGap: 14, padding: '9px 14px', background: _CPD.offWhite, borderBottom: `1px solid ${_CPD.lightGray}` }}>
                           {['Item', 'Size', 'Qty', 'Price', 'Batch', 'Status'].map((h, idx) => <span key={h} style={{ ...eyebrow, ...(idx === 3 ? { textAlign: 'right' } : {}) }}>{h}</span>)}
                         </div>
@@ -603,7 +650,7 @@ function CoachStoreCard({ store: s, d }) {
                       </div>
 
                       {/* Fundraising + shipping footer */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 6 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, justifyContent: 'space-between', alignItems: 'center', marginTop: 12, padding: '12px 16px', background: '#fff', border: `1px solid ${_CPD.lightGray}`, borderRadius: 12 }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
                           <span style={{ display: 'inline-flex', color: _CPD.green }}>{fundIcon}</span>
                           <span style={{ fontSize: 13, color: _CPD.textLight }}>Fundraising from this order</span>
@@ -615,7 +662,7 @@ function CoachStoreCard({ store: s, d }) {
                             <div style={{ fontSize: 13.5, color: _CPD.navy, fontWeight: 700 }}>{row.shipHeadline}</div>
                             <div style={{ fontSize: 12.5, color: _CPD.textLight, ...tnum }}>{row.shipSub} · Ships to {row.shipTo}</div>
                           </div>
-                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 12px', borderRadius: 4, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
+                          {row.tracked && <a href={row.trackHref} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{ ...disp, fontWeight: 700, fontSize: 12, letterSpacing: '.05em', textTransform: 'uppercase', color: _CPD.red, border: `1px solid ${_CPD.midGray}`, padding: '7px 13px', borderRadius: 999, whiteSpace: 'nowrap', textDecoration: 'none' }}>Track ↗</a>}
                         </div>
                       </div>
                     </div>
@@ -655,6 +702,22 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[lightbox,setLightbox]=useState(null);// url string for lightbox overlay
   const[storeBuilder,setStoreBuilder]=useState(false);// coach self-serve store builder view
   const[uniformBuilder,setUniformBuilder]=useState(false);// coach self-serve uniform designer
+  // This team's uniform-builder orders, listed so a coach can open a proof and
+  // confirm it from the portal (server resolves the alpha tag; same trust model
+  // as the rest of the portal).
+  const[uniformOrders,setUniformOrders]=useState([]);
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      try{
+        if(!customer?.alpha_tag)return;
+        const r=await fetch('/.netlify/functions/uniform-order',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'portal_list',portal:customer.alpha_tag})});
+        const d=await r.json();
+        if(alive&&d&&d.ok)setUniformOrders(Array.isArray(d.orders)?d.orders:[]);
+      }catch(_e){/* card simply stays hidden */}
+    })();
+    return()=>{alive=false};
+  },[customer?.alpha_tag]);
   const[adRange,setAdRange]=useState('period');// AD spend dashboard scope: 'period' | 'all'
   const[spendView,setSpendView]=useState(false);// AD Spend & Promo full-screen view
   const[page,setPage]=useState('home');// portal nav: home|orders|roster|store|art|billing|shop
@@ -664,6 +727,23 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   const[spendMode,setSpendMode]=useState('all');// dashboard metric: 'all' | 'adidas' (items only)
   const[teamFilter,setTeamFilter]=useState('all');// AD-only: filter Orders/Estimates/Art by sport (sub-customer)
   useEffect(()=>setInvs(initInvs),[initInvs]);
+  // Deep-link: emails/texts can point straight at one estimate (?est=<id>) or art
+  // proof (?so=<id>&job=<id>) instead of the portal home. The params ride on the
+  // portal's own URL when it's opened directly; embedded in the marketing /coach
+  // iframe (which forwards only the portal tag) they're recovered from the parent
+  // page URL via document.referrer. Applied once, as soon as the target record has
+  // loaded, then locked so it never fights the coach's own navigation.
+  const _deepLinked=useRef(false);
+  useEffect(()=>{
+    if(_deepLinked.current)return;
+    let sp=null;try{sp=new URLSearchParams(window.location.search);}catch(_){}
+    const _param=k=>{const v=sp&&sp.get(k);if(v)return v;try{const r=document.referrer||'';const qi=r.indexOf('?');if(qi>=0)return new URLSearchParams(r.slice(qi)).get(k);}catch(_){}return null;};
+    const estId=_param('est'),soId=_param('so'),jobId=_param('job');
+    if(!estId&&!soId){_deepLinked.current=true;return;}
+    if(estId){const e=(ests||[]).find(x=>x.id===estId);if(e){setEstView(e);setUpdateRequestSent(false);setUpdateRequestText('');setPage('orders');_deepLinked.current=true;}return;}
+    const s=(sos||[]).find(x=>x.id===soId);
+    if(s){setSoView(s);const j=jobId?(safeJobs(s)||[]).find(jj=>jj.id===jobId):null;if(j){setJobView({job:j,so:s});setComment('');}setPage('orders');_deepLinked.current=true;}
+  },[sos,ests]);
   const isP=!customer.parent_id;
   // ── NSA design tokens — hoisted so detail views (estimate/order/art) theme too ──
   // A sub-team's own colors drive the theme; its parent department's colors only
@@ -671,14 +751,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // still borrows the school's gold — which is what stops a red-only team's
   // accent from falling back to a lightened tint that reads pink.
   const _parentCust=customer.parent_id?(allCustomers||[]).find(c=>c.id===customer.parent_id):null;
-  const cpTheme=cpTeamTheme(customer,_parentCust&&_parentCust.school_colors);
+  const cpTheme=cpTeamTheme(customer,_parentCust?cpEffectiveFamilies(_parentCust):null);
   const cpMonogram=((customer.name||'').match(/\b[A-Za-z0-9]/g)||[]).slice(0,2).join('').toUpperCase()||'NS';
-  const _hasFam=cols=>Array.isArray(cols)&&cols.some(f=>CP_HEX[f]);
-  const _nsaHasColors=_hasFam(customer.school_colors)||(!!_parentCust&&_hasFam(_parentCust.school_colors));
+  // Effective families come from the family picker (school_colors) or, for the
+  // ~95% of customers who only filled the "School Colors (Pantone)" card, from
+  // their saved Pantone colors — so the portal wears the real team colors.
+  const _cpFamilies=cpEffectiveFamilies(customer);
+  const _nsaHasColors=_cpFamilies.length>0||(!!_parentCust&&cpEffectiveFamilies(_parentCust).length>0);
   const tPrimary=_nsaHasColors?cpTheme.primary:'#192853';
   const tAccent=_nsaHasColors?cpTheme.accent:'#962C32';
   const tNavyDark=cpShade(tPrimary,-22),tNavyMid=cpShade(tPrimary,8),tNavyTint=cpShade(tPrimary,20);
   const tAccentLight=cpShade(tAccent,26),tAccentSoft=cpShade(tAccent,86);
+  // Hero "Team Colors" swatches: the team's actual colors, not the themed
+  // primary/accent. Falls back to the theme tokens only when no colors are known.
+  const cpSwatches=_cpFamilies.length?_cpFamilies.map(f=>CP_HEX[f]):[tPrimary,tAccent,'#ffffff'];
   const _nsaHash='repeating-linear-gradient(-55deg, rgba(255,255,255,.04) 0 1px, transparent 1px 8px)';
   const _nsaFont="'Source Sans 3',system-ui,sans-serif";
   const _nsaImport="@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,600;0,700;0,800;1,700;1,800&family=Source+Sans+3:wght@400;600;700&display=swap');";
@@ -700,7 +786,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   useEffect(()=>{let cancel=false;(async()=>{
     const sIds=_cpStoreKey?_cpStoreKey.split(','):[];
     if(!sIds.length){if(!cancel)setCpStores([]);return;}
-    const{data}=await supabase.from('webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
+    const{data}=await supabase.from('coach_webstores').select('id,name,slug,status,created_via,close_at').in('customer_id',sIds);
     if(!cancel)setCpStores(data||[]);
   })();return()=>{cancel=true;};},[_cpStoreKey]);
   const cpVisibleStores=cpStores.filter(s=>s.status!=='archived'&&(s.status!=='draft'||s.created_via==='coach'));
@@ -709,6 +795,69 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
   // Roster orders — invite-gated per customer (Catalog Access → coach_roster), same
   // pattern as coach_ai_builder/coach_livelook/coach_build_orders.
   const hasRoster=!!customer.coach_roster;
+  // ── National Team Shop crossover (Coach Crossover, Workstream 1) ──
+  // Connect itself has no coach sign-in (the portal is alpha-tag gated), so the
+  // one-click handoff keys off a supabaseCoach session — the same isolated
+  // coach auth client the Team Shop / Live Look use. undefined = not checked yet.
+  const[ntsSession,setNtsSession]=useState(undefined);
+  useEffect(()=>{let dead=false;
+    supabaseCoach.auth.getSession().then(({data})=>{if(!dead)setNtsSession((data&&data.session)||null);}).catch(()=>{if(!dead)setNtsSession(null);});
+    const{data:_ntsSub}=supabaseCoach.auth.onAuthStateChange((_e,s)=>{if(!dead)setNtsSession(s||null);});
+    return()=>{dead=true;if(_ntsSub&&_ntsSub.subscription)_ntsSub.subscription.unsubscribe();};
+  },[]);
+  const[ntsBannerHidden,setNtsBannerHidden]=useState(()=>{try{return localStorage.getItem('cp_nts_banner_dismissed')==='1';}catch{return true;}});
+  const[ntsEmail,setNtsEmail]=useState('');
+  const[ntsOtpState,setNtsOtpState]=useState('idle');// idle|sending|sent|error
+  // Same signInWithOtp pattern as src/teamshop/CoachGate.js / storefront/AdidasInventory.js:
+  // isolated supabaseCoach client, emailRedirectTo back to THIS portal URL
+  // (incl. ?portal= param — must be allow-listed in Supabase Auth redirects).
+  const ntsSendOtp=async()=>{
+    const em=ntsEmail.trim();
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)||ntsOtpState==='sending')return;
+    setNtsOtpState('sending');
+    const{error}=await supabaseCoach.auth.signInWithOtp({email:em,options:{emailRedirectTo:window.location.origin+window.location.pathname+window.location.search}});
+    setNtsOtpState(error?'error':'sent');
+  };
+  // Tile click: with a coach session, mint a one-time handoff code (the URL
+  // carries ONLY this opaque single-use 60s code — never a session credential)
+  // and open the Team Shop signed in; otherwise a plain link. Minting happens
+  // inside the click gesture; if window.open comes back blocked, same-tab.
+  const openTeamShop=async()=>{
+    let href='https://nationalteamshop.com';
+    try{
+      const{data}=await supabaseCoach.auth.getSession();
+      const sess=data&&data.session;
+      if(sess){
+        const _mint=(withCust)=>fetch('/.netlify/functions/teamshop-handoff',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+sess.access_token},body:JSON.stringify(withCust?{action:'mint',customer_id:customer.id}:{action:'mint'})});
+        let r=await _mint(true);
+        if(r.status===403)r=await _mint(false);// this coach sign-in may not be linked to this portal's customer — hand off without a team preselect
+        const b=await r.json().catch(()=>null);
+        if(r.ok&&b&&b.code)href='https://nationalteamshop.com/?handoff='+b.code;
+      }
+    }catch(e){/* fall through to the plain link */}
+    try{const w=window.open(href,CP_LINK_TARGET,'noopener');if(!w)window.location.assign(href);}catch(e){window.location.assign(href);}
+  };
+  // ── Team Shop orders card (Stage 8) — only once a coach session exists
+  // (ntsSession above); netlify/functions/teamshop-orders.js 'list' against
+  // THIS portal's customer.id, same auth model as the handoff mint. Fetched
+  // once per session+customer, not polled — this is a compact recent-orders
+  // peek, not a live order desk.
+  const[ntsOrders,setNtsOrders]=useState(null);// null = not loaded yet
+  useEffect(()=>{let dead=false;
+    if(!ntsSession||!customer?.id){setNtsOrders(null);return;}
+    (async()=>{
+      try{
+        const r=await fetch('/.netlify/functions/teamshop-orders',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+ntsSession.access_token},body:JSON.stringify({action:'list',customer_id:customer.id})});
+        const b=await r.json().catch(()=>null);
+        if(!dead)setNtsOrders(r.ok&&b&&Array.isArray(b.orders)?b.orders:[]);
+      }catch(e){if(!dead)setNtsOrders([]);}
+    })();
+    return()=>{dead=true;};
+  },[ntsSession,customer?.id]);
+  // Same friendly status vocabulary as src/teamshop/AccountPage.js's
+  // statusChipLabel — intentionally a small standalone copy (CoachPortal.js
+  // sits outside the teamshop chunk, no shared module between them).
+  const ntsStatusLabel=(o)=>statusChipLabel(o); // shared: src/lib/teamshopOrderStatus.js
   const custSOs=sos.filter(s=>ids.includes(s.customer_id));
   const custEsts=ests.filter(e=>ids.includes(e.customer_id));
   // Shared estimate total — sums sizes, falling back to est_qty when there's no
@@ -1296,7 +1445,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             {soJobsList.map(j=>{const artFile=soAF.find(a=>a.id===j.art_file_id);const _jArtIds=new Set((j._art_ids||[j.art_file_id].filter(Boolean)).filter(Boolean));(j.items||[]).forEach(gi=>{const it=safeItems(so)[gi.item_idx];if(!it)return;safeDecos(it).forEach(d=>{if(d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd')_jArtIds.add(d.art_file_id)})});const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
               const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
               const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
-              const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
+              const _jMf=_jIm.length===0?(()=>{const _g=_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));return _g.length>0?_g:_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.prod_files||[]))})():[];
               const _jSeen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_jSeen.has(u))return false;_jSeen.add(u);return true});
               const _clickJob=()=>{setJobView({job:j,so});setComment('');if(j.sent_to_coach_at&&!j.coach_email_opened_at){const liveSO2=sos.find(s=>s.id===so.id);if(liveSO2){const updSO2={...liveSO2,jobs:(liveSO2.jobs||safeJobs(liveSO2)).map(jj=>jj.id===j.id?{...jj,coach_email_opened_at:new Date().toISOString()}:jj),updated_at:new Date().toLocaleString()};if(savSOFn)savSOFn(updSO2);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO2:s))}}};
               const _jWait=j.art_status==='waiting_approval';
@@ -1361,7 +1510,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
     // "also applies to" caption. Unlinked garments keep their own per-item mock.
     const _linkOfC=gi=>resolveMockLink(_jobArtFiles,gi.sku,gi.color);
     const _depsOfC=gi=>mockLinkDependents(_jobArtFiles,gi.sku,gi.color);
-    const mockups=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
+    const mockups=(()=>{const _g=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));return _g.length>0?_g:_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.prod_files||[]))})();
     const _hasAnyItemMockup=gi=>{const src=_linkOfC(gi);if(src)return _filterDisplayable(mockLinkSourceFiles(_jobArtFiles,src)).length>0;const _mk=gi.sku+'|'+(gi.color||'');return _jobArtFiles.some(_af=>{const m=_af?.item_mockups||{};const v=m[_mk]&&m[_mk].length>0?m[_mk]:(m[gi.sku]||[]);return _filterDisplayable(v).length>0})};
     const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd=it?prod.find(pp=>pp.id===it.product_id||pp.sku===it.sku):null;return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd?.image_url||(prd?.images&&prd.images[0])||it?._colorImage||'',back_image_url:prd?.back_image_url||(prd?.images&&prd.images[1])||it?._colorBackImage||''}});
     return<div style={{minHeight:'100vh',background:'#f1f5f9',display:'flex',justifyContent:'center',padding:'40px 16px'}}>
@@ -1392,6 +1541,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _cpDecosSorted=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'&&d.art_file_id&&d.art_file_id!=='__tbd'):[];const _seenIm=new Set();const _cpFirst=(_af)=>{const im=_af?.item_mockups||{};const v=im[_mk];if(v&&v.length>0)return v[0];const vb=im[gi.sku];if(vb&&vb.length>0)return vb[0];const de=Object.entries(im).find(([k])=>k.startsWith(_mk+'|'));return de&&de[1]&&de[1].length>0?de[1][0]:null;};
             // Linked garment → no images of its own (a note references the source); else per-item.
             const itemMockups=_mySrc?[]:_filterDisplayable(_cpDecosSorted.length>1?_cpDecosSorted.flatMap((d,i)=>{const af3=safeArt(so).find(a=>a.id===d.art_file_id);if(!af3)return[];const disc=i===0?'':(d.color_way_id||('d'+i));const key=_mk+(disc?('|'+disc):'');const im=af3?.item_mockups||{};const v=im[key];if(v&&v.length>0)return[v[0]];const f=_cpFirst(af3);return f?[f]:[];}):_itemArtFiles.length>1?_itemArtFiles.flatMap(_af=>{const f=_cpFirst(_af);return f?[f]:[]}):_itemArtFiles.flatMap(_af=>{const im=_af?.item_mockups||{};const v=im[_mk];return v&&v.length>0?v:(im[gi.sku]||[])})).concat(/* suffixed slots: reversible Side B, numbers, names */_filterDisplayable(_itemArtFiles.flatMap(_af=>Object.entries(_af?.item_mockups||{}).filter(([k,arr])=>k.startsWith(_mk+'|')&&Array.isArray(arr)&&arr.length>0).flatMap(([,arr])=>arr)))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true});
+            // No per-item mock and no link: fall back to the art's proof files (reused library
+            // art with no per-garment mocks anywhere). Only on multi-item jobs — a single-item
+            // job already shows the identical files via the job-level `mockups` ladder above,
+            // so adding them here too would just duplicate the same images on screen.
+            const itemProofFiles=(!_mySrc&&itemMockups.length===0&&items.length>1)?_filterDisplayable(_itemArtFiles.flatMap(_af=>artProofFallback(_af))).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seenIm.has(u))return false;_seenIm.add(u);return true}):[];
             const artDecos=srcItem?safeDecos(srcItem).filter(d=>d.kind==='art'):[];
             const artPos=artDecos.map(d=>d.position||'Front Center').filter((v,idx,arr)=>arr.indexOf(v)===idx);
             // Numbers/names shown only when THIS job produces them — the coach approving a logo
@@ -1423,6 +1577,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   :<div style={{height:180,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
                 </div>})}
             </div>{_myDeps.length>0&&<div style={{padding:'6px 14px',background:'#eef2ff',fontSize:11,fontWeight:700,color:'#3730a3',textAlign:'center'}}>One mockup — also applies to {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}</>}
+            {!_mySrc&&itemMockups.length===0&&itemProofFiles.length>0&&<>
+              <div style={{padding:'8px 14px',background:'#fffbeb',border:'1px solid #fde047',borderTop:'none',borderBottom:'none',fontSize:11,fontWeight:700,color:'#92400e',textAlign:'center'}}>♻️ Sew-out proof from production files — not a garment mockup</div>
+              <div style={{display:'grid',gridTemplateColumns:itemProofFiles.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
+                {itemProofFiles.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const isImg=_isImgUrl(url,f);
+                  return<div key={fi} style={{background:'white',cursor:isUrl(url)?'pointer':'default'}} onClick={()=>{if(isUrl(url))setLightbox(url)}}>
+                    {isImg&&isUrl(url)?<img src={url} alt="" style={{width:'100%',height:itemProofFiles.length>1?180:280,objectFit:'contain',display:'block',background:'#fafafa'}}/>
+                    :<div style={{height:180,display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}><span style={{fontSize:32}}>📄</span></div>}
+                  </div>})}
+              </div>
+            </>}
             {/* Item header */}
             <div style={{padding:'12px 14px'}}>
               <div style={{display:'flex',gap:12,alignItems:'center',marginBottom:10}}>
@@ -1535,14 +1699,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div style={{fontSize:12,color:'#9a3412',fontWeight:600}}>Mockup files haven't been uploaded yet</div>
           </div>}
           {j.art_status==='waiting_approval'&&!j.sent_to_coach_at&&<div style={{background:'#f0f9ff',border:'1px solid #bae6fd',borderRadius:10,padding:14,marginBottom:16,fontSize:12,color:'#0369a1',fontWeight:600}}>🎨 Proof in progress — your rep is reviewing this design and will send it to you for approval when it's ready.</div>}
-          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:10,padding:16,marginBottom:16}}>
+          {j.art_status==='waiting_approval'&&j.sent_to_coach_at&&<div style={{border:'2px solid #f59e0b',background:'#fffbeb',borderRadius:16,padding:18,marginBottom:16}}>
+
             <div style={{fontWeight:700,color:'#92400e',marginBottom:10}}>⏳ This artwork needs your approval</div>
-            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:8,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
+            {_portalDisclaimer&&<div style={{padding:'10px 14px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:12,marginBottom:12,fontSize:12,color:'#991b1b',lineHeight:1.5}}><strong>⚠️ Important:</strong> {_portalDisclaimer}</div>}
             <div style={{marginBottom:10}}>
-              <textarea className="form-input" rows={3} placeholder="Add a note (optional for approval, required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical'}}/>
+              <textarea className="form-input" rows={3} placeholder="Add a note (optional for approval, required for rejection)..." value={comment} onChange={e=>setComment(e.target.value)} style={{fontSize:12,resize:'vertical',borderRadius:10}}/>
             </div>
             <div style={{display:'flex',gap:8}}>
-              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
+              <button className="btn btn-sm" style={{background:'#22c55e',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 // A coach must never approve a proof with unmocked garments — they'd be
                 // approving art they can't see. Same per-garment gate the rep side enforces
@@ -1559,11 +1724,16 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 // embroidery .dst)? Approval sends it straight to art_complete instead of the
                 // upload-files stage — mirrors the buildJobs derivation. Every art on the job
                 // must be confirmed before we skip the stage.
-                const _apArts=jArtIds.map(id=>safeArt(liveSO).find(a=>a.id===id)).filter(Boolean);const _apDeco=_apArts[0]?.deco_type||j.deco_type;const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)))?'art_complete':prodFilesStatusFor(_apDeco);
+                const _apArts=jArtIds.map(id=>safeArt(liveSO).find(a=>a.id===id)).filter(Boolean);const _apDeco=_apArts[0]?.deco_type||j.deco_type;const _apSt=(_apArts.length&&_apArts.every(a=>artProdFilesConfirmed(a)||artDstOnFile(a)))?'art_complete':prodFilesStatusFor(_apDeco);/* artDstOnFile: at coach-approve time the art status hasn't flipped to 'approved' yet, so the status-gated .dst check alone would route a fully-digitized job into upload_emb_files anyway */
                 // Pin the approval to the artwork on screen: every mock URL in view must still
                 // exist server-side, or the approve conflicts instead of recording an approval
-                // for an image the artist has since replaced.
-                const _sm=new Set();const _seenMocks=[...mockups,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
+                // for an image the artist has since replaced. Pin ONLY the fields the RPC's
+                // guard pools cover (mockup_files / files / item_mockups) — NOT the prod_files
+                // fallback the display `mockups` uses when a job has no mockup. The server never
+                // pools prod_files, so pinning those URLs 409'd every approval of a prod-files-
+                // only proof with NSA_MOCKS_CHANGED even though the artist never touched the art.
+                const _pinMocks=_filterDisplayable(_jobArtFiles.flatMap(_af=>_af?.mockup_files||_af?.files||[]));
+                const _sm=new Set();const _seenMocks=[..._pinMocks,..._jobArtFiles.flatMap(_af=>Object.values(_af?.item_mockups||{}).flat())].map(f=>typeof f==='string'?f:((f&&(f.url||f.name))||'')).filter(u=>{if(!u||_sm.has(u))return false;_sm.add(u);return true});
                 // Rep to notify: creator → customer's primary rep → monitored inbox, so a rep
                 // missing an email never silently swallows the decision (mirrors the estimate path).
                 const rep=REPS.find(r=>r.id===liveSO.created_by)||REPS.find(r=>r.id===customer.primary_rep_id);
@@ -1582,7 +1752,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 if(savSOFn)savSOFn(updSO);else if(onUpdateSOs)onUpdateSOs(prev=>prev.map(s=>s.id===so.id?updSO:s));
                 setComment('');// stay on the job view — it re-renders from live state to show the "approved" banner
               }}>✅ Approve Artwork</button>
-              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'10px 16px'}} onClick={async()=>{
+              <button className="btn btn-sm" style={{background:'#dc2626',color:'white',flex:1,justifyContent:'center',fontWeight:700,padding:'12px 16px',borderRadius:10}} onClick={async()=>{
                 if(!comment.trim()){alert('Please describe what changes you need.');return}
                 const liveSO=sos.find(s=>s.id===so.id);if(!liveSO)return;
                 const _fb=comment.trim();
@@ -1610,8 +1780,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               }}>❌ Request Changes</button>
             </div>
           </div>}
-          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
-          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:8,padding:10,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
+          {(j.art_status==='art_complete'||j.art_status==='production_files_needed')&&<div style={{background:'#f0fdf4',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#166534',fontWeight:600}}>✅ You approved this artwork{j.coach_approval_comment&&<div style={{fontWeight:400,marginTop:6,color:'#15803d'}}>Your note: "{j.coach_approval_comment}"</div>}</div>}
+          {(j.art_status==='art_requested'&&j.coach_rejected)&&<div style={{background:'#fef2f2',borderRadius:12,padding:12,marginBottom:16,fontSize:12,color:'#dc2626',fontWeight:600}}>🔄 Changes requested — your artist is working on revisions</div>}
           {(j.art_status==='art_complete'||j.art_status==='production_files_needed'||(j.art_status==='art_requested'&&j.coach_rejected))&&(()=>{
             const _next=waitingArtJobs.find(w=>!(w.so&&w.so.id===so.id&&w.id===j.id));
             return<div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:16}}>
@@ -1644,7 +1814,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       if(soItems.length>0){
         soItems.forEach(it=>{
           const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-          const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
+          const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
           const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
           let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
           if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
@@ -1979,13 +2149,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         <div className="cp-col">
         {/* ── HOME HUB — school hero + color-coordinated section tiles (the launchpad) ── */}
         {page==='home'&&<div>
-          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}`}</style>
+          <style>{`.nsa-qa{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.nsa-attn,.nsa-rep{display:grid;gap:24px}.nsa-attn{grid-template-columns:1fr 1fr}.nsa-rep{grid-template-columns:1.3fr 1fr}@media(max-width:880px){.nsa-qa{grid-template-columns:1fr}.nsa-attn,.nsa-rep{grid-template-columns:1fr}.nsa-herologo{display:none!important}.nsa-heroleft{max-width:100%!important}}
+          /* ── Dashboard-only restyle tokens (flat/rounded, teamshop-aligned). Scoped to this
+             home-page block only — NOT touching the shared .nsa-tile/.nsa-skew/.nsa-card rules
+             above, which other pages (Orders/Billing/Art Locker/Shop) still rely on. ── */
+          .nsa-dtile{transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+          .nsa-dtile:hover{transform:translateY(-3px);box-shadow:0 14px 32px rgba(25,40,83,.12)!important;border-color:#E2E6F0!important}
+          .nsa-dbtn{transition:transform .15s ease,filter .15s ease}
+          .nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}`}</style>
           {/* ── Pennant hero ── */}
-          <div style={{position:'relative',overflow:'hidden',borderRadius:8,minHeight:320,boxShadow:'0 16px 40px rgba(0,0,0,.25)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
-            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
-            <div style={{position:'absolute',top:0,right:0,bottom:0,width:'46%',background:tAccent,opacity:.14,clipPath:'polygon(28% 0,100% 0,100% 100%,0 100%)',pointerEvents:'none'}}/>
+          <div style={{position:'relative',overflow:'hidden',borderRadius:16,minHeight:320,boxShadow:'0 10px 32px rgba(15,26,56,.18)',marginBottom:28,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 58%, ${tNavyTint} 100%)`}}>
             <div className="nsa-herologo" style={{position:'absolute',top:0,right:0,bottom:0,width:'42%',display:'flex',alignItems:'center',justifyContent:'center',padding:'34px 40px'}}>
-              <div style={{width:'100%',height:'100%',borderRadius:10,background:'rgba(255,255,255,.05)',display:'flex',alignItems:'center',justifyContent:'center'}}>
+              <div style={{width:'100%',height:'100%',borderRadius:16,background:'rgba(255,255,255,.08)',border:'1px solid rgba(255,255,255,.16)',display:'flex',alignItems:'center',justifyContent:'center'}}>
                 {cpLogo?<img src={cpLogo} alt="" style={{maxWidth:'100%',maxHeight:'100%',objectFit:'contain'}}/>:<div style={{textAlign:'center',color:'rgba(255,255,255,.45)'}}><div className="nsa-disp" style={{fontSize:64,fontWeight:800,letterSpacing:'-.04em',lineHeight:1}}>{cpMonogram}</div><div style={{fontSize:12,marginTop:6}}>Set team logo (customer detail)</div></div>}
               </div>
             </div>
@@ -1995,12 +2170,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               <div style={{fontSize:15,color:'rgba(255,255,255,.78)',marginTop:10}}>{isP?(adData?adData.teamCount:subs.length)+' teams · ':''}Powered by National Sports Apparel</div>
               <div style={{display:'flex',alignItems:'center',gap:12,marginTop:18}}>
                 <span className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Team Colors</span>
-                {[tPrimary,tAccent,'#ffffff'].map((c,i)=><span key={i} style={{width:24,height:24,background:c,border:'2px solid rgba(255,255,255,.5)',transform:'skewX(-12deg)'}}/>)}
+                {/* merge: main's cpSwatches (real school-color families) in the Team Shop branch's circle styling */}
+                {cpSwatches.map((c,i)=><span key={i} style={{width:22,height:22,borderRadius:'50%',background:c,border:'2px solid rgba(255,255,255,.5)'}}/>)}
               </div>
               {totalDue>0&&<><div style={{height:1,background:'rgba(255,255,255,.15)',margin:'22px 0 18px',maxWidth:400}}/>
               <div style={{display:'flex',alignItems:'center',gap:22,flexWrap:'wrap'}}>
                 <div><div className="nsa-disp" style={{fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'rgba(255,255,255,.6)'}}>Balance Due</div><div className="nsa-disp" style={{fontWeight:800,fontSize:38,color:tAccentLight,lineHeight:1}}>${totalDue.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div></div>
-                <button className="nsa-skew nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'12px 22px',borderRadius:4,cursor:'pointer'}}><span>Pay Balance →</span></button>
+                <button className="nsa-dbtn nsa-disp" onClick={()=>setPage('billing')} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:15,letterSpacing:'.5px',textTransform:'uppercase',padding:'13px 24px',borderRadius:8,cursor:'pointer'}}>Pay Balance →</button>
               </div></>}
             </div>
           </div>
@@ -2023,11 +2199,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               ...(adData?[{k:'spend',t:adData.hasPromo?'Promo & Spend':'Spend Report',sub:adData.hasPromo?adData.money2(adData.remainingDisplay)+' promo balance':'View report',icon:'📊',accent:false,onClick:()=>setSpendView(true)}]:[]),
             ];
             return qa.map(q=>(
-              <button key={q.k} className="nsa-tile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderTop:`3px solid ${q.accent?tAccent:tPrimary}`,borderRadius:6,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
-                <span style={{width:50,height:50,flexShrink:0,borderRadius:6,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:24}}>{q.icon}</span>
+              <button key={q.k} className="nsa-dtile" onClick={q.onClick||(()=>setPage(q.k))} style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:22,display:'flex',alignItems:'center',gap:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',cursor:'pointer',textAlign:'left'}}>
+                <span style={{width:48,height:48,flexShrink:0,borderRadius:12,background:q.accent?tAccent:tPrimary,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:22}}>{q.icon}</span>
                 <span style={{minWidth:0}}>
                   <span className="nsa-disp" style={{display:'block',fontWeight:700,fontSize:19,textTransform:'uppercase',color:tPrimary,lineHeight:1}}>{q.t}</span>
-                  <span style={{display:'block',fontSize:13,color:q.sa?tAccent:'#5A6075',fontWeight:q.sa?700:400,marginTop:4}}>{q.sub}</span>
+                  {q.sa?<span style={{display:'inline-flex',alignItems:'center',gap:6,marginTop:6,background:tAccentSoft,color:tAccent,fontSize:12,fontWeight:700,borderRadius:999,padding:'4px 10px 4px 8px'}}><span style={{width:6,height:6,borderRadius:999,background:tAccent,flexShrink:0}}/>{q.sub}</span>:<span style={{display:'block',fontSize:13,color:'#5A6075',marginTop:4}}>{q.sub}</span>}
                 </span>
               </button>
             ));})()}
@@ -2035,7 +2211,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           {/* ── Needs Your Attention ── */}
           <div className="nsa-attn" style={{marginTop:28}}>
             {(()=>{const openE=custEsts.filter(e=>e.status==='sent'||e.status==='open').slice(0,3);return(
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Estimates to Approve</div>
                 <button onClick={()=>setPage('orders')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>View all →</button>
@@ -2047,11 +2223,11 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn||est.memo||est.id}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{est.memo||est.id} · ${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                   </div>
-                  <button className="nsa-skew nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                  <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{flexShrink:0,background:tPrimary,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:8,cursor:'pointer'}}>Approve</button>
                 </div>})}
             </div>);})()}
             {(()=>{const jobs=waitingArtJobs.slice(0,3);return(
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'16px 22px'}}>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:18,textTransform:'uppercase',color:tPrimary}}>Designs to Review</div>
                 <button onClick={()=>setPage('art')} className="nsa-disp" style={{background:'none',border:'none',cursor:'pointer',color:tAccent,fontWeight:700,fontSize:13,textTransform:'uppercase'}}>Art Locker →</button>
@@ -2059,30 +2235,29 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
               {jobs.length===0?<div style={{padding:'0 22px 18px',color:'#5A6075',fontSize:13}}>No proofs waiting on you right now.</div>:
                jobs.map((j,ix)=>{const so=j.so;
                 return<div key={j.id} className="nsa-card" style={{display:'flex',alignItems:'center',gap:12,padding:'12px 22px',borderTop:'1px solid #EEF1F6',cursor:'pointer'}} onClick={()=>{setSoView(so);setJobView({job:j,so});setComment('')}}>
-                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:4,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16,clipPath:'polygon(0 0,100% 0,100% 100%,8px 100%,0 calc(100% - 8px))'}}>{String(ix+1).padStart(2,'0')}</div>
+                  <div className="nsa-disp" style={{width:46,height:54,flexShrink:0,borderRadius:12,background:`linear-gradient(150deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',color:'rgba(255,255,255,.85)',fontWeight:800,fontSize:16}}>{String(ix+1).padStart(2,'0')}</div>
                   <div style={{flex:1,minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:16,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{j.art_name||so.memo||'Artwork'}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||so.id}</div>
                   </div>
-                  <button className="nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:4,cursor:'pointer'}}>Review</button>
+                  <button className="nsa-dbtn nsa-disp" onClick={(ev)=>{ev.stopPropagation();setSoView(so);setJobView({job:j,so});setComment('')}} style={{flexShrink:0,background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'7px 14px',borderRadius:8,cursor:'pointer'}}>Review</button>
                 </div>})}
             </div>);})()}
           </div>
           {/* ── Rep + Contact ── */}
           <div className="nsa-rep" style={{marginTop:24}}>
-            <div style={{position:'relative',overflow:'hidden',borderRadius:6,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
-              <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',overflow:'hidden',borderRadius:16,padding:'24px 28px',color:'#fff',background:`linear-gradient(120deg, ${tPrimary}, ${tNavyMid})`,display:'flex',alignItems:'center',justifyContent:'space-between',gap:20}}>
               <div style={{position:'relative',minWidth:0}}>
                 <div className="nsa-disp" style={{fontWeight:700,fontSize:13,letterSpacing:'1px',textTransform:'uppercase',color:tAccentLight}}>Your Dedicated Rep</div>
                 <div className="nsa-disp" style={{fontWeight:800,fontSize:26,textTransform:'uppercase',marginTop:4}}>{rep?.name||'NSA Team'}</div>
                 <div style={{fontSize:13,color:'rgba(255,255,255,.7)',marginTop:3}}>Knows your teams, your colors, your deadlines.</div>
               </div>
-              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-skew nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 20px',borderRadius:4}}><span>Contact {(rep?.name||'NSA Team').split(' ')[0]}</span></a>
+              <a href={`mailto:${rep?.email||'team@nsa-teamwear.com'}`} className="nsa-dbtn nsa-disp" style={{position:'relative',flexShrink:0,background:tAccent,color:'#fff',textDecoration:'none',fontWeight:700,fontSize:14,letterSpacing:'.5px',textTransform:'uppercase',padding:'11px 22px',borderRadius:8}}>Contact {(rep?.name||'NSA Team').split(' ')[0]}</a>
             </div>
-            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:6,padding:'20px 22px'}}>
+            <div style={{background:'#fff',border:'1px dashed #D1D5DE',borderRadius:16,padding:'20px 22px'}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Contact &amp; Shipping</div>
               <div style={{fontSize:13,color:'#5A6075',margin:'6px 0 12px'}}>{(customer.contacts||[])[0]?.name||'—'}{(customer.contacts||[])[0]?.email?' · '+(customer.contacts||[])[0].email:''}{customer.shipping_city?' · '+customer.shipping_city+', '+(customer.shipping_state||''):''}</div>
-              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:4,cursor:'pointer'}}>Request Update</button>
+              <button onClick={()=>setContactEdit({name:(customer.contacts||[])[0]?.name||'',email:(customer.contacts||[])[0]?.email||'',phone:(customer.contacts||[])[0]?.phone||'',shipping:safeStr(customer.shipping_address_line1)})} className="nsa-dbtn nsa-disp" style={{background:'transparent',color:tPrimary,border:`2px solid ${tPrimary}`,fontWeight:700,fontSize:13,textTransform:'uppercase',padding:'8px 16px',borderRadius:8,cursor:'pointer'}}>Request Update</button>
             </div>
           </div>
         </div>}
@@ -2094,19 +2269,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           let filtered=artLibrary.filter(a=>(artDeco==='all'||a.deco===artDeco)&&(!q||a.name.toLowerCase().includes(q)||(a.deco||'').toLowerCase().includes(q))&&(!_tfName||(a.teams||[]).includes(_tfName)));
           if(isP)filtered=[...filtered].sort((a,b)=>((a.teams||[])[0]||'').localeCompare((b.teams||[])[0]||''));
           return<div>
-            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:6px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}`}</style>
+            <style>{`.nsa-artgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}@media(max-width:980px){.nsa-artgrid{grid-template-columns:repeat(2,1fr)}}@media(max-width:560px){.nsa-artgrid{grid-template-columns:1fr}}.nsa-arttile{background:#fff;border:1px solid #EEF1F6;border-radius:16px;overflow:hidden;cursor:pointer;box-shadow:0 2px 12px rgba(0,0,0,.06);transition:transform .25s,box-shadow .25s}.nsa-arttile:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.22)}
+            .nsa-dbtn{transition:transform .15s ease,filter .15s ease}.nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}`}</style>
             <div style={{marginBottom:24}}>
               <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Proofs &amp; Approved Designs</div>
               <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Art Locker</h1>
-              <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+              <div style={{width:60,height:4,background:tAccent,borderRadius:999,marginTop:10}}/>
             </div>
             {artLibrary.length===0?
-              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
+              <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'48px',textAlign:'center',color:'#5A6075'}}>Every design we mock up for your team is collected here — ready to view, download &amp; re-order.</div>
             :<>
               <div style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap',marginBottom:18}}>
-                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:6,fontSize:14,fontFamily:'inherit'}}/>
+                <input value={artQuery} onChange={e=>setArtQuery(e.target.value)} placeholder={'Search '+artLibrary.length+' design'+(artLibrary.length!==1?'s':'')+'…'} style={{flex:'1 1 220px',minWidth:160,padding:'11px 14px',border:'1px solid #EEF1F6',borderRadius:8,fontSize:14,fontFamily:'inherit'}}/>
                 {isP&&_teamSelect}
-                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:4,padding:'9px 14px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
+                {decos.length>2&&decos.map(d=>{const on=artDeco===d;return<button key={d} onClick={()=>setArtDeco(d)} className="nsa-dbtn nsa-disp" style={{border:'none',background:on?tPrimary:'#fff',color:on?'#fff':'#5A6075',borderRadius:999,padding:'9px 16px',fontSize:12,fontWeight:700,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.5px',boxShadow:on?'none':'0 1px 2px rgba(0,0,0,.06)'}}>{d==='all'?'All':d}</button>})}
               </div>
               {filtered.length===0?<div style={{color:'#5A6075',fontSize:14,padding:'24px',textAlign:'center'}}>No designs match your search.</div>:
               <div className="nsa-artgrid">
@@ -2115,8 +2291,8 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                     <div style={{position:'relative',aspectRatio:'4 / 3.4',background:`linear-gradient(150deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,display:'flex',alignItems:'center',justifyContent:'center',padding:14,overflow:'hidden'}}>
                       <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
                       {thumb&&isUrl(thumb)?<img src={thumb} alt={a.name} loading="lazy" style={{position:'relative',maxWidth:'100%',maxHeight:'100%',objectFit:'contain',filter:'drop-shadow(0 6px 16px rgba(0,0,0,.35))'}}/>:<span className="nsa-disp" style={{position:'relative',color:'rgba(255,255,255,.9)',fontSize:48,fontWeight:800}}>{cpMonogram}</span>}
-                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:0,transform:'skewX(-12deg)',background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 12px 4px 14px'}}><span style={{display:'inline-block',transform:'skewX(12deg)'}}>{a.deco}</span></span>}
-                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:4,padding:'2px 7px'}}>⊞ {a.urls.length}</span>}
+                      {a.deco&&<span className="nsa-disp" style={{position:'absolute',top:10,left:10,background:tAccent,color:'#fff',fontWeight:700,fontSize:10,letterSpacing:'.5px',textTransform:'uppercase',padding:'4px 10px',borderRadius:999}}>{a.deco}</span>}
+                      {a.urls.length>1&&<span style={{position:'absolute',bottom:8,right:8,fontSize:10,fontWeight:800,background:'rgba(0,0,0,.5)',color:'#fff',borderRadius:999,padding:'2px 8px'}}>⊞ {a.urls.length}</span>}
                     </div>
                     <div style={{padding:'12px 14px',display:'flex',alignItems:'center',justifyContent:'space-between',gap:8}}>
                       <div style={{minWidth:0}}>
@@ -2162,7 +2338,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             const _jArtFiles=[..._jArtIds].map(aid=>soAF.find(a=>a.id===aid)).filter(Boolean);
             const _jSkus=new Set((j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];return it?.sku||gi.sku}).filter(Boolean));
             const _jIm=_filterDisplayable(_jArtFiles.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus.has(k.split('|')[0])).flatMap(([,arr])=>arr||[])));
-            const _jMf=_jIm.length===0?_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[])):[];
+            const _jMf=_jIm.length===0?(()=>{const _g=_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.mockup_files||af3?.files||[]));return _g.length>0?_g:_filterDisplayable(_jArtFiles.flatMap(af3=>af3?.prod_files||[]))})():[];
             const _seen=new Set();const mockups=[..._jIm,..._jMf].filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_seen.has(u))return false;_seen.add(u);return true});
             const firstMock=mockups[0];const fmUrl=firstMock?(typeof firstMock==='string'?firstMock:firstMock.url):'';
             const fmIsImg=fmUrl&&_isImgUrl(fmUrl,firstMock);const fmIsPdf=fmUrl&&_isPdfUrl(fmUrl,firstMock);const fmPdfThumb=fmIsPdf?_cloudinaryPdfThumb(fmUrl):null;
@@ -2286,18 +2462,20 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
           if(isP&&teamFilter!=='all')rows=rows.filter(so=>so.customer_id===teamFilter);
           if(isP)rows=[...rows].sort(_teamSort);
           return<div>
-            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}`}</style>
+            <style>{`@media(max-width:760px){.nsa-otab{grid-template-columns:1fr!important;gap:8px!important}.nsa-ohead{display:none!important}}
+            .nsa-dbtn{transition:transform .15s ease,filter .15s ease}.nsa-dbtn:hover{transform:translateY(-1px);filter:brightness(1.07)}
+            .nsa-drow{transition:transform .15s ease,box-shadow .15s ease}.nsa-drow:hover{box-shadow:0 8px 20px rgba(25,40,83,.08)}`}</style>
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-end',gap:16,flexWrap:'wrap',marginBottom:24}}>
               <div>
                 <div className="nsa-disp" style={{fontWeight:700,fontSize:14,letterSpacing:'2px',textTransform:'uppercase',color:tAccent}}>Active &amp; Recent</div>
                 <h1 className="nsa-disp" style={{fontWeight:800,fontSize:40,textTransform:'uppercase',color:tPrimary,margin:'2px 0 0'}}>Orders</h1>
-                <div style={{width:60,height:4,background:tAccent,transform:'skewX(-12deg)',marginTop:10}}/>
+                <div style={{width:60,height:4,background:tAccent,borderRadius:999,marginTop:10}}/>
               </div>
               {isP&&_teamSelect}
             </div>
             {/* ── Estimates — always present in the Orders section as a dropdown; lists
                 open (to-approve) first, then approved-awaiting-conversion estimates. ── */}
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderLeft:`4px solid ${tAccent}`,borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',marginBottom:28}}>
               <button onClick={()=>setEstOpen(o=>!o)} style={{width:'100%',display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'16px 22px',borderBottom:estOpen?'1px solid #EEF1F6':'none',background:'#FAFBFC',border:'none',cursor:'pointer',textAlign:'left'}}>
                 <span style={{display:'flex',alignItems:'center',gap:10,minWidth:0}}>
                   {openEsts.length>0&&<span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',justifyContent:'center',width:26,height:26,borderRadius:999,background:tAccent,color:'#fff',fontWeight:800,fontSize:13,flexShrink:0}}>{openEsts.length}</span>}
@@ -2314,7 +2492,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
                     <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-                    <button className="nsa-skew nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:4,cursor:'pointer'}}><span>Approve</span></button>
+                    <button className="nsa-dbtn nsa-disp" onClick={ev=>{ev.stopPropagation();setEstView(est);setUpdateRequestSent(false);setUpdateRequestText('')}} style={{background:tAccent,color:'#fff',border:'none',fontWeight:700,fontSize:13,letterSpacing:'.5px',textTransform:'uppercase',padding:'9px 18px',borderRadius:8,cursor:'pointer'}}>Approve</button>
                   </div>
                 </div>})}
               {estOpen&&approvedEsts.length>0&&openEsts.length>0&&<div style={{padding:'11px 22px 5px',fontSize:11,fontWeight:800,textTransform:'uppercase',letterSpacing:'.5px',color:'#94A0B0',background:'#FAFBFC',borderBottom:'1px solid #EEF1F6'}}>Approved — awaiting your rep</div>}
@@ -2326,15 +2504,15 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                   </div>
                   <div style={{display:'flex',alignItems:'center',gap:16,flexShrink:0}}>
                     <div className="nsa-disp" style={{fontWeight:800,fontSize:18,color:tPrimary}}>${tt.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
-                    <span className="nsa-disp" style={{background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px',borderRadius:4,whiteSpace:'nowrap'}}>✓ Approved</span>
+                    <span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,background:'#E8F5EC',color:'#1F7A43',fontWeight:800,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'8px 14px 8px 12px',borderRadius:999,whiteSpace:'nowrap'}}><span style={{width:6,height:6,borderRadius:999,background:'#1F7A43',flexShrink:0}}/>Approved</span>
                   </div>
                 </div>})}
               {estOpen&&openEsts.length===0&&approvedEsts.length===0&&<div style={{padding:'18px 22px',color:'#5A6075',fontSize:13}}>No estimates right now — your rep posts quotes here for you to review &amp; approve.</div>}
             </div>
             {/* ── Order History table ── */}
             <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Order History</div>
-            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
-            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
+            {rows.length===0?<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'40px',textAlign:'center',color:'#5A6075'}}>No orders yet — your rep will post them here.</div>:
+            <div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden'}}>
               <div className="nsa-disp nsa-otab nsa-ohead" style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'14px 24px',background:'#F7F8FB',fontWeight:700,fontSize:12,letterSpacing:'1px',textTransform:'uppercase',color:'#5A6075'}}>
                 <span>Order</span><span>Status</span><span>Delivery</span><span style={{textAlign:'right'}}>Total</span>
               </div>
@@ -2344,13 +2522,13 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
                 const pct=totalU>0?Math.round(fulU/totalU*100):0;
                 const team=(allCustomers||[]).find(c=>c.id===so.customer_id);const tn=isP&&team&&team.id!==customer.id?team.name:(so.memo||so.id);
                 const tot=calcOrderTotals(so).grand;
-                return<div key={so.id} className="nsa-card nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
+                return<div key={so.id} className="nsa-card nsa-drow nsa-otab" onClick={()=>setSoView(so)} style={{display:'grid',gridTemplateColumns:'1.6fr 1fr 1fr .8fr',gap:16,padding:'16px 24px',borderTop:'1px solid #EEF1F6',cursor:'pointer',alignItems:'center'}}>
                   <div style={{minWidth:0}}>
                     <div className="nsa-disp" style={{fontWeight:700,fontSize:17,textTransform:'uppercase',color:tPrimary,lineHeight:1.1,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{tn}</div>
                     <div style={{fontSize:13,color:'#5A6075',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{so.memo||'Order'} · {totalU} pcs · {so.id}</div>
                     <div style={{height:5,background:'#EEF1F6',borderRadius:999,marginTop:9,overflow:'hidden',maxWidth:220}}><div style={{height:'100%',width:pct+'%',background:tPrimary,borderRadius:999}}/></div>
                   </div>
-                  <div><span className="nsa-disp" style={{display:'inline-block',transform:'skewX(-6deg)',background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px',borderRadius:4}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{sm[0]}</span></span></div>
+                  <div><span className="nsa-disp" style={{display:'inline-flex',alignItems:'center',gap:6,background:sm[2],color:sm[1],fontWeight:700,fontSize:12,letterSpacing:'.5px',textTransform:'uppercase',padding:'5px 12px 5px 10px',borderRadius:999}}><span style={{width:6,height:6,borderRadius:999,background:sm[1],flexShrink:0}}/>{sm[0]}</span></div>
                   <div style={{fontSize:14,color:'#2A2F3E'}}>{so.expected_date?(st==='shipped'?'Arrives ':'ETA ')+so.expected_date:'—'}</div>
                   <div className="nsa-disp" style={{textAlign:'right',fontWeight:700,fontSize:18,color:tPrimary}}>${tot.toLocaleString(undefined,{maximumFractionDigits:0})}</div>
                 </div>;
@@ -2509,6 +2687,18 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
         </div>}
 
         {page==='shop'&&<div>
+          {/* National Team Shop sign-in nudge — only when NO coach session exists.
+              Verifying once creates the supabaseCoach session that turns the
+              National Team Shop tile below into a one-click signed-in handoff. */}
+          {ntsSession===null&&!ntsBannerHidden&&<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',background:'#F7F8FB',border:'1px solid #EEF1F6',borderRadius:8,padding:'10px 14px',marginBottom:14,fontSize:13,color:'#2A2F3E'}}>
+            <span style={{fontWeight:600}}>Verify your email once to enable one-click shopping on National Team Shop</span>
+            {ntsOtpState==='sent'?<span style={{color:'#1F7A43',fontWeight:600}}>Check your email for the sign-in link.</span>:<>
+              <input type="email" value={ntsEmail} onChange={e=>setNtsEmail(e.target.value)} onKeyDown={e=>{if(e.key==='Enter')ntsSendOtp();}} placeholder="coach@school.org" style={{flex:'1 1 180px',minWidth:150,padding:'6px 10px',border:'1px solid #D1D5DE',borderRadius:6,fontSize:13,fontFamily:'inherit'}}/>
+              <button onClick={ntsSendOtp} disabled={ntsOtpState==='sending'} style={{background:tPrimary,color:'#fff',border:'none',borderRadius:6,padding:'7px 14px',fontSize:12.5,fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>{ntsOtpState==='sending'?'Sending…':'Email me a link'}</button>
+              {ntsOtpState==='error'&&<span style={{color:'#962C32',fontSize:12}}>Couldn't send — try again.</span>}
+            </>}
+            <button onClick={()=>{setNtsBannerHidden(true);try{localStorage.setItem('cp_nts_banner_dismissed','1');}catch{/* won't persist */}}} aria-label="Dismiss" style={{marginLeft:'auto',background:'none',border:'none',color:'#94A0B0',fontSize:16,cursor:'pointer',lineHeight:1,padding:0}}>×</button>
+          </div>}
           {/* Hero */}
           <div style={{position:'relative',overflow:'hidden',borderRadius:8,boxShadow:'0 16px 40px rgba(0,0,0,.25)',background:`linear-gradient(120deg, ${tNavyDark} 0%, ${tPrimary} 55%, ${tNavyMid} 100%)`,color:'#fff',padding:'48px 44px',marginBottom:32}}>
             <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
@@ -2543,8 +2733,71 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             <div className="nsa-disp" style={{fontSize:14,fontWeight:800,background:'rgba(255,255,255,.16)',border:'1px solid rgba(255,255,255,.3)',borderRadius:4,padding:'10px 18px',whiteSpace:'nowrap'}}>Start →</div>
           </button>
 
+          {/* Uniform orders — proof review & confirmation lives on each order's
+              tokened status page; this card is the portal's way in. */}
+          {uniformOrders.length>0&&<div style={{background:'#fff',border:'1px solid #e2e8f0',borderRadius:8,padding:'16px 20px',marginBottom:16,boxShadow:'0 1px 6px rgba(15,23,42,.06)'}}>
+            <div className="nsa-disp" style={{fontSize:15,fontWeight:800,textTransform:'uppercase',color:tPrimary,marginBottom:10}}>Your Uniform Orders</div>
+            {uniformOrders.slice(0,6).map(o=>{
+              const needsConfirm=o.production_status==='proof_ready';
+              const statusLabel=needsConfirm?'Proof ready — review & confirm':String(o.production_status||'submitted').replace(/_/g,' ');
+              return(
+                <a key={o.order_number} href={`/uniform-builder?order=${encodeURIComponent(o.order_number)}&token=${encodeURIComponent(o.token)}`} style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:12,padding:'9px 0',borderTop:'1px solid #f1f5f9',textDecoration:'none',color:'#0f172a'}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontWeight:700,fontSize:14}}>{o.order_number}<span style={{fontWeight:400,color:'#64748b'}}> · {o.total_qty} pcs</span></div>
+                    <div style={{fontSize:12,color:needsConfirm?'#962C32':'#64748b',fontWeight:needsConfirm?700:400,textTransform:'capitalize'}}>{statusLabel}</div>
+                  </div>
+                  <span className="nsa-disp" style={{flexShrink:0,fontSize:12,fontWeight:800,textTransform:'uppercase',color:'#fff',background:needsConfirm?'#962C32':tPrimary,borderRadius:4,padding:'7px 12px'}}>{needsConfirm?'Confirm →':'View →'}</span>
+                </a>
+              );
+            })}
+          </div>}
+
           {/* Shop & Order section */}
           <div className="nsa-disp" style={{fontWeight:800,fontSize:20,textTransform:'uppercase',color:tPrimary,marginBottom:14}}>Shop &amp; Order</div>
+
+          {/* National Team Shop tile — one-click handoff (Coach Crossover) */}
+          <button onClick={openTeamShop} className="nsa-tile" style={{width:'100%',textAlign:'left',cursor:'pointer',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14,fontFamily:'inherit'}}>
+            <div style={{position:'absolute',inset:0,background:_nsaHash,pointerEvents:'none'}}/>
+            <div style={{position:'relative',width:58,height:58,flexShrink:0,borderRadius:8,background:tAccent,color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:26}}>🛍️</div>
+            <div style={{position:'relative',flex:1,minWidth:0}}>
+              <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+                <div className="nsa-disp" style={{fontWeight:800,fontSize:24,textTransform:'uppercase',color:'#fff',lineHeight:1}}>National Team Shop</div>
+                <span style={{display:'inline-flex',alignItems:'center',background:'rgba(150,44,50,.25)',border:`1px solid ${tAccentLight}`,color:tAccentLight,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:11,letterSpacing:'1px',textTransform:'uppercase',padding:'3px 9px',borderRadius:999}}>New</span>
+              </div>
+              <div style={{fontSize:14,color:'rgba(255,255,255,.78)',marginTop:5}}>Quick-turn custom gear — your logos, your pricing</div>
+            </div>
+            <div style={{position:'relative',flexShrink:0,color:'rgba(255,255,255,.6)',fontSize:24}}>›</div>
+          </button>
+
+          {/* Team Shop orders — compact recent-orders peek (Stage 8). Only
+              renders once a coach session exists; the verify-email banner
+              above already invites sign-in when there's none. */}
+          {ntsSession&&ntsOrders&&<div style={{background:'#fff',border:'1px solid #EEF1F6',borderRadius:16,padding:'18px 22px',marginBottom:14,boxShadow:'0 2px 12px rgba(0,0,0,.06)'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10}}>
+              <div className="nsa-disp" style={{fontWeight:800,fontSize:15,textTransform:'uppercase',color:tPrimary}}>Team Shop orders</div>
+              <button onClick={openTeamShop} style={{background:'none',border:'none',color:tAccent,fontWeight:700,fontSize:12.5,cursor:'pointer',fontFamily:'inherit',padding:0}}>View all →</button>
+            </div>
+            {!ntsOrders.length&&<div style={{fontSize:13,color:'#64748b',padding:'6px 0'}}>No orders yet — browse National Team Shop to place your first one.</div>}
+            {ntsOrders.slice(0,3).map(o=>{
+              const first=o.items&&o.items[0];
+              const extra=o.items?o.items.length-1:0;
+              const label=first?(first.name||first.sku||'Item')+(extra>0?` + ${extra} more`:''):'Order';
+              return(
+                <div key={o.id} style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'9px 0',borderTop:'1px solid #F1F5F9'}}>
+                  <div style={{flex:'1 1 200px',minWidth:0}}>
+                    <div style={{fontSize:13.5,fontWeight:700,color:'#0f172a',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{label}</div>
+                    <div style={{fontSize:11.5,color:'#64748b',marginTop:2}}>{o.created_at?new Date(o.created_at).toLocaleDateString():''}</div>
+                  </div>
+                  <span style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:11,fontWeight:800,padding:'4px 9px 4px 8px',borderRadius:999,background:'#F1F5F9',color:'#475569',whiteSpace:'nowrap'}}><span style={{width:6,height:6,borderRadius:999,background:'#475569',flexShrink:0}}/>{ntsStatusLabel(o)}</span>
+                  {/* /shop/order/<token> is host-agnostic (src/index.js checks the
+                      PATH before any host routing — see OrderTrack.js's header
+                      comment), so a relative link works from this portal's own
+                      origin same as it would from nationalteamshop.com. */}
+                  {o.status_token&&<a href={'/shop/order/'+o.status_token} target={CP_LINK_TARGET} rel="noopener noreferrer" style={{fontSize:11.5,fontWeight:700,color:tAccent,textDecoration:'none',whiteSpace:'nowrap'}}>Track ↗</a>}
+                </div>
+              );
+            })}
+          </div>}
 
           {/* Live Look tile — the highlight */}
           <a href={CP_LIVELOOK_URL} target={CP_LINK_TARGET} rel="noopener noreferrer" className="nsa-tile" style={{textDecoration:'none',display:'flex',alignItems:'center',gap:22,background:`linear-gradient(120deg, ${tPrimary} 0%, ${tNavyMid} 100%)`,border:`1px solid ${tPrimary}`,borderRadius:8,padding:'26px 28px',boxShadow:'0 2px 12px rgba(0,0,0,.1)',position:'relative',overflow:'hidden',marginBottom:14}}>
@@ -2687,3 +2940,5 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
 
 
 export default CoachPortal;
+// Exported for unit tests — pure color-resolution helpers (no React/Supabase).
+export { cpPantoneFamily, cpEffectiveFamilies, cpTeamTheme, CP_HEX };

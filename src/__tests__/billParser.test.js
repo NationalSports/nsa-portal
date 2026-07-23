@@ -21,9 +21,12 @@ function loadParser() {
   const safeNum = v => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
   // Empty catalog → the parser falls back to its SKU regexes (still reproduces the ULT365 phantom,
   // which is detected via SKU_RE, not the catalog).
-  const factory = new Function('prod', 'vend', 'sos', 'submittedBatches', 'invPOs', 'safeNum',
+  // The parse block calls the real sportsLink helpers (document discount + SI-fee fill) —
+  // inject the true implementations so these fixtures characterize actual behavior.
+  const { applySiDocumentDiscount, siExpectedUpcharge } = require('../sportsLink');
+  const factory = new Function('prod', 'vend', 'sos', 'submittedBatches', 'invPOs', 'safeNum', 'applySiDocumentDiscount', 'siExpectedUpcharge',
     block + '\n; return { parseSupplierBill, parseSingleInvoice };');
-  return factory([], [], [], [], [], safeNum);
+  return factory([], [], [], [], [], safeNum, applySiDocumentDiscount, siExpectedUpcharge);
 }
 
 const fixtures = require('./fixtures/sportsIncBills.json');

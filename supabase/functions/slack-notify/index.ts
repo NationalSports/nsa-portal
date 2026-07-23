@@ -9,11 +9,34 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { bearerToken, isServiceRole } from "../_shared/auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+// Shared secret the messages Database Webhook must send as `x-webhook-secret`.
+// This endpoint is triggered by that webhook (INSERT on public.messages); before
+// this guard, any anon-key holder could POST a forged record to spoof Slack DMs
+// and write slack_notifications / user_profiles with service-role privilege.
+const SLACK_NOTIFY_SECRET = Deno.env.get("SLACK_NOTIFY_SECRET") || "";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+
+// Caller authorization. Accepts the trusted service-role bearer (if the webhook is
+// configured to send it) OR a matching x-webhook-secret. STAGED ROLLOUT: while
+// SLACK_NOTIFY_SECRET is unset we log loudly and allow, so deploying this code does
+// not break live notifications before the webhook is reconfigured. Setting the env
+// var AND the webhook's x-webhook-secret header is what actually closes the hole.
+// Returns a plain boolean on purpose: the call site is `if (!authorizeWebhook(req))`,
+// and a result OBJECT there would be always-truthy — the guard would never fire.
+function authorizeWebhook(req: Request): boolean {
+  if (isServiceRole(bearerToken(req))) return true;
+  if (SLACK_NOTIFY_SECRET) {
+    const provided = req.headers.get("x-webhook-secret") || "";
+    return provided === SLACK_NOTIFY_SECRET;
+  }
+  console.error("[slack-notify] SECURITY: SLACK_NOTIFY_SECRET is not set and the caller is not service-role — request auth is NOT enforced (staged rollout). Set SLACK_NOTIFY_SECRET in the edge function env AND add a matching x-webhook-secret header to the messages Database Webhook to close this.");
+  return true;
+}
 
 // ─── Slack API helpers ─────────────────────────────────
 
@@ -163,6 +186,13 @@ function buildBlocks(
 
 serve(async (req: Request) => {
   try {
+    if (!authorizeWebhook(req)) {
+      return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+        status: 401,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
     // Webhook payload from Supabase (Database Webhook → Edge Function)
     const payload = await req.json();
     const record = payload.record || payload;

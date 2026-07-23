@@ -1,5 +1,7 @@
 /* eslint-disable */
 import { NSA as _NSA_CONST } from './constants';
+// Tackle-twill logo menu (settings-aware) so pdfDecoLabel can name a twill placement on documents.
+import { TWA as _TWA_TABLE } from './pricing';
 import JsBarcode from 'jsbarcode';
 import { supabase as _sbAuthClient } from './lib/supabase';
 // pdf-lib is loaded on demand (see printPdfLabels below) to keep it out of the eager bundle.
@@ -589,7 +591,8 @@ export const validateShipAddress = (a = {}) => {
 // deterministic): hoodie ≈ 18oz, tee ≈ 6oz, shorts ≈ 7oz, etc. Used to weigh
 // shipping labels when a catalog weight isn't set on the product.
 export function estimateWeightOz(text) {
-  const t = (text || '').toLowerCase();
+  // String() first — a numeric SKU (truthy non-string) used to throw TypeError here.
+  const t = String(text || '').toLowerCase();
   const rules = [
     [/back ?pack|duffel|duffle|equipment bag|gear bag/, 28],
     [/tote|sackpack|cinch|drawstring|bag/, 10],
@@ -614,8 +617,14 @@ export function estimateWeightOz(text) {
 export function labelWeightLbs(items, store = {}, weightByPid = {}) {
   let oz = 0, any = false;
   (items || []).filter((i) => !i.is_bundle_parent).forEach((i) => {
-    const w = (weightByPid && weightByPid[i.product_id]) || estimateWeightOz(i.sku || i.name);
-    oz += w * (i.qty || 1); any = true;
+    // != null (not ||) so a legitimately-cataloged 0oz override is honored instead of
+    // silently replaced by the text estimate.
+    const ov = weightByPid ? Number(weightByPid[i.product_id]) : NaN;
+    const w = weightByPid && weightByPid[i.product_id] != null && Number.isFinite(ov) ? ov : estimateWeightOz(i.sku || i.name);
+    // Missing qty means 1 (legacy rows), but an explicit 0 (cancelled line) is 0 —
+    // it used to weigh in as a full unit. Negative/garbage counts as 0.
+    const q = i.qty == null ? 1 : Math.max(0, Number(i.qty) || 0);
+    oz += w * q; any = true;
   });
   if (any && oz > 0) return Math.max(0.1, Math.round(oz / 16 * 10) / 10);
   return Number(store && store.label_weight_lbs) || 1;
@@ -863,6 +872,38 @@ export const openDocPDF=async(opts,filename)=>{
   window.open(url,'_blank');
   setTimeout(()=>URL.revokeObjectURL(url),60000);
 };
+
+// ── Raw full-document print / download ──
+// For self-contained sheets that bring their OWN <html>/<style> (e.g. the
+// production Work Order sheet from src/lib/workOrderSheet.js). Unlike printDoc/
+// downloadDoc these do NOT wrap the payload through buildDocHtml — the caller
+// passes a complete HTML document string.
+export const printRawDoc=(html,title)=>{
+  const w=window.open('','_blank');if(!w)return;
+  w.document.write(html);w.document.close();
+  if(title){try{w.document.title=title}catch{}}
+  // Snapshot-print only once every image (mockups) has loaded, else they print blank.
+  let printed=false;
+  const go=()=>{if(printed)return;printed=true;setTimeout(()=>{w.focus();w.print()},100)};
+  const pending=Array.from(w.document.images||[]).filter(im=>!(im.complete&&im.naturalWidth>0));
+  if(pending.length===0){setTimeout(go,200);return}
+  let left=pending.length;const done=()=>{left--;if(left<=0)go()};
+  pending.forEach(im=>{im.addEventListener('load',done);im.addEventListener('error',done)});
+  setTimeout(go,10000); // safety: print anyway if an image never loads
+};
+// Server-side (Puppeteer) PDF of a self-contained HTML doc. Margin defaults to
+// zero because these sheets manage their own @page margins/padding. Any images
+// must be publicly reachable (Cloudinary mockups are) or inlined as data URLs.
+export const downloadRawDoc=async(html,filename,{margin}={})=>{
+  const safe=(String(filename||'document').replace(/[^a-z0-9._-]+/gi,'_').replace(/\.html?$/i,''))||'document';
+  const fname=safe+'.pdf';
+  const {content}=await _serverPdf(html,fname,{margin:margin||{top:'0',right:'0',bottom:'0',left:'0'}});
+  const bytes=Uint8Array.from(atob(content),c=>c.charCodeAt(0));
+  const blob=new Blob([bytes],{type:'application/pdf'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=fname;a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),60000);
+};
 export const nextInvId=invs=>{const nums=(invs||[]).map(i=>{const m=String(i.id).match(/(\d+)$/);return m?parseInt(m[1]):0});return'INV-'+(Math.max(1000,...nums)+1)};
 
 // Decoration label used on PDF line-item rows. Includes the decoration name
@@ -882,6 +923,10 @@ export const pdfDecoLabel = (d, artF) => {
   }
   if (d.kind === 'outside_deco') {
     return (d.deco_type || 'Decoration').replace(/_/g,' ');
+  }
+  if (d.kind === 'twill') {
+    const t = (_TWA_TABLE || [])[d.dtf_size || 0] || (_TWA_TABLE || [])[0];
+    return 'Tackle Twill' + (t && t.label ? ' — ' + t.label : '');
   }
   // art (default)
   const namePart = artF && artF.name ? String(artF.name).trim() : '';

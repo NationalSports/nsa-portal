@@ -11,6 +11,7 @@ const {
   resolvePriorMockKey,
   prevArtAutoWireTargets,
   artWriteMatches,
+  prevArtDedupKey,
 } = require('../lib/artIdentity');
 
 describe('artLogoKey / artNameKey', () => {
@@ -22,6 +23,33 @@ describe('artLogoKey / artNameKey', () => {
   test('name key is lowercased trim of name (or id)', () => {
     expect(artNameKey({ name: 'Front Logo Tees Dolphin' })).toBe('front logo tees dolphin');
     expect(artNameKey({ id: 'caf9' })).toBe('caf9');
+  });
+});
+
+describe('prevArtDedupKey — library copy and source-order copy of one design collapse to one card', () => {
+  // The reported duplication: promoteArtToLibrary mints a fresh `caf…` id for the
+  // library copy, so the same design shows up as both "Library — …" and "SO-… — …".
+  // The dedup key must ignore the id and match on the design identity.
+  test('same design, different ids (library vs order) → same key', () => {
+    const library = { id: 'caf1720000000000', name: '8in 1 Color Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    const onOrder = { id: 'af1699999999999', name: '8in 1 Color Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    expect(prevArtDedupKey(library)).toBe(prevArtDedupKey(onOrder));
+  });
+  test('name is case/whitespace-insensitive', () => {
+    const a = { id: 'x', name: '  Full Color Sunbird ', deco_type: 'screen_print', art_size: '8in', color_ways: [{}] };
+    const b = { id: 'y', name: 'full color sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}] };
+    expect(prevArtDedupKey(a)).toBe(prevArtDedupKey(b));
+  });
+  test('real variants stay separate — different size, deco, or color-way count', () => {
+    const base = { name: 'Sunbird', deco_type: 'screen_print', art_size: '8in', color_ways: [{}, {}] };
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, art_size: '3.5in' }));
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, deco_type: 'embroidery' }));
+    expect(prevArtDedupKey(base)).not.toBe(prevArtDedupKey({ ...base, color_ways: [{}] }));
+  });
+  test('blank-named rows fall back to id so distinct untitled art does not collapse', () => {
+    const a = { id: 'af1', name: '', deco_type: 'screen_print', art_size: '', color_ways: [] };
+    const b = { id: 'af2', name: '', deco_type: 'screen_print', art_size: '', color_ways: [] };
+    expect(prevArtDedupKey(a)).not.toBe(prevArtDedupKey(b));
   });
 });
 
@@ -73,6 +101,32 @@ describe('buildTeamArtLibrary — parent must not clobber team art', () => {
     expect(lib.find((a) => a.id === 'caf-school')._srcCustId).toBe(parentId);
   });
 
+  test('parent ORDER art with a unique name cascades to the child store', () => {
+    const parentOrderLogo = { id: 'af-parent-crest', name: 'Program Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [vbArt],
+      parentOrderArt: [{ art: parentOrderLogo, label: 'SO-9001', srcCustId: parentId }],
+      teamId,
+      parentId,
+    });
+    // Team keeps its own logo AND now also sees the parent's order logo.
+    expect(lib.map((a) => a.id).sort()).toEqual(['af-parent-crest', 'caf-vb']);
+    expect(lib.find((a) => a.id === 'af-parent-crest')._srcCustId).toBe(parentId);
+  });
+
+  test('parent ORDER art with the same name does NOT clobber the team record', () => {
+    const parentOrderCopy = { ...fbArt, id: 'af-parent-fb' }; // parent's order copy of a same-name logo
+    const lib = buildTeamArtLibrary({
+      teamArt: [vbArt],
+      parentOrderArt: [{ art: parentOrderCopy, label: 'SO-9002', srcCustId: parentId }],
+      teamId,
+      parentId,
+    });
+    expect(lib.find((a) => a.id === 'caf-vb')).toBeTruthy();
+    expect(lib.find((a) => artNameKey(a) === 'front logo').id).toBe('caf-vb');
+    expect(lib.find((a) => a.id === 'af-parent-fb')).toBeUndefined();
+  });
+
   test('order art for the team is kept even when parent has a same-name preview', () => {
     const orderCopy = { ...vbArt, id: 'af-so-vb', preview_url: '' };
     const lib = buildTeamArtLibrary({
@@ -84,6 +138,43 @@ describe('buildTeamArtLibrary — parent must not clobber team art', () => {
     });
     expect(lib.find((a) => a.id === 'af-so-vb')).toBeTruthy();
     expect(lib.find((a) => a.id === 'caf-fb')).toBeUndefined();
+  });
+
+  // A design saved to the library (fresh `caf…` id) plus its source-order copy
+  // (`af…` id) is ONE design — it must not list twice in the store art picker.
+  test('a promoted library copy and its source-order copy collapse to one card', () => {
+    const libraryCopy = { id: 'caf-crest', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const orderCopy = { id: 'af-crest', name: 'crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [libraryCopy],
+      orderArt: [{ art: orderCopy, label: 'SO-2001', srcCustId: teamId }],
+      teamId,
+    });
+    expect(lib.filter((a) => artNameKey(a) === 'crest')).toHaveLength(1);
+  });
+
+  test('collapsing prefers the copy that actually has a renderable image', () => {
+    const libraryCopy = { id: 'caf-crest', name: 'Crest', deco_type: 'screen_print', preview_url: '' };
+    const orderCopy = { id: 'af-crest', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/crest.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [libraryCopy],
+      orderArt: [{ art: orderCopy, label: 'SO-2001', srcCustId: teamId }],
+      teamId,
+    });
+    const kept = lib.filter((a) => artNameKey(a) === 'crest');
+    expect(kept).toHaveLength(1);
+    expect(kept[0].preview_url).toBe('https://cdn.example/crest.png');
+  });
+
+  test('same name but a DIFFERENT method stays as two distinct designs', () => {
+    const sp = { id: 'caf-sp', name: 'Crest', deco_type: 'screen_print', preview_url: 'https://cdn.example/sp.png' };
+    const emb = { id: 'af-emb', name: 'Crest', deco_type: 'embroidery', preview_url: 'https://cdn.example/emb.png' };
+    const lib = buildTeamArtLibrary({
+      teamArt: [sp],
+      orderArt: [{ art: emb, label: 'SO-2002', srcCustId: teamId }],
+      teamId,
+    });
+    expect(lib.map((a) => a.id).sort()).toEqual(['af-emb', 'caf-sp']);
   });
 });
 

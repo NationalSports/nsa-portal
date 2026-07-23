@@ -12,6 +12,24 @@ export const safeDecos = (it) => safeArr(it?.decorations);
 export const safeItems = (o) => safeArr(o?.items);
 export const safeArt = (o) => safeArr(o?.art_files);
 
+// ── Roster scoping ──
+// A numbers deco's roster jsonb can carry stale size keys the garment doesn't have —
+// "copy numbers from another item" brings the source's whole size curve, and a line's
+// sizes can shrink after numbers were entered. The line-item editor only renders slots
+// for the garment's own sizes, so stale keys are invisible there, but any consumer that
+// iterates roster keys raw shows phantom sizes and duplicated numbers (SO-1588: a
+// one-size backpack displayed the tee's S–3X roster on top of its own OSFA numbers).
+// Keeps only sizes with qty > 0, each list capped at that size's qty. No usable size
+// info → roster returned as-is. Works for names maps too (same per-size-array shape).
+export const scopeRosterToSizes = (roster, sizes) => {
+  const r = safeObj(roster); const sz = safeObj(sizes);
+  const live = Object.entries(sz).filter(([, q]) => safeNum(q) > 0);
+  if (!live.length) return r;
+  const out = {};
+  live.forEach(([s, q]) => { const arr = safeArr(r[s]).slice(0, q); if (arr.length) out[s] = arr; });
+  return out;
+};
+
 // ── Job-item decoration ownership ──
 // A job item records which decoration indexes of its SO line the job produces (deco_idxs).
 // Returns null for legacy items without the array — the legacy single deco_idx was written as
@@ -131,7 +149,9 @@ export const buildInvoicedQtyMap = (so, invoicesForSO) => {
     const lines = safeArr(inv?.line_items);
     lines.forEach(li => {
       const q = safeNum(li?.qty);
-      if (!q) return;
+      // Non-positive line quantities are invalid, not credits — a negative entry here
+      // would inflate "remaining to invoice" and enable over-invoicing.
+      if (!(q > 0)) return;
       if (li?._so_line_key && map.has(li._so_line_key)) {
         map.set(li._so_line_key, map.get(li._so_line_key) + q);
         return;
@@ -373,6 +393,32 @@ export const mockSlotKeys = (base, decos) => {
   return slots;
 };
 
+// ── Approval-proof fallback for reused / pre-digitized art ──
+// A displayable "proof" file: something a rep/coach can actually look at (image or PDF).
+// Production formats (.dst/.emb/.ai/.eps) never count.
+export const displayableProofFile = (f) =>
+  /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
+// The files that stand in for a mockup when an art file carries NO per-garment mocks at
+// all: the general mockup_files/files bucket (legacy single-design art), else the
+// digitizer's displayable sew-out proof in prod_files (reused library art). This is the
+// same ladder skusMissingMockups accepts and the OrderEditor/CoachPortal approval views
+// render — every mockup display surface (incl. the Art Dashboard slots) must use it so a
+// reused art never renders as "no mockup" on one screen while another screen shows proof.
+// Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
+// general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
+export const artProofFallback = (a) => {
+  // A rep/artist can explicitly clear the sew-out proof from a garment slot when it isn't a
+  // usable stand-in (wrong colorway, needs a real mockup). proof_dismissed makes the prod-file
+  // proof stop standing in for a mockup on every surface — this display fallback AND the
+  // approval gate (skusMissingMockups) — so the slot reverts to an empty upload zone. It's a
+  // non-destructive display flag: the prod files themselves (incl. .dst/.emb machine files) stay.
+  if (a?.proof_dismissed) return [];
+  const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+  if (hasPerItem) return [];
+  const gen = (safeArr(a?.mockup_files).length > 0 ? safeArr(a.mockup_files) : safeArr(a?.files)).filter(displayableProofFile);
+  return gen.length > 0 ? gen : safeArr(a?.prod_files).filter(displayableProofFile);
+};
+
 // Returns the list of SKUs on a job that have no mockup attached. Mirrors the
 // per-item mockup lookup in OrderEditor: for each item, find the art files this
 // item's decorations actually reference (intersected with the job's art set,
@@ -471,6 +517,20 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
+    // Reused/pre-digitized art with no mockups anywhere: the digitizer's sew-out proof (a
+    // displayable image/PDF sitting in prod_files) is what the approval views now show, so it
+    // satisfies the gate the same way — matches the prod-files display fallback in
+    // OrderEditor/CoachPortal. Non-displayable production files (.dst/.emb/.ai) never count.
+    const prodProof = artFiles.flatMap(a => {
+      // Respect an explicit proof dismissal (see artProofFallback): a cleared proof no longer
+      // satisfies the gate, so approval requires a real mockup — keeping the gate consistent with
+      // what every display surface now shows for this art (an empty upload slot).
+      if (a?.proof_dismissed) return [];
+      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
+      if (hasPerItem) return [];
+      return safeArr(a?.prod_files).filter(displayableProofFile);
+    });
+    if (prodProof.length > 0) return;
     if (mSku) missing.push(mSku);
   });
   return missing;
@@ -538,6 +598,17 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
       const im = a?.item_mockups || {};
       const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
       if (hasOwn) return;
+      // Legacy single-design art carries ONE mock in the shared mockup_files bucket (or a
+      // displayable sew-out proof in prod_files) that stands in for every garment — the same
+      // fallback skusMissingMockups accepts and every mock-display surface renders. That mock is
+      // already shown and approved on this order, so the garment is NOT missing one: don't nag
+      // "Check Mock" just because the SAME design was later mocked per-garment on another order
+      // (which arrives via priorByArtKey / this order's other-garment keys). Without this, a
+      // fully-approved legacy mock kept re-surfacing "Check Mock" that normal approval could never
+      // clear — there was nothing per-item to write. artProofFallback returns [] the moment the
+      // art has ANY per-item mock, so genuinely reused art (per-item mocks for siblings, none for
+      // this garment) still falls through and flags below.
+      if (artProofFallback(a).length > 0) return;
       // Gather candidate prior mocks, grouped by where they were approved (each group keeps its
       // front/back together), deduped by URL across all sources for this art file.
       const seen = new Set();

@@ -2,7 +2,7 @@
 const {
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   rQ, rT, spP, emP, npP, dP, DTF, SP, EM,
-  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, isJobReady, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   buildQBSalesOrder, buildQBInvoice,
   checkInventoryConflicts,
@@ -1012,7 +1012,9 @@ describe('Job Building', () => {
         sizes: { S: 10 },
         decorations: [{ kind: 'art', art_file_id: 'af1', position: 'Front' }],
       })],
-      art_files: [makeArtFile({ status: 'uploaded' })],
+      // mockup_files present — an 'uploaded' art file with no mockups must fall through to
+      // 'needs_art' instead (SO-1038 phantom-approval fix), so a real proof is required here.
+      art_files: [makeArtFile({ status: 'uploaded', mockup_files: ['proof.jpg'] })],
       jobs: [],
     });
     const jobs = buildJobs(so);
@@ -1403,6 +1405,28 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.item_status).toBe('items_received');
   });
 
+  test('non-split job items refresh their scalar gi.fulfilled from receipts (no drift from the summary)', () => {
+    // Regression (SO-1393, the 5170 Navy Tees): a plain (non-split) job item was skipped by the
+    // recompute, so after a warehouse receipt the job summary read fulfilled_units=50 while every
+    // line under it still read fulfilled:0. The per-line scalar must track receipts too, matching
+    // OrderEditor.syncJobs, so the summary always equals the sum of its lines.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1393-04', item_status: 'need_to_order', fulfilled_units: 0, total_units: 50,
+        items: [{ item_idx: 0, fulfilled: 0 }, { item_idx: 1, fulfilled: 0 }] }],
+    });
+    const items = [
+      makeSOItem({ sizes: { S: 12, M: 18, L: 13, XL: 3 },
+        po_lines: [{ po_id: 'PO-1', S: 12, M: 18, L: 13, XL: 3, received: { S: 12, M: 18, L: 13, XL: 3 } }] }),
+      makeSOItem({ sizes: { '2XL': 4 },
+        po_lines: [{ po_id: 'PO-1', '2XL': 4, received: { '2XL': 4 } }] }),
+    ];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.fulfilled_units).toBe(50);
+    expect(j.items[0].fulfilled).toBe(46);
+    expect(j.items[1].fulfilled).toBe(4);
+    expect(j.items.reduce((a, gi) => a + gi.fulfilled, 0)).toBe(j.fulfilled_units);
+  });
+
   test('un-receiving mis-shipped units reverts items_received back to partially_received', () => {
     // The mis-ship scenario: 300 ordered, all received → 5 un-received on the PO (295/300).
     // The job must drop out of items_received so it can be reviewed/split.
@@ -1570,10 +1594,78 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
   });
 
   test('returns same job reference when nothing changed', () => {
-    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0 }] };
+    // The identity fast-path only applies when the job is ALREADY fully computed — including each
+    // line's scalar gi.fulfilled (now that the recompute tracks it, a job whose nested fulfilled is
+    // stale/absent is legitimately "changed" and gets a fresh object). Production jobs always carry
+    // it (buildJobs/syncJobs populate it), so mirror that here with the receipt-correct fulfilled: 15.
+    const job = { id: 'JOB-1', item_status: 'items_received', fulfilled_units: 15, total_units: 15, items: [{ item_idx: 0, fulfilled: 15 }] };
     const so = makeSO({ jobs: [job] });
     const items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
     expect(recalcJobFulfillment(so, items)[0]).toBe(job);
+  });
+});
+
+describe('Derived job product status (deriveJobItemStatus)', () => {
+  // The Jobs-board "Need to Order" bug: a job whose garments are fully on a PO must NOT read
+  // 'need_to_order' just because nothing has been received yet (fulfilled_units 0). Stored
+  // item_status stays receipt-only for the floor gate; this is the coverage-aware DISPLAY status.
+  const job = (over) => ({ id: 'JOB-1', item_status: 'need_to_order', fulfilled_units: 0, total_units: 15, items: [{ item_idx: 0 }], ...over });
+
+  test('no PO and no pick → need_to_order (genuinely un-ordered)', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [], pick_lines: [] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('need_to_order');
+  });
+
+  test('every unit on a PO, nothing received → waiting_receive, NOT need_to_order', () => {
+    // Reproduces SO-1234 / SO-1475: OMG drop-ship orders, fully ordered, 0 received.
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('some units on a PO, nothing received → on_order', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('on_order');
+  });
+
+  test('cancelled PO units do not count as covered', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, cancelled: { S: 5, M: 10 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('need_to_order');
+  });
+
+  test('units reserved on a pick line count as covered → waiting_receive', () => {
+    const so = makeSO({ jobs: [job()] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [], pick_lines: [{ pick_id: 'PK-1', status: 'pick', S: 5, M: 10 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('partial receipt → partially_received regardless of coverage', () => {
+    const so = makeSO({ jobs: [job({ fulfilled_units: 6 })] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 1 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('partially_received');
+  });
+
+  test('all received → items_received', () => {
+    const so = makeSO({ jobs: [job({ fulfilled_units: 15 })] });
+    so.items = [makeSOItem({ sizes: { S: 5, M: 10 }, po_lines: [{ po_id: 'PO-1', S: 5, M: 10, received: { S: 5, M: 10 } }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('items_received');
+  });
+
+  test('split job honors its own gi.sizes subset for coverage', () => {
+    // A split slice carries only its subset in gi.sizes; coverage is judged against that, not the
+    // full line. 4 units on the slice, 4 ordered → fully covered.
+    const so = makeSO({ jobs: [{ id: 'JOB-1-S', fulfilled_units: 0, total_units: 4, items: [{ item_idx: 0, sizes: { S: 4 } }] }] });
+    so.items = [makeSOItem({ sizes: { S: 10 }, po_lines: [{ po_id: 'PO-1', S: 4 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
+  });
+
+  test('qty_only item covered under the QTY bucket → waiting_receive', () => {
+    const so = makeSO({ jobs: [job({ total_units: 0 })] });
+    so.items = [makeSOItem({ sizes: {}, qty_only: true, est_qty: 50, po_lines: [{ po_id: 'PO-1', QTY: 50 }] })];
+    expect(deriveJobItemStatus(so.jobs[0], so)).toBe('waiting_receive');
   });
 });
 

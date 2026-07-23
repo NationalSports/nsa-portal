@@ -21,6 +21,17 @@
 [context.production.environment]
   PUBLIC_URL = "https://nsa-portal.netlify.app"
 
+# Team Shop launch gate — netlify/edge-functions/teamshop-gate.js. Declared here (NOT via
+# inline `export const config`) ON PURPOSE: config-file edge functions run BEFORE inline
+# ones, so this gate short-circuits a gated nationalteamshop.com request before the inline
+# /shop/* + /* SEO functions ever run. Declaring it inline too would demote it to inline
+# ordering (Netlify merges same-name declarations as inline), so keep it toml-only.
+# Inert unless the TEAMSHOP_GATE_KEY env var is set, and only ever fires on the Team Shop
+# host — safe to ship while nationalteamshop.com is dark.
+[[edge_functions]]
+  path = "/*"
+  function = "teamshop-gate"
+
 # index.html must never be cached, so a reload after a deploy always fetches the
 # current asset manifest (chunk hashes) instead of re-requesting dead chunks.
 [[headers]]
@@ -43,9 +54,14 @@
 
 [functions]
   directory = "netlify/functions"
-  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js);
-  # make sure the file ships inside the function bundle.
-  included_files = ["src/lib/opsRecap.js"]
+  # rep-ops-digest shares its category rules with the client (src/lib/opsRecap.js),
+  # quickorder-quote shares the deco pricing tables (src/lib/decoPricing.js), and
+  # teamshop-assistant shares the FAQ facts (src/lib/teamshopFaq.js) + order status
+  # labels (src/lib/teamshopOrderStatus.js) with the storefront;
+  # make sure these files ship inside the function bundles.
+  # bill-anomaly-digest shares its flag rules with the client's push-time stamping and
+  # the ⚠ Review pill (src/lib/billAnomalies.js).
+  included_files = ["src/lib/opsRecap.js", "src/lib/decoPricing.js", "src/lib/teamshopFaq.js", "src/lib/teamshopOrderStatus.js", "src/lib/billAnomalies.js"]
 
 # New-hire onboarding reminders — daily at 16:07 UTC (~8-9 AM PT). Nudges hires
 # who were invited but haven't finished (capped at 3 reminders, 3 days apart).
@@ -101,6 +117,13 @@
 [functions."roster-reminder-sweep"]
   schedule = "20 16 * * *"
 
+# Monthly commission review reminder — 1st of the month ~7 AM PT (14:00 UTC).
+# Emails steve@ a link straight to the PREVIOUS month's Commissions Admin
+# Dashboard to review payouts before they're paid. A thin reminder, not a
+# computed report (see netlify/functions/commission-report-reminder.js).
+[functions."commission-report-reminder"]
+  schedule = "0 14 1 * *"
+
 # Rep daily activity digest — ~2 AM PT (09:11 UTC). Emails each rep a branded
 # recap of the prior PT day's orders across their stores (+ any that closed).
 # Reps with no activity get nothing.
@@ -120,6 +143,16 @@
 # to the daily digest. Reps with nothing past due get nothing.
 [functions."rep-ar-digest"]
   schedule = "0 16 * * 5"
+
+# Marketing Command Center sync — daily at 13:00 UTC (~6am PT). The cron fn
+# fires marketing-sync, which pulls each online-presence source (SEO data.json,
+# Brevo campaigns, Yelp, Google reviews) into marketing_data/marketing_history
+# for the portal /marketing page. Sources without credentials skip gracefully.
+[functions."marketing-sync"]
+  timeout = 26
+
+[functions."marketing-sync-cron"]
+  schedule = "0 13 * * *"
 
 # S&S Activewear adidas catalog sync — daily at 12:00 UTC. The cron fn just
 # fires ss-adidas-sync-background (15-min budget), which pulls every adidas
@@ -168,6 +201,15 @@
 [functions."sanmar-brands-sync-cron"]
   schedule = "0 16 * * *"
 
+# SanMar product-only ("form") photo scrape — every 2 hours at :15. Replaces
+# model photography with the garment-only front/back shots from sanmar.com
+# product pages (products.image_flat_front_url/back; a DB trigger keeps
+# image_front_url pointed at the flat photo so the daily catalog syncs can't
+# clobber it). Per-style state in sanmar_flat_state; steady state is a near
+# no-op (60-day recheck).
+[functions."sanmar-flat-images-cron"]
+  schedule = "15 */2 * * *"
+
 # Sports Inc (SportsLink) bill sync — daily at 16:30 UTC (~11:30 EST / 12:30 EDT,
 # safely after the 10:30 EST SI processing cutoff). The cron fires
 # sportslink-sync-background, which mirrors all active SI documents since the portal
@@ -186,8 +228,46 @@
 [functions."ss-orders-sync-cron"]
   schedule = "30 12 * * *"
 
+# Supplier-bill anomaly report — daily at 21:30 UTC (~4:30-5:30 PM ET, after the day's
+# pulls and pushes). Emails accounting + Steve any bill from the last day that looks out
+# of line: adidas/UA freight >10% of merchandise, billed price >25% off the order cost,
+# approved overage, or a document total that doesn't add up — including bills that were
+# AUTO-pushed. Shared rules: src/lib/billAnomalies.js. Nothing anomalous → no email.
+# Env: BILL_ANOMALY_EMAILS (comma list; defaults to accounting@ + Steve).
+[functions."bill-anomaly-digest"]
+  schedule = "30 21 * * *"
+
 # Roster deadline reminders — daily at 17:00 UTC (~9-10 AM PT). Emails coaches
 # whose roster deadline is within 3 days and whose team isn't locked yet, once
 # per session (deadline_reminded_at).
 [functions."roster-deadline-reminders"]
   schedule = "0 17 * * *"
+
+# Team Shop / Club stuck-order sweep — hourly. Flags paid-but-unconverted, stuck
+# pending_payment, art stuck 5+ business days, and no-PO-but-need_to_order jobs;
+# emails ONE alert to STUCK_SWEEP_ALERT_EMAIL only when something is stuck (never
+# on a clean sweep). Also callable on demand — staff POST { action:'run' } with a
+# bearer session token from the Team Shop queue UI. See
+# netlify/functions/teamshop-stuck-sweep.js.
+[functions."teamshop-stuck-sweep"]
+  schedule = "50 * * * *"
+
+# Team Shop / Club auto-release — every 15 min. Releases hold jobs it can PROVE
+# ready by a server-side recompute (art done + garments fully in hand) through
+# advance_job_stage('release', …) — the same 00205 gate a staff scan uses, never a
+# direct prod_status write. Default-OFF via teamshop_settings.auto_release_enabled
+# (00208); scope 'auto_art_only' | 'all'. Also callable on demand — staff POST
+# { action:'run' } with a bearer session token. See
+# netlify/functions/teamshop-auto-release.js.
+[functions."teamshop-auto-release"]
+  schedule = "*/15 * * * *"
+
+# Team Shop DTF print lane (00211) — hourly. A scheduled (no-auth) invocation runs
+# the DTF batch sweep: records pending per-job DTF print needs and batches them into
+# ONE draft PO to the DTF vendor once SUM(pending prints) >= threshold_qty OR the
+# oldest pending need passes max_age_days (the time backstop the schedule exists
+# for). Default-INERT: the seeded DTF vendor has no gates/email and auto-submit off,
+# so this no-ops until staff configure it. Staff can also POST { action:'sweep_dtf' }.
+# See netlify/functions/teamshop-auto-po.js.
+[functions."teamshop-auto-po"]
+  schedule = "25 * * * *"

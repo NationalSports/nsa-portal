@@ -6,6 +6,9 @@
 // rewrite used for /livelook, so the browser URL stays on the marketing domain.
 import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import { supabase } from '../lib/supabase';
+// Shared with the Team Shop storefront's Team Stores page — one query path
+// for the webstores_public directory search, not two hand-synced copies.
+import { cleanTerm, closesLabel, searchPublicTeamStores } from '../lib/publicTeamStores';
 
 // The public store builder is a sizeable, login-free flow; load it only when a
 // coach actually clicks "Build" so the directory itself stays instant.
@@ -38,15 +41,6 @@ function shade(hex, pct) {
   const t = pct < 0 ? 0 : 255, p = Math.abs(pct) / 100;
   r = Math.round((t - r) * p) + r; g = Math.round((t - g) * p) + g; b = Math.round((t - b) * p) + b;
   return '#' + (r * 65536 + g * 256 + b).toString(16).padStart(6, '0');
-}
-function closesLabel(close_at) {
-  if (!close_at) return null;
-  const d = new Date(close_at);
-  if (isNaN(d)) return null;
-  const days = Math.ceil((d - Date.now()) / 86400000);
-  if (days < 0) return null;
-  const date = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  return days <= 7 ? `Closes ${date} · ${days <= 0 ? 'today' : days + ' day' + (days === 1 ? '' : 's')} left` : `Open until ${date}`;
 }
 
 function Fonts() {
@@ -89,9 +83,6 @@ function StoreCard({ s }) {
   );
 }
 
-// Strip characters that would break the PostgREST or() filter syntax.
-const cleanTerm = (q) => String(q || '').replace(/[%,()*:]/g, ' ').trim();
-
 export default function TeamStores() {
   const [q, setQ] = useState('');
   const [results, setResults] = useState(null); // null = not searched yet; [] = no match
@@ -114,13 +105,9 @@ export default function TeamStores() {
     setSearching(true);
     const mine = ++seq.current;
     const t = setTimeout(async () => {
-      const { data } = await supabase.from('webstores_public')
-        .select('slug,name,logo_url,primary_color,accent_color,banner_url,close_at')
-        .eq('status', 'open').eq('public_listed', true)
-        .or(`name.ilike.*${term}*,slug.ilike.*${term}*`)
-        .order('name').limit(24);
+      const data = await searchPublicTeamStores(term); // open-only, per this finder's pre-existing behavior
       if (mine !== seq.current) return; // a newer keystroke superseded this one
-      setResults(data || []);
+      setResults(data);
       setSearching(false);
     }, 250);
     return () => clearTimeout(t);

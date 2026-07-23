@@ -1,0 +1,338 @@
+/* eslint-disable */
+// Adversarial / characterization tests for src/pricing.js, src/lib/decoPricing.js,
+// src/richardsonPrices.js.
+//
+// Two production fixes were JUST applied and are pinned here as REGRESSION tests
+// asserting the NEW (fixed) behavior:
+//   1. getRichardsonLevel4Price — a whitespace-only style no longer prefix-matches
+//      the whole table (''.startsWith('') was true for every key).
+//   2. normSzName(42) no longer throws (String() coercion added before .toUpperCase()).
+//   3. decoPricing dP — a non-numeric sell_override (e.g. 'abc' from a bad paste) is
+//      now ignored instead of NaN-ing totals, while a numeric-string or explicit 0
+//      override is still honored.
+//
+// Everything else here CHARACTERIZES current behavior (pins it, with a comment on
+// why it's surprising) so it can't drift silently — it is not asserting these are
+// the "right" answers, just the current, verified ones.
+
+import {
+  normSzName,
+  auTierDisc,
+  auCostMult,
+  isAU,
+  mergeColors,
+  _decoVendorPrice,
+  calcOrderTotals,
+  soIsPaid,
+  calcPaidQualifyingSpend,
+  calcAdidasItemSpend,
+} from '../pricing';
+import { getRichardsonLevel4Price, RICHARDSON_LEVEL4_PRICES } from '../richardsonPrices';
+
+const DP = require('../lib/decoPricing');
+const T = DP.DEFAULTS;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION 1 — getRichardsonLevel4Price: whitespace-only no longer prefix-matches
+// ─────────────────────────────────────────────────────────────────────────────
+describe('getRichardsonLevel4Price — whitespace/empty fix (regression)', () => {
+  test('whitespace-only style returns 0, not the cheapest table price', () => {
+    expect(getRichardsonLevel4Price(' ')).toBe(0);
+    expect(getRichardsonLevel4Price('\t\t')).toBe(0);
+  });
+
+  test('null/undefined/empty string all return 0', () => {
+    expect(getRichardsonLevel4Price(null)).toBe(0);
+    expect(getRichardsonLevel4Price(undefined)).toBe(0);
+    expect(getRichardsonLevel4Price('')).toBe(0);
+  });
+
+  test('a real style still returns its exact Level 4 price', () => {
+    expect(getRichardsonLevel4Price('R15')).toBe(RICHARDSON_LEVEL4_PRICES['R15']);
+    expect(getRichardsonLevel4Price('r15')).toBe(RICHARDSON_LEVEL4_PRICES['R15']); // case-insensitive
+  });
+
+  test('prefix matching still works for a real family (lowest matching price wins)', () => {
+    // "PTS20" is a feed-style prefix covering catalog models PTS20M (7.44) and PTS20S (7.65).
+    expect(getRichardsonLevel4Price('PTS20')).toBe(
+      Math.min(RICHARDSON_LEVEL4_PRICES['PTS20M'], RICHARDSON_LEVEL4_PRICES['PTS20S'])
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION 2 — normSzName: numeric input no longer throws
+// ─────────────────────────────────────────────────────────────────────────────
+describe('normSzName — numeric-input fix (regression)', () => {
+  test('a bare number no longer throws and returns its String() form', () => {
+    expect(() => normSzName(42)).not.toThrow();
+    expect(normSzName(42)).toBe('42');
+  });
+
+  test('0 is falsy and passes through unchanged (returns the number 0, not a string)', () => {
+    expect(normSzName(0)).toBe(0);
+  });
+
+  test('normal strings still normalize — "Mens S" strips the adult qualifier to bare "S"', () => {
+    // SZ_NORM has no 'S' key (only 'SM'/'SML'/'SMALL' -> 'S'), so the adult-qualifier
+    // branch returns the stripped remainder ('S') as-is when it's not itself a SZ_NORM key.
+    expect(normSzName('Mens S')).toBe('S');
+    expect(normSzName('Mens Small')).toBe('S');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION 2b — normSzName: age/gender-qualified sizes normalize to the bare
+// size, they do NOT collapse to OSFA. The OMG store import used to shortcut any
+// size starting with "Adult" straight to OSFA (/^adult\b/ → 'OSFA'), so a store
+// of sized apparel labeled "Adult S / Adult Medium / …" imported as a single
+// OSFA bucket (Bellflower Baseball, Jul 2026). The fix routes the import through
+// normSzName; these pin the behavior it now relies on.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('normSzName — "Adult <size>" strips the qualifier, never collapses to OSFA (regression)', () => {
+  test('spelled-out adult sizes normalize to the core scale', () => {
+    expect(normSzName('Adult Small')).toBe('S');
+    expect(normSzName('Adult Medium')).toBe('M');
+    expect(normSzName('Adult Large')).toBe('L');
+    expect(normSzName('Adult X-Large')).toBe('XL');
+  });
+
+  test('abbreviated adult sizes normalize to the core scale', () => {
+    expect(normSzName('Adult S')).toBe('S');
+    expect(normSzName('Adult M')).toBe('M');
+    expect(normSzName('Adult L')).toBe('L');
+    expect(normSzName('Adult XL')).toBe('XL');
+    expect(normSzName('Adult 2XL')).toBe('2XL');
+  });
+
+  test('none of the adult-qualified sizes come back as OSFA', () => {
+    for (const s of ['Adult Small', 'Adult Medium', 'Adult Large', 'Adult X-Large', 'Adult S', 'Adult XL', 'Adult 2XL']) {
+      expect(normSzName(s)).not.toBe('OSFA');
+    }
+  });
+
+  test('a bare "Adult" (no size) is NOT forced to OSFA by normSzName — the import guards that one-size case at the call site', () => {
+    // normSzName only strips a qualifier when a size actually follows it; with nothing
+    // after "Adult" there is no size to normalize, so it passes through uppercased.
+    expect(normSzName('Adult')).toBe('ADULT');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION 3 — decoPricing dP: non-numeric sell_override ignored, numeric honored
+// ─────────────────────────────────────────────────────────────────────────────
+describe('dP — sell_override coercion fix (regression)', () => {
+  const emDeco = { type: 'embroidery', stitches: 8000 };
+
+  test('a non-numeric sell_override ("abc") is ignored — computed sell is used (finite)', () => {
+    const withBad = DP.dP(T, { ...emDeco, sell_override: 'abc' }, 6);
+    const withNone = DP.dP(T, emDeco, 6);
+    expect(Number.isFinite(withBad.sell)).toBe(true);
+    expect(withBad.sell).toBe(withNone.sell);
+    expect(Number.isNaN(withBad.sell)).toBe(false);
+  });
+
+  test('a numeric-string sell_override ("12.5") is still honored', () => {
+    const r = DP.dP(T, { ...emDeco, sell_override: '12.5' }, 6);
+    expect(r.sell).toBe('12.5'); // override value is passed through as-is when Number()-coercible
+  });
+
+  test('sell_override of explicit 0 is still honored (not treated as "no override")', () => {
+    const r = DP.dP(T, { ...emDeco, sell_override: 0 }, 6);
+    expect(r.sell).toBe(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CHARACTERIZATION — everything below pins CURRENT behavior
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 4. REGRESSION — negative quantities are invalid data, not credits. A negative
+//    num_qty used to flow straight through to _nq (and a negative est_qty numbers
+//    line used to subtract revenue in calcOrderTotals). Both are now clamped.
+describe('dP numbers branch — negative qty regression', () => {
+  test('negative num_qty clamps _nq to the garment-qty fallback path, never negative (non-reversible)', () => {
+    const d = { kind: 'numbers', num_qty: -10 };
+    const r = DP.dP(T, d, 5);
+    // Math.max(0, num_qty || q): -10 is truthy so the || short-circuits, then the
+    // clamp floors it at 0 — an invalid negative count prices as zero applications.
+    expect(r._nq).toBe(0);
+  });
+
+  test('negative num_qty stays clamped at 0 when reversible (no -20 doubling)', () => {
+    const d = { kind: 'numbers', num_qty: -10, reversible: true };
+    const r = DP.dP(T, d, 5);
+    expect(r._nq).toBe(0);
+  });
+
+  test('positive num_qty is unaffected by the clamp', () => {
+    expect(DP.dP(T, { kind: 'numbers', num_qty: 10 }, 5)._nq).toBe(10);
+    expect(DP.dP(T, { kind: 'numbers', num_qty: 10, reversible: true }, 5)._nq).toBe(20);
+  });
+
+  test('calcOrderTotals skips a negative est_qty line entirely — revenue never goes negative', () => {
+    const order = {
+      items: [
+        {
+          unit_sell: 20,
+          est_qty: -5, // no sizes -> est_qty fallback is now floored at 0, so the line is skipped
+          decorations: [{ kind: 'numbers' }],
+        },
+      ],
+    };
+    const totals = calcOrderTotals(order);
+    expect(totals.rev).toBe(0);
+  });
+
+  test('calcOrderTotals ignores negative size cells but keeps the positive ones', () => {
+    const order = { items: [{ unit_sell: 20, sizes: { S: -3, M: 4 } }] };
+    expect(calcOrderTotals(order).rev).toBe(80);
+  });
+});
+
+// 5. screen_print with a negative color count silently prices at $0/$0 instead of
+//    erroring — spP's c<1||c>5 guard rejects the color count but the caller doesn't
+//    surface that as a failure. Pinned to keep this silent-zero behavior visible.
+describe('dP screen_print — negative colors characterization', () => {
+  test('colors: -1 silently returns {sell: 0, cost: 0}', () => {
+    const d = { type: 'screen_print', colors: -1 };
+    const r = DP.dP(T, d, 10);
+    expect(r).toEqual({ sell: 0, cost: 0 });
+  });
+});
+
+// 6. auCostMult has no brand gate of its own — a non-AU brand still returns the
+//    UA/NB multiplier because isAdidasPriced(brand) is false for it. Callers MUST
+//    gate with isAU() first, or a random brand silently prices like UA/NB.
+describe('auCostMult / auTierDisc — no internal brand gate (characterization)', () => {
+  test('a non-AU brand (e.g. Nike) still returns the UA/NB multiplier, not a rejection', () => {
+    expect(isAU('Nike')).toBe(false); // confirms Nike is NOT actually an AU brand
+    expect(auCostMult('Nike', false)).toBe(0.425); // apparel UA/NB multiplier anyway
+    expect(auCostMult('Nike', true)).toBeCloseTo(0.55 * 0.85, 10); // footwear UA/NB multiplier anyway
+  });
+
+  test('an unknown/lowercase tier code defaults to tier B', () => {
+    expect(auTierDisc('z', undefined, 'Apparel')).toBe(0.35); // std schedule tier B
+    expect(auTierDisc('a', undefined, 'Apparel')).toBe(0.35); // lowercase 'a' doesn't match key 'A' -> falls to B
+    expect(auTierDisc(undefined, undefined, 'Apparel')).toBe(0.35);
+  });
+});
+
+// 7. mergeColors falls back to the customer's own colors when the parent_id points
+//    at a customer that isn't in the provided list (deleted/unloaded parent).
+describe('mergeColors — unknown/missing parent characterization', () => {
+  test('parent_id set but parent not found in allCustomers -> own colors only', () => {
+    const cust = { parent_id: 'ghost-parent', pantone_colors: [{ code: 'PMS 100' }] };
+    const result = mergeColors(cust, [], 'pantone_colors');
+    expect(result).toEqual([{ code: 'PMS 100' }]);
+  });
+
+  test('no parent_id at all -> own colors only, trivially', () => {
+    const cust = { pantone_colors: [{ code: 'PMS 200' }] };
+    expect(mergeColors(cust, [{ id: 'other' }], 'pantone_colors')).toEqual([{ code: 'PMS 200' }]);
+  });
+});
+
+// 8. _decoVendorPrice: unrecognized deco_type never sets a tier (none of the
+//    embroidery/screen_print/dtf branches run) -> null. Exact min/max stitch
+//    boundaries are inclusive on both ends.
+describe('_decoVendorPrice — characterization', () => {
+  const tiers = [
+    { min_stitches: 0, max_stitches: 7999, qty_breaks: [{ min_qty: 1, price: 5 }] },
+    { min_stitches: 8000, max_stitches: 15999, qty_breaks: [{ min_qty: 1, price: 8 }] },
+  ];
+  const pricingList = [{ deco_vendor_id: 'v1', deco_type: 'embroidery', pricing_tiers: { tiers } }];
+
+  test('unknown deco_type returns null (no matching pricing row)', () => {
+    expect(_decoVendorPrice(pricingList, 'v1', 'laser_etch', {})).toBeNull();
+  });
+
+  test('stitch count at the exact upper boundary (7999) picks the lower tier', () => {
+    expect(_decoVendorPrice(pricingList, 'v1', 'embroidery', { stitches: 7999, qty: 1 })).toBe(5);
+  });
+
+  test('stitch count at the exact lower boundary of the next tier (8000) picks it', () => {
+    expect(_decoVendorPrice(pricingList, 'v1', 'embroidery', { stitches: 8000, qty: 1 })).toBe(8);
+  });
+});
+
+// Screen-print upcharges (dark=underbase, fleece, mesh). These live in the deco_vendor_pricing
+// row and are applied by _decoVendorPrice, but only take effect when the caller passes the flag —
+// the Deco PO builder + per-line Outside-deco editor now do. Guards that wiring's contract.
+describe('_decoVendorPrice — screen-print upcharges (dark/fleece/mesh)', () => {
+  const ssList = [{
+    deco_vendor_id: 'ss', deco_type: 'screen_print',
+    pricing_tiers: { tiers: [{ colors: 1, qty_breaks: [{ min_qty: 1, price: 2.0 }] }] },
+    upcharges: { underbase: 0.10, fleece: 0.15, mesh: 0.25 },
+  }];
+  const p = (params) => _decoVendorPrice(ssList, 'ss', 'screen_print', { qty: 48, colors: 1, ...params });
+
+  test('no flags → base price', () => { expect(p({})).toBe(2.0); });
+  test('dark / underbase adds 10%', () => { expect(p({ underbase: true })).toBe(2.2); });
+  test('fleece adds 15%', () => { expect(p({ fleece: true })).toBe(2.3); });
+  test('mesh adds 25%', () => { expect(p({ mesh: true })).toBe(2.5); });
+  test('upcharges compound multiplicatively (underbase × fleece)', () => {
+    expect(p({ underbase: true, fleece: true })).toBe(2.53); // 2.0 × 1.10 × 1.15
+  });
+  test('embroidery ignores the screen-print upcharge flags', () => {
+    const emList = [{ deco_vendor_id: 'ss', deco_type: 'embroidery',
+      pricing_tiers: { tiers: [{ min_stitches: 0, max_stitches: 999999, qty_breaks: [{ min_qty: 1, price: 5 }] }] },
+      upcharges: { fleece: 0.15 } }];
+    expect(_decoVendorPrice(emList, 'ss', 'embroidery', { qty: 10, fleece: true })).toBe(5);
+  });
+});
+
+// 9. calcOrderTotals: a negative sizes total doesn't go negative on its own — it
+//    fails the `sq>0` check and falls back to est_qty (sq is only used when positive).
+describe('calcOrderTotals — negative sizes total characterization', () => {
+  test('negative sizes sum falls back to est_qty rather than producing negative revenue from sizes', () => {
+    const order = {
+      items: [{ unit_sell: 10, est_qty: 4, sizes: { S: -5 } }],
+    };
+    const totals = calcOrderTotals(order);
+    // sq = -5 (not > 0) -> q falls back to est_qty (4) -> rev = 4 * 10 = 40
+    expect(totals.rev).toBe(40);
+  });
+});
+
+// 10. soIsPaid tolerance: exactly $0.01 short of total counts as paid (the >= total-0.01
+//     tolerance check); $0.02 short does not.
+describe('soIsPaid — tolerance boundary characterization', () => {
+  test('paid exactly $0.01 short of total counts as paid', () => {
+    const so = { id: 'so1' };
+    const invs = [{ so_id: 'so1', status: 'open', total: 100, paid: 99.99 }];
+    expect(soIsPaid(so, invs)).toBe(true);
+  });
+
+  test('paid $0.02 short of total does not count as paid', () => {
+    const so = { id: 'so1' };
+    const invs = [{ so_id: 'so1', status: 'open', total: 100, paid: 99.98 }];
+    expect(soIsPaid(so, invs)).toBe(false);
+  });
+});
+
+// 11. calcPaidQualifyingSpend with an empty famIds set matches nothing -> all-zero result.
+describe('calcPaidQualifyingSpend — empty famIds characterization', () => {
+  test('empty famIds returns all-zero spend', () => {
+    const result = calcPaidQualifyingSpend({
+      sos: [{ id: 'so1', customer_id: 'cust1', order_date: '2026-01-01' }],
+      invs: [],
+      histInvs: [{ customer_id: 'cust1', status: 'paid', date: '2026-01-01', subtotal: 500 }],
+      famIds: [],
+      start: '2026-01-01',
+      end: '2026-12-31',
+    });
+    expect(result).toEqual({ soSpend: 0, histSpend: 0, total: 0 });
+  });
+});
+
+// 12. calcAdidasItemSpend: a negative unit_sell (credit/correction line) flows through
+//     to a negative total — there's no floor at 0.
+describe('calcAdidasItemSpend — negative unit_sell characterization', () => {
+  test('negative unit_sell produces a negative total (no floor at 0)', () => {
+    const order = {
+      items: [{ brand: 'adidas', unit_sell: -10, est_qty: 2 }],
+    };
+    expect(calcAdidasItemSpend(order)).toBe(-20);
+  });
+});

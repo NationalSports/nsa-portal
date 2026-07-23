@@ -49,8 +49,12 @@ describe('#6 order-edit total — re-derive processing + tax from the stored rat
     const oldSub = Number(order.subtotal) || 0;
     const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * newSubtotal : (Number(order.processing_fee) || 0));
     const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * newSubtotal : (Number(order.tax) || 0));
-    const preTax = round2(Math.max(0, newSubtotal + newFundraise + (Number(order.shipping_fee) || 0) + processing - (Number(order.discount_amt) || 0)));
-    return { processing, tax, total: round2(preTax + tax) };
+    // #2: the coupon discount scales with the merchandise pot (subtotal + fundraise) it was
+    // a percentage of — same shape as saveOrderEdits, which also persists this scaled value.
+    const oldPot = oldSub + (Number(order.fundraise_amt) || 0);
+    const discount = round2(oldPot > 0 ? (Number(order.discount_amt) || 0) / oldPot * (newSubtotal + newFundraise) : (Number(order.discount_amt) || 0));
+    const preTax = round2(Math.max(0, newSubtotal + newFundraise + (Number(order.shipping_fee) || 0) + processing - discount));
+    return { processing, tax, discount, total: round2(preTax + tax) };
   }
 
   // A real order like the live test: $22 subtotal, $3 fundraise, $15 ship, 5% processing, CA tax.
@@ -77,5 +81,50 @@ describe('#6 order-edit total — re-derive processing + tax from the stored rat
     const fixed = recompute(order, 22, 3).total;           // = 43.41, what was charged
     expect(oldTotal).toBe(40);
     expect(fixed).toBeGreaterThan(oldTotal);
+  });
+});
+
+describe('#2 order-edit coupon discount — scale with the merchandise pot, not the stale dollars', () => {
+  const round2 = (n) => Math.round(n * 100) / 100;
+  function recompute(order, newSubtotal, newFundraise) {
+    const oldSub = Number(order.subtotal) || 0;
+    const processing = round2(oldSub > 0 ? (Number(order.processing_fee) || 0) / oldSub * newSubtotal : (Number(order.processing_fee) || 0));
+    const tax = round2(oldSub > 0 ? (Number(order.tax) || 0) / oldSub * newSubtotal : (Number(order.tax) || 0));
+    const oldPot = oldSub + (Number(order.fundraise_amt) || 0);
+    const discount = round2(oldPot > 0 ? (Number(order.discount_amt) || 0) / oldPot * (newSubtotal + newFundraise) : (Number(order.discount_amt) || 0));
+    const preTax = round2(Math.max(0, newSubtotal + newFundraise + (Number(order.shipping_fee) || 0) + processing - discount));
+    return { processing, tax, discount, total: round2(preTax + tax) };
+  }
+
+  // 2 jerseys @ $40 (subtotal 80), a 50%-off coupon → discount_amt 40, so the card
+  // charged $40. Staff edit the order down to 1 jersey (subtotal 40).
+  const order = { subtotal: 80, fundraise_amt: 0, shipping_fee: 0, processing_fee: 0, tax: 0, discount_amt: 40, total: 40 };
+
+  test('halving the merch halves the coupon discount', () => {
+    const r = recompute(order, 40, 0);
+    expect(r.discount).toBe(20);  // 40 * (40 / 80)
+    expect(r.total).toBe(20);     // 40 − 20
+  });
+
+  test('old formula (full stale discount) collapsed the goods total toward $0 — regression guard', () => {
+    const buggy = round2(Math.max(0, 40 + 0 + 0 + 0 - 40)); // = 0, less than the ~$40 card charge
+    const fixed = recompute(order, 40, 0).total;            // = 20
+    expect(buggy).toBe(0);
+    expect(fixed).toBeGreaterThan(buggy);
+  });
+
+  test('the scaled pot includes fundraising (discount base is subtotal + fundraise)', () => {
+    // 20%-off a $60 pot (subtotal 50 + fundraise 10) → discount_amt 12. Remove half the
+    // merch: subtotal 25 + fundraise 5 = pot 30. Scaled discount = 12 * (30/60) = 6.
+    const o = { subtotal: 50, fundraise_amt: 10, shipping_fee: 0, processing_fee: 0, tax: 0, discount_amt: 12, total: 48 };
+    const r = recompute(o, 25, 5);
+    expect(r.discount).toBe(6);
+    expect(r.total).toBe(24); // 25 + 5 − 6
+  });
+
+  test('a size-only edit (pot unchanged) leaves the discount exactly as charged', () => {
+    const r = recompute(order, 80, 0);
+    expect(r.discount).toBe(40);
+    expect(r.total).toBe(40);
   });
 });

@@ -17,6 +17,11 @@ const safeDecos = (it) => safeArr(it?.decorations);
 const safeItems = (o) => safeArr(o?.items);
 const safeArt = (o) => safeArr(o?.art_files);
 const safeJobs = (o) => safeArr(o?.jobs);
+// Same "does this art file actually have anything to review" check the approval-card UI uses
+// (App.js totalMocks) — an art file can carry a stale 'needs_approval'/'uploaded' status with 0
+// files/0 mockups (e.g. after a recall that didn't reset status), which must NOT read as waiting_approval
+// or it regenerates a phantom "Mockup ready for review" action item forever (SO-1038).
+const _hasMockupContent = (af) => Math.max((af.mockup_files || af.files || []).length, Object.values(af.item_mockups || {}).reduce((a, arr) => a + (arr || []).length, 0)) > 0;
 
 // ── Pricing ──
 const rQ = v => Math.round(v * 4) / 4;
@@ -28,44 +33,73 @@ const SP = { bk: [{ min: 1, max: 11 }, { min: 12, max: 23 }, { min: 24, max: 35 
 const EM = { sb: [10000, 15000, 20000, 999999], qb: [6, 24, 48, 99999], pr: [[4.8, 5.1, 4.8, 4.5], [5.4, 5.1, 4.8, 4.8], [6, 5.7, 5.4, 5.4], [7.2, 7.5, 7.2, 6]], mk: 1.6, fl: 8 };
 const NP = { bk: [10, 50, 99999], co: [4, 3, 3], se: [7, 6, 5], tc: 3 };
 const DTF = [{ label: '4" Sq & Under', cost: 2.5, sell: 4.5 }, { label: 'Front Chest (12"x4")', cost: 4.5, sell: 7.5 }];
+// Tackle twill (mirror of src/lib/decoPricing.js). TWA = chest/logo menu, TWN = jersey numbers
+// by height × color. Flat per-application; sell defaults to 2× cost. Guarded by pricingDrift test.
+const TWA = [{ label: 'Left Chest 1 Color', cost: 6, sell: 12 }, { label: 'Full Chest 1 Color', cost: 11, sell: 22 }, { label: 'Full Chest 1 Color — Open Jerseys', cost: 12.5, sell: 25 }, { label: 'Full Chest 2 Color', cost: 13.5, sell: 27 }, { label: 'Full Chest 2 Color — Open Jerseys', cost: 16.5, sell: 33 }];
+const TWN = [{ size: '1-4"', cost1: 1.5, sell1: 3, cost2: 2.5, sell2: 5 }, { size: '6"', cost1: 1.75, sell1: 3.5, cost2: 2.75, sell2: 5.5 }, { size: '8-10"', cost1: 3, sell1: 6, cost2: 4, sell2: 8 }];
 
 // Bracket 0 (under 12) stores sell price (flat total); other brackets store cost.
 function spP(q, c, s = true) { const bi = SP.bk.findIndex(b => q >= b.min && q <= b.max); if (bi < 0 || c < 1 || c > 5) return 0; const v = SP.pr[bi]?.[c - 1]; if (v == null) return 0; if (bi === 0) return s ? v : rQ(v / SP.mk); return s ? rT(v * SP.mk) : v }
 // Under-12 screen print is an ALL-IN flat charge for the run, not per piece (mirrors src/pricing.js
 // spFlatShare — keep in sync). Unrounded per-piece shares so qty x value rebuilds the exact flat total.
 function spFlatShare(q, c, u = 1) { const b0 = SP.bk[0]; if (!(q >= b0.min && q <= b0.max)) return null; const v = SP.pr[0]?.[c - 1]; if (v == null || !(q > 0)) return null; const fs = v * u; return { sell: fs / q, cost: rQ(fs / SP.mk) / q } }
+// Split-job screen print: each production run priced at its own tier, summed, returned as
+// unrounded per-piece shares (mirrors src/lib/decoPricing.js spRunBlend/decoSplitRuns — keep in sync).
+function spRunBlend(runs, c, u = 1) { let Q = 0, sT = 0, cT = 0; for (const r0 of runs || []) { const r = safeNum(r0); if (!(r > 0)) continue; Q += r; const f = spFlatShare(r, c, u); if (f) { sT += f.sell * r; cT += f.cost * r; continue } const cc = rQ(spP(r, c, false) * u); sT += rT(cc * SP.mk) * r; cT += cc * r } if (!(Q > 0) || (runs || []).filter(r => safeNum(r) > 0).length < 2) return null; return { sell: sT / Q, cost: cT / Q } }
+function decoSplitRuns(d, pq) { if (!d || !Array.isArray(d.split_runs)) return null; const runs = d.split_runs.map(safeNum).filter(r => r > 0); if (runs.length < 2) return null; const tot = runs.reduce((a, b) => a + b, 0); const rm = d.reversible ? 2 : 1; if (tot * rm === pq) return runs.map(r => r * rm); if (tot === pq) return runs; return null }
 // EM.pr stores cost; sell = rT(cost × EM.mk).
-function emP(st, q, s = true) { const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
-function npP(q, tw = false, s = true) { const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
+// Non-positive stitch counts / quantities are invalid input, not the smallest tier —
+// return 0 like spP does. Synced with pricing.js/decoPricing.js and App.js copies.
+function emP(st, q, s = true) { if (!(st > 0) || !(q > 0)) return 0; const si = EM.sb.findIndex(b => st <= b); const qi = EM.qb.findIndex(b => q <= b); if (si < 0 || qi < 0) return 0; const v = EM.pr[si][qi]; return s ? Math.max(rT(v * EM.mk), EM.fl || 0) : v }
+function npP(q, tw = false, s = true) { if (!(q > 0)) return 0; const bi = NP.bk.findIndex(b => q <= b); if (bi < 0) return 0; return s ? (NP.se[bi] + (tw ? rQ(NP.tc * 1.65) : 0)) : (NP.co[bi] + (tw ? NP.tc : 0)) }
+// Tackle twill (mirror of src/lib/decoPricing.js). twaP: chest/logo by TWA index. twnP: number by TWN size × color.
+function twaP(idx, s = true) { const t = TWA[idx || 0] || TWA[0]; if (!t) return 0; return s ? safeNum(t.sell) : safeNum(t.cost) }
+function twnP(size, tw = false, s = true) { const r = TWN.find(x => x.size === size) || TWN[0]; if (!r) return 0; return s ? safeNum(tw ? r.sell2 : r.sell1) : safeNum(tw ? r.cost2 : r.cost1) }
 
 function dP(d, q, artFiles, cq) {
+  // A sell_override that can't coerce to a finite number (e.g. 'abc' from a bad paste)
+  // must not NaN the SO totals — treat it as absent so the computed price applies.
+  // Numeric strings ('12.5') still pass through. Synced with App.js dP / decoPricing.js _dPInner.
+  // (Object.assign, not spread — see the no-spread NOTE above recalcJobFulfillment.)
+  if (d && d.sell_override != null && !Number.isFinite(Number(d.sell_override))) d = Object.assign({}, d, { sell_override: null });
   const pq = cq || q;
   if (d.kind === 'art' && d.art_file_id && artFiles) {
     if (d.art_file_id === '__tbd') { const tType = d.art_tbd_type || 'screen_print';
-      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (tType === 'screen_print') { const nc = d.tbd_colors || 1; const u = d.underbase ? 1 + SP.ub : 1; const _sr = decoSplitRuns(d, pq); if (_sr) { const b = spRunBlend(_sr, nc, u); if (b) return { sell: d.sell_override != null ? d.sell_override : b.sell, cost: b.cost } } const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
       if (tType === 'embroidery') { const c = emP(d.tbd_stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
-      if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } };
+      if (tType === 'heat_press' || tType === 'dtf') { const t = DTF[d.tbd_dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } };
       return { sell: d.sell_override || 0, cost: 0 } }
     const art = artFiles.find(a => a.id === d.art_file_id); if (art) {
-      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
+      if (art.deco_type === 'screen_print') { const nc = art.ink_colors ? art.ink_colors.split('\n').filter(l => l.trim()).length : 1; const u = d.underbase ? 1 + SP.ub : 1; const _sr = decoSplitRuns(d, pq); if (_sr) { const b = spRunBlend(_sr, nc, u); if (b) return { sell: d.sell_override != null ? d.sell_override : b.sell, cost: b.cost } } const f = spFlatShare(pq, nc, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(pq, nc, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
       if (art.deco_type === 'embroidery') { const c = emP(art.stitches || 8000, pq, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
-      if (art.deco_type === 'dtf' || art.deco_type === 'heat_press') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } } } }
+      // Transfer-code decos carry real cost on cost_each — keep in sync with decoPricing.js.
+      if (art.deco_type === 'dtf' || art.deco_type === 'heat_press') { const t = DTF[art.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: (d.transfer_code && d.cost_each != null) ? safeNum(d.cost_each) : t.cost } } } }
+  // Team Shop conversion decos (00199): cost_each is the rate-card cost-of-record; sell
+  // stays 0 (already folded into unit_sell). Keep in sync with src/lib/decoPricing.js.
+  if (d.kind === 'art' && !d.art_file_id && d.cost_each != null) return { sell: safeNum(d.sell_override) || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
   if (d.type === 'screen_print') { const u = d.underbase ? 1 + SP.ub : 1; const f = spFlatShare(q, d.colors || 1, u); if (f) return { sell: d.sell_override != null ? d.sell_override : f.sell, cost: f.cost }; const c = rQ(spP(q, d.colors || 1, false) * u); return { sell: d.sell_override != null ? d.sell_override : rT(c * SP.mk), cost: c } }
   if (d.type === 'embroidery') { const c = emP(d.stitches || 8000, q, false); return { sell: d.sell_override != null ? d.sell_override : Math.max(rT(c * EM.mk), EM.fl || 0), cost: c } }
   if (d.kind === 'numbers' || d.type === 'number_press') {
     // Mirror src/pricing.js dP() exactly so the editor and QB billing agree.
-    if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || safeNum(d.num_qty) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
-    const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : (safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
+    if (d.num_method === 'sublimated') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq || Math.max(0, safeNum(d.num_qty)) || 0; const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); return { sell: safeNum(d.sell_override) || 0, cost: 0, _nq: useQty * mult } }
+    // Tackle twill numbers: flat price from TWN (num_size × two_color), not the qty-tiered npP.
+    if (d.num_method === 'tackle_twill') { const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const useQty = nq > 0 ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult; return { sell: d.sell_override != null ? d.sell_override : twnP(d.num_size, d.two_color, true), cost: twnP(d.num_size, d.two_color, false), _nq: fnq } }
+    const nq = d.roster ? Object.values(d.roster).flat().filter(v => v && v.trim()).length : 0; const hasAssigned = nq > 0; const useQty = hasAssigned ? nq : Math.max(0, safeNum(d.num_qty) || q); const mult = (d.front_and_back ? 2 : 1) * (d.reversible ? 2 : 1); const fnq = useQty * mult;
     // Price the per-number volume break at the doubled application count (fnq), not the garment qty.
     return { sell: d.sell_override != null ? d.sell_override : npP(fnq || 1, d.two_color, true), cost: npP(fnq || 1, d.two_color, false), _nq: fnq } };
-  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override || d.sell_each || 6); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
-  if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override || t.sell, cost: t.cost } }
-  if (d.kind === 'outside_deco') return { sell: d.sell_override || safeNum(d.sell_each), cost: safeNum(d.cost_each) };
+  // sell_override honors an explicit 0 (nullish, matches decoPricing.js — keep in sync).
+  if (d.kind === 'names') { const nc = d.names ? Object.values(d.names).flat().filter(v => v && v.trim()).length : 0; const se = safeNum(d.sell_override != null ? d.sell_override : (d.sell_each || 6)); const co = safeNum(d.cost_each || 3); return { sell: nc > 0 ? rQ(nc * se / q) : se, cost: nc > 0 ? rQ(nc * co / q) : co } };
+  if (d.type === 'dtf') { const t = DTF[d.dtf_size || 0]; return { sell: d.sell_override != null ? d.sell_override : t.sell, cost: t.cost } }
+  // Tackle-twill chest/logo: flat per-garment price from the TWA menu (index on d.dtf_size).
+  if (d.kind === 'twill') return { sell: d.sell_override != null ? d.sell_override : twaP(d.dtf_size, true), cost: twaP(d.dtf_size, false) };
+  if (d.kind === 'outside_deco') return { sell: d.sell_override != null ? d.sell_override : safeNum(d.sell_each), cost: safeNum(d.cost_each) };
   return { sell: 0, cost: 0 }
 }
 
 // ── PO Committed ──
-const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + (ordered - cancelled) }, 0);
+// Per-line floor at 0: cancelling more than was ordered (data-entry slip) must not
+// produce a negative committed count — negative quantities are invalid, not credits.
+const poCommitted = (poLines, sz) => (poLines || []).reduce((a, pk) => { const ordered = pk[sz] || 0; const cancelled = (pk.cancelled || {})[sz] || 0; return a + Math.max(0, ordered - cancelled) }, 0);
 
 // ── Booking Order Helpers ──
 function isBookingOrder(ord) {
@@ -342,9 +376,9 @@ const buildJobs = (o) => {
           // in before the seps exist) is NOT enough, so an approved job waits in its production-files
           // stage until someone confirms. Same rule as artProdFilesConfirmed in constants.js — a .dst
           // confirms on its own; staleness after a recall is gated by af.status, not this check.
-          const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
+          const _prodConfirmed = af.prod_files_attached === true || ((af.deco_type || '') === 'embroidery' && [...(af.files || []), ...(af.prod_files || [])].some(f => { if (f && typeof f === 'object' && f.stale) return false; const n = (typeof f === 'string' ? f : (f && (f.name || f.url)) || '').toLowerCase(); return n.endsWith('.dst'); }));
           const _prodNeededSt = (['dtf','heat_press'].includes(af.deco_type || '')) ? 'order_dtf_transfers' : (af.deco_type || '') === 'embroidery' ? 'upload_emb_files' : 'production_files_needed';
-          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : af.status === 'needs_approval' ? 'waiting_approval' : af.status === 'uploaded' ? 'waiting_approval' : 'needs_art';
+          const st = af.status === 'approved' ? (_prodConfirmed ? 'art_complete' : _prodNeededSt) : (af.status === 'needs_approval' || af.status === 'uploaded') ? (_hasMockupContent(af) ? 'waiting_approval' : 'needs_art') : 'needs_art';
           if (st !== 'art_complete') worstArtSt = st;
         } else { artNames.push('Unnamed'); decoTypes.push('screen_print'); worstArtSt = 'needs_art'; }
       } else if (d.kind === 'numbers') {
@@ -513,9 +547,10 @@ const isJobReady = (j, o) => {
 // so honor that before falling back to the full SO item sizes — otherwise a receive after
 // a custom split would clobber both halves' totals with the full item quantity. Receipts are
 // apportioned within each split family (see allocateJobFulfillment) so a slice and its parent
-// never both count the same units, and jobs carrying per-size splits get gi.fulfilled /
-// gi.fulSizes refreshed to the apportioned amounts — stored fulSizes is what the UI's size
-// chips show (and what syncJobs preserves), so it has to track receipts in both directions.
+// never both count the same units. EVERY job item gets its scalar gi.fulfilled refreshed to the
+// apportioned amount (split items also refresh their per-size gi.fulSizes, which the UI's size
+// chips read and syncJobs preserves), so a job's per-line fulfilled never drifts from its
+// fulfilled_units summary the way a warehouse receipt on a non-split line used to leave it.
 // NOTE: no spread syntax in this file — babel would inject an ESM helper import for it,
 // which makes webpack treat this CommonJS module as ESM and drop module.exports entirely.
 const recalcJobFulfillment = (o, items) => {
@@ -525,19 +560,73 @@ const recalcJobFulfillment = (o, items) => {
     const itemSt = a.fulfilled >= a.total && a.total > 0 ? 'items_received' : a.fulfilled > 0 ? 'partially_received' : 'need_to_order';
     let giChanged = false;
     const newItems = (j.items || []).map((gi, gii) => {
-      if (!gi.sizes || Object.keys(gi.sizes).length === 0) return gi;
       const fs = a.fulSizes[gii] || {};
       const f = Object.keys(fs).reduce((x, sz) => x + fs[sz], 0);
-      const old = gi.fulSizes || {};
-      const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
-      const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
-      if (same) return gi;
+      // Split job items carry a per-size gi.sizes and render fulSizes chips, so refresh BOTH the
+      // size map and the scalar. A plain (non-split) job item has no gi.sizes and only tracks the
+      // scalar gi.fulfilled — refresh just that. It used to be skipped entirely, so gi.fulfilled
+      // froze at its build-time 0 even as receipts arrived: after a warehouse receive the job
+      // summary read e.g. "50 fulfilled" while every line under it still read 0, drifting from
+      // fulfilled_units. OrderEditor.syncJobs already derives gi.fulfilled from receipts — mirror
+      // it here so the recompute and the editor agree instead of one freezing what the other heals.
+      if (gi.sizes && Object.keys(gi.sizes).length > 0) {
+        const old = gi.fulSizes || {};
+        const oldKeys = Object.keys(old).filter(sz => safeNum(old[sz]) > 0);
+        const same = safeNum(gi.fulfilled) === f && oldKeys.length === Object.keys(fs).length && oldKeys.every(sz => safeNum(old[sz]) === fs[sz]);
+        if (same) return gi;
+        giChanged = true;
+        return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+      }
+      if (safeNum(gi.fulfilled) === f) return gi;
       giChanged = true;
-      return Object.assign({}, gi, { fulSizes: fs, fulfilled: f });
+      return Object.assign({}, gi, { fulfilled: f });
     });
     if (!giChanged && j.item_status === itemSt && j.fulfilled_units === a.fulfilled && j.total_units === a.total) return j;
     return Object.assign({}, j, { item_status: itemSt, fulfilled_units: a.fulfilled, total_units: a.total, items: newItems });
   });
+};
+
+// ── Derived (display) product status for a job ──
+// The stored item_status (set by recalcJobFulfillment) tracks RECEIPTS only: it reads
+// 'need_to_order' whenever fulfilled_units is 0, even when a PO already covers every unit.
+// That's correct for the floor release gate (advance_job_stage / jobReadiness key off it —
+// "goods in hand?"), but it is the WRONG thing to LABEL "Need to Order" on the Jobs board:
+// a job whose garments are fully on a PO — or a drop-ship job that never gets received —
+// would sit under "Need to Order" forever even though nothing more needs ordering.
+// This derives a coverage-aware status for DISPLAY/FILTER, mirroring calcSOStatus's coverage
+// math (committed = PO ordered − cancelled, or already on a pick line). It NEVER mutates the
+// stored item_status. Same ladder as OrderEditor's job-detail jItemStatus so the Jobs list and
+// the order's job detail agree:
+//   items_received  — every unit received/pulled
+//   partially_received — some (but not all) units received
+//   waiting_receive — nothing received, but every unit is committed (fully ordered/picked)
+//   on_order        — nothing received, some units committed
+//   need_to_order   — nothing received and nothing committed (genuinely still needs a PO)
+const deriveJobItemStatus = (j, o) => {
+  const total = safeNum(j.total_units);
+  const ful = safeNum(j.fulfilled_units);
+  if (total > 0 && ful >= total) return 'items_received';
+  if (ful > 0) return 'partially_received';
+  const items = safeItems(o);
+  let totalSz = 0, coveredSz = 0;
+  (j.items || []).forEach(gi => {
+    const it = items[gi.item_idx];
+    if (!it) return;
+    // Split job items carry their own subset in gi.sizes; fall back to the full line otherwise.
+    // qty_only items (no size breakdown) hold their count in est_qty under the 'QTY' bucket.
+    let entries = Object.entries(gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : safeSizes(it)).filter(([, v]) => safeNum(v) > 0);
+    if (entries.length === 0 && safeNum(it.est_qty) > 0) entries = [['QTY', safeNum(it.est_qty)]];
+    entries.forEach(([sz, v]) => {
+      const need = safeNum(v);
+      totalSz += need;
+      const picked = safePicks(it).reduce((a, pk) => a + safeNum(pk[sz]), 0);
+      const poOrd = safePOs(it).reduce((a, pk) => a + safeNum(pk[sz]) - safeNum((pk.cancelled || {})[sz]), 0);
+      coveredSz += Math.min(need, picked + poOrd);
+    });
+  });
+  if (totalSz > 0 && coveredSz >= totalSz) return 'waiting_receive';
+  if (coveredSz > 0) return 'on_order';
+  return 'need_to_order';
 };
 
 // ── Ready-for-decoration transition ──
@@ -610,7 +699,7 @@ const jobGroupKey = (j, parentId) => {
 function calcTotals(o, cust) {
   const artQty = {};
   safeItems(o).forEach(it => {
-    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + Math.max(0, safeNum(v)), 0);
     safeDecos(it).forEach(d => { if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q } });
   });
   const af = safeArt(o);
@@ -619,7 +708,7 @@ function calcTotals(o, cust) {
   const outByItem = outsourcedDecoTypes(o);
   let rev = 0, cost = 0;
   safeItems(o).forEach((it, ii) => {
-    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + Math.max(0, safeNum(v)), 0);
     if (!q) return;
     rev += q * safeNum(it.unit_sell);
     cost += q * safeNum(it.nsa_cost);
@@ -635,7 +724,7 @@ function calcTotals(o, cust) {
     // their decoration cost must still be counted so margins aren't overstated.
     (it.po_lines || []).forEach(pl => {
       if (pl.po_type !== 'outside_deco') return;
-      const plQty = Object.keys(safeSizes(it)).reduce((a, sz) => a + safeNum(pl[sz]), 0);
+      const plQty = Object.keys(safeSizes(it)).reduce((a, sz) => a + Math.max(0, safeNum(pl[sz])), 0);
       cost += plQty * safeNum(pl.unit_cost);
     });
   });
@@ -744,7 +833,10 @@ const PROMO_SHIP_MULT = 1.25;
 
 function calcPromoItemSell(item) {
   if (safeNum(item.retail_price) > 0) return safeNum(item.retail_price);
-  return safeNum(item.nsa_cost) * 2.0;
+  // Same >0 guard as retail_price: a negative nsa_cost (cost-correction typo) must not
+  // produce a negative sell price flowing into promoRev/customerPays.
+  const c = safeNum(item.nsa_cost);
+  return c > 0 ? c * 2.0 : 0;
 }
 
 // Calculate promo-adjusted totals for an order
@@ -754,7 +846,7 @@ function calcPromoTotals(o, cust) {
 
   const artQty = {};
   safeItems(o).forEach(it => {
-    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + Math.max(0, safeNum(v)), 0);
     safeDecos(it).forEach(d => {
       if (d.kind === 'art' && d.art_file_id) { artQty[d.art_file_id] = (artQty[d.art_file_id] || 0) + q }
     });
@@ -763,7 +855,7 @@ function calcPromoTotals(o, cust) {
   let promoRev = 0, promoCost = 0, normalRev = 0, normalCost = 0, origPromoRev = 0;
 
   safeItems(o).forEach(it => {
-    const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+    const q = Object.values(safeSizes(it)).reduce((a, v) => a + Math.max(0, safeNum(v)), 0);
     if (!q) return;
 
     if (it.is_promo) {
@@ -829,7 +921,7 @@ function calcPromoSpendAllocation(orders, customerIds, periodStart, periodEnd, p
   let totalRev = 0;
   filtered.forEach(o => {
     safeItems(o).forEach(it => {
-      const q = Object.values(safeSizes(it)).reduce((a, v) => a + safeNum(v), 0);
+      const q = Object.values(safeSizes(it)).reduce((a, v) => a + Math.max(0, safeNum(v)), 0);
       totalRev += q * safeNum(it.unit_sell);
     });
   });
@@ -1007,15 +1099,26 @@ function commissionRepId(customer, so) {
   return (customer && customer.primary_rep_id) || (so && so.created_by) || null;
 }
 
+// Who may be listed as the rep on an account/job and earn commission. Sales reps and admins
+// always qualify; any other role (e.g. a CSR) can be opted in per-person via the
+// `commission_eligible` flag so they can own accounts and appear in commission reports WITHOUT
+// giving up their base role. This is the single source of truth for rep-eligibility — route
+// every "is this person a sellable rep" list/filter through it so the rule can't drift across
+// its ~20 call sites the way a copy-pasted `role==='rep'||role==='admin'` silently would.
+function isCommissionRep(r) {
+  return !!r && (r.role === 'rep' || r.role === 'admin' || r.commission_eligible === true);
+}
+
 module.exports = {
   // Safe accessors
   safe, safeArr, safeObj, safeNum, safeStr, safeSizes, safePicks, safePOs, safeDecos, safeItems, safeArt, safeJobs,
   // Attribution
   commissionRepId,
+  isCommissionRep,
   // Pricing
-  rQ, rT, spP, emP, npP, dP, DTF, SP, EM, NP,
+  rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars

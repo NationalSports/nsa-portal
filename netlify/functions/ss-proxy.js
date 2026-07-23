@@ -36,24 +36,36 @@ exports.handler = async (event) => {
   }
 
   const path = event.queryStringParameters?.path || '/Styles';
-  // Force JSON response format (Accept header alone is unreliable for some endpoints)
-  const separator = path.includes('?') ? '&' : '?';
-  const url = `https://api.ssactivewear.com/V2${path}${separator}mediatype=json`;
   const auth = Buffer.from(`${accountNumber}:${apiKey}`).toString('base64');
 
   // Forward the write verbs S&S uses (POST orders, PUT/DELETE CrossRef); anything else is a GET.
   const _m = String(event.httpMethod || 'GET').toUpperCase();
   const method = ['POST', 'PUT', 'DELETE'].includes(_m) ? _m : 'GET';
+
+  // Force JSON response format (Accept header alone is unreliable for some endpoints). EXCEPTION:
+  // the CrossRef PUT/DELETE are bodyless and take only `identifier` on the querystring — their
+  // documented example URL carries no `mediatype`. Appending it pushes S&S's ASP.NET stack down
+  // the same empty-body formatter path that 500s ("unhandled exception") on a declared
+  // Content-Type (see the header note below), so a bodyless write gets the bare documented URL.
+  const separator = path.includes('?') ? '&' : '?';
+  const bodylessWrite = !event.body && (method === 'PUT' || method === 'DELETE');
+  const url = bodylessWrite
+    ? `https://api.ssactivewear.com/V2${path}`
+    : `https://api.ssactivewear.com/V2${path}${separator}mediatype=json`;
   try {
+    const headers = {
+      'Authorization': `Basic ${auth}`,
+      'Accept': 'application/json',
+      // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
+      'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
+    };
+    // Content-Type ONLY when a body is actually forwarded: declaring application/json on a
+    // bodyless request (the CrossRef PUT — its identifier rides the querystring) makes S&S's
+    // ASP.NET stack try to bind an empty JSON body and 500.
+    if (event.body) headers['Content-Type'] = 'application/json';
     const response = await fetch(url, {
       method,
-      headers: {
-        'Authorization': `Basic ${auth}`,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        // S&S's firewall 403s the Node runtime's default User-Agent — a real UA is required
-        'User-Agent': 'NSA-Portal/1.0 (nationalsportsapparel.com)',
-      },
+      headers,
       ...(event.body ? { body: event.body } : {}),
     });
 

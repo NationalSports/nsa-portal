@@ -48,7 +48,7 @@ const _msubFromUrl=()=>{try{const v=new URLSearchParams(window.location.search).
 // ═══════════════════════════════════════════
 // MOBILE PORTAL COMPONENT
 // ═══════════════════════════════════════════
-export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],onPullIF,onReceiveSOPO,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel}){
+export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=[],msgs,prod,vend,REPS,assignedTodos=[],computedTodos=[],dismissedTodos:parentDismissed,onDismissTodo,onLogout,onSwitchDesktop,onSaveEstimate,onSaveSO,searchProducts,nextEstId,nf,onMsg,invPOs=[],submittedBatches=[],onPullIF,onReceiveSOPO,onReceiveSOPOBatch,onReceiveInvPO,onAssignBot,canAccess,scanRequest,onScanRequestDone,boxes=[],onBoxLookup,onBoxUpdate,onBoxCombine,onBoxLabel,receipt,onReceiptDone,onPrintLabels}){
   const isOps=cu.role==='warehouse'||cu.role==='production';// ops roles: no sales/financial reporting
   const _caTop=canAccess||(()=>true);// page-access check usable anywhere in the component
   const[tab,setTab]=useState(()=>_mtabFromUrl()||'home');
@@ -119,6 +119,8 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
   const[whTab,setWhTab]=useState('if'); // if | pos
   const[mpScanOpen,setMpScanOpen]=useState(false); // camera/QR scanner modal
   const[mpBox,setMpBox]=useState(null); // {box,binDraft,combineWith} — Box Action sheet (BX plate scans)
+  const[receiptPrinted,setReceiptPrinted]=useState(false); // check-in confirmation: has the label been printed yet?
+  useEffect(()=>{setReceiptPrinted(false)},[receipt]); // reset the Print button each time a new confirmation opens
   const[whDetail,setWhDetail]=useState(null); // null | {kind:'if',soId,pickId} | {kind:'po',key}
   const[whPullQty,setWhPullQty]=useState({}); // {itemIdx:{size:qty}}
   const[whRcvQty,setWhRcvQty]=useState({}); // {lineIdx:{size:qty}}
@@ -317,6 +319,14 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
           const qty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
           const sell=+it.unit_sell||+it.unit_price||0;
           const decos=it.decorations||[];
+          // Check-in progress for this line across its POs (drop-ship excluded — those never
+          // arrive at the warehouse). Denominator is raw ordered so this matches the "Purchase
+          // Orders — X/Y checked in" panel below; "full" = nothing open (received + cancelled
+          // cover the order), the same rule the panel uses to badge a line Received.
+          const _pol=(it.po_lines||[]).filter(po=>!po.drop_ship);
+          let _ordIn=0,_rcvIn=0,_canIn=0;
+          _pol.forEach(po=>{numericSizeKeys(po).forEach(sz=>{_ordIn+=po[sz]||0;_rcvIn+=(po.received||{})[sz]||0;_canIn+=(po.cancelled||{})[sz]||0;})});
+          const _rcvShow=Math.min(_rcvIn,_ordIn);const _inFull=_ordIn>0&&_rcvIn>0&&(_rcvIn+_canIn)>=_ordIn;
           return<div key={idx} className="mp-item-card">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start'}}>
               <div><div style={{fontWeight:700,fontSize:14}}>{it.name||it.sku}</div>
@@ -337,6 +347,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 return<span key={di} style={{fontSize:10,fontWeight:700,padding:'2px 6px',borderRadius:6,background:(dk?.color||'#64748b')+'20',color:dk?.color||'#64748b'}}>{d.position?d.position+' · ':''}{lbl}</span>;
               })}
             </div>}
+            {_ordIn>0&&<div style={{marginTop:8,display:'inline-flex',alignItems:'center',gap:6,fontSize:11,fontWeight:800,padding:'3px 9px',borderRadius:8,background:_inFull?'#f0fdf4':'#fffbeb',color:_inFull?'#166534':'#b45309',border:'1px solid '+(_inFull?'#bbf7d0':'#fde68a')}}>{_inFull?'✓ All '+_ordIn+' checked in':'📦 '+_rcvShow+'/'+_ordIn+' checked in'}</div>}
           </div>})}
         {/* ─── Purchase Orders + Check-In status — so warehouse can see what's on order and what's arrived ─── */}
         {(()=>{
@@ -1088,6 +1099,11 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         </div>
         <ScopeToggle/>
       </div>
+      {/* Global search bar */}
+      <div className="mp-search-inline" onClick={()=>setShowSearch(true)} style={{cursor:'pointer'}}>
+        <MIcon name="search" size={18}/>
+        <span style={{flex:1,color:'#94a3b8',fontSize:15}}>Search orders, customers, estimates…</span>
+      </div>
       {/* Quick stats */}
       <div className="mp-stats-grid">
         <div className="mp-stat-card" onClick={()=>setTab('orders')}>
@@ -1374,7 +1390,7 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     const sel=buildPOs().filter(p=>poKeys.includes(p.key)&&p.totOpen>0&&!p.dropShip);
     if(sel.length===0){if(nf)nf(batchNo+' has no open units to receive','error');return;}
     setWhBatchSelected(new Set(sel.map(p=>p.key)));setWhBatchQty({});setWhBatchMode(true);
-    setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch'});
+    setTab('more');setMoreSubPage('warehouse');setWhTab('pos');setWhDetail({kind:'batch',batchNo});
     setShowSearch(false);setQ('');
   };
   // ─── SCAN ROUTER — camera scans and ?scan= QR deep links (printed 4×6 labels) land here.
@@ -1430,6 +1446,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(total===0){if(nf)nf('Enter at least one quantity to receive','error');return;}
     setWhSaving(true);
     try{
+      // Summary toast fires FIRST: nf replaces the current toast, so firing it after the
+      // receive handlers was clobbering the "🎽 Ready for decoration" notice they raise.
+      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
       // Collect SO-PO receipts grouped by soId so two POs on the same SO apply in one call —
       // onReceiveSOPO reads the SO from a render snapshot, so separate per-PO calls would
       // clobber each other. Inventory POs each target a distinct record, so they fire directly.
@@ -1438,8 +1457,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
         if(po.kind==='so'){po.lines.forEach((l,i)=>{const rcv={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)rcv[sz]=n});if(Object.keys(rcv).length>0)(soLines[po.soId]=soLines[po.soId]||[]).push({itemIdx:l.itemIdx,poLineIdx:l.poLineIdx,rcv})});}
         else{const receivedMap={};po.lines.forEach((l,i)=>{const m={};Object.entries(lm[i]||{}).forEach(([sz,v])=>{const n=parseInt(v)||0;if(n>0)m[sz]=n});if(Object.keys(m).length>0)receivedMap[l.idx]=m});if(Object.keys(receivedMap).length>0)onReceiveInvPO&&onReceiveInvPO(po.invId,receivedMap);}
       });
-      Object.entries(soLines).forEach(([soId,lines])=>{if(lines.length>0)onReceiveSOPO&&onReceiveSOPO(soId,lines)});
-      if(nf)nf('Received '+total+' unit'+(total!==1?'s':'')+' across '+sel.length+' PO'+(sel.length!==1?'s':''));
+      // Batch handler applies all SOs then prints ONE combined job — separate per-SO calls
+      // each open a print window, and iPad Safari blocks every pop-up after the first.
+      const entries=Object.entries(soLines).filter(([,lines])=>lines.length>0).map(([soId,lines])=>({soId,lines}));
+      if(entries.length>0){
+        if(onReceiveSOPOBatch)onReceiveSOPOBatch(entries);
+        else entries.forEach(e=>onReceiveSOPO&&onReceiveSOPO(e.soId,e.lines));
+      }
       setWhBatchSelected(new Set());setWhBatchMode(false);setWhBatchQty({});setWhDetail(null);
     }finally{setWhSaving(false);}
   };
@@ -1553,6 +1577,13 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
     if(whDetail?.kind==='batch'){
       const sel=pos.filter(p=>whBatchSelected.has(p.key)&&p.totOpen>0&&!p.dropShip);
       const grandRcv=sel.reduce((a,po)=>a+Object.values(whBatchQty[po.key]||{}).reduce((b,m)=>b+Object.values(m||{}).reduce((c,v)=>c+(parseInt(v)||0),0),0),0);
+      // Source POs the frozen batch snapshot still lists but whose live PO line has since been re-batched
+      // onto another batch — surface them read-only (matching the desktop view) so the warehouse can see
+      // where they went instead of the PO silently vanishing from the batch. Snapshot is never mutated.
+      const _movLivePoIdsLc=new Set(pos.map(p=>(p.poId||'').toLowerCase()).filter(Boolean));
+      const _movLoadedSoIds=new Set(sos.map(s=>s.id));
+      const _movSb=whDetail.batchNo?(submittedBatches||[]).find(b=>(b.po_number||'').toLowerCase()===String(whDetail.batchNo).toLowerCase()):null;
+      const movedOut=_movSb?(_movSb.source_pos||[]).filter(sp=>{if(!sp.po_id)return false;if(sp.so_id&&!_movLoadedSoIds.has(sp.so_id))return false;return !_movLivePoIdsLc.has(String(sp.po_id).toLowerCase())}).map(sp=>{const dest=pos.find(p=>p.soId===sp.so_id&&p.batchPoNumber);return{poId:sp.po_id,soId:sp.so_id,customer:sp.customer||'',movedTo:(dest&&dest.batchPoNumber)||'',units:(sp.items||[]).reduce((a,it)=>a+(it.qty||0),0)}}):[];
       return<div className="mp-detail">
         <div className="mp-detail-header">
           <button className="mp-back-btn" onClick={()=>{setWhDetail(null);setWhBatchQty({})}}><MIcon name="back" size={22}/></button>
@@ -1596,6 +1627,17 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
                 <button onClick={()=>batchPoClear(po)} style={{padding:'8px 12px',borderRadius:8,border:'1px solid #e2e8f0',background:'white',color:'#64748b',fontWeight:700,fontSize:12,cursor:'pointer',minHeight:34}}>Clear</button>
               </div>
             </div>})}
+          {movedOut.length>0&&<div style={{marginTop:2}}>
+            <div style={{fontSize:11,fontWeight:800,color:'#b45309',letterSpacing:0.3,margin:'4px 0 6px'}}>MOVED TO ANOTHER BATCH</div>
+            {movedOut.map(m=><div key={m.poId} style={{marginBottom:10,opacity:0.8,padding:'10px 12px',border:'1px dashed #e2e8f0',borderRadius:10,background:'#fafaf9'}}>
+              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                <span style={{fontWeight:800,color:'#94a3b8',fontSize:14,textDecoration:'line-through'}}>{m.poId}</span>
+                <span style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#fef3c7',color:'#b45309',fontWeight:700}}>→ moved to {m.movedTo||'another batch'}</span>
+                {m.units>0&&<span style={{marginLeft:'auto',fontSize:11,color:'#94a3b8',fontWeight:700}}>{m.units} unit{m.units!==1?'s':''}</span>}
+              </div>
+              <div style={{fontSize:12,marginTop:3,color:'#94a3b8'}}>{m.customer||m.soId}{m.movedTo?' · receive on '+m.movedTo:''}</div>
+            </div>)}
+          </div>}
         </div>
         <div style={{position:'sticky',bottom:0,background:'white',borderTop:'1px solid #e2e8f0',padding:'12px 16px',paddingBottom:'max(12px, env(safe-area-inset-bottom))'}}>
           <button disabled={whSaving||grandRcv===0} onClick={()=>confirmBatchReceive(sel)} style={{width:'100%',padding:'14px',borderRadius:12,border:'none',background:grandRcv>0&&!whSaving?'#1e40af':'#cbd5e1',color:'white',fontWeight:800,fontSize:15,cursor:grandRcv>0&&!whSaving?'pointer':'default',minHeight:48}}>
@@ -2375,6 +2417,43 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
               <button onClick={doCombine} disabled={!mpBox.combineWith} style={{fontSize:12,fontWeight:700,padding:'8px 14px',borderRadius:8,border:'1px solid #cbd5e1',background:'#f8fafc',opacity:mpBox.combineWith?1:0.5}}>Combine</button>
             </div>}
           </>}
+        </div>
+      </div>;
+    })()}
+    {/* Check-in confirmation — fires after a receive/pull is applied. Shows exactly what was
+        just checked in (items + Program/Rep/SO), any job now ready for decoration, and the
+        label print button (label prints from here on tap, never before the save is applied). */}
+    {receipt&&receipt.groups&&receipt.groups.length>0&&(()=>{
+      const done=onReceiptDone||(()=>{});
+      const pulled=receipt.kind==='pulled';
+      const hasLabels=(receipt.labels||[]).length>0;
+      const doPrint=()=>{if(onPrintLabels)onPrintLabels(receipt.labels||[]);setReceiptPrinted(true)};
+      return<div style={{position:'fixed',inset:0,zIndex:3200,background:'rgba(15,23,42,0.6)',display:'flex',alignItems:'flex-end',justifyContent:'center'}} onClick={done}>
+        <div style={{width:'100%',maxWidth:560,maxHeight:'90vh',overflowY:'auto',background:'white',borderRadius:'14px 14px 0 0',padding:'16px 16px calc(16px + env(safe-area-inset-bottom))'}} onClick={e=>e.stopPropagation()}>
+          <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:2}}>
+            <span style={{fontSize:18,fontWeight:900,color:'#166534'}}>✓ {pulled?'Pulled':'Checked In'} — {receipt.units} unit{receipt.units!==1?'s':''}</span>
+            <button onClick={done} style={{marginLeft:'auto',background:'none',border:'none',color:'#64748b',fontSize:26,lineHeight:1,padding:'0 4px'}}>×</button>
+          </div>
+          <div style={{fontSize:12,color:'#64748b',fontWeight:600,marginBottom:12}}>Review what was {pulled?'pulled':'received'}, then print the label.</div>
+          {receipt.groups.map((g,gi)=><div key={gi} style={{border:'1px solid #e2e8f0',borderRadius:10,padding:'10px 12px',marginBottom:10}}>
+            <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:4}}>
+              <span style={{fontWeight:800,color:'#1e40af',fontSize:15}}>{g.soId}</span>
+              {g.custName&&<span style={{fontSize:13,fontWeight:700,color:'#0f172a'}}>{g.custName}</span>}
+            </div>
+            <div style={{fontSize:11,color:'#64748b',marginBottom:8}}>Program: <strong style={{color:'#334155'}}>{g.custName||'—'}</strong>{g.repName?<> · Rep: <strong style={{color:'#334155'}}>{g.repName}</strong></>:null} · SO: <strong style={{color:'#334155'}}>{g.soId}</strong></div>
+            {(g.lines||[]).map((ln,li)=><div key={li} style={{display:'flex',gap:8,alignItems:'baseline',flexWrap:'wrap',fontSize:12,padding:'5px 0',borderTop:'1px solid #f1f5f9'}}>
+              <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af'}}>{ln.sku}</span>
+              <span style={{color:'#334155',fontWeight:600}}>{ln.name}{ln.color?' — '+ln.color:''}</span>
+              <span style={{marginLeft:'auto',color:'#475569',fontFamily:'monospace'}}>{ln.szStr}</span>
+              <span style={{fontWeight:800,color:'#166534',minWidth:28,textAlign:'right'}}>{ln.qty}</span>
+            </div>)}
+            {(g.deco||[]).length>0&&<div style={{marginTop:8,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:8,padding:'8px 10px'}}>
+              <div style={{fontSize:12,fontWeight:800,color:'#166534',marginBottom:4}}>🎽 Ready for Decoration</div>
+              {g.deco.map((j,ji)=><div key={ji} style={{fontSize:11,color:'#15803d',padding:'2px 0'}}><strong style={{color:'#14532d'}}>{j.art_name}</strong> · {j.id} · {j.units} units{j.deco_type?' · '+j.deco_type:''}</div>)}
+            </div>}
+          </div>)}
+          {hasLabels&&<button onClick={doPrint} style={{width:'100%',padding:'13px',borderRadius:10,border:'none',background:receiptPrinted?'#0891b2':'#1e40af',color:'white',fontWeight:800,fontSize:15,marginTop:2,minHeight:48,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}><MIcon name="box" size={17}/> {receiptPrinted?'Print Label Again':'Print Label'+((receipt.labels||[]).length>1?'s ('+receipt.labels.length+')':'')}</button>}
+          <button onClick={done} style={{width:'100%',padding:'12px',borderRadius:10,border:hasLabels?'1px solid #cbd5e1':'none',background:hasLabels?'white':'#16a34a',color:hasLabels?'#334155':'white',fontWeight:800,fontSize:15,marginTop:8,minHeight:48,cursor:'pointer'}}>{receiptPrinted||!hasLabels?'Done':'Done — Skip Label'}</button>
         </div>
       </div>;
     })()}

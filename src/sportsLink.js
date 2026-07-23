@@ -7,7 +7,15 @@
 //
 // Docs: https://api.sportsinc.com/  (REST/JSON, auth via X-API-KEY header)
 
-export const _siNum = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+// Tolerates formatted currency strings ("$1,234.56", "(100.50)" = negative) — a raw
+// parseFloat silently zeroed those, an under-billing path.
+export const _siNum = (v) => {
+  if (typeof v === 'number') return isNaN(v) ? 0 : v;
+  const s = String(v == null ? '' : v).trim();
+  const neg = /^\(.*\)$/.test(s);
+  const n = parseFloat(s.replace(/[($,)\s]/g, ''));
+  return isNaN(n) ? 0 : (neg ? -n : n);
+};
 
 // Format an API datetime to the MM/DD/YYYY the PDF parser emits. We take the literal
 // Y-M-D off the front of the ISO string rather than constructing a Date, so a
@@ -120,6 +128,35 @@ export const scoreSiPoMatch = (parsedBill, candidate) => {
   return { score, confidence, method, reasons };
 };
 
+// A PO string that is clearly a NetSuite/manual reference, not a portal order (owner
+// 2026-07-23). Verified against live data: SO-prefixed refs and long pure-numeric ids have
+// ZERO portal-PO collisions, so a no-match bill carrying one belongs in the Outside/NetSuite
+// pile, not the active review queue. Deliberately NARROW — NSA-prefixed and store-name POs
+// are excluded (real portal "NSA #### TAG" orders exist), so a genuine bill is never mis-sorted.
+export const looksNetsuiteDocRef = (po) => {
+  const s = String(po || '').trim().toUpperCase();
+  if (/^SO\s?\d{3,}$/.test(s)) return true;              // NetSuite sales-order ref: SO135806
+  if (/^\d{6,}$/.test(s.replace(/\s/g, ''))) return true; // long pure-numeric invoice/doc id
+  return false;
+};
+
+// Auto-push PO confirmation (owner 2026-07-23). The auto-push gate requires the bill's PO to
+// match the order it tied to. Reps write that PO sloppily — "PO.3182.LAF", "3094 CLHSSP"
+// (no prefix), "3126 GC 3119 SE" (extra tokens) — so a strict string compare rejects certain
+// matches and they sit waiting for a manual push. This confirms a match when the numeric CORE
+// is identical AND a customer TAG is shared: two independent signals agreeing (the PO number
+// and the customer), which uniquely identifies the order. It only WIDENS the gate — the
+// price-within-25%, vendor-compatible, and full high-confidence checks all still run alongside.
+// Requires a tag on both sides, so a tag-less "PO 3323 REP" never core-only-matches a different
+// customer's PO 3323.
+export const poCoreTagMatch = (billPo, orderPo) => {
+  const a = parseSiPoString(billPo), b = parseSiPoString(orderPo);
+  if (!a.core || a.core !== b.core) return false;
+  if (!a.tags.length || !b.tags.length) return false;
+  const bset = new Set(b.tags);
+  return a.tags.some((t) => bset.has(t));
+};
+
 // Rank portal PO candidates for a bill, best first (only positive-scoring ones).
 export const rankSiPoCandidates = (parsedBill, candidates) =>
   (candidates || [])
@@ -146,6 +183,77 @@ export const buildSportsLinkDocsQuery = (filters = {}) => {
   return p;
 };
 
+// Document-level dealer discount (owner report 2026-07-22). Sports Inc applies vendor
+// dealer discounts — Agron's blanket 25% off list is the loud case — as a DOCUMENT
+// adjustment, not a line one: every line carries LIST price (netPrice === listPrice ===
+// list), and only merchandiseTotal reflects the discount. So sum(line extensions) is the
+// GROSS and our true per-line COST is list × (merchandiseTotal / grossExtensions).
+// Example (real bill 100984970): 8 × Stadium 4 Backpack @ 32.50 list = 260 gross, but
+// merchandiseTotal 195 → factor 0.75 → true cost 24.375/ea. Without this, every Agron
+// line reads as a phantom +33% price gap: it won't tie (price tiers want ±2¢), the
+// auto-push safety gate holds it, and if pushed priceSync overwrites our correct net cost
+// with the inflated list. Derived from the bill's OWN numbers, so it self-corrects for
+// any discount vendor, not just Agron. Returns 1 (no adjustment) unless a real, sane
+// document discount is present.
+export const siDiscountFactor = (grossExt, merchTotal) => {
+  const g = _siNum(grossExt), m = _siNum(merchTotal);
+  if (g <= 0 || m <= 0 || m >= g - 0.01) return 1;         // no document-level discount
+  const f = m / g;
+  return f >= 0.5 && f < 1 ? Math.round(f * 1e6) / 1e6 : 1; // sane band; else leave list (bill just flags for review)
+};
+
+// Push a document-level dealer discount down onto line costs — the ONE implementation,
+// shared by the EDI adapter (mapSportsLinkDocToBill) and the PDF-parse path so the line
+// rewrite (_list_unit preservation, rounding, _doc_discount_pct) never drifts between
+// them. Mutates items in place when a discount is present; no-op (factor 1) when
+// gross ≈ net. Returns { discFactor, docDiscountPct }.
+export const applySiDocumentDiscount = (items, merchandiseTotal) => {
+  const grossExt = (items || []).reduce((a, it) => a + _siNum(it && it.extension), 0);
+  const discFactor = siDiscountFactor(grossExt, merchandiseTotal);
+  const docDiscountPct = discFactor !== 1 ? Math.round((1 - discFactor) * 1000) / 10 : 0;
+  if (discFactor !== 1) {
+    items.forEach((it) => {
+      it._list_unit = it.unit_price;
+      it._list_extension = it.extension;
+      it.unit_price = Math.round(it.unit_price * discFactor * 100) / 100;
+      it.extension = Math.round(it.extension * discFactor * 100) / 100;
+    });
+  }
+  return { discFactor, docDiscountPct };
+};
+
+// SI service upcharge (owner, 2026-07-22: "0.008 of the subtotal excluding shipping —
+// all Sports Inc invoices"). Verified against 1,000+ live si_documents: the charge is
+// 0.8% of the GROSS (pre-dealer-discount) merchandise subtotal, no flat minimum — which
+// is why discounted vendors (Agron) read ~1.03% of NET while UA/Rawlings/A4 sit at
+// 0.80% on the nose. Used as a FILL when a Sports Inc bill is missing the printed
+// upcharge (PDF/vision parses); never overwrites a printed or EDI-supplied value —
+// the invoice of record wins.
+export const siExpectedUpcharge = (grossMerch) => {
+  const g = _siNum(grossMerch);
+  return g > 0 ? Math.round(g * 0.008 * 100) / 100 : 0;
+};
+
+// Early-pay freight waiver (owner, 2026-07-22): Rawlings and TCK sometimes waive
+// shipping if the bill is paid on/before an early date printed on it. Rare. This
+// DETECTS the situation — waiver-capable supplier, real freight, an early-pay signal
+// in the document text — and returns it for a human decision; it never waives on its
+// own (payment timing lives outside the portal).
+const _SI_WAIVER_SUPPLIERS = new Set(['RAWLINGS SPORTING GOODS CO INC', 'TWIN CITY KNITTING CO']);
+export const earlyPayFreightWaiver = (bill) => {
+  if (!bill) return { eligible: false };
+  const supKey = _siSupplierKey(bill.supplier || bill.vendor);
+  const waiverSupplier = [..._SI_WAIVER_SUPPLIERS].some((s) => supKey === s || (supKey && (s.includes(supKey) || supKey.includes(s))));
+  const freightAmount = _siNum(bill.freight);
+  if (!waiverSupplier || freightAmount <= 0) return { eligible: false };
+  const text = String(bill.rawText || '');
+  const m = text.match(/(?:DISCOUNT\s+DATE|FREIGHT\s+ALLOW\w*|TERMS\s+DISCOUNT)[^\d]{0,40}(\d{1,2}\/\d{1,2}\/\d{2,4})/i);
+  // EDI docs carry no rawText; a freightAllowance field on the raw doc is the same signal.
+  const ediSignal = _siNum(bill._freight_allowance) > 0;
+  if (!m && !ediSignal) return { eligible: false };
+  return { eligible: true, payByDate: m ? m[1] : '', freightAmount };
+};
+
 // Adapter: a SportsLink document → the Portal's parsed-supplier-bill object.
 //
 // Emits the exact shape App.js's parseSingleInvoice() produces, so the existing
@@ -169,6 +277,10 @@ export const mapSportsLinkDocToBill = (doc) => {
       desc: String(ln.description || '').trim(),
     };
   });
+  // Push the document-level dealer discount down onto the line costs so each unit_price
+  // equals our true net cost (see siDiscountFactor / applySiDocumentDiscount — shared
+  // with the PDF-parse path). merchandise_total already carries the net.
+  const { docDiscountPct } = applySiDocumentDiscount(items, doc?.merchandiseTotal);
   // Net inbound freight = freight charge less any freight allowance.
   const freightNet = _siNum(doc.freightAmount) - _siNum(doc.freightAllowance);
   // doc_number is the dedup key against bills already on the Portal. We mirror the value
@@ -202,9 +314,11 @@ export const mapSportsLinkDocToBill = (doc) => {
     tracking: String(doc.trackingNumber || '').trim(),
     merchandise_total: _siNum(doc.merchandiseTotal),
     freight: freightNet > 0 ? +freightNet.toFixed(2) : _siNum(doc.freightAmount),
+    _freight_allowance: _siNum(doc.freightAllowance), // early-pay waiver signal (earlyPayFreightWaiver)
     si_upcharge: +(_siNum(doc.siUpcharge) + _siNum(doc.svcHandleCharge)).toFixed(2),
     doc_total: _siNum(doc.docTotal),
     is_credit: !!doc.isCredit,
+    _doc_discount_pct: docDiscountPct,                // >0 when a dealer discount was pushed onto line costs (Agron 25% etc.)
     has_lines: items.length > 0,
     has_usable_lines: hasUsableLines,
     carrier: String(doc.carrier || '').trim(),

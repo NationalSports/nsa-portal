@@ -7,12 +7,24 @@
 //
 // SanMar's API is style-number-gated (no "list by brand" endpoint), so the
 // style set is seeded from:
-//   1. The sanmar_style_seeds table (pulled from sanmarsports.com/products.json)
+//   1. The sanmar_style_seeds table. This sync REFRESHES that table itself at the
+//      start of every run by paging sanmarsports.com/products.json (the dealer's
+//      public Shopify catalog, ~3k+ styles) — so new SanMar styles flow into the
+//      catalog automatically and the seed list can't silently go stale. Best-effort:
+//      a fetch failure just falls back to the seeds already on file.
 //   2. Products already SanMar-sourced in the DB (refresh runs on every sync)
 //   3. The SANMAR_BRAND_STYLES env var — a comma-separated list of style
 //      numbers to add (e.g. "K500,PC61,DT6000,3001C")
-// New (not-yet-synced) styles are processed first so the 15-min budget always
-// makes forward progress; large seed sets converge over a couple of runs.
+// Styles without one of THIS sync's own rows (id 'smb-…') are processed first so
+// the 15-min budget always makes forward progress; already-synced styles refresh
+// afterward. Priority keys off 'smb-' specifically, not any sanmar row, so a style
+// that only has hand-added 'sm-…' rows (e.g. a manual quick-add) still counts as
+// not-yet-synced and gets its full color set built instead of being stuck at the
+// back of the queue forever. Large seed sets converge over several runs.
+//
+// On-demand: POST { "styles": ["PC90H","PC55"] } runs a TARGETED pass over exactly
+// those styles (skips the seed refresh and the S&S cutover) — for backfilling or
+// validating specific styles without waiting for the daily full pass.
 //
 // Writes:
 //   products        — one row per style+color, id 'smb-{style}-{colorCode}',
@@ -71,11 +83,30 @@ function canonicalBrand(name) {
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+// Inventory ↔ product-color join key. SanMar returns two-tone colors with inconsistent
+// spacing between the getInventoryLevels feed ("True Royal/ White") and the product feed
+// ("True Royal/White"), so a plain lowercase compare missed EVERY slash color and wrote 0
+// stock (e.g. Sport-Tek Tricot Track Jacket read out of stock with hundreds on hand). Strip
+// all whitespace from the color and upcase the size so the two sides line up.
+const invKey = (color, size) => String(color || '').toLowerCase().replace(/\s+/g, '') + '|' + String(size || '').trim().toUpperCase();
 
-exports.handler = async () => {
+exports.handler = async (event) => {
   const site  = (process.env.URL || '').replace(/\/+$/, '');
   const sbUrl = (process.env.REACT_APP_SUPABASE_URL || '').replace(/\/+$/, '');
   const sbKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  // Optional targeted run: POST { "styles": ["PC90H","PC55"] } ingests exactly those
+  // styles and nothing else (skips the seed refresh and the S&S cutover). Used to
+  // backfill / validate specific styles on demand without waiting for the daily pass
+  // to grind through the full ~3k-style queue.
+  let targetStyles = [];
+  try {
+    const body = event && event.body ? JSON.parse(event.body) : null;
+    if (body && Array.isArray(body.styles)) {
+      targetStyles = body.styles.map((s) => String(s || '').trim().toUpperCase()).filter(Boolean);
+    }
+  } catch { /* ignore malformed body — fall through to a normal full run */ }
+  const targeted = targetStyles.length > 0;
   if (!site || !sbUrl || !sbKey) {
     console.error('[sanmar-brands-sync] missing config');
     return { statusCode: 500, body: 'Not configured' };
@@ -103,6 +134,53 @@ exports.handler = async () => {
     throw lastErr;
   };
 
+  // Refresh sanmar_style_seeds from sanmarsports.com/products.json (the dealer's
+  // public Shopify catalog). `handle` is the style number (e.g. "pc90h" → PC90H),
+  // `vendor` is the brand. Idempotent — upsert on style (PK), never deletes, so a
+  // short/partial pull only adds fewer styles (never loses any). A page that fails
+  // after retries is skipped, not treated as the end, so one flaky page can't
+  // truncate the whole pull. Whole thing is best-effort: on total failure we keep
+  // the seeds already on file.
+  const refreshSeeds = async () => {
+    const seen = new Map(); // STYLE -> brand (vendor as-is; brand filter matches substrings either way)
+    let pages = 0;
+    for (let page = 1; page <= 40; page++) {
+      let ok = false, prods = [];
+      for (let t = 0; t < 4 && !ok; t++) {
+        try {
+          const ctrl = new AbortController();
+          const to = setTimeout(() => ctrl.abort(), 30000);
+          const res = await fetch('https://sanmarsports.com/products.json?limit=250&page=' + page, {
+            headers: { 'User-Agent': 'Mozilla/5.0 (nsa-portal seed sync)' }, signal: ctrl.signal,
+          }).finally(() => clearTimeout(to));
+          if (res.ok) { const d = await res.json(); prods = arr(d && d.products); ok = true; }
+        } catch { /* transient — retry */ }
+        if (!ok) await sleep(1500 * (t + 1));
+      }
+      if (!ok) { console.warn('[sanmar-brands-sync] seed page', page, 'failed after retries — skipping'); continue; }
+      if (!prods.length) break; // a successful, empty page is the real end of the catalog
+      pages++;
+      for (const p of prods) {
+        const style = String(p.handle || '').trim().toUpperCase();
+        if (style && !seen.has(style)) seen.set(style, String(p.vendor || '').trim());
+      }
+      await sleep(300);
+    }
+    if (!seen.size) { console.warn('[sanmar-brands-sync] seed refresh pulled 0 styles — using existing seeds'); return; }
+    const nowIso = new Date().toISOString();
+    const rows = [...seen].map(([style, brand]) => ({ style, brand, source: 'shopify_api', scraped_at: nowIso }));
+    let upserted = 0;
+    for (let j = 0; j < rows.length; j += 500) {
+      const r = await sb('sanmar_style_seeds?on_conflict=style', {
+        method: 'POST', headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify(rows.slice(j, j + 500)),
+      });
+      if (!r.ok) { console.warn('[sanmar-brands-sync] seed upsert', r.status, (await r.text()).slice(0, 200)); break; }
+      upserted += rows.slice(j, j + 500).length;
+    }
+    console.log('[sanmar-brands-sync] seed refresh: ' + pages + ' pages, ' + upserted + ' styles upserted from sanmarsports.com');
+  };
+
   try {
     // SanMar vendor id
     const vRes = await sb('vendors?api_provider=eq.sanmar&select=id&limit=1');
@@ -110,8 +188,14 @@ exports.handler = async () => {
     const vendorId = Array.isArray(vendors) && vendors[0] && vendors[0].id;
     if (!vendorId) return { statusCode: 200, body: 'No SanMar vendor configured' };
 
+    // Keep the seed list current before we read it — best-effort, never fatal.
+    // Skipped on a targeted run (we already know exactly which styles to do).
+    if (!targeted) {
+      try { await refreshSeeds(); } catch (e) { console.warn('[sanmar-brands-sync] seed refresh failed (non-fatal):', e.message); }
+    }
+
     // Style list: existing SanMar-sourced products (refresh) + DB seeds + env seed
-    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=sku')).json();
+    const existing = await (await sb('products?vendor_id=eq.' + vendorId + '&inventory_source=eq.sanmar&select=id,sku')).json();
     const dbSeeds = await (await sb('sanmar_style_seeds?select=style,brand')).json();
     const styleOf = (sku) => String(sku || '').split('-')[0].trim();
     const seed = (process.env.SANMAR_BRAND_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -119,12 +203,18 @@ exports.handler = async () => {
     // brand recorded are always tried.
     const seedStyles = arr(dbSeeds).filter((r) => !EXCLUDE_BRAND_RE.test(r.brand || '')).map((r) => r.style);
     const existingStyles = arr(existing).map((p) => styleOf(p.sku)).filter(Boolean);
-    const existingSet = new Set(existingStyles);
-    // New (not-yet-synced) styles go first so first-time ingest wins the 15-min
+    // Prioritise by THIS sync's own rows (id 'smb-…'), not by any sanmar row. A style
+    // that only has hand-added 'sm-…' rows (a different id scheme, e.g. from a manual
+    // quick-add or an old catalog import) has never been through this sync and still
+    // needs its full color set built — but it *looks* "already synced" if we key off
+    // every sanmar row, so it gets sorted to the back and, at ~200 styles/run, never
+    // reached. Keying off 'smb-' keeps those styles in the priority (new) bucket.
+    const smbSet = new Set(arr(existing).filter((p) => String(p.id).startsWith('smb-')).map((p) => styleOf(p.sku)).filter(Boolean));
+    // New (no smb- row yet) styles go first so first-time ingest wins the 15-min
     // budget; already-synced styles refresh afterward and roll forward run to run.
-    const newStyles = [...seedStyles, ...seed].filter((s) => s && !existingSet.has(s));
-    const styles = [...new Set([...newStyles, ...existingStyles])];
-    console.log('[sanmar-brands-sync] styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
+    const newStyles = [...seedStyles, ...seed].filter((s) => s && !smbSet.has(s));
+    const styles = targeted ? targetStyles : [...new Set([...newStyles, ...existingStyles])];
+    console.log('[sanmar-brands-sync]', targeted ? 'TARGETED run —' : 'styles to sync:', styles.length, seed.length ? '(seed: ' + seed.length + ')' : '');
     if (!styles.length) {
       return { statusCode: 200, body: JSON.stringify({ message: 'No brand styles to sync. Add SanMar style numbers to SANMAR_BRAND_STYLES env var (e.g. "K500,PC61,DT6000,3001C") to seed the catalog.', styles: 0 }) };
     }
@@ -159,13 +249,13 @@ exports.handler = async () => {
             inv?.inventory || inv?.items
           );
           variations.forEach((v) => {
-            const color = String(v?.attributeColor || v?.color || '').toLowerCase();
-            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
+            const color = String(v?.attributeColor || v?.color || '');
+            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA');
             let qty = 0;
             const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
             parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
             if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-            if (qty > 0) stockByCS[color + '|' + size] = (stockByCS[color + '|' + size] || 0) + qty;
+            if (qty > 0) { const k = invKey(color, size); stockByCS[k] = (stockByCS[k] || 0) + qty; }
           });
         } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
 
@@ -180,12 +270,18 @@ exports.handler = async () => {
           const recs = grp.recs, r0 = recs[0];
           const sku = style + '-' + colorCode;
           const sizes = [...new Set(recs.map((r) => String(r.size || r.labelSize || '').trim()).filter(Boolean))];
-          const cost   = num(r0.piecePrice || r0.customerPrice || r0.casePrice);
-          const retail = num(r0.msrp || r0.mapPrice || r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
+          // Our real per-size cost: the sale/program price when SanMar has one, else the
+          // piece price. Base cost = the LOWEST size's price (the XS–XL tier) — recs[0] is
+          // whatever size SanMar lists first (often an upsized 2XL+ row), which inflated
+          // nsa_cost for every color (e.g. LPC380 stored 4.52 vs the real 3.05 base).
+          const costOf = (r) => num(r.myPrice) || num(r.salePrice) || num(r.piecePrice) || num(r.customerPrice) || num(r.casePrice);
+          const _perSize = recs.map(costOf).filter((c) => c > 0);
+          const cost   = _perSize.length ? Math.min(..._perSize) : 0;
+          const retail = num(r0.msrp || r0.mapPrice) || num(r0.piecePrice) || (cost > 0 ? Math.round(cost * 2) : 0);
           // Per-size cost (2XL/3XL+ often run higher). Capture only sizes that differ from
           // the base; nsa_cost stays the base, size_costs is null when uniform.
           const _scMap = {};
-          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = num(r.piecePrice || r.customerPrice || r.casePrice); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
+          for (const r of recs) { const sz = String(r.size || r.labelSize || '').trim(); const sc = costOf(r); if (sz && sc > 0 && _scMap[sz] == null) _scMap[sz] = sc; }
           const sizeCosts = {};
           for (const [sz, sc] of Object.entries(_scMap)) { if (Math.abs(sc - cost) > 0.001) sizeCosts[sz] = sc; }
           const img    = r0.colorProductImage || r0.productImage || r0.colorProductImageThumbnail || r0.thumbnailImage || '';
@@ -209,7 +305,7 @@ exports.handler = async () => {
             inventory_source: 'sanmar',
           });
           for (const size of sizes) {
-            const key = String(grp.colorName).toLowerCase() + '|' + size;
+            const key = invKey(grp.colorName, size);
             invUpserts.push({
               id: sku + '-' + size, sku, size, stock_qty: stockByCS[key] || 0,
               last_synced: new Date().toISOString(), source: 'sanmar',
@@ -245,8 +341,10 @@ exports.handler = async () => {
     // from S&S → SanMar). Scoped to synced brands only, so a brand we didn't
     // reach this run keeps its existing rows — no empty gap. Boxercraft stays on
     // S&S because SanMar doesn't carry it (never enters syncedBrands).
+    // Skipped on a targeted run: a handful of styles is not a full brand pass, so
+    // it must not retire that brand's S&S rows wholesale.
     let ssRetired = 0;
-    if (syncedBrands.size) {
+    if (!targeted && syncedBrands.size) {
       const inList = [...syncedBrands].map((b) => '"' + String(b).replace(/"/g, '') + '"').join(',');
       const cr = await sb('products?inventory_source=eq.ss_activewear&is_active=eq.true&brand=in.(' + inList + ')', {
         method: 'PATCH', headers: { Prefer: 'return=representation', 'Content-Type': 'application/json' },
@@ -257,7 +355,7 @@ exports.handler = async () => {
     }
 
     console.log('[sanmar-brands-sync] done:', productsUpserted, 'products,', invRows, 'inventory rows,', ssRetired, 'S&S rows retired,', errors.length, 'errors');
-    return { statusCode: 200, body: JSON.stringify({ styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
+    return { statusCode: 200, body: JSON.stringify({ targeted, styles: styles.length, products: productsUpserted, inventory_rows: invRows, ss_retired: ssRetired, synced_brands: [...syncedBrands], errors: errors.slice(0, 10) }) };
   } catch (e) {
     console.error('[sanmar-brands-sync]', e);
     return { statusCode: 500, body: e.message };

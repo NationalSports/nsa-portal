@@ -47,6 +47,34 @@ describe('buildAppliedBillRows', () => {
     const rows = buildAppliedBillRows([bill({ doc_number: 'D1', is_credit: true })], 'u');
     expect(rows[0].is_credit).toBe(true);
   });
+
+  it('records resolution telemetry — auto-push flags, AI touch, mapping count', () => {
+    const [auto] = buildAppliedBillRows([bill({
+      doc_number: 'D3', _auto_tied: true, _auto_pushed: true,
+      _lineMappings: [{ bill_idx: 0 }, { bill_idx: 1 }],
+    })], 'Sam');
+    expect(auto.resolution).toEqual({
+      auto_pushed: true, auto_tied: true, ai_reconciled: false,
+      ai_changed: 0, overage_ok: false, lines: 2, flags: [],
+    });
+    const [manual] = buildAppliedBillRows([bill({
+      doc_number: 'D4', _aiMatched: true, _aiChangedCount: 3, _overage_ok: true,
+    })], 'Sam');
+    expect(manual.resolution).toEqual({
+      auto_pushed: false, auto_tied: false, ai_reconciled: true,
+      ai_changed: 3, overage_ok: true, lines: 0,
+      flags: [{ code: 'overage', detail: expect.any(String) }],
+    });
+  });
+
+  it('stamps the adidas/UA freight>10% anomaly flag on the ledger row', () => {
+    const [r] = buildAppliedBillRows([bill({
+      doc_number: 'D5', vendor: 'ADIDAS US TEAM SERVICES',
+      merchandise_total: 1000, freight: 150, doc_total: 1150,
+    })], 'Sam');
+    expect(r.resolution.flags.map((f) => f.code)).toEqual(['freight_gt10']);
+    expect(r.resolution.flags[0].detail).toContain('15%');
+  });
 });
 
 describe('legacyAppliedBillRows (pre-00184 fallback payload)', () => {
@@ -111,5 +139,40 @@ describe('mergeServerBills (Bill History union)', () => {
     expect(merged).toHaveLength(2);
     expect(merged[0].id).toBe('srv-2'); // newest first
     expect(merged[1].id).toBe('a');
+  });
+});
+
+// ── Adversarial-input regressions (2026-07-18 sweep) ──
+describe('numeric-string doc_total coercion', () => {
+  it('buildAppliedBillRows keeps a doc_total that round-tripped as a numeric string', () => {
+    // Regression: safeNum is number-typed only — "412.50" used to become null.
+    const rows = buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: '412.50' } }], 'Sam');
+    expect(rows[0].doc_total).toBe(412.5);
+  });
+  it('buildAppliedBillRows maps garbage and empty doc_total to null, not NaN', () => {
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: 'abc' } }], 'S')[0].doc_total).toBeNull();
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1', doc_total: '' } }], 'S')[0].doc_total).toBeNull();
+    expect(buildAppliedBillRows([{ parsed: { doc_number: 'INV-1' } }], 'S')[0].doc_total).toBeNull();
+  });
+  it('mergeServerBills fallback row keeps a string doc_total from the server', () => {
+    const merged = mergeServerBills([], [{ id: 3, doc_norm: 'inv-3', doc_number: 'INV-3', doc_total: '99.95', raw_meta: null, applied_at: '2026-07-01T10:00:00Z' }]);
+    expect(merged[0].parsed.doc_total).toBe(99.95);
+  });
+  it('mergeServerBills tolerates an unparseable applied_at (sorts last, blank uploadedAt, no crash)', () => {
+    const merged = mergeServerBills([], [
+      { id: 1, doc_norm: 'inv-a', doc_number: 'INV-A', applied_at: 'not-a-date' },
+      { id: 2, doc_norm: 'inv-b', doc_number: 'INV-B', applied_at: '2026-07-06T00:00:00Z' },
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].id).toBe('srv-2');
+    expect(merged[1].id).toBe('srv-1');
+    expect(merged[1].uploadedAt).toBe('');
+    expect(merged[1].uploadedTs).toBe(0);
+  });
+  it('buildAppliedBillRows is not idempotent — same bill twice yields two identical-key rows (caller/DB dedups)', () => {
+    const b = { parsed: { doc_number: 'INV-1', doc_total: 10 } };
+    const rows = buildAppliedBillRows([b, b], 'S');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].doc_norm).toBe(rows[1].doc_norm);
   });
 });

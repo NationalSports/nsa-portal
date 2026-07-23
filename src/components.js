@@ -210,13 +210,19 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     if(cust2){
     const emails=[...new Set((cust2?.contacts||[]).map(c=>c.email).filter(Boolean))];
     const primaryContact=(cust2.contacts||[])[0];
+    // Greet by first name only — "Hi Jabari," not the full "Hi Jabari Carr," which reads too formal.
+    const _firstName=(primaryContact?.name||'Coach').trim().split(/\s+/)[0]||'Coach';
     const initChecked={};emails.forEach(em=>{initChecked[em]=true});
     setCheckedEmails(initChecked);setCustomEmails([]);setAddingEmail('');
     const _signer=repUserRef.current?.name||'National Sports Apparel';
-    setBody(`Hi ${primaryContact?.name||'Coach'},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: https://nationalsportsapparel.com/coach?portal=${cust2.alpha_tag}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
+    // Deep-link the portal straight to this estimate (?est=<id>) / SO (?so=<id>)
+    // instead of the portal home — the coach portal opens the matching view on load.
+    const _dl=est2?.id?(dt==='so'?'&so='+est2.id:'&est='+est2.id):'';
+    const portalLink=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag+_dl:'';
+    setBody(`Hi ${_firstName},\n\nPlease find the attached ${lbl.toLowerCase()} for ${est2?.memo||'your order'}. You can view ${dt==='so'?'it':'and approve it'} through your portal.\n\nPortal link: ${portalLink||'https://nationalsportsapparel.com/coach?portal='+(cust2.alpha_tag||'')}\n\nLet me know if you have any questions!\n\n${_signer}\nNational Sports Apparel`);
     setSmsPhone(primaryContact?.phone||'');
-    const portalUrl2=cust2?.alpha_tag?'https://nationalsportsapparel.com/coach?portal='+cust2.alpha_tag:'';
-    setSmsMsg('Hi '+(primaryContact?.name||'Coach')+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
+    const portalUrl2=portalLink;
+    setSmsMsg('Hi '+_firstName+', your '+lbl.toLowerCase()+' for '+(est2?.memo||'your order')+' is ready. View it here: '+portalUrl2);
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
@@ -530,6 +536,7 @@ function ThreadQuickPicks({colors,onPick}){
 
 function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadColors=[],suppressWarning=false}){
   const isEmb=decoType==='embroidery';
+  const isDtf=decoType==='dtf';
   const cws=colorWays||[];
   const inkLabel=isEmb?'thread':'ink';
   const updCw=(ci,patch)=>onChange(cws.map((cw,x)=>x===ci?{...cw,...patch}:cw));
@@ -537,10 +544,11 @@ function ColorWaysEditor({colorWays,onChange,decoType,pantoneColors=[],threadCol
   return<div>
     <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:6}}>
       <span style={{fontSize:10,fontWeight:700,color:'#475569',letterSpacing:0.3}}>COLOR WAYS</span>
-      <span style={{fontSize:9,color:'#94a3b8'}}>{isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
+      <span style={{fontSize:9,color:'#94a3b8'}}>{isDtf?'Full-color — color ways optional':isEmb?'Thread colors per garment':'Ink colors per garment'}</span>
       {cws.length>0&&<span style={{fontSize:9,fontWeight:700,color:'#fff',background:'#94a3b8',borderRadius:8,padding:'0 7px',lineHeight:'16px'}}>{cws.length}</span>}
     </div>
-    {cws.length===0&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
+    {cws.length===0&&isDtf&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748b',background:'#f8fafc',border:'1px solid #e2e8f0',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>DTF prints full-color (CMYK) — no color ways needed. Add one only to note a specific garment color.</div>}
+    {cws.length===0&&!isDtf&&!suppressWarning&&<div style={{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#b45309',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:6,padding:'7px 10px',marginBottom:8,fontWeight:600}}>⚠ Add at least one color way to specify the {inkLabel} colors for each garment color.</div>}
     <div style={{display:'flex',gap:8,flexWrap:'wrap',marginBottom:8}}>
       {cws.map((cw,ci)=>{
         const gHex=threadHex(cw.garment_color);

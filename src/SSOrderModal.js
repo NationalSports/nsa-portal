@@ -18,7 +18,7 @@ const NSA_SHIP_TO = {
   postalCode: NSA_WAREHOUSE.zip,
 };
 
-export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted }) {
+export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Activewear', shipTo, onClose, onSubmitted, onLearnSkus }) {
   const [tab, setTab] = useState('lines'); // 'lines' | 'json'
   const [confirmed, setConfirmed] = useState(false);
   const [testMode, setTestMode] = useState(true);
@@ -74,6 +74,9 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
     }
     // S&S accepted the order — success regardless of local bookkeeping.
     setResult(r); setSubmitState('success');
+    // Learn each line's S&S-SKU ↔ our-style pairing (test OR live: a validated test proves
+    // S&S accepted these exact part numbers). Fire-and-forget; never affects the success UI.
+    if (onLearnSkus) { try { onLearnSkus(lines, vendorName); } catch (e) { console.warn('[S&S] alias learn skipped:', e); } }
     // Only a LIVE order should mark the batch as ordered; a test order places nothing.
     // Run bookkeeping OUTSIDE the submit try so a promotion error can't mask a placed order —
     // but await the (async) result and surface a silent no-op, so a placed-but-unrecorded
@@ -125,6 +128,15 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
           ) : (
             <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
               <strong>🧪 Test order.</strong> S&S will create and immediately cancel it — nothing ships. Use this to confirm the account can order and the lines resolve. Uncheck "Test order" below to place it for real.
+            </div>
+          )}
+
+          {/* Ship-to, plainly visible (owner 2026-07-23): drop-ship orders carry a CUSTOMER
+              address — the human must see where goods will land without digging into the JSON. */}
+          {!done && shipTo && (
+            <div style={{ padding: 10, background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: '#6b21a8' }}>
+              <strong>📦 Ships to:</strong> {[ship.companyName, ship.attentionTo && 'Attn: ' + ship.attentionTo, ship.address1, ship.address2, [ship.city, ship.region, ship.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(' · ')}
+              <span style={{ marginLeft: 8, color: '#9333ea' }}>— confirm this address before submitting.</span>
             </div>
           )}
 

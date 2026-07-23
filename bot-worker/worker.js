@@ -13,12 +13,12 @@
 //       RUN_ONCE=1 node worker.js (process at most one task, then exit)
 
 import { spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
+import { cleanSizes, buildPrompt as buildPromptLib, extractJsonBlock } from './lib.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +39,12 @@ const {
 } = process.env;
 
 const WORKER_VERSION = '0.1.0';
+
+// Task types this (Playwright, cart-filling) worker knows how to run. Other bot
+// task types — e.g. 'track_po_status', a read-only CLICK order-status lookup run
+// by the Cowork PO-tracker — are left queued for their own runner. Tasks with no
+// task_type are legacy add-to-cart tasks and still run here.
+const HANDLED_TASK_TYPES = new Set(['add_to_cart']);
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('[worker] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required. Copy .env.example to .env.');
@@ -66,31 +72,6 @@ function botTargetForVendor(vendorName) {
   if (v.includes('silver')) return 'silver_screen';
   if (v.includes('sanmar')) return 'sanmar';
   return v.replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'unknown';
-}
-
-// Real size:quantity pairs only — the sizes jsonb also carries meta keys
-// (drop_ship, unit_cost, etc.) that must not be treated as sizes.
-const SIZE_META = new Set(['drop_ship', 'unit_cost', 'po_type', 'vendor', 'memo', 'notes', 'status']);
-function cleanSizes(raw) {
-  const out = {};
-  for (const [k, v] of Object.entries(raw || {})) {
-    if (SIZE_META.has(k)) continue;
-    const n = Number(v);
-    if (Number.isFinite(n) && n > 0) out[k] = n;
-  }
-  return out;
-}
-
-// Render the line items into a readable list for the prompt.
-function formatLines(lines) {
-  return (lines || [])
-    .map((l) => {
-      const sizes = Object.entries(cleanSizes(l.sizes))
-        .map(([sz, v]) => `${sz}:${v}`)
-        .join(' ');
-      return `- ${l.sku}${l.color ? ' (' + l.color + ')' : ''} — qty ${l.qty}${sizes ? ' [' + sizes + ']' : ''}`;
-    })
-    .join('\n');
 }
 
 // Resolve the real order behind a task from the database when the task has no
@@ -140,14 +121,50 @@ async function resolveOrderFromDb(task) {
 
   const vendorName = lines.find((l) => l.vendor)?.vendor
     || (lines.find((l) => /adidas/i.test(l.name)) ? 'Adidas' : (lines[0].name || ''));
-  const drop_ship = lines.some((l) => l.drop_ship);
+  // A write-in address / decorator / attention saved on the PO (sizes jsonb meta)
+  // wins over the SO's resolved ship-to — the rep set it on purpose. Precedence:
+  // explicit ship_to > decorator (ship_to_deco_id) > program address.
+  const shipToMeta = pls.map((p) => (p.sizes || {}).ship_to).find((v) => v && typeof v === 'object') || null;
+  const decoIdMeta = pls.map((p) => (p.sizes || {}).ship_to_deco_id).find((v) => typeof v === 'string' && v.trim()) || null;
+  const attention = pls.map((p) => (p.sizes || {}).attention).find((v) => typeof v === 'string' && v.trim()) || null;
+  const drop_ship = lines.some((l) => l.drop_ship) || !!shipToMeta || !!decoIdMeta;
+  let ship_to = drop_ship ? (shipToMeta || (decoIdMeta ? await resolveDecoShipTo(decoIdMeta) : null) || await resolveShipTo(task.so_id)) : null;
+  if (ship_to && attention) ship_to = { ...ship_to, attention };
   return {
     target: botTargetForVendor(vendorName),
     vendor_name: vendorName || null,
     po_number: poId,
     lines,
     drop_ship,
-    ship_to: drop_ship ? await resolveShipTo(task.so_id) : null,
+    ship_to,
+  };
+}
+
+// Decorator-bound blanks: resolve the DECORATOR's delivery address (its own
+// saved address, falling back to its linked Vendor record) — server-side mirror
+// of the portal's resolveDecoShipToClient. Returns {name,line1,city,state,zip}
+// or null when no usable address exists.
+async function resolveDecoShipTo(decoId) {
+  if (!decoId) return null;
+  const { data: dv } = await supabase
+    .from('deco_vendors')
+    .select('id,name,vendor_id,address_line1,city,state,zip')
+    .eq('id', decoId).maybeSingle();
+  if (!dv) return null;
+  let src = (dv.address_line1 || dv.city) ? dv : null;
+  if (!src && dv.vendor_id) {
+    const { data: lv } = await supabase
+      .from('vendors').select('name,address_line1,city,state,zip')
+      .eq('id', dv.vendor_id).maybeSingle();
+    if (lv && (lv.address_line1 || lv.city)) src = lv;
+  }
+  if (!src) return null;
+  return {
+    name: dv.name || '',
+    line1: src.address_line1 || '',
+    city: src.city || '',
+    state: src.state || '',
+    zip: src.zip || '',
   };
 }
 
@@ -175,62 +192,22 @@ async function resolveShipTo(soId) {
 }
 
 function buildPrompt(task, p = {}, conversation = []) {
-  const hasLines = Array.isArray(p.lines) && p.lines.length > 0;
-  // Resolved/structured order -> use its vendor. Otherwise default to Adidas
-  // CLICK so creds fill in, and let Claude work from the task notes.
-  const target = p.target || (hasLines ? 'unknown' : 'adidas_click');
-  const creds = credsForTarget(target);
-  const tpl = readFileSync(join(__dirname, 'prompts', 'add_to_cart.md'), 'utf8');
-  const lines = hasLines
-    ? formatLines(p.lines)
-    : '(No structured line list — work from the task notes below.)';
-  const notes = (task.title || task.description)
-    ? `Task: ${task.title || ''}${task.description ? '\n' + task.description : ''}`
-    : '(none)';
-  const s = p.ship_to;
-  const delivery = (p.drop_ship && s && (s.line1 || s.city))
-    ? `THIS IS A DROP SHIP — the order must deliver directly to the program below, NOT National Sports' default address.\n`
-      + `On the cart's Delivery Location, click it and choose "Add one-time delivery location", then fill the form exactly:\n`
-      + `- Attention 1: ${s.name}\n`
-      + `- Street Address: ${s.line1}\n`
-      + `- City/Town: ${s.city}\n`
-      + `- State: ${s.state}\n`
-      + `- ZIP code: ${s.zip}\n`
-      + `Country is United States. Then click "Use this address" so it becomes the cart's delivery location. (No PO boxes.)`
-    : `Not a drop ship — leave the default delivery location as-is.`;
-  const deliveryDate = p.delivery_date
-    ? `Set the order's DELIVERY DATE to ${p.delivery_date}. In the cart, under the "Delivery Dates" heading, there's a date chip showing the current date (e.g. "Jun 2, 2026"). CLICK that date chip — a calendar opens — then pick ${p.delivery_date}. Confirm the chip now shows ${p.delivery_date}. (This is the ship/deliver date — you are still ordering now, not later.)`
-    : `No specific delivery date requested — leave the default delivery date, UNLESS a backorder rule below changes it.`;
-  // Prior human comments so the agent can act on answers (e.g. backorder
-  // guidance) it received after a previous "needs_input" pass.
-  const convo = (conversation || [])
-    .map((c) => `- ${c.user_id === BOT_MEMBER_ID ? 'Claude' : 'Human'}: ${c.text}`)
-    .join('\n') || '(no prior messages)';
-  return tpl
-    .replaceAll('{{CONVERSATION}}', convo)
-    .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
-    .replaceAll('{{TARGET}}', target)
-    .replaceAll('{{VENDOR_URL}}', creds.url || '(unknown — find it)')
-    .replaceAll('{{VENDOR_USER}}', creds.user || '(missing)')
-    .replaceAll('{{VENDOR_PASS}}', creds.pass || '(missing)')
-    .replaceAll('{{PO_NUMBER}}', p.po_number || '(see task notes)')
-    .replaceAll('{{LINES}}', lines)
-    .replaceAll('{{TASK_NOTES}}', notes)
-    .replaceAll('{{DELIVERY}}', delivery)
-    .replaceAll('{{DELIVERY_DATE}}', deliveryDate);
+  return buildPromptLib(task, p, conversation, { credsForTarget, botMemberId: BOT_MEMBER_ID });
 }
 
 // Run Claude Code headlessly with the Playwright MCP. Returns the parsed
 // {status, summary, ...} the agent emits in its final ```json block.
-function runClaude(prompt) {
+// Always streams (stream-json) so PROGRESS markers the agent narrates can be
+// forwarded live via onProgress({step,total,label}); WORKER_DEBUG=1 adds
+// per-action console logging on top.
+const PROGRESS_RE = /^PROGRESS\s+(\d+)\s*\/\s*(\d+)\s*[—–-]+\s*(.+?)\s*$/m;
+function runClaude(prompt, onProgress = null) {
   return new Promise((resolve) => {
-    // WORKER_DEBUG=1 streams each agent step (navigate/click/type) to the
-    // terminal so a run isn't a black box.
     const debug = !!process.env.WORKER_DEBUG;
     const args = [
       '-p', prompt,
-      '--output-format', debug ? 'stream-json' : 'json',
-      ...(debug ? ['--verbose'] : []),
+      '--output-format', 'stream-json',
+      '--verbose',
       ...(WORKER_MODEL ? ['--model', WORKER_MODEL] : []),
       '--mcp-config', join(__dirname, 'mcp.json'),
       // The agent must drive the browser without interactive approval on a
@@ -243,10 +220,10 @@ function runClaude(prompt) {
     ];
     // Close stdin (no piped input) to avoid the "no stdin data received" wait.
     const child = spawn(CLAUDE_BIN, args, { cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '';
     let err = '';
     let streamResult = null;
-    if (debug) {
+    let lastText = '';
+    {
       let buf = '';
       child.stdout.on('data', (d) => {
         buf += d;
@@ -258,12 +235,17 @@ function runClaude(prompt) {
             const ev = JSON.parse(line);
             if (ev.type === 'assistant' && ev.message?.content) {
               for (const c of ev.message.content) {
-                if (c.type === 'text' && c.text?.trim()) log('🗣 ', c.text.trim().slice(0, 200));
-                if (c.type === 'tool_use') log('🔧', c.name, JSON.stringify(c.input).slice(0, 200));
+                if (c.type === 'text' && c.text?.trim()) {
+                  lastText = c.text;
+                  if (debug) log('🗣 ', c.text.trim().slice(0, 200));
+                  const m = c.text.match(PROGRESS_RE);
+                  if (m && onProgress) onProgress({ step: parseInt(m[1], 10), total: parseInt(m[2], 10) || 8, label: m[3].slice(0, 80) });
+                }
+                if (c.type === 'tool_use' && debug) log('🔧', c.name, JSON.stringify(c.input).slice(0, 200));
               }
             } else if (ev.type === 'result') {
               streamResult = ev.result || '';
-              log('✅ result:', streamResult.slice(0, 200));
+              if (debug) log('✅ result:', streamResult.slice(0, 200));
             }
           } catch { /* non-JSON line */ }
         }
@@ -273,23 +255,24 @@ function runClaude(prompt) {
     let done = false;
     const finish = (r) => { if (!done) { done = true; resolve(r); } };
     // Safety net: kill + report a stuck run instead of hanging forever.
-    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '600000', 10);
+    // 20 min. The historical 10-min cap killed nearly every cart run mid-flight
+    // (agent never reached the PO/address/sizes steps); the add-all search flow
+    // is much faster, but give real orders room to finish.
+    const timeoutMs = parseInt(process.env.RUN_TIMEOUT_MS || '1200000', 10);
     const killer = setTimeout(() => {
       log(`run exceeded ${timeoutMs}ms — terminating`);
       try { child.kill('SIGKILL'); } catch {}
       finish({ status: 'queued', summary: `Timed out after ${Math.round(timeoutMs / 1000)}s — resetting to queued for retry.` });
     }, timeoutMs);
-    child.stdout.on('data', (d) => (out += d));
     child.stderr.on('data', (d) => (err += d));
     child.on('error', (e) => { clearTimeout(killer); finish({ status: 'queued', summary: 'Could not launch Claude: ' + e.message }); });
     child.on('close', (code) => {
       clearTimeout(killer);
       if (done) return;
       if (err.trim()) log('claude stderr:', err.trim().slice(0, 500));
-      // --output-format json wraps the run; the agent's text is in `.result`.
-      // In debug (stream-json) mode the result text came from the result event.
-      let resultText = (debug && streamResult != null) ? streamResult : out;
-      try { resultText = JSON.parse(resultText).result ?? resultText; } catch { /* not JSON-wrapped */ }
+      // The agent's final text arrives in the stream's `result` event; fall back
+      // to the last assistant text if the stream ended without one.
+      const resultText = streamResult != null ? streamResult : lastText;
       const parsed = extractJsonBlock(resultText);
       if (parsed) return finish(parsed);
       finish({
@@ -298,18 +281,6 @@ function runClaude(prompt) {
       });
     });
   });
-}
-
-// Pull the last fenced ```json block (or trailing object) out of the agent text.
-function extractJsonBlock(text) {
-  if (!text) return null;
-  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
-  const candidate = fences.length ? fences[fences.length - 1][1] : null;
-  for (const c of [candidate, text]) {
-    if (!c) continue;
-    try { return JSON.parse(c.trim()); } catch { /* try next */ }
-  }
-  return null;
 }
 
 // Tell the portal we're awake. status='working' while on a task, else 'idle'.
@@ -369,6 +340,10 @@ async function processOne() {
   const now = Date.now();
   // Skip scheduled tasks whose run time hasn't arrived yet.
   const task = (tasks || []).find((t) => {
+    // Leave task types this worker doesn't handle (e.g. 'track_po_status') queued
+    // for their own runner. No task_type = legacy add-to-cart task → runs here.
+    const tt = t.bot_payload?.task_type;
+    if (tt && !HANDLED_TASK_TYPES.has(tt)) return false;
     const when = t.bot_payload?.scheduled_for;
     return !when || new Date(when).getTime() <= now;
   });
@@ -406,7 +381,24 @@ async function processOne() {
     }
     if (order) log(`order resolved: ${order.lines.length} line(s), PO ${order.po_number || '?'}, vendor ${order.vendor_name || order.target}${order.drop_ship ? ' · DROP SHIP' + (order.ship_to ? ' → ' + order.ship_to.name : ' (no address!)') : ''} · model ${WORKER_MODEL || 'default'}`);
     else log('no structured order — running from task notes');
-    result = await runClaude(buildPrompt(task, order || {}, conversation));
+    // Live progress: the agent narrates "PROGRESS k/8 — label" markers; write
+    // each one onto the task row so the portal's realtime feed shows the step.
+    // Fire-and-forget, deduped by step; the final status update below rewrites
+    // bot_payload without `progress`, clearing it when the run ends.
+    let _lastKey = '';
+    const onProgress = (p) => {
+      const key = p && p.step + '|' + p.label;
+      if (!p || key === _lastKey) return;
+      _lastKey = key;
+      const payload = { ...(task.bot_payload || {}), ...(order || {}), progress: { ...p, at: new Date().toISOString() } };
+      supabase.from('assigned_todos')
+        .update({ bot_payload: payload, updated_at: new Date().toISOString() })
+        .eq('id', task.id)
+        .then((r) => { if (r.error) log('progress update failed:', r.error.message); });
+      log(`progress ${p.step}/${p.total} — ${p.label}`);
+    };
+    onProgress({ step: 0, total: 8, label: 'Starting up' });
+    result = await runClaude(buildPrompt(task, order || {}, conversation), onProgress);
   } catch (e) {
     result = { status: 'failed', summary: 'Worker exception: ' + (e?.message || e) };
   }
@@ -415,6 +407,27 @@ async function processOne() {
   // human answer. Replying in the portal re-queues the task so it resumes.
   const ALLOWED = ['needs_review', 'needs_input', 'blocked', 'failed', 'queued'];
   let status = ALLOWED.includes(result.status) ? result.status : 'needs_review';
+
+  // The Claude CLI's own login (not the vendor portal's) has expired — the agent
+  // never ran. Say exactly what to do on the worker box; the vendor cart is untouched.
+  if (/OAuth|access token|401.*authenticat|authenticat.*401|re-?authenticate/i.test(result.summary || '')) {
+    status = 'blocked';
+    result.summary = 'The worker machine\'s Claude login expired (this is the bot\'s own Claude account, NOT the vendor site). '
+      + 'On the worker box run `claude` and log in again (or `claude setup-token`), then reply here to re-queue this task. '
+      + 'Original error: ' + (result.summary || '');
+  }
+
+  // Sanity-check: skipped SKUs (out of stock beyond the 14-day window) always
+  // need a rep decision — never let them slide through as needs_review.
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  if (status === 'needs_review' && skipped.length) {
+    status = 'needs_input';
+    if (!result.question) {
+      result.question = 'These SKUs were skipped (sizes unavailable now and not restocking within 14 days): '
+        + skipped.map((s) => `${s.sku} (${s.sizes || '?'} — restock ${s.restock || 'no date'})`).join('; ')
+        + '. Wait for restock, substitute, or drop them?';
+    }
+  }
 
   // Sanity-check: if the agent says needs_review but reports 0 total qty across
   // all lines, the cart wasn't actually filled — downgrade to blocked so a human
@@ -436,18 +449,33 @@ async function processOne() {
   // If reset to queued (e.g. Claude binary not found), skip the comment — it'll retry silently.
   if (status === 'queued') { log('task', task.id, 'reset to queued for retry:', result.summary); await heartbeat('idle', null); return true; }
 
+  // Structured report — sections separated by blank lines, bullets per line item.
+  // The portal renders **bold**, "- " bullets, and URLs, so this reads as a tidy
+  // report instead of one run-on paragraph.
   const emoji = status === 'needs_review' ? '🛒' : status === 'needs_input' ? '❓' : status === 'blocked' ? '🚧' : '❌';
-  const reportLines = [
-    `${emoji} **Bot ${status}** — ${result.summary || ''}`,
-    result.question ? `**Question:** ${result.question}` : '',
-    result.cart_url ? `Cart: ${result.cart_url}` : '',
-    result.po_entered ? `PO entered: yes` : '',
-    (result.backordered && result.backordered.length) ? `⏳ Backordered: ${result.backordered.join('; ')}` : '',
-    (result.issues && result.issues.length) ? `Issues: ${result.issues.join('; ')}` : '',
-    status === 'needs_review' ? `Review the cart and submit it if it looks right, then close this task.` : '',
-    status === 'needs_input' ? `Reply on this task to tell Claude how to proceed — it will resume automatically.` : '',
-  ].filter(Boolean).join('\n');
-  await comment(task.id, reportLines);
+  const STATUS_LABEL = { needs_review: 'Ready to review & order', needs_input: 'Needs your answer', blocked: 'Blocked', failed: 'Failed' };
+  const sections = [`${emoji} **Bot ${STATUS_LABEL[status] || status}**`];
+  if (result.summary) sections.push(String(result.summary).trim());
+  // Progress checklist — always show PO + address state so the rep can eyeball it fast.
+  const checklist = [
+    `- ${result.po_entered === true ? '✅' : '⬜'} PO number entered`,
+    `- ${result.address_set === true ? '✅' : '⬜'} Delivery address set`,
+  ];
+  if (result.cart_url) checklist.push(`- 🛒 Cart: ${result.cart_url}`);
+  sections.push('**Checklist**\n' + checklist.join('\n'));
+  if (result.question) sections.push('**Question**\n' + String(result.question).trim());
+  if (skipped.length) sections.push('**Skipped — need your call**\n'
+    + skipped.map((s) => `- ${s.sku} (${s.sizes || '?'}) — restock ${s.restock || 'no date'}`).join('\n'));
+  if (Array.isArray(result.backordered) && result.backordered.length) sections.push('**Backordered — ordered anyway (restock ≤ 14 days)**\n'
+    + result.backordered.map((b) => `- ${b}`).join('\n'));
+  if (Array.isArray(result.issues) && result.issues.length) sections.push('**Issues**\n'
+    + result.issues.map((i) => `- ${i}`).join('\n'));
+  const nextStep = status === 'needs_review' ? 'Review the cart and submit it if it looks right, then close this task.'
+    : status === 'needs_input' ? 'Reply on this task to tell Claude how to proceed — it will resume automatically.'
+    : status === 'blocked' ? 'Fix the blocker described above, then hit Retry on the task.'
+    : 'The run did not complete — hit Retry on the task to run it again.';
+  sections.push('**Next step:** ' + nextStep);
+  await comment(task.id, sections.join('\n\n'));
   await heartbeat('idle', null);
 
   log('finished task', task.id, '→', status);

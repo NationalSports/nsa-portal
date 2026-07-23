@@ -69,16 +69,16 @@ async function searchSanMar(query, vendorMap) {
     const color = it.catalogColor || it.color || it.colorName || it.productColor || '';
     if (!styleMap[sid]) styleMap[sid] = { source: 'sm', vendorId: vid('sanmar', vendorMap), sku: sid, name: ((it.brandName || it.brand || '') + ' ' + (it.productTitle || it.styleName || it.description || sid)).trim(), brand: it.brandName || it.brand || '', image: it.colorProductImage || it.productImage || it.colorProductImageThumbnail || it.thumbnailImage || '', _colors: {} };
     const cKey = sid + '|' + color;
-    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, sku: sid, image: it.colorProductImage || it.productImage || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
+    if (!styleMap[sid]._colors[cKey]) styleMap[sid]._colors[cKey] = { colorName: color, colorCode: it.colorCode || null, sku: sid, image: it.colorProductImage || it.productImage || it.colorSwatchImage || '', cost: 0, _sizes: {}, totalQty: 0 };
     const cEntry = styleMap[sid]._colors[cKey];
     const sz = normSzName(it.size || it.labelSize || it.sizeCode || 'OSFA');
-    const price = priceMap[color + '|' + sz] || parseFloat(it.piecePrice || 0) || 0;
+    const price = priceMap[color + '|' + sz] || parseFloat(it.salePrice || 0) || parseFloat(it.piecePrice || 0) || 0;
     const qty = invData[color + '|' + sz] || parseInt(it.inventoryQty || it.qty || 0) || 0;
     if (sz) cEntry._sizes[sz] = (cEntry._sizes[sz] || 0) + qty;
     cEntry.totalQty += qty;
     if (price > 0 && (cEntry.cost === 0 || price < cEntry.cost)) cEntry.cost = price;
   });
-  return Object.values(styleMap).map((s) => ({ ...s, colors: Object.values(s._colors).map((c) => ({ colorName: c.colorName, sku: c.sku, image: c.image, cost: c.cost, sizes: Object.keys(c._sizes), totalQty: c.totalQty })), _colors: undefined }));
+  return Object.values(styleMap).map((s) => ({ ...s, colors: Object.values(s._colors).map((c) => ({ colorName: c.colorName, colorCode: c.colorCode, sku: c.sku, image: c.image, cost: c.cost, sizes: Object.keys(c._sizes), totalQty: c.totalQty })), _colors: undefined }));
 }
 
 // ── S&S Activewear ──────────────────────────────────────────────────────────
@@ -166,10 +166,16 @@ export function vendorColorToProductRow(style, color) {
   const slug = String(color.colorName || 'default').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'default';
   const cost = Number(color.cost) || 0;
   const retail = cost > 0 ? Math.ceil(cost / 0.5) : 0;
+  // SKU color segment: prefer the vendor's color CODE (e.g. SanMar 'DarkHeatherGrey') over a
+  // slug of the display name ('Dark Hthr Grey' → 'dark-hthr-grey'). The synced inventory is
+  // keyed by code, and the storefront matches stock on the normalized sku — an abbreviated
+  // display name ('Hthr' vs 'Heather') would never match its own stock rows. The id keeps
+  // the display-name slug so re-importing an existing colorway updates rather than duplicates.
+  const skuColor = String(color.colorCode || '').replace(/[^a-zA-Z0-9]/g, '') || slug;
   return {
     id: `${style.source}-${String(style.sku).toLowerCase()}-${slug}`,
     vendor_id: style.vendorId || null,
-    sku: `${style.sku}-${slug}`.toUpperCase(),
+    sku: `${style.sku}-${skuColor}`.toUpperCase(),
     name: style.name || style.sku,
     brand: style.brand || null,
     color: color.colorName || null,

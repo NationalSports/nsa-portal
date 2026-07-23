@@ -37,8 +37,9 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
 
-  // Extract UUID from various URL formats
-  const uuidMatch = reportUrl.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+  // Extract UUID from various URL formats. String() first — a non-string reportUrl
+  // (e.g. a number) used to throw an uncaught TypeError here instead of the clean 400.
+  const uuidMatch = String(reportUrl || '').match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
   if (!uuidMatch) {
     return { statusCode: 400, headers, body: JSON.stringify({ error: 'No valid report UUID found in URL' }) };
   }

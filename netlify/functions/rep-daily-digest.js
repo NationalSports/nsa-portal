@@ -137,9 +137,13 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
       ${tile('Orders', String(totOrders))}${tile('Items', String(totItems))}${tile('Sales', money(totSales))}</tr></table>${fundLine}` : '';
 
   const storeBlocks = storesArr.map(({ store, orders, sales }) => {
-    const link = `${portal}/shop/${esc(store.slug)}`;
+    // Links land the rep in the portal backend, not the public storefront: the red
+    // bar → this store's Analytics (reports) tab, each order's "View" → that order in
+    // the Orders tab. "View storefront" (footer) is the escape hatch to the public shop.
+    const reportsLink = `${portal}/?pg=webstores&store=${esc(store.id)}&tab=analytics`;
+    const shopLink = `${portal}/shop/${esc(store.slug)}`;
     const rows = orders.slice().sort((a, b) => new Date(a.created_at) - new Date(b.created_at)).map((o) => {
-      const oLink = `${portal}/shop/${esc(store.slug)}/order/${esc(o.id)}`;
+      const oLink = `${portal}/?pg=webstores&store=${esc(store.id)}&tab=orders&order=${esc(o.id)}`;
       const fund = Number(o.fundraise_amt) || 0;
       const units = Number(o._units) || 0;
       const meta = [ptTime(o.created_at), `${units} item${units === 1 ? '' : 's'}`, fund > 0 ? `${money(fund)} to team` : ''].filter(Boolean).join(' · ');
@@ -154,15 +158,17 @@ function buildDigestHtml({ rep, storesArr, closed, dayLabel, portal }) {
         </td></tr>`;
     }).join('');
     return `<div style="border:1px solid ${LINE};border-radius:10px;overflow:hidden;margin:0 0 14px">
-      <div style="background:${store.primary_color || NAVY};padding:12px 16px;display:block">
-        <a href="${link}" style="color:#fff;text-decoration:none;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</a>
+      <a href="${reportsLink}" style="display:block;background:${store.primary_color || NAVY};padding:12px 16px;text-decoration:none">
+        <span style="color:#fff;font-family:'Barlow Condensed',Arial,sans-serif;font-weight:800;font-size:18px;letter-spacing:.3px;text-transform:uppercase">${esc(store.name)}</span>
         <span style="color:rgba(255,255,255,.78);font-size:12px;font-weight:700"> &nbsp;·&nbsp; ${orders.length} order${orders.length === 1 ? '' : 's'} · ${money(sales)}</span>
-      </div>
+      </a>
       <table width="100%" style="border-collapse:collapse"><tbody>
         <tr><td colspan="2" style="height:6px"></td></tr>
         ${rows}
       </tbody></table>
-      <div style="height:8px"></div>
+      <div style="padding:10px 16px;border-top:1px solid #f1ece1;text-align:right">
+        <a href="${shopLink}" style="display:inline-block;font-size:12px;color:${INK};text-decoration:none;font-weight:700;border:1px solid ${LINE};border-radius:6px;padding:6px 12px">View storefront ↗</a>
+      </div>
     </div>`;
   }).join('');
 

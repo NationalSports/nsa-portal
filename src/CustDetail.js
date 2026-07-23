@@ -1,7 +1,7 @@
 /* eslint-disable */
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { _pick, ART_FILE_SC, SZ_ORD, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups } from './safeHelpers';
+import { _pick, ART_FILE_SC, SZ_ORD, sizeBreakdownStr, SC, pantoneHex, threadHex, NSA, prodFilesStatusFor, artProdFilesConfirmed, markDstsStale } from './constants';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs, safeFirm, safeArt, jobItemDecoIdxs, skusMissingMockups, resolveMockLink, mockLinkSourceFiles, artProofFallback } from './safeHelpers';
 import { Icon, Bg, calcSOStatus, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ColorWaysEditor } from './components';
 import { pickCwAsset, normalizeWebLogos } from './businessLogic';
 import { garmentHex, garmentIsDark } from './lib/artGrid';
@@ -372,7 +372,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Build unified transaction list
       const txns=[];
       // Existing orders (est, SO, inv)
-      orders.forEach(o=>{txns.push({id:o.id,type:o.type,date:o.date||o.created_at?.split(' ')[0],memo:o.memo,customer_id:o.customer_id,total:o.total,status:o.status,so_id:o.type==='sales_order'?o.id:null,_src:'order',_o:o})});
+      orders.forEach(o=>{txns.push({id:o.id,type:o.type,date:o.date||o.created_at?.split(' ')[0],memo:o.memo,customer_id:o.customer_id,total:o.total,status:o.type==='sales_order'?calcSOStatus(o):o.status,so_id:o.type==='sales_order'?o.id:null,_src:'order',_o:o})});
       // IFs and POs from SOs
       custSOs.forEach(so=>{
         const subC=allCustomers.find(c=>c.id===so.customer_id);
@@ -401,7 +401,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       // Filter
       const filt=deduped.filter(t=>{
         if(oF!=='all'&&t.type!==oF)return false;
-        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
+        if(sF==='open')return['sent','draft','open','waiting','needs_pull','in_production','need_order','waiting_receive','items_received','ready_to_invoice','booking','partial'].includes(t.status)||(t.type==='estimate'&&t.status==='approved');
         if(sF==='closed')return(t.type==='estimate'?['converted','cancelled']:['approved','paid','pulled','received','complete','completed','shipped','cancelled']).includes(t.status);
         return true;
       }).sort((a,b)=>(b.date||'').localeCompare(a.date||''));
@@ -552,7 +552,9 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {ws.map(s=>{const a=wsAgg[s.id]||{};const ex=stExpanded.has(s.id);return <React.Fragment key={s.id}>
             <tr style={{borderTop:'1px solid #f1f5f9',cursor:'pointer'}} onClick={()=>toggle(s.id)}>
               <td style={{...td,textAlign:'center'}}>{caret(ex)}</td>
-              <td style={{...td,fontWeight:700,color:'#0369a1'}}>{s.name}</td>
+              <td style={td}>{onOpenWebstore
+                ? <span onClick={e=>{e.stopPropagation();onOpenWebstore(s.id);}} title="Open this store" style={{fontWeight:700,color:'#0369a1',cursor:'pointer',textDecoration:'underline',textDecorationColor:'#bae6fd',textUnderlineOffset:2}}>{s.name}</span>
+                : <span style={{fontWeight:700,color:'#0369a1'}}>{s.name}</span>}</td>
               <td style={td}>{chip(s.status)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.open_at)}</td>
               <td style={{...td,color:'#64748b'}}>{dt(s.close_at)}</td>
@@ -1728,7 +1730,26 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
       const _jAF2=[...new Set([j.art_file_id,...(j._art_ids||[])].filter(Boolean))].map(aid=>safeArt(so).find(a=>a.id===aid)).filter(Boolean);
       const _jSkus2=new Set((j.items||[]).map(gi=>gi.sku).filter(Boolean));
       const _mf2Seen=new Set();
-      const mockupFiles2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
+      const _mockupFilesBase2=_filterDisplayable([...(af2?.mockup_files||af2?.files||[]),..._jAF2.flatMap(af3=>Object.entries(af3?.item_mockups||{}).filter(([k])=>_jSkus2.has(k.split('|')[0])).flatMap(([,arr])=>arr||[]))]).filter(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||_mf2Seen.has(u))return false;_mf2Seen.add(u);return true});
+      // The normal lookup misses two cases the approval gate (skusMissingMockups) already
+      // accepts: a garment LINKED to another garment's mock (nothing lives under its own
+      // sku|color key), and reused art with no per-garment mocks anywhere but a displayable
+      // sew-out proof in prod_files. Only consulted when the normal lookup found nothing —
+      // once real mockups exist, they're the source of truth.
+      const _mockLinkFiles2=_mockupFilesBase2.length===0?(()=>{
+        const seen=new Set();const out=[];
+        (j.items||[]).forEach(gi=>{
+          const it=safeItems(so)[gi.item_idx];
+          const gSku=it?.sku||gi.sku||'';const gColor=it?.color||gi.color||'';
+          const srcKey=resolveMockLink(_jAF2,gSku,gColor);
+          if(!srcKey)return;
+          mockLinkSourceFiles(_jAF2,srcKey).forEach(f=>{const u=typeof f==='string'?f:(f?.url||'');if(!u||seen.has(u))return;seen.add(u);out.push(f)});
+        });
+        return _filterDisplayable(out);
+      })():[];
+      const _proofFiles2=(_mockupFilesBase2.length===0&&_mockLinkFiles2.length===0)?_filterDisplayable(_jAF2.flatMap(af3=>artProofFallback(af3))):[];
+      const mockupFiles2=[..._mockupFilesBase2,..._mockLinkFiles2,..._proofFiles2];
+      const _mf2ProofOnly=_mockupFilesBase2.length===0&&_mockLinkFiles2.length===0&&_proofFiles2.length>0;
       const items=(j.items||[]).map(gi=>{const it=safeItems(so)[gi.item_idx];const prd2=prod.find(pp=>pp.id===it?.product_id||pp.sku===it?.sku);return{...gi,brand:it?.brand||'',fullName:safeStr(it?.name)||gi.name,image_url:prd2?.image_url||it?._colorImage||'',back_image_url:prd2?.back_image_url||it?._colorBackImage||''}});
       return<div className="modal-overlay" onClick={()=>setShowPortal(false)}><div className="modal" style={{maxWidth:700,maxHeight:'90vh',overflow:'auto'}} onClick={e=>e.stopPropagation()}>
         <div style={{background:'linear-gradient(135deg,#1e3a5f,#2563eb)',color:'white',padding:'20px 24px',borderRadius:'12px 12px 0 0',position:'relative'}}>
@@ -1744,6 +1765,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
           {/* Mockup artwork display */}
           {mockupFiles2.length>0&&<div style={{marginBottom:16}}>
             <div style={{fontSize:12,fontWeight:700,color:'#64748b',marginBottom:8}}>🖼️ Artwork Mockup</div>
+            {_mf2ProofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from production files — not a garment mockup</div>}
             {mockupFiles2.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);
               return<div key={fi} style={{borderRadius:10,border:'1px solid #e2e8f0',overflow:'hidden',background:'white',marginBottom:8}}>
                 {_isImgUrl(url)?<img src={url} alt={name} style={{width:'100%',maxHeight:500,objectFit:'contain',display:'block',cursor:'pointer'}} onClick={()=>setMockupLightbox(url)}/>
@@ -1870,7 +1892,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
                 const _rejAt=new Date().toISOString();
                 const rej={reason:_fb,by:'Coach',at:_rejAt,rejected_at:_rejAt};
                 const updJobs2=safeJobs(freshSO).map(jj=>jj.id===liveJob.id?{...jj,art_status:'art_requested',coach_rejected:true,sent_to_coach_at:null,coach_approved_at:null,rejections:[...(jj.rejections||[]),rej]}:jj);
-                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
+                const updatedSO={...freshSO,art_files:(freshSO.art_files||[]).map(af3=>jArtIds.includes(af3.id)?{...af3,status:'waiting_for_art',prod_files_attached:false,files:markDstsStale(af3.files),prod_files:markDstsStale(af3.prod_files),notes:(af3.notes?af3.notes+'\n':'')+'Coach feedback: '+_fb}:af3),jobs:updJobs2,updated_at:new Date().toLocaleString()};
                 onSaveSO(updatedSO);
                 setPortalComment('');setPortalJobView(null)
               }}>❌ Request Changes</button>
@@ -1927,7 +1949,7 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
         if(soItems.length>0){
           soItems.forEach(it=>{
             const sqq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);const qty=sqq>0?sqq:safeNum(it.est_qty);if(!qty)return;
-            const szStr=SZ_ORD.filter(sz=>safeSizes(it)[sz]>0).map(sz=>safeSizes(it)[sz]+(it.is_footwear?'/':' ')+sz).join(', ');
+            const szStr=sizeBreakdownStr(safeSizes(it),it.is_footwear);
             const unitPrice=safeNum(it.unit_sell);const lineAmt=Math.round(qty*unitPrice*depPct*100)/100;subTotal+=lineAmt;
             let itemName=(safeStr(it.name)||'Item')+(it.color?' - '+it.color:'');
             if(szStr)itemName+='<br/><span style="color:#555">'+szStr+'</span>';
@@ -2127,7 +2149,10 @@ function CustDetail({customer:initCust,allCustomers,allOrders,onBack,onEdit,onSe
               {/* Clickable jobs — artwork proofs */}
               {soJobs.length>0&&<>
                 <div style={{fontSize:11,fontWeight:700,color:'#64748b',marginBottom:6}}>🎨 Artwork & Decoration</div>
-                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);const _pmf=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                {soJobs.map(j=>{const _paf=safeArt(so).find(a=>a.id===j.art_file_id);
+                  const _pmfGen=_filterDisplayable(_paf?.mockup_files||_paf?.files||[]);
+                  const _pmfItem=_pmfGen.length===0?_filterDisplayable(Object.values(_paf?.item_mockups||{}).flat()):[];
+                  const _pmf=_pmfGen.length>0?_pmfGen:_pmfItem.length>0?_pmfItem:_filterDisplayable(artProofFallback(_paf));
                   return<div key={j.id} style={{border:'1px solid '+(j.art_status==='waiting_approval'?'#f59e0b':'#e2e8f0'),background:j.art_status==='waiting_approval'?'#fffbeb':'#fafbfc',borderRadius:8,marginBottom:6,overflow:'hidden',cursor:'pointer'}} onClick={()=>{setPortalJobView({job:j,so});setPortalComment('')}}>
                   {_pmf.length>0&&<div style={{display:'grid',gridTemplateColumns:_pmf.length>1?'1fr 1fr':'1fr',gap:2,background:'#f1f5f9'}}>
                     {_pmf.map((f,fi)=>{const _u=typeof f==='string'?f:(f?.url||'');const _ii=_isImgUrl(_u,f);const _ip=_isPdfUrl(_u,f);const _pt=_ip?_cloudinaryPdfThumb(_u):null;

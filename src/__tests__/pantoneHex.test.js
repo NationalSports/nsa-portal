@@ -36,6 +36,21 @@ describe('pantoneHex — named color resolution (case-insensitive)', () => {
     expect(pantoneHex('485')).toBe('#DA291C');
   });
 
+  test('resolves combined "number + name" codes to the exact Pantone ink', () => {
+    // Colors saved from the "School Colors (Pantone)" card as a combined string;
+    // previously these fell through to a placeholder grey.
+    expect(pantoneHex('1815 Cardinal')).toBe('#8C1018');
+    expect(pantoneHex('1235 Gold')).toBe('#FFC72C');
+    expect(pantoneHex('2768 Navy')).toBe('#071D49');
+  });
+
+  test('resolves bare / unnumbered family names via threadHex', () => {
+    expect(pantoneHex('Maroon')).toBe('#800000');
+    expect(pantoneHex('Vegas Gold')).toBe('#C5B358');
+    // number not in the Pantone map, but the trailing name still resolves
+    expect(pantoneHex('2171 Light Blue')).toBe('#ADD8E6');
+  });
+
   test('returns null for empty / unknown input', () => {
     expect(pantoneHex('')).toBeNull();
     expect(pantoneHex(null)).toBeNull();

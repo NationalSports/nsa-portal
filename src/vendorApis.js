@@ -158,7 +158,10 @@ const createShipStationLabel = async (so, customer, packageItems, weight, carrie
   // Map carrier — dropdown values are lowercase ('fedex','ups','usps')
   const carrierLower = (carrier || 'fedex').toLowerCase();
   const carrierMap = { fedex: { carrierCode: 'fedex', serviceCode: 'fedex_ground' }, ups: { carrierCode: 'ups', serviceCode: 'ups_ground' }, usps: { carrierCode: 'stamps_com', serviceCode: 'usps_priority_mail' } };
-  const cm = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: service || 'fedex_ground' };
+  const _base = carrierMap[carrierLower] || { carrierCode: carrierLower, serviceCode: 'fedex_ground' };
+  // A caller-supplied ship speed (a ShipStation service code, e.g. ups_next_day_air / ups_2nd_day_air)
+  // overrides the carrier's default Ground service. Empty/null keeps the carrier's default.
+  const cm = { carrierCode: _base.carrierCode, serviceCode: (typeof service === 'string' && service.trim()) ? service.trim() : _base.serviceCode };
   const dims = dimensions && dimensions.length && dimensions.width && dimensions.height
     ? { length: parseFloat(dimensions.length), width: parseFloat(dimensions.width), height: parseFloat(dimensions.height), units: 'inches' }
     : undefined;
@@ -963,24 +966,58 @@ const sanmarResolvePartIds = async (descriptors) => {
 // ─── S&S Activewear API Integration (via Netlify proxy — REST/JSON) ───
 // Requires SS_ACCOUNT_NUMBER + SS_API_KEY in Netlify env vars
 // Docs: https://api.ssactivewear.com/V2/Default.aspx
+
+// Pull S&S's REAL error out of a failed response so staff see WHY, not a bare status.
+// Shapes seen: the proxy's own {error}, S&S's {errors:[{message}]} (case varies), or an
+// IIS/ASP.NET HTML error page — strip tags and keep the first ~200 chars for that one.
+const _ssErrMsg = (errText, status) => {
+  let j; try { j = JSON.parse(errText); } catch {}
+  const first = (a) => (Array.isArray(a) && a.length ? a[0] : null);
+  const e = j && (j.error || first(j.errors) || first(j.Errors) || first(Array.isArray(j) ? j : null) || j);
+  const msg = typeof e === 'string' ? e : e && (e.message || e.Message || e.error);
+  const raw = String(errText || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  return `S&S API error ${status}` + (msg ? `: ${msg}` : raw ? `: ${raw.slice(0, 200)}` : '');
+};
+
 const ssApiCall = async (endpoint, options = {}) => {
   try {
     const method = options.method || 'GET';
     const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(endpoint)}`;
     const response = await authFetch(proxyUrl, {
       method,
-      headers: { 'Content-Type': 'application/json' },
-      ...(options.body ? { body: options.body } : {})
+      // Content-Type only when a body is actually sent — see ss-proxy.js for why.
+      ...(options.body ? { headers: { 'Content-Type': 'application/json' }, body: options.body } : {})
     });
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-      throw new Error(msg || `S&S API error: ${response.status}`);
+      throw new Error(_ssErrMsg(errText, response.status));
     }
     const data = await response.json();
     console.log('[S&S] API response:', endpoint, Array.isArray(data) ? `${data.length} items` : data);
     return data;
   } catch (error) { console.error('[S&S] API call failed:', endpoint, error); throw error; }
+};
+
+// Style lookup for a set of S&S part numbers (chunked GET /Products/{sku,sku,…}).
+// Returns { SKUUPPER → { styleName, brandName } } for the resolver's style tie-break.
+// Best-effort by design: callers treat a miss/failure as "no enrichment", never an error —
+// a failed chunk must not block pulling bills. 25 skus/call keeps URLs short; the tiny
+// pause keeps a big pull inside S&S's 60 req/min budget alongside the orders call itself.
+const ssGetProductStyles = async (skus) => {
+  const list = [...new Set((Array.isArray(skus) ? skus : []).map(s => String(s || '').trim().toUpperCase()).filter(Boolean))];
+  const map = {};
+  for (let i = 0; i < list.length; i += 25) {
+    const chunk = list.slice(i, i + 25);
+    try {
+      const data = await ssApiCall('/Products/' + chunk.map(encodeURIComponent).join(','));
+      (Array.isArray(data) ? data : (data ? [data] : [])).forEach(p => {
+        const k = String(p?.sku || p?.Sku || '').trim().toUpperCase();
+        if (k) map[k] = { styleName: String(p?.styleName || p?.StyleName || '').trim(), brandName: String(p?.brandName || p?.BrandName || '').trim() };
+      });
+    } catch (e) { /* skip this chunk — enrichment is optional */ }
+    if (i + 25 < list.length) await new Promise(r => setTimeout(r, 350));
+  }
+  return map;
 };
 
 const ssGetProducts = async (filter) => {
@@ -1008,8 +1045,9 @@ const ssGetOrders = async (filter = {}) => {
 // ─── S&S CrossRef (our SKU ↔ S&S SKU) ───
 // `yourSku` on order/product lines is populated from these cross-references. Mapping our
 // style to the S&S sku promotes S&S bill lines from a color+size guess to an exact SKU match.
-// GET /CrossRef/{yourSku,list} → records; PUT /CrossRef/{yourSku}?identifier={S&S sku value}
-// assigns a yourSku to one S&S product (200 = updated, 201 = created).
+// GET /CrossRef/{yourSku,list} → records; PUT /CrossRef/{yourSku}?Identifier={S&S sku value}
+// assigns a yourSku to one S&S product (200 = updated, 201 = created). Param name matches the
+// S&S doc example verbatim (PUT /v2/crossref/G2000whtxl?Identifier=B00760003).
 const ssGetCrossRefs = async (yourSkus) => {
   const list = (Array.isArray(yourSkus) ? yourSkus : [yourSkus]).map(s => String(s || '').trim()).filter(Boolean);
   if (!list.length) return [];
@@ -1020,13 +1058,14 @@ const ssGetCrossRefs = async (yourSkus) => {
 // Custom response handling: a PUT can come back with an empty body (json() would throw).
 // Returns { ok, status, created, updated }.
 const ssPutCrossRef = async (yourSku, identifier) => {
-  const path = '/CrossRef/' + encodeURIComponent(String(yourSku || '').trim()) + '?identifier=' + encodeURIComponent(String(identifier || '').trim());
+  const path = '/CrossRef/' + encodeURIComponent(String(yourSku || '').trim()) + '?Identifier=' + encodeURIComponent(String(identifier || '').trim());
   const proxyUrl = `/.netlify/functions/ss-proxy?path=${encodeURIComponent(path)}`;
-  const response = await authFetch(proxyUrl, { method: 'PUT', headers: { 'Content-Type': 'application/json' } });
+  // No body and therefore NO Content-Type header: the identifier rides the querystring, and
+  // a bodyless PUT declaring application/json is what S&S's ASP.NET stack 500s on.
+  const response = await authFetch(proxyUrl, { method: 'PUT' });
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
-    let msg; try { msg = JSON.parse(errText)?.error; } catch {}
-    throw new Error(msg || `S&S CrossRef PUT error: ${response.status}`);
+    throw new Error(_ssErrMsg(errText, response.status));
   }
   return { ok: true, status: response.status, created: response.status === 201, updated: response.status === 200 };
 };
@@ -1606,4 +1645,4 @@ const testSportsLinkConnection = async () => {
 };
 
 
-export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };
+export { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, sanmarGetPricing, sanmarGetPromoInventory, testSanMarConnection, sanmarSubmitPO, sanmarResolvePartIds, ssApiCall, ssGetProducts, ssGetProductStyles, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetCrossRefs, ssPutCrossRef, testSSConnection, ssResolveSkus, ssSubmitOrder, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, richardsonGetStockInventory, richardsonSearchStyles, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, momentecSubmitOrder, momentecOrderDetails, momentecStyleV2, momentecResolveSkus, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkApiCall, sportsLinkGetDocuments, sportsLinkSetStatus, testSportsLinkConnection };

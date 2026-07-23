@@ -85,7 +85,18 @@ In Supabase Dashboard → **Database** → **Webhooks**:
 4. **Events**: `INSERT`
 5. **Type**: Supabase Edge Functions
 6. **Function**: `slack-notify`
-7. Save
+7. **HTTP Headers**: add `x-webhook-secret` = the same value you set for the
+   `SLACK_NOTIFY_SECRET` edge-function env var (any long random string). This is
+   what authorizes the webhook — without it, anyone holding the public anon key
+   could POST a forged `messages` record to this function and spoof Slack DMs.
+8. Save
+
+> **Security (staged rollout):** `slack-notify` only enforces this secret once
+> `SLACK_NOTIFY_SECRET` is set in the edge function's env. Until then it logs a
+> loud warning and still runs, so deploying the function never breaks live
+> notifications. To close the hole: set `SLACK_NOTIFY_SECRET` in the function env
+> **and** add the matching `x-webhook-secret` header above. (A webhook configured
+> to send the service-role key as its bearer is also accepted, no secret needed.)
 
 ## Step 5: Link Team Members
 

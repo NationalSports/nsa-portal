@@ -23,6 +23,7 @@
 
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { requireStaffOrService } from "../_shared/auth.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -96,6 +97,14 @@ async function lookupRate(address1: string, city: string, state: string, zip5: s
 
 serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
+
+  // Authorize first: this bulk-updates customers.tax_rate and spends the metered
+  // TaxCloud budget. Staff (browser) or the trusted server/pg_cron (service role,
+  // which the taxcloud crons send) only — previously any anon-key holder could run it.
+  const auth = await requireStaffOrService(req);
+  if (!auth.ok) {
+    return new Response(JSON.stringify({ ok: false, error: auth.error }), { status: auth.status, headers: CORS });
+  }
 
   let body: { limit?: number; only_missing?: boolean; concurrency?: number } = {};
   try { body = await req.json(); } catch { /* empty body is fine */ }

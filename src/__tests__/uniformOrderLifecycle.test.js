@@ -8,13 +8,14 @@ class MockQuery {
   select() { return this; }
   insert(payload) { this.operation = 'insert'; this.payload = Array.isArray(payload) ? payload : [payload]; return this; }
   update(payload) { this.operation = 'update'; this.payload = payload; return this; }
-  eq(key, value) { this.filters.push([key, value]); return this; }
+  eq(key, value) { this.filters.push([key, value, 'eq']); return this; }
+  neq(key, value) { this.filters.push([key, value, 'neq']); return this; }
   order(key, options = {}) { this.orders.push([key, !!options.ascending]); return this; }
   limit(value) { this.max = value; return this; }
   maybeSingle() { return this.execute(true); }
   single() { return this.execute(true); }
   then(resolve, reject) { return this.execute(false).then(resolve, reject); }
-  matches(row) { return this.filters.every(([key, value]) => row[key] === value); }
+  matches(row) { return this.filters.every(([key, value, op]) => (op === 'neq' ? row[key] !== value : row[key] === value)); }
   stamp(table, row) {
     const now = new Date().toISOString();
     if (table === 'uniform_order_requests') return {
@@ -187,5 +188,20 @@ describe('uniform order lifecycle', () => {
     expect(finalized.status).toBe(200);
     expect(finalized.body.order.payment_status).toBe('paid');
     expect(mockState.uniform_order_requests).toHaveLength(1);
+  });
+
+  test('never leaks staff-only columns in customer-facing responses', async () => {
+    const created = await call({ ...createPayload, client_ref: 'leak-check' });
+    const order = created.body.order;
+    const noted = await call({ action: 'staff_update', order_id: order.id, rep_review_notes: 'Internal: check credit hold', assigned_rep_id: 'rep-9' }, true);
+    expect(noted.status).toBe(200);
+    for (const res of [created, await call({ ...createPayload, client_ref: 'leak-check' }), await call({ action: 'status', order_number: order.order_number, token: order.token })]) {
+      expect(res.body.order.rep_review_notes).toBeUndefined();
+      expect(res.body.order.assigned_rep_id).toBeUndefined();
+      expect(res.body.order.stripe_intent_id).toBeUndefined();
+      expect(res.body.order.customer_id).toBeUndefined();
+      expect(res.body.order.public_token).toBeUndefined();
+      expect(res.body.order.token).toBeTruthy();
+    }
   });
 });

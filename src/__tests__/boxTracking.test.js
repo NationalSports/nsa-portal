@@ -111,6 +111,35 @@ describe('makeBoxRow', () => {
   });
 });
 
+describe('makeBoxRow — receiving kind (PO receive)', () => {
+  it('builds a kind=receiving row whose source_refs carry the PO (and SO when present)', () => {
+    const row = makeBoxRow({
+      id: 'BX-2050',
+      kind: 'receiving',
+      contents: [{ sku: 'PC61', color: 'Red', sizes: { M: 6 } }],
+      soId: 'SO-2001',
+      poId: 'NSA-4501',
+      createdBy: 'wh1',
+      now: '2026-07-12T00:00:00.000Z',
+    });
+    expect(row.kind).toBe('receiving');
+    expect(row.po_id).toBe('NSA-4501');
+    expect(row.so_id).toBe('SO-2001');
+    expect(row.if_id).toBe(null);
+    expect(row.source_refs).toEqual([
+      { type: 'PO', id: 'NSA-4501' },
+      { type: 'SO', id: 'SO-2001' },
+    ]);
+    // A receiving box carries a scannable plate exactly like a pull box.
+    const l = buildBoxLabel(row, { scanBase: 'https://x.app/' });
+    expect(l.qrData).toBe('https://x.app/?scan=BX-2050');
+  });
+  it('a PO-only receiving box (no SO) still records the PO ref', () => {
+    const row = makeBoxRow({ id: 'BX-2051', kind: 'receiving', contents: [{ sku: 'X', sizes: { S: 1 } }], poId: 'NSA-9', now: '2026-07-12T00:00:00.000Z' });
+    expect(row.source_refs).toEqual([{ type: 'PO', id: 'NSA-9' }]);
+  });
+});
+
 describe('mergeSourceRefs', () => {
   it('de-dupes by type+id, survivor first', () => {
     expect(
@@ -150,5 +179,15 @@ describe('buildBoxLabel', () => {
     const l = buildBoxLabel({ ...box, if_id: null, status: 'weird' }, { dateStr: '6/16' });
     expect(l.note).toBe('WEIRD — 6/16');
     expect(BOX_STATUS_META.weird).toBeUndefined();
+  });
+});
+
+// ── Adversarial-input regressions (2026-07-18 sweep) ──
+describe('boxUnits negative-cell hardening', () => {
+  it('ignores negative size cells instead of subtracting them (label unit counts)', () => {
+    // Regression: a corrupted contents row { S: -3 } used to shrink the printed count.
+    expect(boxUnits([{ sku: 'A', sizes: { S: -3, M: 5 } }])).toBe(5);
+    expect(boxUnits([{ sku: 'A', sizes: { S: '-2', M: '4' } }])).toBe(4);
+    expect(boxUnits([{ sku: 'A', sizes: { S: 'abc', M: 2 } }])).toBe(2);
   });
 });

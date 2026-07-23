@@ -5,9 +5,9 @@
 -- rep to process manually. Every path lands here as one row so staff have a
 -- single queue to work from (Settings -> Uniform Orders in the portal).
 --
--- Public route, no coach login, so inserts are open — same pattern as
--- uniform_designs. Reads/updates are staff-only so contact info and order
--- details aren't exposed over the public anon key.
+-- Public route, no coach login — submissions go through the service-role
+-- uniform-order function. The table itself is staff-only under RLS so contact
+-- info and order details aren't exposed over the public anon key.
 
 create table if not exists public.uniform_order_requests (
   id            uuid primary key default gen_random_uuid(),
@@ -37,32 +37,18 @@ create index if not exists uniform_order_requests_created_at_idx on public.unifo
 
 alter table public.uniform_order_requests enable row level security;
 
--- Public demo route: anyone (coach, no login) may create an order request.
+-- Staff-only (matches the live 00179 posture and 00224's policies). The public
+-- builder submits orders through the service-role uniform-order function, which
+-- owns validation, pricing, and the per-order public token.
 drop policy if exists uniform_order_requests_public_insert on public.uniform_order_requests;
-create policy uniform_order_requests_public_insert
-  on public.uniform_order_requests
-  for insert
-  to anon, authenticated
-  with check (true);
-
--- Staff-only: read/manage the queue.
 drop policy if exists uniform_order_requests_staff_select on public.uniform_order_requests;
-create policy uniform_order_requests_staff_select
-  on public.uniform_order_requests
-  for select
-  to authenticated
-  using (true);
-
 drop policy if exists uniform_order_requests_staff_update on public.uniform_order_requests;
-create policy uniform_order_requests_staff_update
-  on public.uniform_order_requests
-  for update
-  to authenticated
-  using (true);
-
 drop policy if exists uniform_order_requests_staff_delete on public.uniform_order_requests;
-create policy uniform_order_requests_staff_delete
+drop policy if exists uniform_order_requests_staff_all on public.uniform_order_requests;
+create policy uniform_order_requests_staff_all
   on public.uniform_order_requests
-  for delete
+  for all
   to authenticated
-  using (true);
+  using (public.is_team_member())
+  with check (public.is_team_member());
+revoke select, insert, update, delete on public.uniform_order_requests from anon;

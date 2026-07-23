@@ -10,7 +10,7 @@ export const _soCols=['id','customer_id','estimate_id','memo','status','created_
 // schemas that don't have those columns, and the retry-with-extras-stripped
 // path silently drops est_qty / qty_only along with them — losing user input.
 export const _itemCols=['product_id','sku','name','brand','color','vendor_id','nsa_cost','retail_price','unit_sell','sizes','available_sizes','_colors','no_deco','notes','is_custom','custom_desc','custom_cost','custom_sell','is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','is_footwear','customer_supplied'];
-export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
+export const _decoCols=['kind','position','type','art_file_id','art_tbd_type','tbd_colors','tbd_stitches','tbd_dtf_size','sell_override','sell_each','cost_each','underbase','two_color','colors','stitches','dtf_size','num_method','num_size','num_size_back','num_font','roster','names','names_list','vendor','deco_type','notes','custom_font_art_id','print_color','front_and_back','reversible','num_qty','name_qty','name_method','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code','_cost_locked'];
 // Columns that may not exist in production DB / schema cache — stripped on insert retry
 export const _itemExtraCols=new Set(['is_promo','_pre_promo_sell','_promo_credit','_promo_partial_qty','is_free_promo','_pre_free_promo_sell','est_qty','qty_only','size_availability','notes','is_footwear','customer_supplied']);
 export const _estExtraCols=new Set(['promo_applied','promo_amount','update_requests','email_sent_at','email_opened_at','email_viewed_at','follow_up_at','sent_history','print_history','approved_by','approved_at','credit_applied','credit_amount','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
@@ -20,7 +20,7 @@ export const _soExtraCols=new Set(['_shipping_cost','_shipstation_cost','_inboun
 // _cost_locked and names_list are intentionally NOT in this strip-on-retry set (same rule as deco_pos
 // above): both columns exist in the live DB, and decorations persist via DELETE+INSERT — stripping them
 // on a retry caused by an unrelated column would silently wipe locked pricing / name lists on every save.
-export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code']);
+export const _decoExtraCols=new Set(['print_color','front_and_back','reversible','num_qty','name_qty','name_method','num_font','num_size_back','custom_font_art_id','deco_type','notes','vendor','color_way_id','color_way_id_b','split_group','split_sizes','split_runs','fulfillment','deco_po_id','web_url','placement','side','color_label','transfer_code']);
 // Sanitize decoration data before DB insert — strip UI-only placeholders that would violate constraints
 export const _sanitizeDeco=(d)=>{const r={...d};if(r.custom_font_art_id&&r.custom_font_art_id==='pending')r.custom_font_art_id=null;if(r.art_file_id&&r.art_file_id==='__tbd')r.art_file_id=null;return r};
 export const _msgCols=['id','so_id','author_id','text','ts','dept','tagged_members','entity_type','entity_id','thread_id'];
@@ -38,8 +38,8 @@ export const _loadArtRow=a=>({id:a.id,name:a.name,deco_type:a.deco_type,ink_colo
 // until migration 00152 is applied, so the app keeps saving art if the columns aren't there yet)
 export const _artExtraCols=new Set(['art_sizes','garment_colors','item_mockups','mock_links','design_id','color_ways','preview_url','web_logos','web_logo_url','sample_art','stitches','archived','prod_files_attached']);
 // Columns that may not exist in so_jobs — stripped on retry
-export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
-export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
+export const _jobExtraCols=new Set(['_art_ids','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','split_open','priced_separately','price_override','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at']);
+export const _jobCols=['id','key','art_file_id','_art_ids','_draft','art_name','deco_type','positions','art_status','item_status','prod_status','total_units','fulfilled_units','split_from','split_open','priced_separately','price_override','created_at','assigned_machine','assigned_to','ship_method','items','_auto','art_requests','art_messages','assigned_artist','rep_notes','rejections','coach_rejected','sent_to_coach_at','coach_approved_at','coach_approval_comment','coach_email_opened_at','follow_up_at','sent_history','run_order','run1_done','run2_done','_merged','art_hidden','numbers_done','emb_names_link','link_group','auto_group_off','split_group','follow_up_auto','follow_up_interval_days','follow_up_message','follow_up_to','follow_up_count','follow_up_max','follow_up_last_sent_at'];
 export const _custCols=['id','parent_id','name','alpha_tag','search_tags','billing_address_line1','billing_address_line2','billing_city','billing_state','billing_zip','shipping_address_line1','shipping_address_line2','shipping_city','shipping_state','shipping_zip','shipping_attention','adidas_ua_tier','catalog_markup','uniform_discount_percent','payment_terms','tax_rate','tax_exempt','primary_rep_id','notes','is_active','created_at','updated_at','alt_billing_addresses','art_files','pantone_colors','thread_colors','netsuite_internal_id','disable_cc_pay'];
 
 // Pantone color lookup
@@ -230,7 +230,14 @@ export const PANTONE_MAP={
 // ('Black','white','REFLEX BLUE'). Normalize keys to upper-case so named colors resolve to a
 // swatch instead of falling through to a blank fallback. Numeric codes are unaffected by case.
 const PANTONE_MAP_UC=Object.fromEntries(Object.entries(PANTONE_MAP).map(([k,v])=>[k.toUpperCase(),v]));
-export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')]||null};
+export const pantoneHex=(code)=>{if(!code)return null;const s=code.toString().toUpperCase().replace(/\s*(C|U|CP|UP|TCX|TPX|TPG|TN)\s*$/,'').replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();
+  const direct=PANTONE_MAP_UC[s]||PANTONE_MAP_UC[s.replace(/\s+/g,' ')];if(direct)return direct;
+  // Colors are often saved as a combined "number + name" code (e.g. "1815 Cardinal",
+  // "1235 Gold") or a bare family name ("Maroon", "Vegas Gold"). Without this these
+  // fall through to a placeholder grey. Resolve the leading Pantone number first
+  // (exact ink), then a named team/garment color via threadHex.
+  const num=s.match(/^(\d{3,4})\b/);if(num&&PANTONE_MAP_UC[num[1]])return PANTONE_MAP_UC[num[1]];
+  return threadHex(s)||null;};
 export const pantoneSearch=(query)=>{if(!query||query.length<1)return[];const q=query.toUpperCase().replace(/^PMS\s*/,'').replace(/^PANTONE\s*/,'').trim();return Object.entries(PANTONE_MAP).filter(([k])=>k.toUpperCase().includes(q)).slice(0,12).map(([code,hex])=>({code,hex}))};
 // Thread color name-to-hex lookup for common embroidery thread colors
 export const THREAD_COLORS={'cardinal':'#8C1515','navy':'#001f3f','gold':'#FFD700','white':'#FFFFFF','black':'#000000',
@@ -336,11 +343,25 @@ export const PROD_FILES_STATUSES=['production_files_needed','order_dtf_transfers
 export const prodFilesStatusFor=(deco)=>(deco==='dtf'||deco==='heat_press')?'order_dtf_transfers':deco==='embroidery'?'upload_emb_files':'production_files_needed';
 // A .dst IS the embroidery production file — if one is attached anywhere on the art, prod files are effectively done.
 export const isDstFile=(f)=>{const n=(typeof f==='string'?f:(f&&(f.name||f.url))||'').toLowerCase();return n.endsWith('.dst')};
+// Recall/update-request paths tag the old DSTs {stale:true} instead of deleting them (history stays
+// downloadable) — a stale stitch file belongs to the superseded design and must never satisfy any gate.
+export const isStaleFile=(f)=>!!(f&&typeof f==='object'&&f.stale);
+export const artLiveDsts=(af)=>[...(af?.files||[]),...(af?.prod_files||[])].filter(f=>isDstFile(f)&&!isStaleFile(f));
+// Approve-time DST detection: at the moment an approval is being granted (rep's Approve Artwork, the
+// coach's portal approve, a workboard move to complete) the art file's status hasn't flipped to
+// 'approved' yet, so artProdFilesConfirmed's status-gated .dst branch can't see the DST and the UI
+// used to ask "is the production file attached?" with the DST in plain sight. The approval action
+// itself is the sign-off on the CURRENT art, and stale DSTs from a recalled design are tagged out by
+// markDstsStale — so a live .dst is trustworthy here without the status gate.
+export const artDstOnFile=(af)=>!!af&&(af.deco_type||'')==='embroidery'&&artLiveDsts(af).length>0;
+// Tag every DST in a file list stale — called by the pull-back paths (recall, update request, coach
+// send-back) alongside prod_files_attached:false, so the old stitch file can't auto-release the redo.
+export const markDstsStale=(list)=>(list||[]).map(f=>isDstFile(f)&&!isStaleFile(f)?(typeof f==='string'?{url:f,stale:true}:{...f,stale:true}):f);
 // prod_files_attached===false is an explicit invalidation (art recalled/updated for a design change,
 // or cloned prior art whose inherited files are unreviewed) — the OLD files still sitting on the row
 // must not satisfy either gate until someone re-confirms them. Legacy rows leave the flag undefined
 // and keep the file-based fallbacks below.
-export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(isDstFile);return false};
+export const artProdFilesReady=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if(af.prod_files_attached===false)return false;if((af.prod_files||[]).length>0)return true;if((af.deco_type||'')==='embroidery')return(af.files||[]).some(f=>isDstFile(f)&&!isStaleFile(f));return false};
 // Digitizer design code — the digitizing house stamps a "DG" number into every delivered
 // file name (DG648617_A_3D_CAP_FRONT.DST, sometimes written DG-648617). Normalizes to
 // "DG648617"; null when the name carries no DG number.
@@ -357,7 +378,7 @@ export const dgCodeOf=name=>{const m=String(name||'').match(/DG[-_ ]?(\d{4,})/i)
 // A file merely sitting in prod_files (e.g. an order PDF) is not enough; artProdFilesReady stays the
 // looser gate for marking an already-staged job complete. Matches _prodConfirmed in businessLogic.js
 // (which only runs its .dst check under the af.status==='approved' branch).
-export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return[...(af.files||[]),...(af.prod_files||[])].some(isDstFile);return false};
+export const artProdFilesConfirmed=(af)=>{if(!af)return false;if(af.prod_files_attached===true)return true;if((af.deco_type||'')==='embroidery'&&af.status==='approved')return artLiveDsts(af).length>0;return false};
 export const ART_FILE_LABELS={waiting_for_art:'Waiting for Art',needs_approval:'Needs Approval',approved:'Approved / Needs Files',art_complete:'Art Complete',changes_requested:'Changes Requested'};
 // 'changes_requested' is a badge-only status (coach sent the art back) — it shares the "Waiting for Art"
 // dashboard column but reads distinctly so the artist knows it's a revision, not fresh art.
@@ -447,6 +468,22 @@ export const SZ_ORD=['YXS','YS','YM','YL','YXL','YOUTH','XXS','XS','S','M','L','
   '4.5','5','5.5','6','6.5','7','7.5','8','8.5','9','9.5','10','10.5','11','11.5','12','12.5','13','13.5','14','14.5','15','15.5','16','16.5','17',
   '28','30','32','34','36','38','40','42','44','46','48','50','52','54',
   ...INFANT_SIZES];
+// ── Size ordering for display (shared) ──
+// Order size labels by the canonical SZ_ORD run, but KEEP any non-standard/custom labels —
+// vendor sizes like "Womens X-Large", "Unisex Large", "Mens 2X-Large" — sorting them to the end
+// instead of dropping them. A plain `SZ_ORD.filter(...)` silently omits every label not in
+// SZ_ORD, which hid ordered units from the Sales Order / Production Sheet / Invoice printouts
+// (a line ordered S/M/L/Womens-XL/Womens-2XL printed only S/M/L while the total still read 12).
+const _szCompare=(a,b)=>{const ia=SZ_ORD.indexOf(a),ib=SZ_ORD.indexOf(b);return (ia===-1?999:ia)-(ib===-1?999:ib)};
+// Union of the size labels present across one or more size maps (pass their flattened keys),
+// ordered for display with custom/unrecognized labels last.
+export const orderedSizeKeys=(keys)=>[...new Set(keys)].sort(_szCompare);
+// "qty size" breakdown string for a line item's sizes map, e.g. "1 S, 5 M, 3 L, 2 Womens X-Large".
+// Footwear renders "qty/size" (e.g. "2/10.5"); apparel renders "qty size". Custom labels are kept.
+export const sizeBreakdownStr=(sizes,isFootwear)=>Object.entries(sizes||{})
+  .filter(([,v])=>Number(v)>0)
+  .sort((a,b)=>_szCompare(a[0],b[0]))
+  .map(([sz,v])=>v+(isFootwear?'/':' ')+sz).join(', ');
 export const SZ_NORM={'XXS':'XXS','2XS':'XXS','XS':'XS','XSMALL':'XS','X-SMALL':'XS','SM':'S','SML':'S','SMALL':'S','MD':'M','MED':'M','MEDIUM':'M','LG':'L','LRG':'L','LARGE':'L',
   'XLG':'XL','XLARGE':'XL','X-LARGE':'XL','XXL':'2XL','2X':'2XL','2XLARGE':'2XL','2X-LARGE':'2XL',
   'XXXL':'3XL','3X':'3XL','3XLARGE':'3XL','3X-LARGE':'3XL','XXXXL':'4XL','4X':'4XL','4XLARGE':'4XL','4X-LARGE':'4XL',

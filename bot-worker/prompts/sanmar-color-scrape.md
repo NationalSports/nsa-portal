@@ -1,5 +1,11 @@
 # SanMar Style Pull (sanmarsports.com) — runbook
 
+> **Now automated.** `sanmar-brands-sync-background` refreshes `sanmar_style_seeds`
+> from `sanmarsports.com/products.json` at the start of every daily run (best-effort,
+> non-fatal), so the seed list stays current on its own. This runbook is kept only as
+> a manual fallback / one-off backfill (e.g. if the site's JSON API changes shape and
+> the in-sync pull needs adapting). Under normal operation you do not need to run it.
+
 Goal: refresh the Supabase `sanmar_style_seeds` table with every style on
 sanmarsports.com, so the daily `sanmar-brands-sync-background` ingests them into
 the catalog. **No scraping needed** — sanmarsports.com is a Shopify store and

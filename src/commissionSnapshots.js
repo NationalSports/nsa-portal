@@ -36,7 +36,9 @@ export function canSnapshotLine(line) {
 // owed; the raw override value is kept alongside for display and later edits.
 export function snapshotRowFromLine(line, snappedBy) {
   const d = line.paidDate;
-  const paid_date = d
+  // Guard Invalid Date (a failed upstream parse) — otherwise the row literally writes
+  // "NaN-NaN-NaN" into paid_date.
+  const paid_date = d && !isNaN(d.getTime())
     ? d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
     : null;
   const ovr = line.ovrRaw;
@@ -83,15 +85,22 @@ export function applySnapshotToLine(line, snap, parseDateFn) {
 // New rate/amount/override for a snapshotted line when an admin changes the override.
 // ovr: true = restore standard 30% on a late invoice; number = explicit decimal rate;
 // null/false = clear back to the base rate implied by the frozen days_to_pay.
-export function overrideSnapshotPatch(snap, ovr) {
+// basis/baseRate (optional, 00198): 'revenue' reps earn rate × frozen revenue instead
+// of rate × frozen GP, and their base rate is their configured baseRate (no late split).
+// Omitting them keeps the original GP behavior exactly.
+export function overrideSnapshotPatch(snap, ovr, basis, baseRate) {
   const gp = Number(snap && snap.gp && snap.gp.gp) || 0;
+  const rev = Number(snap && snap.gp && snap.gp.rev) || 0;
+  const revBasis = basis === 'revenue';
   const late = snap && snap.days_to_pay != null && snap.days_to_pay > COMM_LATE_DAYS;
-  const base = late ? COMM_RATE_LATE : COMM_RATE_STANDARD;
-  const cleared = ovr == null || ovr === false;
-  const rate = cleared ? base : (typeof ovr === 'number' ? ovr : COMM_RATE_STANDARD);
+  const base = revBasis ? (baseRate != null ? baseRate : 0.01) : (late ? COMM_RATE_LATE : COMM_RATE_STANDARD);
+  // NaN (a blanked admin input parsed with parseFloat) counts as clearing the override —
+  // typeof NaN === 'number', so without this it would write rate: NaN / amount: NaN.
+  const cleared = ovr == null || ovr === false || (typeof ovr === 'number' && !Number.isFinite(ovr));
+  const rate = cleared ? base : (typeof ovr === 'number' ? ovr : (revBasis ? base : COMM_RATE_STANDARD));
   return {
     rate,
-    amount: Math.round(gp * rate * 100) / 100,
+    amount: Math.round((revBasis ? rev : gp) * rate * 100) / 100,
     override: cleared ? null : { value: ovr },
   };
 }

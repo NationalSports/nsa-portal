@@ -20,6 +20,15 @@ const TONE = {
   quality_check: ['#0369a1', '#e0f2fe'], shipped: ['#0f766e', '#ccfbf1'], delivered: ['#15803d', '#dcfce7'], cancelled: ['#64748b', '#f1f5f9'],
 };
 const FULFILL_LABEL = { card: 'Card', po: 'School PO', manual: 'Rep queue' };
+// Jobs-style board columns. Cancelled stays off the board (visible via the
+// queue filters) so the lanes read as live work only.
+const BOARD_LANES = [
+  ['Intake', ['submitted', 'rep_review']],
+  ['Proofing', ['proof_ready', 'changes_requested']],
+  ['Approved', ['approved']],
+  ['Production', ['production', 'quality_check']],
+  ['Shipped', ['shipped', 'delivered']],
+];
 const fieldStyle = { width: '100%', boxSizing: 'border-box', fontSize: 12, padding: '7px 9px', borderRadius: 6, border: '1px solid #cbd5e1', background: '#fff' };
 
 function fileBase(o) { return (o.team_name || 'order').toLowerCase().replace(/\s+/g, '-'); }
@@ -37,6 +46,7 @@ export default function UniformOrdersAdmin() {
   const [err, setErr] = useState('');
   const [filter, setFilter] = useState('open');
   const [busyId, setBusyId] = useState('');
+  const [view, setView] = useState('board'); // board | queue
 
   const load = async () => {
     try {
@@ -45,7 +55,7 @@ export default function UniformOrdersAdmin() {
           .select('id,order_number,parent_order_id,customer_id,sales_order_id,converted_at,team_name,sport,contact_name,contact_email,config,spec,bottom_spec,roster,total_qty,unit_price,total,public_unit_price,discount_percent,discount_total,pricing_breakdown,fulfillment,status,payment_status,production_status,assigned_rep_id,rep_review_notes,proof_version,approved_proof_version,approved_at,locked_at,locked_by,production_started_at,quality_checked_at,carrier,tracking_number,tracking_url,shipped_at,delivered_at,po_number,po_contact,thumb,back_thumb,last_customer_note,created_at,updated_at')
           .order('created_at', { ascending: false }).limit(300),
         supabase.from('team_members').select('id,name,is_active').eq('is_active', true).order('name'),
-        supabase.from('customers').select('id,name,alpha_tag,is_active').eq('is_active', true).order('name'),
+        supabase.from('customers').select('id,name,alpha_tag,primary_rep_id,is_active').eq('is_active', true).order('name'),
       ]);
       if (error) throw error;
       setRows(data || []); setReps(repRows || []); setCustomers(customerRows || []); setErr('');
@@ -59,6 +69,17 @@ export default function UniformOrdersAdmin() {
     if (filter === 'open') return rows.filter((r) => !['delivered', 'cancelled'].includes(r.production_status));
     return rows.filter((r) => r.production_status === filter);
   }, [rows, filter]);
+
+  // Commission attribution mirrors the sales-order rule (businessLogic's
+  // commissionRepId): the account owner earns it. An order becomes
+  // commissionable once it's linked to a customer whose account has a rep;
+  // unlinked orders (or accounts without a rep) are house orders.
+  const customerOf = (row) => customers.find((c) => c.id === row.customer_id) || null;
+  const commissionRepOf = (row) => {
+    const customer = customerOf(row);
+    if (!customer || !customer.primary_rep_id) return null;
+    return reps.find((r) => r.id === customer.primary_rep_id) || { id: customer.primary_rep_id, name: customer.primary_rep_id };
+  };
 
   const staffApi = async (row, action, values = {}) => {
     setBusyId(row.id); setErr('');
@@ -131,21 +152,76 @@ export default function UniformOrdersAdmin() {
   return (
     <div className="card">
       <div className="card-body" style={{ padding: 20 }}>
-        <h3 style={{ margin: '0 0 4px', color: '#1e293b' }}>Uniform Orders</h3>
-        <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Review every order, publish versioned proofs, record approval, lock production, and send tracking from one queue.</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <h3 style={{ margin: '0 0 4px', color: '#1e293b' }}>Uniform Orders</h3>
+            <div style={{ fontSize: 13, color: '#64748b', marginBottom: 16 }}>Review every order, publish versioned proofs, record approval, lock production, and send tracking from one queue.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button className={`btn btn-xs ${view === 'board' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('board')}>Board</button>
+            <button className={`btn btn-xs ${view === 'queue' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setView('queue')}>Queue</button>
+          </div>
+        </div>
         {err && <div style={{ padding: '10px 12px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 13, marginBottom: 14 }}>{err}</div>}
 
-        <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
-          {['open', 'all', ...PRODUCTION].map((value) => <button key={value} className={`btn btn-xs ${filter === value ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(value)}>{value === 'open' ? 'Open' : value === 'all' ? 'All' : LABEL[value]}</button>)}
-        </div>
+        {view === 'board' && (rows === null ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : (
+          <div style={{ display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 8, alignItems: 'flex-start' }}>
+            {BOARD_LANES.map(([lane, statuses]) => {
+              const laneRows = (rows || []).filter((r) => statuses.includes(r.production_status));
+              return (
+                <div key={lane} style={{ minWidth: 250, width: 250, flexShrink: 0, background: '#f1f5f9', borderRadius: 9, padding: 10 }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 9, padding: '0 3px' }}>
+                    <strong style={{ fontSize: 12, textTransform: 'uppercase', letterSpacing: .4, color: '#334155' }}>{lane}</strong>
+                    <span style={{ fontSize: 11, fontWeight: 800, color: '#64748b', background: '#e2e8f0', borderRadius: 10, padding: '2px 8px' }}>{laneRows.length}</span>
+                  </div>
+                  {laneRows.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8', padding: '10px 3px' }}>Nothing here.</div>}
+                  {laneRows.map((row) => {
+                    const customer = customerOf(row);
+                    const commRep = commissionRepOf(row);
+                    const assigned = reps.find((r) => r.id === row.assigned_rep_id);
+                    const ageDays = Math.floor((Date.now() - new Date(row.updated_at || row.created_at).getTime()) / 86400000);
+                    return (
+                      <button key={row.id} onClick={() => { setView('queue'); setFilter('all'); toggle(row); }} style={{ width: '100%', textAlign: 'left', border: '1px solid #dbe1ea', borderRadius: 8, background: '#fff', padding: 10, marginBottom: 8, cursor: 'pointer', display: 'block' }}>
+                        <div style={{ display: 'flex', gap: 9, alignItems: 'flex-start' }}>
+                          <div style={{ width: 40, height: 40, flexShrink: 0, borderRadius: 5, border: '1px solid #e2e8f0', overflow: 'hidden', background: '#f8fafc', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{row.thumb ? <img src={row.thumb} alt="" style={{ width: '100%', height: '100%', objectFit: 'contain' }} /> : <span style={{ fontSize: 16 }}>🎽</span>}</div>
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 800, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.order_number || 'Pending'} · {row.team_name}</div>
+                            <div style={{ fontSize: 11, color: '#64748b', marginTop: 1 }}>{row.total_qty} pcs · {money(row.total)} · {FULFILL_LABEL[row.fulfillment] || row.fulfillment}</div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 7 }}>
+                          <span style={pill(row.production_status)}>{LABEL[row.production_status] || row.production_status}</span>
+                          <span style={{ ...pill(row.payment_status), color: row.payment_status === 'paid' ? '#15803d' : '#92400e', background: row.payment_status === 'paid' ? '#dcfce7' : '#fef3c7' }}>{LABEL[row.payment_status] || row.payment_status}</span>
+                          {row.locked_at && <span style={{ ...pill('approved'), color: '#334155', background: '#e2e8f0' }}>🔒</span>}
+                        </div>
+                        <div style={{ fontSize: 10.5, color: '#64748b', marginTop: 6, lineHeight: 1.5 }}>
+                          {customer ? <div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>🏷 {customer.name}</div> : <div style={{ color: '#94a3b8' }}>No customer account linked</div>}
+                          {commRep ? <div title="Commissionable — account owner earns it once invoiced and paid">💰 Commission: {commRep.name}</div> : <div style={{ color: '#94a3b8' }}>House order (no account rep)</div>}
+                          {assigned && <div>👤 Working rep: {assigned.name}</div>}
+                          {row.sales_order_id && <div>📄 {row.sales_order_id}</div>}
+                          <div style={{ color: '#94a3b8' }}>Proof v{row.proof_version || 0} · {ageDays === 0 ? 'today' : `${ageDays}d in stage`}</div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+          </div>
+        ))}
 
-        {rows === null ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : filtered.length === 0 ? <div style={{ color: '#64748b', fontSize: 13 }}>No orders in this view.</div> : (
+        {view === 'queue' && <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+          {['open', 'all', ...PRODUCTION].map((value) => <button key={value} className={`btn btn-xs ${filter === value ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setFilter(value)}>{value === 'open' ? 'Open' : value === 'all' ? 'All' : LABEL[value]}</button>)}
+        </div>}
+
+        {view === 'queue' && (rows === null ? <div style={{ color: '#64748b', fontSize: 13 }}>Loading…</div> : filtered.length === 0 ? <div style={{ color: '#64748b', fontSize: 13 }}>No orders in this view.</div> : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {filtered.map((row) => {
               const open = expandedId === row.id;
               const d = drafts[row.id] || {};
               const detail = details[row.id] || { proofs: [], events: [] };
               const working = busyId === row.id;
+              const commRep = commissionRepOf(row);
               return (
                 <div key={row.id} style={{ border: '1px solid #dbe1ea', borderRadius: 9, background: '#fff', overflow: 'hidden' }}>
                   <button onClick={() => toggle(row)} style={{ width: '100%', border: 0, background: '#fff', padding: 14, display: 'flex', gap: 14, alignItems: 'flex-start', textAlign: 'left', cursor: 'pointer' }}>
@@ -157,6 +233,8 @@ export default function UniformOrdersAdmin() {
                         <span style={{ ...pill(row.payment_status), color: row.payment_status === 'paid' ? '#15803d' : '#92400e', background: row.payment_status === 'paid' ? '#dcfce7' : '#fef3c7' }}>{LABEL[row.payment_status] || row.payment_status}</span>
                         {row.locked_at && <span style={{ ...pill('approved'), color: '#334155', background: '#e2e8f0' }}>🔒 Locked</span>}
                         {row.parent_order_id && <span style={{ ...pill('submitted'), color: '#475569', background: '#f1f5f9' }}>Reorder</span>}
+                        {commRep && <span title="Commissionable — the account owner earns it once invoiced and paid" style={{ ...pill('approved'), color: '#166534', background: '#dcfce7' }}>💰 {commRep.name}</span>}
+                        {row.sales_order_id && <span style={{ ...pill('submitted'), color: '#1d4ed8', background: '#dbeafe' }}>{row.sales_order_id}</span>}
                       </div>
                       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 4 }}>{row.contact_name} · {row.contact_email} · {FULFILL_LABEL[row.fulfillment] || row.fulfillment}</div>
                       <div style={{ fontSize: 12, color: '#334155' }}>{row.total_qty} jerseys · {money(row.total)}{row.po_number ? ` · PO ${row.po_number}` : ''} · Proof v{row.proof_version || 0}</div>
@@ -248,7 +326,7 @@ export default function UniformOrdersAdmin() {
               );
             })}
           </div>
-        )}
+        ))}
       </div>
     </div>
   );
