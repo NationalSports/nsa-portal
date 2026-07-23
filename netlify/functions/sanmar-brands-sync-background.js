@@ -83,6 +83,12 @@ function canonicalBrand(name) {
 
 const num = (v) => { const n = parseFloat(v); return Number.isFinite(n) ? n : 0; };
 const arr = (v) => (Array.isArray(v) ? v : v != null ? [v] : []);
+// Inventory ↔ product-color join key. SanMar returns two-tone colors with inconsistent
+// spacing between the getInventoryLevels feed ("True Royal/ White") and the product feed
+// ("True Royal/White"), so a plain lowercase compare missed EVERY slash color and wrote 0
+// stock (e.g. Sport-Tek Tricot Track Jacket read out of stock with hundreds on hand). Strip
+// all whitespace from the color and upcase the size so the two sides line up.
+const invKey = (color, size) => String(color || '').toLowerCase().replace(/\s+/g, '') + '|' + String(size || '').trim().toUpperCase();
 
 exports.handler = async (event) => {
   const site  = (process.env.URL || '').replace(/\/+$/, '');
@@ -243,13 +249,13 @@ exports.handler = async (event) => {
             inv?.inventory || inv?.items
           );
           variations.forEach((v) => {
-            const color = String(v?.attributeColor || v?.color || '').toLowerCase();
-            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA').trim();
+            const color = String(v?.attributeColor || v?.color || '');
+            const size  = String(v?.attributeSize || v?.size || v?.labelSize || 'OSFA');
             let qty = 0;
             const parts = arr(v?.partInventoryArray?.partInventory || v?.PartInventoryArray?.PartInventory);
             parts.forEach((p) => { qty += num(p?.quantityAvailable?.Quantity || p?.quantityAvailable?.quantity || p?.quantityAvailable); });
             if (qty <= 0) qty = num(v?.quantityAvailable || v?.totalQty || v?.qty);
-            if (qty > 0) stockByCS[color + '|' + size] = (stockByCS[color + '|' + size] || 0) + qty;
+            if (qty > 0) { const k = invKey(color, size); stockByCS[k] = (stockByCS[k] || 0) + qty; }
           });
         } catch (e) { console.warn('[sanmar-brands-sync] inventory', style, e.message); }
 
@@ -299,7 +305,7 @@ exports.handler = async (event) => {
             inventory_source: 'sanmar',
           });
           for (const size of sizes) {
-            const key = String(grp.colorName).toLowerCase() + '|' + size;
+            const key = invKey(grp.colorName, size);
             invUpserts.push({
               id: sku + '-' + size, sku, size, stock_qty: stockByCS[key] || 0,
               last_synced: new Date().toISOString(), source: 'sanmar',
