@@ -7651,7 +7651,11 @@ export default function App(){
       const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
       const NAVY='#1e3a8a',NAVY2='#1e40af',RED='#dc2626',SLATE='#475569';
       const _saleDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return null;let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))};
-      const _invDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}const dt=new Date(d);return isNaN(dt)?null:dt};
+      const _invDate=(d)=>{if(!d)return null;const m=String(d).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(m){let y=parseInt(m[3]);if(y<100)y+=2000;return new Date(y,parseInt(m[1])-1,parseInt(m[2]))}
+        // Parse bare ISO dates as LOCAL midnight — new Date('YYYY-MM-DD') is UTC midnight, which
+        // lands invoices dated the 1st in the previous local month west of Greenwich.
+        const iso=String(d).match(/^(\d{4})-(\d{2})-(\d{2})$/);if(iso)return new Date(+iso[1],+iso[2]-1,+iso[3]);
+        const dt=new Date(d);return isNaN(dt)?null:dt};
       const now=new Date(),cY=now.getFullYear(),cM=now.getMonth();
       const PERIODS=[['this_month','This Month',new Date(cY,cM,1),new Date(cY,cM+1,1)],['last_month','Last Month',new Date(cY,cM-1,1),new Date(cY,cM,1)],['last_3','Last 3 Months',new Date(cY,cM-2,1),new Date(cY,cM+1,1)],['ytd','Year to Date',new Date(cY,0,1),new Date(cY,cM+1,1)],['last_12','Last 12 Months',new Date(cY,cM-11,1),new Date(cY,cM+1,1)]];
       const per=PERIODS.find(p=>p[0]===dashSalesPeriod)||PERIODS[0];const pStart=per[2],pEnd=per[3];
@@ -7721,7 +7725,13 @@ export default function App(){
       }else if(report==='sales_vs_billed'){
         const byRep=new Map();
         periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),sales:0,billed:0,orders:0};seg.sales+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
-        invs.forEach(inv=>{if(inv.status==='void')return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;const linkedSO=sos.find(s=>s.id===inv.so_id);const repId=linkedSO?repOf(linkedSO):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id);if(!repId)return;const seg=byRep.get(repId)||{label:repName(repId),sales:0,billed:0,orders:0};seg.billed+=Number(inv.total)||0;byRep.set(repId,seg)});
+        // Billed = portal invoices + NetSuite history (customer_invoices) — either alone is a
+        // partial view since invoicing split across the two systems in May 2026. Dedupe on
+        // document number: the hist row wins when a portal invoice was round-tripped to NetSuite.
+        const _histIds=new Set((histInvs||[]).map(h=>h.id));
+        const _addBilled=(repId,amt)=>{if(!repId)return;const seg=byRep.get(repId)||{label:repName(repId),sales:0,billed:0,orders:0};seg.billed+=amt;byRep.set(repId,seg)};
+        invs.forEach(inv=>{if(inv.status==='void'||inv.deleted_at||_histIds.has(inv.id))return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;const linkedSO=sos.find(s=>s.id===inv.so_id);const repId=linkedSO?repOf(linkedSO):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id);_addBilled(repId,Number(inv.total)||0)});
+        (histInvs||[]).forEach(hi=>{if(hi.status==='void')return;const dt=_invDate(hi.date);if(!dt||dt<pStart||dt>=pEnd)return;const repId=cust.find(x=>x.id===hi.customer_id)?.primary_rep_id;_addBilled(repId,Number(hi.total)||0)});
         const rows=[...byRep.values()].filter(s=>s.sales>0||s.billed>0).sort((a,b)=>b.sales-a.sales);
         const tSales=rows.reduce((a,s)=>a+s.sales,0),tBilled=rows.reduce((a,s)=>a+s.billed,0);
         const maxVal=Math.max(...rows.map(r=>Math.max(r.sales,r.billed)),1);
@@ -12918,7 +12928,14 @@ export default function App(){
     let _ytdThis=0,_ytdLast=0,_mtdThis=0,_mtdLast=0,_lastMonthFull=0,_lastMonthLast=0,_last90=0,_last90Ly=0;
     const _pmo=_cmo===0?11:_cmo-1,_pmoYear=_cmo===0?_ly:_cy;
     const _t0=new Date(_cy,_cmo,_cday),_t0Ly=new Date(_ly,_cmo,_cday),_lo90=new Date(_cy,_cmo,_cday-90),_lo90Ly=new Date(_ly,_cmo,_cday-90);
-    (histInvs||[]).forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const m=String(hi.date).match(/^(\d{4})-(\d{2})-(\d{2})/);if(!m)return;const y=+m[1],mo=+m[2]-1,d=+m[3];const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
+    // Billed = NetSuite history + portal-created invoices. Invoicing moved into the portal in
+    // May 2026, so the NetSuite import alone undercounts reps who bill here (portal invoices
+    // never flow back into customer_invoices). Dedupe on document number — a hist row that
+    // mirrors a portal invoice wins, so a future NetSuite round-trip can't double-count.
+    const _histDocIds=new Set((histInvs||[]).map(hi=>hi.id));
+    const _billedRows=[...(histInvs||[]).filter(hi=>hi&&hi.status!=='void'),
+      ...(invs||[]).filter(iv=>iv&&iv.status!=='void'&&!iv.deleted_at&&!_histDocIds.has(iv.id))];
+    _billedRows.forEach(hi=>{if(!hi.date||!_matchRep(hi))return;const s=String(hi.date);let y,mo,d;let m=s.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m){y=+m[1];mo=+m[2]-1;d=+m[3]}else{m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);if(!m)return;y=+m[3];if(y<100)y+=2000;mo=+m[1]-1;d=+m[2]}const t=safeNum(hi.total);const isYtd=mo<_cmo||(mo===_cmo&&d<=_cday);const isMtd=mo===_cmo&&d<=_cday;if(y===_cy){_mThis[mo]+=t;if(isYtd)_ytdThis+=t;if(isMtd)_mtdThis+=t}else if(y===_ly){_mLast[mo]+=t;if(isYtd)_ytdLast+=t;if(isMtd)_mtdLast+=t}if(y===_pmoYear&&mo===_pmo)_lastMonthFull+=t;if(y===_pmoYear-1&&mo===_pmo)_lastMonthLast+=t;const idt=new Date(y,mo,d);if(idt>_lo90&&idt<=_t0)_last90+=t;else if(idt>_lo90Ly&&idt<=_t0Ly)_last90Ly+=t});
     const _pctChg=(c,p)=>p>0?Math.round((c-p)/p*100):(c>0?100:0);
     const _ytdDelta=_pctChg(_ytdThis,_ytdLast);
     const _daysInMonth=new Date(_cy,_cmo+1,0).getDate();
