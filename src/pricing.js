@@ -94,6 +94,10 @@ const _tables=()=>({SP,EM,NP,DTF,TWA,TWN});
 export function spP(q,c,s=true){return DECO.spP(_tables(),q,c,s)}
 // Under-12 screen print is an ALL-IN flat charge — see decoPricing.spFlatShare (EST-1308).
 export function spFlatShare(q,c,u=1){return DECO.spFlatShare(_tables(),q,c,u)}
+// Split-job screen print: price each production run's qty at its own tier and blend — see
+// decoPricing.spRunBlend/decoSplitRuns (jobs split with priced_separately).
+export function spRunBlend(runs,c,u=1){return DECO.spRunBlend(_tables(),runs,c,u)}
+export const decoSplitRuns=DECO.decoSplitRuns;
 // EM.pr stores cost; sell = max(rT(cost × EM.mk), EM.fl) so embroidery never sells below the EM.fl floor.
 export function emP(st,q,s=true){return DECO.emP(_tables(),st,q,s)}
 export function npP(q,tw=false,s=true){return DECO.npP(_tables(),q,tw,s)}

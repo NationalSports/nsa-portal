@@ -92,6 +92,37 @@ function twnP(T,size,tw=false,s=true){const TWN=T.TWN||[];const r=TWN.find(x=>x.
 // Per-design quantity for a split-art decoration (one of two+ logos sharing a line's sizes);
 // null when the deco isn't part of a split. Used so each design prices & bills at its own qty.
 const decoSplitQty=(d)=>(d&&d.split_group&&d.split_sizes)?Object.values(d.split_sizes).reduce((a,v)=>a+safeNum(v),0):null;
+// ── Split-JOB screen-print pricing (production job split → separate runs) ──
+// When a production job is split (so_jobs.priced_separately), each half is a separate press
+// run: setups aren't shared, so the design must price each run's qty at its own tier (a 1-pc
+// run pays the bracket-0 flat charge; a 24-pc run pays the 24-tier rate) instead of the
+// combined qty. Prices every run independently, sums, and returns the totals as UNROUNDED
+// per-piece shares (same convention as spFlatShare) so every caller's `eq × value` rebuilds
+// the exact summed total — i.e. the blended average per piece across all runs. Cost is the
+// tier cost per run; sell is that cost marked up (bracket-0 flat sell is already the marked-up
+// flat). Returns null when runs don't describe 2+ priced pieces.
+function spRunBlend(T,runs,c,u=1){
+  const SP=T.SP;let Q=0,sT=0,cT=0;
+  for(const r0 of runs||[]){const r=safeNum(r0);if(!(r>0))continue;Q+=r;
+    const f=spFlatShare(T,r,c,u);
+    if(f){sT+=f.sell*r;cT+=f.cost*r;continue}
+    const cc=rQ(spP(T,r,c,false)*u);sT+=rT(cc*SP.mk)*r;cT+=cc*r}
+  if(!(Q>0)||(runs||[]).filter(r=>safeNum(r)>0).length<2)return null;
+  return{sell:sT/Q,cost:cT/Q}}
+// Valid, reconciled run list for a decoration, or null. d.split_runs is stamped from the SO's
+// production jobs when a job is split with separate pricing; it's only trusted when the runs
+// still sum to the design's LIVE combined qty (pq — the artQty the caller just computed, or
+// pq/revMult for callers that pre-doubled reversible qty). A stale breakdown (line sizes edited
+// after the split) must fall back to combined-tier pricing, never bill a phantom partition.
+function decoSplitRuns(d,pq){
+  if(!d||!Array.isArray(d.split_runs))return null;
+  const runs=d.split_runs.map(safeNum).filter(r=>r>0);
+  if(runs.length<2)return null;
+  const tot=runs.reduce((a,b)=>a+b,0);
+  const rm=d.reversible?2:1;
+  if(tot*rm===pq)return runs.map(r=>r*rm);
+  if(tot===pq)return runs; // caller convention without the reversible ×2
+  return null}
 function dP(T,d,q,artFiles,cq){
   // Split-art designs bill at their own per-size allocation. cq (the combined tier qty) is
   // already summed per design by the artQty builders, so price the design at its share, then
@@ -114,13 +145,13 @@ function _dPInner(T,d,q,artFiles,cq){
   const pq=cq!=null?cq:q*_revMult;
   if(d.kind==='art'&&d.art_file_id&&artFiles){
     if(d.art_file_id==='__tbd'){const tType=d.art_tbd_type||'screen_print';
-      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+      if(tType==='screen_print'){const nc=d.tbd_colors||1;const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(T,_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
       if(tType==='embroidery'){const c=emP(T,d.tbd_stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
       if(tType==='heat_press'||tType==='dtf'){const t=DTF[d.tbd_dtf_size||0];return{sell:d.sell_override!=null?d.sell_override:t.sell,cost:t.cost}};
       return{sell:d.sell_override||0,cost:0}}
     const art=artFiles.find(a=>a.id===d.art_file_id);if(art){
     const _cwInkCount=(()=>{if(d.color_way_id&&art.color_ways){const cw=art.color_ways.find(c=>c.id===d.color_way_id);if(cw)return cw.inks.length}return null})();
-    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
+    if(art.deco_type==='screen_print'){const nc=_cwInkCount||(art.ink_colors?art.ink_colors.split('\n').filter(l=>l.trim()).length:1);const u=d.underbase?1+SP.ub:1;const _sr=decoSplitRuns(d,pq);if(_sr){const b=spRunBlend(T,_sr,nc,u);if(b)return{sell:d.sell_override!=null?d.sell_override:b.sell,cost:b.cost}}const f=spFlatShare(T,pq,nc,u);if(f)return{sell:d.sell_override!=null?d.sell_override:f.sell,cost:f.cost};const c=rQ(spP(T,pq,nc,false)*u);return{sell:d.sell_override!=null?d.sell_override:rT(c*SP.mk),cost:c}}
     if(art.deco_type==='embroidery'){const c=emP(T,art.stitches||8000,pq,false);return{sell:d.sell_override!=null?d.sell_override:Math.max(rT(c*EM.mk),EM.fl||0),cost:c}}
     // Heat-transfer designs (transfer_code decos, batched club/team stores) carry their
     // real cost-of-record on cost_each (webstore_transfers.unit_cost, 00204) — prefer it
@@ -153,4 +184,4 @@ function _dPInner(T,d,q,artFiles,cq){
   if(d.kind==='outside_deco')return{sell:d.sell_override!=null?d.sell_override:safeNum(d.sell_each),cost:safeNum(d.cost_each)};
   return{sell:0,cost:0}}
 
-module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, emP, npP, twaP, twnP, decoSplitQty, dP };
+module.exports = { rQ, rT, auTierDisc, isAdidasPriced, isAU, auCostMult, SP, EM, NP, DTF, TWA, TWN, DEFAULTS, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, decoSplitQty, dP };
