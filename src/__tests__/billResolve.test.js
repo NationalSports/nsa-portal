@@ -575,6 +575,47 @@ describe('bulk rollup — bought in bulk, billed by size (the KJ3429/CUSTOM clea
   });
 });
 
+describe('bulk rollup must respect the ACCOUNT (the OLuSOCG↔FPUTN cross-customer case, 2026-07-23)', () => {
+  // Real case: an S&S bill tagged "PO 3283 OLuSOCG" (Orange Lutheran) was bulk-rolled onto
+  // Fresno Pacific's "PO 3283 FPUTN" single open line purely because the bare number 3283
+  // matched — a wrong-customer proposal. The bulk rollup now refuses a bare-number collision
+  // with a different account (alpha_tags), so a different-customer order is never proposed.
+  const ssBill = {
+    po_number: 'PO 3283 OLuSOCG',
+    vendor: 'S&S Activewear',
+    items: [
+      { sku: 'B027F8504', size: 'M', color: 'Black/ White', qty: 1, unit_price: 15, desc: "Men's Pregame T-Shirt" },
+      { sku: 'B027F8505', size: 'L', color: 'Black/ White', qty: 10, unit_price: 15, desc: "Men's Pregame T-Shirt" },
+    ],
+  };
+  const fresnoCand = {
+    kind: 'so', id: 'SO-1096', label: 'SO-1096', raw: { id: 'SO-1096' }, alpha_tags: ['FPUTN'],
+    items: [
+      { sku: 'KC0865', name: 'Adidas Tiro W Woven Top', color: 'Navy/ White', size: 'BULK', qty: 18, unit_cost: 28.13, so_id: 'SO-1096', item_id: 'k1', po_id: 'PO 3283 FPUTN' },
+    ],
+  };
+  test('a different customer sharing only the bare PO number is NOT proposed (no cross-account bulk)', () => {
+    const props = proposeResolutions(ssBill, [fresnoCand], { canonSize: canon });
+    expect(props.find((p) => p.target.id === 'SO-1096')).toBeUndefined();
+  });
+  test('the SAME-account order still bulk-rolls — even when the vendor mangled the tag (poAnchored false)', () => {
+    // Orange Lutheran order: alpha_tag matches the bill, but its po_id tag is typo'd (missing G),
+    // so poAnchored is false — the account-gated bulk path (not the exact-PO override) must fire.
+    const orangeCand = {
+      kind: 'so', id: 'SO-1251', label: 'SO-1251', raw: { id: 'SO-1251' }, alpha_tags: ['OLUSOCG'],
+      items: [
+        { sku: 'JX4452', name: 'Adidas Unisex Pregame Tee', color: 'Black/ White', size: 'BULK', qty: 11, unit_cost: 11.25, so_id: 'SO-1251', item_id: 'j1', po_id: 'PO 3283 OLUSOC' },
+      ],
+    };
+    const p = proposeResolutions(ssBill, [orangeCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.target.id).toBe('SO-1251');
+    expect(p.poAnchored).toBe(false);
+    expect(p.ties.length).toBe(2);
+    expect(p.ties.every((t) => t.basis === 'bulk')).toBe(true);
+  });
+});
+
 describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only lines open)', () => {
   const po = 'PO 5150 KCHS';
   const mkBill = (items) => ({ po_number: po, items });
@@ -1252,5 +1293,108 @@ describe('account/vendor/description gating of weak proposals', () => {
     // SCFREP startsWith SCF → same account, so the account gate must NOT drop it
     expect(props.length).toBeGreaterThan(0);
     expect(props[0].accountMismatch).toBeFalsy();
+  });
+});
+
+// ── Credit-memo reversal (owner 2026-07-23: RA 74599650 — burgundy A430s returned off
+// invoice 100785124, greys re-shipped on 100898884) ──
+describe('proposeCreditReversal — tie a credit to the BILLED goods it reverses', () => {
+  const { proposeCreditReversal, creditOriginalDoc } = require('../billResolve');
+  const targets = [
+    { sku: 'A430', size: 'L',   billed: 2, unit_cost: 20.13, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 40.26, date: '07/17/2026' }] },
+    { sku: 'A430', size: 'XL',  billed: 7, unit_cost: 20.13, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 140.91, date: '07/17/2026' }] },
+    { sku: 'A430', size: '2XL', billed: 2, unit_cost: 22.49, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 44.98, date: '07/17/2026' }] },
+    { sku: 'A430', size: '3XL', billed: 1, unit_cost: 22.49, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 22.49, date: '07/17/2026' }] },
+    { sku: '41800', size: 'M',  billed: 28, unit_cost: 8.14, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 227.92, date: '07/17/2026' }] },
+  ];
+  const raCredit = {
+    is_credit: true, po_number: 'PO 17802 OVHF', doc_number: '74599650', merchandise_total: -248.64,
+    rawText: 'Return Order Confirmation RA Confirmation: 74599650 ... C1: 100785124 C2: Do Not Need',
+    items: [ // RA prints negative pieces — abs() is used
+      { sku: 'A430', size: 'XL',  qty: -7, unit_price: 20.13, extension: -140.91 },
+      { sku: 'A430', size: '3XL', qty: -1, unit_price: 22.49, extension: -22.49 },
+      { sku: 'A430', size: 'L',   qty: -2, unit_price: 20.13, extension: -40.26 },
+      { sku: 'A430', size: '2XL', qty: -2, unit_price: 22.49, extension: -44.98 },
+    ],
+  };
+  test('the real RA: every line ties to its billed bucket, anchored to the original invoice', () => {
+    const plan = proposeCreditReversal(raCredit, targets, {});
+    expect(plan.ok).toBe(true);
+    expect(plan.ties).toHaveLength(4);
+    expect(plan.totalUnits).toBe(12);
+    expect(plan.originalDoc).toBe('100785124');
+    expect(plan.originalDocKnown).toBe(true);
+    // XL line reverses 7 from the XL bucket
+    const xl = plan.ties.find(t => t.bill_idx === 0);
+    expect(targets[xl.target_idx].size).toBe('XL');
+    expect(xl.qty).toBe(7);
+  });
+  test('clamps to what was billed and says so', () => {
+    const over = { ...raCredit, items: [{ sku: 'A430', size: 'L', qty: -5, unit_price: 20.13, extension: -100.65 }] };
+    const plan = proposeCreditReversal(over, targets, {});
+    expect(plan.ties[0].qty).toBe(2); // only 2 billed
+    expect(plan.reasons.join(' ')).toMatch(/clamped/);
+  });
+  test('never guesses: an unknown SKU stays unresolved and the plan is not ok', () => {
+    const stray = { ...raCredit, items: [{ sku: 'ZZZ999', size: 'L', qty: -2, unit_price: 20.13, extension: -40.26 }] };
+    const plan = proposeCreditReversal(stray, targets, {});
+    expect(plan.ok).toBe(false);
+    expect(plan.unresolved).toHaveLength(1);
+  });
+  test('vendor letter-suffix SKUs still tie (5162436D reverses billed 5162436)', () => {
+    const t2 = [{ sku: '5162436', size: 'L', billed: 3, unit_cost: 7.5, docs: [{ doc: 'X1', cost: 22.5 }] }];
+    const c2 = { is_credit: true, rawText: '', items: [{ sku: '5162436D', size: 'L', qty: -3, unit_price: 7.5, extension: -22.5 }] };
+    const plan = proposeCreditReversal(c2, t2, {});
+    expect(plan.ok).toBe(true);
+    expect(plan.ties[0].qty).toBe(3);
+  });
+  test('warns when the referenced original invoice is not among the billed docs', () => {
+    const other = { ...raCredit, rawText: 'C1: 999999999' };
+    const plan = proposeCreditReversal(other, targets, {});
+    expect(plan.originalDocKnown).toBe(false);
+    expect(plan.reasons.join(' ')).toMatch(/not among the docs/);
+  });
+  test('creditOriginalDoc reads the common formats', () => {
+    expect(creditOriginalDoc('blah C1: 100785124 blah')).toBe('100785124');
+    expect(creditOriginalDoc('Original Invoice: 100785124')).toBe('100785124');
+    expect(creditOriginalDoc('ORIG INV 100785124')).toBe('100785124');
+    expect(creditOriginalDoc('no reference here')).toBe('');
+  });
+});
+
+// ── creditAutoApplySafe — only OBVIOUS credits auto-apply (owner 2026-07-23) ──
+describe('creditAutoApplySafe — stricter than invoice auto-push', () => {
+  const { proposeCreditReversal, creditAutoApplySafe } = require('../billResolve');
+  const targets = [
+    { sku: 'A430', size: 'L',  billed: 2, unit_cost: 20.13, docs: [{ doc: '100785124', cost: 40.26 }] },
+    { sku: 'A430', size: 'XL', billed: 7, unit_cost: 20.13, docs: [{ doc: '100785124', cost: 140.91 }] },
+  ];
+  const base = { is_credit: true, rawText: 'C1: 100785124', items: [
+    { sku: 'A430', size: 'L',  qty: -2, unit_price: 20.13, extension: -40.26 },
+    { sku: 'A430', size: 'XL', qty: -7, unit_price: 20.13, extension: -140.91 },
+  ] };
+  test('fully tied + anchored to the named original invoice + nothing clamped → safe', () => {
+    const plan = proposeCreditReversal(base, targets, {});
+    expect(plan.ok).toBe(true);
+    expect(creditAutoApplySafe(plan)).toBe(true);
+  });
+  test('no original-invoice reference → NOT safe (waits for the human)', () => {
+    const plan = proposeCreditReversal({ ...base, rawText: '' }, targets, {});
+    expect(plan.ok).toBe(true); // still manually applicable
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('references a doc that did not bill these lines → NOT safe', () => {
+    const plan = proposeCreditReversal({ ...base, rawText: 'C1: 999999999' }, targets, {});
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('clamped quantities → NOT safe', () => {
+    const over = { ...base, items: [{ sku: 'A430', size: 'L', qty: -5, unit_price: 20.13, extension: -100.65 }] };
+    const plan = proposeCreditReversal(over, targets, {});
+    expect(plan.ok).toBe(true); // human can still apply the clamped 2
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('any unresolved line → NOT safe', () => {
+    const stray = { ...base, items: [...base.items, { sku: 'ZZZ1', size: 'M', qty: -1, unit_price: 5, extension: -5 }] };
+    expect(creditAutoApplySafe(proposeCreditReversal(stray, targets, {}))).toBe(false);
   });
 });

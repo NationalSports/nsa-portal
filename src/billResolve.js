@@ -39,6 +39,76 @@ export const skuNumBase = (s) => {
   return m ? m[1] : null;
 };
 
+// ── Credit-memo reversal (owner 2026-07-23: the RA 74599650 return/re-ship cycle) ────────
+// A vendor credit reverses goods ALREADY BILLED, so normal matching (open quantities only)
+// can never tie it. These helpers are the mirror image: tie the credit's lines to BILLED
+// buckets, clamped so a reversal can never exceed what was billed, on SKU evidence only —
+// no color/size guessing on a money reversal. The App applies the plan only on an explicit
+// human click (credits never auto-anything).
+
+// The original-invoice reference printed on credit memos/RAs ("C1: 100785124",
+// "Original Invoice: 100785124") — anchors the credit to the exact doc it reverses.
+export const creditOriginalDoc = (text) => {
+  const m = String(text || '').match(/(?:ORIGINAL\s+INVOICE|ORIG\.?\s*INV(?:OICE)?|C1)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
+  return m ? m[1] : '';
+};
+
+// proposeCreditReversal(bill, targets, opts?)
+//   bill:    parsed credit bill (is_credit; line qty/price may print negative — abs is used)
+//   targets: billed buckets [{sku,size,color,billed,unit_cost,po_id,so_id,item_id,docs:[{doc,cost,date}]}]
+// Returns { ties:[{bill_idx,target_idx,qty}], unresolved:[bill_idx], totalUnits, totalCost,
+//           ok, reasons:[], originalDoc, originalDocKnown }
+export const proposeCreditReversal = (bill, targets, opts = {}) => {
+  const canon = opts.canonSize || ((s) => String(s || '').toUpperCase().trim());
+  const items = (bill && bill.items) || [];
+  const tgts = (targets || []).map((t, i) => ({ t, i }));
+  const skuMatches = (a, b) => {
+    const x = _ns(a), y = _ns(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const bx = skuNumBase(x), by = skuNumBase(y);
+    if ((bx && bx === y) || (by && by === x) || (bx && by && bx === by)) return true; // letter-suffix variants
+    return x.length >= 5 && y.length >= 5 && (x.includes(y) || y.includes(x));        // contained variants
+  };
+  const ties = []; const unresolved = []; const reasons = [];
+  const used = {}; // target_idx -> units already reversed by this plan
+  items.forEach((bl, bi) => {
+    const qty = Math.abs(_num(bl.qty));
+    const money = Math.abs(_num(bl.unit_price)) > 0 || Math.abs(_num(bl.extension)) > 0;
+    if (qty <= 0 && !money) return; // memo/noise line — owes nothing
+    const alias = bl._alias_sku;
+    const hits = tgts.filter(({ t }) => (skuMatches(bl.sku, t.sku) || (alias && skuMatches(alias, t.sku))) && (!bl.size || canon(t.size) === canon(bl.size)));
+    if (hits.length !== 1) {
+      unresolved.push(bi);
+      reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': ' + (hits.length ? 'matches more than one billed bucket — pick by hand' : 'no billed bucket matches by SKU+size'));
+      return;
+    }
+    const { t, i } = hits[0];
+    const avail = Math.max(0, _num(t.billed) - (used[i] || 0));
+    if (avail <= 0) { unresolved.push(bi); reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': nothing left billed to reverse'); return; }
+    const take = Math.min(qty || avail, avail);
+    if (qty > avail) reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': credit is for ' + qty + ' but only ' + avail + ' billed — clamped');
+    used[i] = (used[i] || 0) + take;
+    ties.push({ bill_idx: bi, target_idx: i, qty: take });
+  });
+  const totalUnits = ties.reduce((a, t) => a + t.qty, 0);
+  const totalCost = items.reduce((a, bl) => a + Math.abs(_num(bl.extension)), 0) || Math.abs(_num(bill && bill.merchandise_total)) || 0;
+  const originalDoc = creditOriginalDoc((bill && bill.rawText) || '');
+  const allDocs = new Set(); (targets || []).forEach((t) => (t.docs || []).forEach((d) => d && d.doc && allDocs.add(String(d.doc).trim().toLowerCase())));
+  const originalDocKnown = !!(originalDoc && allDocs.has(originalDoc.trim().toLowerCase()));
+  if (originalDoc && !originalDocKnown) reasons.push('The credit references original invoice #' + originalDoc + ', which is not among the docs billed on these lines — confirm the target before applying');
+  const ok = ties.length > 0 && unresolved.length === 0;
+  return { ties, unresolved, totalUnits, totalCost, ok, reasons, originalDoc, originalDocKnown };
+};
+
+// Auto-apply gate for OBVIOUS credits (owner 2026-07-23: "if credits are obvious can they
+// auto apply?"). Stricter than invoice auto-push: every money line tied, the credit NAMES
+// its original invoice and that doc is what actually billed these lines, and nothing was
+// clamped or warned. Anything less waits for the human click. The reversal itself is
+// directionally safe — clamped subtraction of provably-billed quantities, audited, dedup'd.
+export const creditAutoApplySafe = (plan) =>
+  !!(plan && plan.ok && plan.totalUnits > 0 && plan.originalDocKnown && (plan.reasons || []).length === 0);
+
 // Summary+detail cross-check (owner 2026-07-23). Some vendors (Champro et al.) come through
 // Sports Inc as a deterministic SUMMARY page ("SEE VENDOR INVOICE FOR DETAIL") plus a scanned
 // DETAIL page whose lines we read with AI vision. The AI is only trusted when its line items
@@ -214,6 +284,14 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const candVendors = [...new Set(cand.items.map((it) => String(it.vendor || '')).filter(Boolean))];
     const vendorCompat = !billVend || !candVendors.length || candVendors.some((v) => vendorsCompatible(billVend, v));
     if (!vendorCompat && !poAnchored) return;
+    // Account (customer) compatibility, computed up front so the BULK rollup below can't tie a
+    // bill tagged for one school onto a bare-NUMBER PO collision with a DIFFERENT school's order
+    // (owner 2026-07-23: an "PO 3283 OLuSOCG" S&S bill bulk-rolled onto Fresno Pacific's
+    // "PO 3283 FPUTN" purely because the number 3283 matched). alpha_tags are the customers this
+    // candidate serves; loose on the bill side (reps glue RE/REP suffixes on), silent when either
+    // side is unknown, and an exact-PO anchor still overrides. Reused by the account gate below.
+    const candTags = (cand.alpha_tags || []).map(_ns).filter((t) => t.length >= 2);
+    const accountMismatch = !!(billPo.tag && billPo.tag.length >= 2 && candTags.length && !candTags.some((t) => billPo.tag === t || billPo.tag.startsWith(t) || (billPo.tag.length >= 3 && t.startsWith(billPo.tag))));
     const used = new Set(); // an order item-size bucket absorbs ONE bill line per proposal
     const ties = [];
     usable.forEach(({ bl, i }) => {
@@ -231,7 +309,10 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // rolls every sized bill line up onto it; so do we — but ONLY under that single-
     // line anchor, so it can never guess between lines. Quantities accumulate.
     const untied = usable.filter(({ i }) => !ties.some((t) => t.bill_idx === i));
-    if (untied.length && billPo.core) {
+    // …but never roll a bill up onto a bare-number PO collision with a different customer's order
+    // (accountMismatch): "3283 OLuSOCG" must not absorb into Fresno Pacific's "3283 FPUTN". An
+    // exact-PO anchor (same flat PO, hence same tag) still allows it.
+    if (untied.length && billPo.core && (!accountMismatch || poAnchored)) {
       const poBuckets = cand.items.map((it, ti) => ({ it, ti }))
         .filter(({ it }) => { const pp = poParts(it.po_id); return pp.core && pp.core === billPo.core; });
       const lineKeys = [...new Set(poBuckets.map(({ it }) => (it.item_id || _ns(it.sku)) + '|' + (it.po_id || '')))];
@@ -319,8 +400,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // weak-tie a batch serving OLuBB/CIVIF. Loose on the bill side (billTag startsWith the
     // customer tag — reps glue REP/RE suffixes on), silent when either side is unknown,
     // and an exact-PO anchor or strong SKU evidence still overrides.
-    const candTags = (cand.alpha_tags || []).map(_ns).filter((t) => t.length >= 2);
-    const accountMismatch = !!(billPo.tag && billPo.tag.length >= 2 && candTags.length && !candTags.some((t) => billPo.tag === t || billPo.tag.startsWith(t) || (billPo.tag.length >= 3 && t.startsWith(billPo.tag))));
+    // candTags / accountMismatch are hoisted above (they also gate the bulk rollup). An exact-PO
+    // anchor or strong SKU evidence (strongBasesEarly) still overrides the mismatch here.
     if (accountMismatch && !poAnchored && strongBasesEarly === 0) return;
     // DATE SANITY: a bill shipped/issued before the order existed cannot be that order.
     // Only fires when both dates parse; 2-day grace absorbs timezone/entry slop.
