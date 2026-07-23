@@ -10549,7 +10549,27 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const folderModal = folderOpen && <NewArtFolderModal seed={folderSeed} busy={upBusy} onCreate={createArtFolder} onClose={() => { if (!upBusy) { setFolderOpen(false); setFolderSeed(null); } }} />;
 
   const inStore = (id) => (storeArt || []).some((a) => a.id === id);
-  const toggleStoreArt = (a) => { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt(inStore(a.id) ? cur.filter((x) => x.id !== a.id) : [...cur, a]); };
+  // Curate the store's art set. Adding a logo also makes it the ACTIVE one to place, so
+  // "tap a logo" and "place it" are one gesture (no separate activate step the rep can
+  // miss). Removing the active logo hands active off to another logo in the set, so the
+  // panel never strands the rep with styles selected and nothing left to apply.
+  const toggleStoreArt = (a) => {
+    const cur = storeArt || [];
+    if (inStore(a.id)) {
+      const next = cur.filter((x) => x.id !== a.id);
+      onSaveStoreArt && onSaveStoreArt(next);
+      if (activeId === a.id) setActiveId(next[0]?.id || null);
+    } else {
+      onSaveStoreArt && onSaveStoreArt([...cur, a]);
+      setActiveId(a.id);
+    }
+  };
+  // Tap a library logo to place it: pull it into the store set if it isn't there yet, and
+  // make it the active logo. Never removes (removal is the explicit × on the tile).
+  const pickArt = (a) => {
+    if (!inStore(a.id)) { const cur = storeArt || []; onSaveStoreArt && onSaveStoreArt([...cur, a]); }
+    setActiveId(a.id);
+  };
   // The store's art set is a snapshot; web logos / color ways added on the customer's art
   // record AFTER the art joined the store only exist on the live library copy. Render and
   // Autocolor from the hydrated view (reads only — saves still write the raw store set).
@@ -10591,6 +10611,10 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
   const itemById = (id) => allItems.find((it) => it.id === id) || null;
   const selectedGroups = groups.filter((g) => selected.has(g.key));
   const includedItems = selectedGroups.flatMap((g) => g.items);
+  // One label for both Apply buttons that names WHY it's disabled instead of showing a
+  // dead "Apply to N styles" — the two things a rep can be missing are a logo and styles.
+  const applyLabel = applying ? 'Applying…' : !activeArt ? 'Pick a logo first' : !activeUrl ? 'Add a web logo first' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply';
+  const applyReady = !applying && !!activeUrl && !!selectedGroups.length;
   const toggleStyle = (key) => setSelected((s) => { const n = new Set(s); n.has(key) ? n.delete(key) : n.add(key); return n; });
   const selectAll = () => setSelected(new Set(groups.map((g) => g.key)));
   const clearSel = () => setSelected(new Set());
@@ -10921,18 +10945,20 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           ); })}
         </div>}
         {addOpen && <div style={{ marginTop: 10, border: '1px solid #eef2f7', borderRadius: 10, background: '#f8fafc', padding: 10 }}>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 8 }}>Customer's full art library — tap to add/remove from this store ({(storeArt || []).length} selected):</div>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: '#475569', marginBottom: 8 }}>Customer's full art library — tap a logo to place it (it joins this store); the <b style={{ color: '#b91c1c' }}>×</b> removes it. ({(storeArt || []).length} in store):</div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(94px,1fr))', gap: 8, maxHeight: 320, overflowY: 'auto' }}>
-            {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); return (
+            {libraryArt.map((a) => { const u = artThumbUrl(a); const sel2 = inStore(a.id); const on2 = a.id === activeId; return (
               <div key={a.id} style={{ position: 'relative' }}>
-                <button onClick={() => toggleStoreArt(a)} title={a.name} style={{ position: 'relative', width: '100%', border: sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
+                <button onClick={() => pickArt(a)} title={on2 ? `${a.name || 'Logo'} — active; pick styles below to apply it` : `Place ${a.name || 'this logo'} — tap, then pick styles below`} style={{ position: 'relative', width: '100%', border: on2 ? '2px solid #4f46e5' : sel2 ? '2px solid #166534' : '1px solid #e2e8f0', borderRadius: 10, background: '#fff', padding: 6, cursor: 'pointer' }}>
                   <div style={{ height: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', background: u ? logoThumbBg(a, u) : '#f8fafc', borderRadius: 6, overflow: 'hidden', boxShadow: u ? 'inset 0 0 0 1px rgba(0,0,0,.06)' : 'none' }}>
                     {u ? <img src={u} alt="" style={{ maxWidth: '92%', maxHeight: '92%', objectFit: 'contain' }} /> : <span style={{ fontSize: 9.5, color: '#94a3b8', fontWeight: 700, textAlign: 'center', padding: '0 3px' }}>{(a.files || [])[0] ? 'AI — add web logo' : 'Add web logo'}</span>}
                   </div>
                   <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 4, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name || 'Logo'}</div>
                   {decoBadge(a.deco_type) && <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><DecoBadge deco={a.deco_type} /></div>}
-                  {sel2 && <span style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
+                  {on2 && <span style={{ position: 'absolute', top: -6, left: -6, fontSize: 9, fontWeight: 800, color: '#fff', background: '#4f46e5', borderRadius: 6, padding: '1px 5px', lineHeight: 1.4 }}>Active</span>}
+                  {sel2 && !on2 && <span style={{ position: 'absolute', top: -6, left: -6, width: 18, height: 18, borderRadius: '50%', background: '#166534', color: '#fff', fontSize: 11, fontWeight: 800, lineHeight: '18px', textAlign: 'center' }}>✓</span>}
                 </button>
+                {sel2 && <button onClick={(e) => { e.stopPropagation(); toggleStoreArt(a); }} title="Remove from this store" style={{ position: 'absolute', top: -6, right: -6, width: 18, height: 18, borderRadius: '50%', background: '#b91c1c', color: '#fff', fontSize: 12, fontWeight: 800, lineHeight: '18px', textAlign: 'center', border: 'none', cursor: 'pointer', padding: 0 }}>×</button>}
                 <div style={{ display: 'flex', justifyContent: 'center', marginTop: 3 }}><WebLogoSlot art={a} onAttach={onAttachWebLogo} compact /></div>
               </div>
             ); })}
@@ -10953,9 +10979,9 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
       ) : (
         <div className="card"><div style={{ padding: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12, position: 'sticky', top: 0, background: '#fff', zIndex: 4, paddingBottom: 4 }}>
-            <div style={{ fontSize: 13, fontWeight: 800 }}>{activeArt ? <>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</> : <span style={{ color: '#64748b' }}>Applied ✓ — pick the next logo above to place more</span>}</div>
+            <div style={{ fontSize: 13, fontWeight: 800 }}>{activeArt ? <>Place <span style={{ color: '#4f46e5' }}>{activeArt.name || 'logo'}</span> on garments</> : <span style={{ color: '#b45309' }}>Pick a logo above to place it →</span>}</div>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button className="btn btn-sm btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'} →` : 'Select styles to apply'}</button>
+              <button className="btn btn-sm btn-primary" disabled={!applyReady} onClick={() => apply()}>{applyLabel}{applyReady ? ' →' : ''}</button>
               <button onClick={() => setBulkOpen(false)} className="btn btn-sm btn-secondary">✕ Close</button>
             </div>
           </div>
@@ -11073,8 +11099,8 @@ function ArtTab({ catalog, stockByWp, decorationMode = 'in_house', libraryArt, s
           <div style={{ position: 'sticky', bottom: 0, background: '#fff', borderTop: '1px solid #e6e8ec', padding: '12px 4px', marginTop: 12, display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
             {done && <span style={{ fontSize: 12.5, color: done.startsWith('Error') ? '#b91c1c' : '#166534', fontWeight: 700 }}>{done}</span>}
             <span style={{ fontSize: 12.5, color: '#64748b' }}>{selectedGroups.length} style{selectedGroups.length === 1 ? '' : 's'} · {includedItems.length} garment{includedItems.length === 1 ? '' : 's'}{(() => { const b = selectedGroups.filter((g2) => backByStyle[g2.key]).length; return b ? ` · ${b} w/ back` : ''; })()}{activeArt ? ` · ${activeArt.name}` : ''}</span>
-            <button className="btn btn-secondary" disabled={applying || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
-            <button className="btn btn-primary" disabled={applying || !activeUrl || !selectedGroups.length} onClick={() => apply()}>{applying ? 'Applying…' : selectedGroups.length ? `Apply to ${selectedGroups.length} style${selectedGroups.length === 1 ? '' : 's'}` : 'Select styles to apply'}</button>
+            <button className="btn btn-secondary" disabled={applying || !activeArt || !selectedGroups.length} onClick={() => apply({ linkOnly: true })} title="Bypass mockups: link this art to the selected styles for production (art, placement & method) without putting a logo on the image — for OMG stores whose product photos already show the decoration.">{applying ? '…' : `Bypass mocks · link art${selectedGroups.length ? ` to ${selectedGroups.length}` : ''}`}</button>
+            <button className="btn btn-primary" disabled={!applyReady} onClick={() => apply()}>{applyLabel}</button>
           </div>
         </div></div>
       ))}
