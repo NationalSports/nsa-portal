@@ -23396,6 +23396,12 @@ export default function App(){
           if(dueDateIdx>=0){for(let j=li+1;j<Math.min(li+3,lines.length);j++){const val=(lines[j].split(/\t+/)[dueDateIdx]||'').trim();if(/\d{1,2}\/\d{1,2}\/\d{2,4}/.test(val)){bill.due_date=val;break}}}
         }
         if(!bill.ship_date){const m=line.match(/SHIP\s+DATE[:\s]+([\d\/]+)/i);if(m)bill.ship_date=m[1]}
+        // SI DOCUMENT NUMBER — Sports Inc's own stable id for the doc, printed near the
+        // merchandise total ("SI DOCUMENT NUMBER: 24609373"). Capture it (owner 2026-07-23):
+        // the EDI pull keys applied bills on the VENDOR's number but records this SI number too,
+        // so dedup MUST check it — otherwise re-uploading a PDF of an already-billed EDI invoice
+        // (parsed under the SI number) double-bills. This is exactly what happened to PO 3294.
+        if(!bill.si_doc_number){const m=line.match(/SI\s+DOCUMENT\s+NUMBER[:\s#]*([0-9]{5,})/i);if(m)bill.si_doc_number=m[1]}
         // Totals
         {const v=extractTotal(line,/MERCHANDISE\s+TOTAL/i,lines[li+1]);if(v!=null&&!bill.merchandise_total)bill.merchandise_total=v}
         {const v=extractTotal(line,/FREIGHT\s+CHARGE|FREIGHT\s+TOTAL|^FREIGHT\b|SHIPPING\s+(?:CHARGE|TOTAL|COST)|DELIVERY\s+CHARGE/i,lines[li+1]);if(v!=null&&!bill.freight)bill.freight=v}
@@ -23931,7 +23937,13 @@ export default function App(){
         if(sw.count)nf('⚡ '+sw.count+' bill(s) auto-matched — PO exact and every line ties (high confidence). In Matched, ready to push.','success');
       }catch(e){console.warn('auto-match sweep',e)}
       // Append mode (queue → review) adds to whatever is already under review instead of replacing it.
-      setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
+      // lastBatch: a persistent receipt for THIS import (owner 2026-07-23: "i dont see what
+      // happens to non matched … the banner goes away so quickly"). Tracks the ids that came
+      // in now so the Upload tab can show a live, non-vanishing breakdown — auto-pushed vs
+      // ready vs still-needs-review vs skipped — instead of a toast that flashes and is gone.
+      const _batchIds=results.map(r=>r.id);
+      const _lastBatch={at:new Date().toLocaleString(),atMs:Date.now(),verb,label:sourceCount+' '+sourceNoun,count:results.length,ids:_batchIds,skipped:skippedInfo.length,failed:results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length};
+      setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false,lastBatch:_lastBatch}));
       // Auto-clear the "Upload & Match" waiting list (owner: uploaded items should drop off
       // the list, even the API ones). A scanned SI doc sits in the grab bucket until its PDF
       // arrives; now that the PDF is parsed, any waiting row whose supplier invoice # matches
@@ -24108,13 +24120,20 @@ export default function App(){
             // Duplicate doc# already pushed to the Portal (or repeated within this upload): don't bring
             // it in at all. It's already applied, so re-importing only surfaces phantom over-billing.
             const dn=(parsed.doc_number||'').trim().toLowerCase();
+            // SI-number cross-key (owner 2026-07-23, the PO 3294 double-bill): the EDI pull applies
+            // a Sports Inc doc under the VENDOR's number but records its si_doc_number too; the PDF
+            // parser reads the SI number as doc_number. Different keys → the plain doc-dedup missed
+            // it and re-pushed. So ALSO treat the bill as already-applied when its SI number is on
+            // the ledger's 's|' space (same check the SI-pull path already does).
+            const sdn=String(parsed.si_doc_number||'').trim().toLowerCase();
+            const _alreadyApplied=_docAlreadyApplied(parsed.doc_number)||(sdn&&_docAlreadyApplied(sdn,'si'));
             // Already on the Portal (or repeated in this batch). By design the PDF upload is a
             // silent reinforcement of the EDI/auto-pushed bill — normally there's nothing to see,
             // so a duplicate is dropped. The ONE exception worth surfacing: this PDF's total
             // disagrees with what we actually pushed. In that case keep it in review as a
             // read-only flag (it's already applied, so _validateBillForPush blocks any re-push and
             // it can never double-bill) instead of dropping the disagreement silently.
-            if(dn&&(seenDocs.has(dn)||_docAlreadyApplied(parsed.doc_number))){
+            if((dn&&seenDocs.has(dn))||(sdn&&seenDocs.has('si|'+sdn))||_alreadyApplied){
               const appliedTot=seenDocs.has(dn)?null:_appliedDocTotal(parsed.doc_number);
               if(pdfCrossCheckConflict(parsed.doc_total,appliedTot)){
                 const where=_docAppliedWhere(parsed.doc_number);
@@ -24123,11 +24142,11 @@ export default function App(){
                 const clabel=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
                 results.push({id:'BILL-'+Date.now()+'-'+idx,file:clabel,text,parsed,selected:false,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
                 idx++;
-              }else{skippedDups.push(parsed.doc_number)}
-              if(dn)seenDocs.add(dn);
+              }else{skippedDups.push(parsed.doc_number||parsed.si_doc_number)}
+              if(dn)seenDocs.add(dn);if(sdn)seenDocs.add('si|'+sdn);
               continue;
             }
-            if(dn)seenDocs.add(dn);
+            if(dn)seenDocs.add(dn);if(sdn)seenDocs.add('si|'+sdn);
             const label=bills.length>1?file.name+' (Invoice '+(bi+1)+'/'+bills.length+' — Doc #'+parsed.doc_number+')':file.name;
             results.push({id:'BILL-'+Date.now()+'-'+idx,file:label,text,parsed,selected:true,qbStatus:null,uploadedAt:new Date().toLocaleString(),uploadedTs:Date.now()});
             idx++;
@@ -25871,7 +25890,12 @@ export default function App(){
     };
     const _validateBillForPush=(p)=>{
       const errs=[];
-      if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      // Dedup on BOTH keys (owner 2026-07-23): a Sports Inc doc is applied by the EDI pull under
+      // the vendor's number but recorded with its si_doc_number; a PDF re-upload parses it under
+      // the SI number. Check both so the same physical invoice can never be pushed twice — the
+      // backstop that would have stopped the PO 3294 double-bill even if parse-dedup missed it.
+      const _sdn=String(p.si_doc_number||'').trim();
+      if(_docAlreadyApplied(p.doc_number)||(_sdn&&_docAlreadyApplied(_sdn,'si')))errs.push('Already pushed to the Portal (duplicate doc #'+((p.doc_number||_sdn||'').toString().trim())+')');
       // Credits reverse goods; the normal push ADDS. Block the normal path outright — the
       // ↩ Apply-credit panel on the card is the one door for credits (owner 2026-07-23).
       if(p.is_credit)errs.push('Credit memo — use ↩ Apply credit on the card (it un-bills the returned goods); the normal push would ADD what the credit reverses.');
@@ -28978,9 +29002,43 @@ export default function App(){
             {rows.map(r=>Row(r,{actions,showConf,stripe:dot}))}
           </div>;
           const outBtn=(r,label)=>siBtn('out',label||'Outside','#fff',NAVY,()=>markSiStatus(r,'outside_portal','Marked Outside of Portal'),'Mark as billed outside the Portal','1.5px solid '+MGRAY);
+          // PERSISTENT UPLOAD RECEIPT (owner 2026-07-23): after a parse, show a live, non-vanishing
+          // breakdown of where THIS batch's bills went — auto-pushed vs ready vs still-needs-review
+          // vs skipped — computed fresh from billImport.parsed so it tracks the async auto-push/AI
+          // passes. Answers "what happened to the non-matched ones" without a toast that flashes.
+          const lb=billImport.lastBatch;
+          const _receipt=(()=>{
+            if(!lb||!lb.ids?.length)return null;
+            const idset=new Set(lb.ids);
+            const mine=(billImport.parsed||[]).filter(b=>idset.has(b.id));
+            let pushed=0,ready=0,needs=0,failed=0;
+            mine.forEach(b=>{
+              if((b.parsed?.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))){failed++;return}
+              if(b.portalStatus==='success'){pushed++;return}
+              const tr=_billTriage(b);
+              if(tr&&tr.issue)needs++;else ready++;
+            });
+            const jump=(filt)=>{setBillView('import');if(filt)setBillFilter(filt);setTimeout(()=>window.scrollTo({top:0,behavior:'smooth'}),50)};
+            const chip=(n,label,color,onClick,title)=>n>0&&<button key={label} onClick={onClick} title={title} style={{display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:700,padding:'6px 12px',borderRadius:20,border:'1px solid '+color,background:'#fff',color,cursor:onClick?'pointer':'default'}}>{label}: <b style={{fontSize:14}}>{n}</b></button>;
+            return <div style={{marginBottom:16,padding:'12px 16px',background:'#F1F4FA',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,borderRadius:8}}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'baseline',flexWrap:'wrap',gap:8,marginBottom:8}}>
+                <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.4,color:NAVY}}>📋 Last upload: {lb.label} → {lb.count} invoice{lb.count===1?'':'s'} found</span>
+                <span style={{fontSize:11,color:TXTL}}>{lb.at} · <button onClick={()=>setBillImport(x=>({...x,lastBatch:null}))} style={{background:'none',border:'none',color:TXTL,cursor:'pointer',textDecoration:'underline',fontSize:11}}>dismiss</button></span>
+              </div>
+              <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                {chip(pushed,'⚡ Auto-pushed','#047857',null,'Matched cleanly and pushed — see the green banner / Bill History')}
+                {chip(ready,'✓ Matched, ready to push','#166534',()=>jump('ready'),'On the Bills tab — one Push sends them')}
+                {chip(needs,'⚠ Need review','#b45309',()=>jump('attention'),'On the Bills tab · To Review — tie the lines or find the order')}
+                {chip(lb.skipped,'♻ Skipped (already on Portal)','#64748b',null,'Duplicates of bills already applied')}
+                {chip(failed,'📄 Could not read','#b91c1c',null,'PDF had no readable text — re-download or upload the vendor detail page')}
+              </div>
+              {(needs>0||ready>0)&&<div style={{fontSize:11,color:TXTL,marginTop:8}}>The {ready+needs} that didn’t auto-push are on the <b>Bills</b> tab{needs>0?' — '+needs+' need you to tie lines / find the order':''}. Nothing is lost.</div>}
+            </div>;
+          })();
           return <div style={{marginTop:6}}>
             {secHead({dot:'#7c3aed',title:'📄 Upload & Match',count:grab.length||undefined,note:grab.length?money(sumD(grab))+' waiting for a PDF':'AI-heavy intake',mt:false})}
             <div style={{fontSize:12,color:TXTL,margin:'-6px 0 14px',maxWidth:940}}>Scanned Sports Inc docs arrive with <b>no line detail</b> over the API — download each PDF from the SI Invoice Center and drop it below. Parsing is automatic, <b>the waiting row clears itself</b> when its invoice is recognized, and parsed bills land in <b>⚠ To Review / ✓ Matched on the Bills tab</b>, where the ✨ AI matcher takes over if the parse can’t match.</div>
+            {_receipt}
             <div style={{maxWidth:820}}>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
