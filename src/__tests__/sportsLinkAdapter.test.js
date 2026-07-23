@@ -350,6 +350,43 @@ describe('applySiDocumentDiscount (shared EDI + PDF discount rewrite)', () => {
   });
 });
 
+describe('poCoreTagMatch (widen auto-push to sloppy-but-certain POs, owner 2026-07-23)', () => {
+  const { poCoreTagMatch } = require('../sportsLink');
+  it('accepts punctuation, missing prefix, extra tokens — same core + shared tag', () => {
+    expect(poCoreTagMatch('PO.3182.LAF', 'PO 3182 LAF')).toBe(true);   // dots vs spaces
+    expect(poCoreTagMatch('3094 CLHSSP', 'PO 3094 CLHSSP')).toBe(true); // missing PO prefix
+    expect(poCoreTagMatch('3126 GC 3119 SE', 'PO 3126 GC')).toBe(true); // extra tokens, shared tag GC
+    expect(poCoreTagMatch('PO 8002 FPUS', 'PO 8002 FPUS')).toBe(true);  // already exact
+  });
+  it('rejects a different core, a different customer, or a tag-less PO', () => {
+    expect(poCoreTagMatch('PO 3182 LAF', 'PO 3183 LAF')).toBe(false);   // different PO number
+    expect(poCoreTagMatch('PO 3094 CLHSSP', 'PO 3094 OTHER')).toBe(false); // same core, different customer
+    expect(poCoreTagMatch('PO 3323 REP', 'PO 3323 AHSCS')).toBe(false); // REP is a stopword → no shared tag
+    expect(poCoreTagMatch('3323', 'PO 3323 AHSCS')).toBe(false);        // no tag on the bill side
+    expect(poCoreTagMatch('', 'PO 3182 LAF')).toBe(false);
+  });
+});
+
+describe('looksNetsuiteDocRef (auto-route clearly-NetSuite refs to Outside, owner 2026-07-23)', () => {
+  const { looksNetsuiteDocRef } = require('../sportsLink');
+  it('flags SO-refs and long pure-numeric invoice ids', () => {
+    expect(looksNetsuiteDocRef('SO135806')).toBe(true);
+    expect(looksNetsuiteDocRef('SO 1255')).toBe(true);
+    expect(looksNetsuiteDocRef('302682488263')).toBe(true);
+    expect(looksNetsuiteDocRef('185946680')).toBe(true);
+    expect(looksNetsuiteDocRef('05162026')).toBe(true);
+  });
+  it('never flags a portal PO, an NSA order, or a store-name PO', () => {
+    expect(looksNetsuiteDocRef('PO 3182 LAF')).toBe(false);
+    expect(looksNetsuiteDocRef('NSA 19251 CREW')).toBe(false); // real portal NSA order
+    expect(looksNetsuiteDocRef('NSA4553')).toBe(false);         // ambiguous — left in review, not hidden
+    expect(looksNetsuiteDocRef('SILICONVALLEY')).toBe(false);   // store name
+    expect(looksNetsuiteDocRef('3094 CLHSSP')).toBe(false);     // spaced core+tag (portal shape)
+    expect(looksNetsuiteDocRef('8464Q3019JH')).toBe(false);     // has letters
+    expect(looksNetsuiteDocRef('')).toBe(false);
+  });
+});
+
 describe('siExpectedUpcharge (0.8% of pre-discount subtotal, fill-when-missing)', () => {
   test('0.8% of gross, rounded to cents', () => {
     expect(siExpectedUpcharge(100)).toBe(0.8);

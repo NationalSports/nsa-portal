@@ -128,6 +128,35 @@ export const scoreSiPoMatch = (parsedBill, candidate) => {
   return { score, confidence, method, reasons };
 };
 
+// A PO string that is clearly a NetSuite/manual reference, not a portal order (owner
+// 2026-07-23). Verified against live data: SO-prefixed refs and long pure-numeric ids have
+// ZERO portal-PO collisions, so a no-match bill carrying one belongs in the Outside/NetSuite
+// pile, not the active review queue. Deliberately NARROW — NSA-prefixed and store-name POs
+// are excluded (real portal "NSA #### TAG" orders exist), so a genuine bill is never mis-sorted.
+export const looksNetsuiteDocRef = (po) => {
+  const s = String(po || '').trim().toUpperCase();
+  if (/^SO\s?\d{3,}$/.test(s)) return true;              // NetSuite sales-order ref: SO135806
+  if (/^\d{6,}$/.test(s.replace(/\s/g, ''))) return true; // long pure-numeric invoice/doc id
+  return false;
+};
+
+// Auto-push PO confirmation (owner 2026-07-23). The auto-push gate requires the bill's PO to
+// match the order it tied to. Reps write that PO sloppily — "PO.3182.LAF", "3094 CLHSSP"
+// (no prefix), "3126 GC 3119 SE" (extra tokens) — so a strict string compare rejects certain
+// matches and they sit waiting for a manual push. This confirms a match when the numeric CORE
+// is identical AND a customer TAG is shared: two independent signals agreeing (the PO number
+// and the customer), which uniquely identifies the order. It only WIDENS the gate — the
+// price-within-25%, vendor-compatible, and full high-confidence checks all still run alongside.
+// Requires a tag on both sides, so a tag-less "PO 3323 REP" never core-only-matches a different
+// customer's PO 3323.
+export const poCoreTagMatch = (billPo, orderPo) => {
+  const a = parseSiPoString(billPo), b = parseSiPoString(orderPo);
+  if (!a.core || a.core !== b.core) return false;
+  if (!a.tags.length || !b.tags.length) return false;
+  const bset = new Set(b.tags);
+  return a.tags.some((t) => bset.has(t));
+};
+
 // Rank portal PO candidates for a bill, best first (only positive-scoring ones).
 export const rankSiPoCandidates = (parsedBill, candidates) =>
   (candidates || [])

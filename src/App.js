@@ -357,7 +357,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
-import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver } from './sportsLink';
+import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, looksPrePortalGlued, poParts } from './billResolve';
@@ -22227,6 +22227,10 @@ export default function App(){
     // the Reedley PO 3281 case). For non-spaced/unknown formats, confirm against the NetSuite export.
     const core=parseSiPoString(row.po_number).core;
     if(origin!=='portal'&&_isNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches NetSuite PO #'+core+' — the order is handled from NetSuite; billed outside the portal.'};
+    // Clearly a NetSuite/manual reference (SO# or a long invoice number) with no portal match —
+    // route off the review queue to Outside. Narrow + collision-free (looksNetsuiteDocRef), so a
+    // real portal bill is never mis-sorted; only fires when nothing confident matched above.
+    if(origin!=='portal'&&(!best||best.confidence==='low')&&looksNetsuiteDocRef(row.po_number))return{bucket:'outside',parsed,match:null,reason:'NetSuite/manual reference (SO# or invoice number) with no portal order — billed outside the portal.'};
     const reason=origin==='portal'
       ?(best?'Weak match — verify the order before approving.':'Portal PO (spaced) not found — the PO line may need to be created.')
       :(best?'Weak match, and no NetSuite record — verify.':'No portal match and not in the NetSuite export — verify (may be old or a data gap).');
@@ -23893,6 +23897,23 @@ export default function App(){
       }catch(e){console.warn('auto-match sweep',e)}
       // Append mode (queue → review) adds to whatever is already under review instead of replacing it.
       setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
+      // Auto-clear the "Upload & Match" waiting list (owner: uploaded items should drop off
+      // the list, even the API ones). A scanned SI doc sits in the grab bucket until its PDF
+      // arrives; now that the PDF is parsed, any waiting row whose supplier invoice # matches
+      // a bill we just brought in is done — mark it 'manual_done' (same as the "Mark uploaded"
+      // button) so it disappears without the manual click. Matched on the vendor's own invoice
+      // number, identical on the API row and the PDF; status-only, reversible, no money path.
+      try{
+        const parsedDocs=new Set(results.map(r=>String(r?.parsed?.supplier_doc_number||r?.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+        const hits=parsedDocs.size?siQueue.filter(r=>r._t?.bucket==='grab'&&parsedDocs.has(String(r.supplier_doc_number||'').trim().toLowerCase())):[];
+        if(hits.length){
+          const ids=hits.map(r=>r.si_doc_number),idSet=new Set(ids);
+          const upd={status:'manual_done',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
+          setSiQueue(prev=>prev.map(r=>idSet.has(r.si_doc_number)?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+          if(supabase){try{await supabase.from('si_documents').update(upd).in('si_doc_number',ids)}catch(e){console.warn('auto-clear grab rows (db)',e)}}
+          nf('✓ '+hits.length+' waiting bill'+(hits.length===1?'':'s')+' cleared from Upload & Match — the PDF is now in review','success');
+        }
+      }catch(e){console.warn('auto-clear grab',e)}
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
@@ -23937,7 +23958,10 @@ export default function App(){
           try{
             const poLc=(p.po_number||'').toLowerCase().replace(/\s+/g,'');
             const matchedPoRaw=p.matchedPOSource==='so_po'?(p.matchedPO?.po_id||''):(p.matchedPO?.po_number||p.matchedPO?.id||'');
-            const poExact=!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc;
+            // Exact-PO gate — strict whitespace-insensitive equality, OR (owner 2026-07-23) a
+            // core+customer-tag match, so a sloppily-written but certain PO ("PO.3182.LAF",
+            // "3094 CLHSSP") still auto-pushes. Only widens the PO check; price/vendor gates below stay.
+            const poExact=(!!poLc&&String(matchedPoRaw).toLowerCase().replace(/\s+/g,'')===poLc)||poCoreTagMatch(p.po_number,matchedPoRaw);
             // Price pairs from what the push would ACTUALLY apply: staged mappings if
             // present, else the same auto-mappings _applyBillsToPortal would build.
             let pairs=(p._lineMappings&&p._lineMappings.length)?p._lineMappings:null;
