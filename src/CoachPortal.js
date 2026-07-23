@@ -1170,13 +1170,12 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
       const eBillAddr=customer?.shipping_address_line1?customer.shipping_address_line1+(customer.shipping_city?'<br/>'+customer.shipping_city+(customer.shipping_state?' '+customer.shipping_state:'')+(customer.shipping_zip?' '+customer.shipping_zip:''):'')+'<br/>United States':(customer?.billing_address_line1?customer.billing_address_line1+(customer.billing_city?'<br/>'+customer.billing_city+(customer.billing_state?' '+customer.billing_state:'')+(customer.billing_zip?' '+customer.billing_zip:''):'')+'<br/>United States':'');
       printDoc({
         title:customer?.name||'Customer',docNum:est.id,docType:'ESTIMATE',
-        headerRight:'<div class="ta">'+_$(estTotal)+'</div><div class="ts">Expires: '+new Date(Date.now()+30*86400000).toLocaleDateString()+'</div>',
+        headerRight:'<div class="ta">'+_$(estTotal)+'</div>',
         infoBoxes:[
           {label:'Bill To',value:customer?.name||'—',sub:eBillAddr||''},
-          {label:'Expires',value:new Date(Date.now()+30*86400000).toLocaleDateString()},
           {label:'Sales Rep',value:rep?.name||'—'},
           {label:'Estimate',value:est.id},
-          {label:'Memo',value:est.memo||'—'},
+          {label:'Memo',value:est.memo||'—',flex:2},
         ],
         tables:[{headers:['Quantity','SKU','Item','Rate','Amount'],aligns:['center','left','left','right','right'],
           rows:[...rows,
@@ -1185,7 +1184,7 @@ function CoachPortal({customer,allCustomers,sos,ests,invs:initInvs,REPS,prod,onU
             ...(estTax>0?[{cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Tax ('+(estTaxRate*100).toFixed(2)+'%)</strong>',style:'text-align:right;border:none'},{value:_$(estTax),style:'text-align:right;border:none'}]}]:[]),
             {_class:'totals-row',cells:[{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'',style:'border:none'},{value:'<strong>Total</strong>',style:'text-align:right'},{value:'<strong>'+_$(estTotal)+'</strong>',style:'text-align:right'}]},
           ]}],
-        footer:'This estimate is valid for 30 days. Prices subject to change. '+NSA.depositTerms
+        footer:'Prices subject to change. '+NSA.depositTerms
       });
     };
     const _estStatusPill=est.status==='approved'?['Approved','#1F7A43','#E8F5EC']:est.status==='converted'?['Converted to Order','#1A3A6B','#E6ECF5']:['Open',tAccent,tAccentSoft];
