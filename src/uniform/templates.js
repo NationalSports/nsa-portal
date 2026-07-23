@@ -193,6 +193,16 @@ const TEMPLATES = {
     atlasFlipY: false,
     views: { front: SHORTS_FRONT, back: SHORTS_BACK },
   },
+  basketball_4r3chb_shorts: {
+    id: 'basketball_4r3chb_shorts', name: '4R3CHB Reversible Basketball Shorts', category: 'Bottoms',
+    credit: 'Holloway 4R3CHB vendor configurator extraction',
+    model3d: PUB('/uniform/4R3CHB-full.glb'),
+    reversible: true,
+    // The companion shorts SVGs were exported from the same vendor UV system
+    // as the jersey. Keep their atlas in glTF UV orientation as well.
+    atlasFlipY: false,
+    views: { front: SHORTS_FRONT, back: SHORTS_BACK },
+  },
   hoodie: {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
@@ -409,6 +419,33 @@ const TEMPLATES = {
         base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
         anchors: { number: { x: 0.5, y: 0.35, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.43, size: 225 }, name: { x: 0.5, y: 0.18, size: 70 } },
+      },
+    },
+  },
+  // Holloway 228125 reversible basketball jersey. 4R3CHB is its matching
+  // short and is intentionally kept as a separate paired-garment asset.
+  // two physical fabric faces as `main` and `reverse`; ProBuilder presents them
+  // together so a coach can design both colorways without mentally flipping a
+  // single model back and forth.
+  basketball_4r3chb: {
+    id: 'basketball_4r3chb', name: '228125 Reversible Basketball Jersey', category: 'Basketball', type: 'raster',
+    credit: 'Holloway 228125 vendor configurator extraction',
+    model3d: PUB('/uniform/228125-full.glb'),
+    reversible: true,
+    // Extracted vendor SVGs share glTF's native lower-left UV origin.
+    // Disabling the browser-image Y flip keeps armhole/hem shells from landing
+    // on the torso as large circular or block-shaped artifacts.
+    atlasFlipY: false,
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.36, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
       },
       back: {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),

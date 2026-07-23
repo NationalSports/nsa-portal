@@ -195,6 +195,12 @@ export function tintedTile(img, src, color1, color2, color3, color4, mode, color
   const w = img.naturalWidth || img.width || 1, h = img.naturalHeight || img.height || 1;
   const c = document.createElement('canvas'); c.width = w; c.height = h;
   const x = c.getContext('2d', { willReadFrequently: true });
+  // Vendor UV SVGs contain only the named colored print paths; the rest of the
+  // atlas is transparent. An opaque garment material samples transparent RGB
+  // as black, which produced large black cutouts around armholes and panel
+  // gaps. Lay the selected body ink under the atlas before recoloring so every
+  // printable pixel has a valid garment color.
+  if (m === 'atlas') { x.fillStyle = color1; x.fillRect(0, 0, w, h); }
   x.drawImage(img, 0, 0);
   const id = x.getImageData(0, 0, w, h);
   const d = id.data;

@@ -651,7 +651,7 @@ function applySidePanelSurface(st, mat, baseHex, accentHex) {
   mat.needsUpdate = true;
 }
 
-function applyDesign(st, rawSpec) {
+function applyDesign(st, rawSpec, liningColor = null) {
   const spec = ds.normalizeSpec(rawSpec);
   const tpl = getTemplate(spec.garmentId);
   // One repeat per ZONE, not per mesh: garments cut into several panels per zone
@@ -666,10 +666,17 @@ function applyDesign(st, rawSpec) {
     const zone = entry.zone;
     const zs = (zone && spec.zones[zone]) || spec.zones.body || ds.DEFAULT_ZONE;
     const mat = entry.mesh.material;
-    const color = textileAlbedo(ds.toHex(zs.color, '#1f2a44'));
+    // The small amount of lining visible through a reversible jersey's neck
+    // and arm openings belongs to its opposite colorway, not a generic gray.
+    const materialIdentity = `${mat && mat.name || ''} ${entry.mesh.name || ''}`.toLowerCase();
+    const isReverseLining = materialIdentity.includes('reverse');
+    const color = textileAlbedo(ds.toHex(isReverseLining && liningColor ? liningColor : zs.color, '#1f2a44'));
     const color2 = textileAlbedo(ds.toHex(zs.color2, '#ffffff'));
     const patternColor2 = textileAlbedo(ds.toHex(zs.patternColor2, color2));
-    const pat = zs.pattern || 'solid';
+    // The opposing print is shown as a separate full proof beside this one.
+    // At openings, a clean opposing base color reads correctly and avoids
+    // projecting this side's atlas onto the physical inner-lining UV shell.
+    const pat = isReverseLining && liningColor ? 'solid' : (zs.pattern || 'solid');
     const meshName = String(entry.mesh.name || '').toLowerCase();
     const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
     if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
@@ -1069,7 +1076,7 @@ function applySelection(st, activeArea, rawSpec) {
 // the model center so it stays framed). `shiftPx` pans the model horizontally by
 // N screen pixels — the wizard uses it to sit the jersey under the whole page's
 // center even though the 3D stage only occupies the area left of the rail.
-export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0, view = null, interactive = true, activeArea = null, activeDecoration = null, onDecorationSelect = null, onDecorationMove = null, onZoneSelect = null, onSnapshot = null, fallbackImage = null }) {
+export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0, view = null, interactive = true, activeArea = null, activeDecoration = null, onDecorationSelect = null, onDecorationMove = null, onZoneSelect = null, onSnapshot = null, fallbackImage = null, surfaceSide = 'all', liningColor = null, viewSyncRef = null, viewSyncId = null }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
   const activeAreaRef = useRef(activeArea); activeAreaRef.current = activeArea;
@@ -1119,6 +1126,25 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     controls.enablePan = false;
     controls.enabled = !!interactive;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
+    // Reversible products render both physical faces at once. Whichever pane
+    // the customer drags becomes the temporary leader; the other pane follows
+    // the same camera pose so front/side/back comparisons stay synchronized.
+    const syncId = viewSyncId || `viewer-${Math.random().toString(36).slice(2)}`;
+    const publishSyncedView = () => {
+      if (!viewSyncRef || !viewSyncRef.current) return;
+      viewSyncRef.current.publisher = syncId;
+      viewSyncRef.current.pose = {
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+        zoom: camera.zoom,
+      };
+    };
+    const onOrbitStart = () => { if (viewSyncRef && viewSyncRef.current) viewSyncRef.current.owner = syncId; };
+    const onOrbitChange = () => { if (viewSyncRef && viewSyncRef.current && viewSyncRef.current.owner === syncId) publishSyncedView(); };
+    const onOrbitEnd = () => { publishSyncedView(); if (viewSyncRef && viewSyncRef.current && viewSyncRef.current.owner === syncId) viewSyncRef.current.owner = null; };
+    controls.addEventListener('start', onOrbitStart);
+    controls.addEventListener('change', onOrbitChange);
+    controls.addEventListener('end', onOrbitEnd);
     // Lens shift: move the rendered image right by `shiftPx` CSS px without
     // moving the camera or orbit target. Re-applied on resize so the shift
     // tracks the current canvas size.
@@ -1342,6 +1368,19 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       // camera gets clamped inside the mesh.
       controls.minDistance = dist * 0.35; controls.maxDistance = dist * 4;
       controls.update();
+      if (viewSyncRef && viewSyncRef.current) {
+        const synced = viewSyncRef.current.pose;
+        if (synced && viewSyncRef.current.initialized) {
+          camera.position.fromArray(synced.position);
+          controls.target.fromArray(synced.target);
+          camera.zoom = synced.zoom || 1;
+          camera.updateProjectionMatrix();
+          controls.update();
+        } else {
+          publishSyncedView();
+          viewSyncRef.current.initialized = true;
+        }
+      }
 
       rootObj.traverse((o) => {
         if (o.isMesh) {
@@ -1351,6 +1390,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
           // catch the lights and wash tinted colors toward pastel. Keep the
           // original name: matchZone falls back to it for zone matching.
           const srcMat = o.material;
+          const materialName = String(srcMat && srcMat.name || '').toLowerCase();
+          if (surfaceSide === 'main' && materialName.includes('reverse')) { o.visible = false; return; }
+          if (surfaceSide === 'reverse' && !materialName.includes('reverse')) { o.visible = false; return; }
           // Sewn topstitch and drawcord geometry is authored as a fixed detail,
           // not a recolorable fabric zone. Preserve those neutral thread/cord
           // materials while the garment panels remain fully editable.
@@ -1405,14 +1447,38 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
         gtao.updateGtaoMaterial({ radius: maxDim * sp.aoRadius, distanceExponent: 1.2, thickness: maxDim * 0.02, scale: sp.aoScale, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
         gtao.setSceneClipBox(new THREE.Box3().setFromObject(rootObj));
       } catch (e) { /* AO tuning is best-effort */ }
-      try { applyDesign(st, spec); updateDecals(st, spec); applySelection(st, activeAreaRef.current, spec); } catch (e) { /* keep default */ }
+      try { applyDesign(st, spec, liningColor); updateDecals(st, spec); applySelection(st, activeAreaRef.current, spec); } catch (e) { /* keep default */ }
       if (activeDecorationRef.current) focusDecorationView(st, activeDecorationRef.current);
       setStatus('ready');
       queueSnapshot(450);
       draco.dispose();
     }, undefined, () => { setStatus('error'); });
 
-    const animate = () => { st.raf = requestAnimationFrame(animate); controls.update(); composer.render(); };
+    const animate = () => {
+      st.raf = requestAnimationFrame(animate);
+      const sync = viewSyncRef && viewSyncRef.current;
+      const isAutoLeader = !!sync && String(syncId).endsWith('-A');
+      const followsUser = !!(sync && sync.pose && (
+        (sync.owner && sync.owner !== syncId)
+        || (!sync.owner && sync.publisher && sync.publisher !== syncId)
+      ));
+      const followsAuto = !!(sync && !sync.owner && autoRotateRef.current && !isAutoLeader && sync.pose);
+      if (followsUser || followsAuto) {
+        const synced = sync.pose;
+        camera.position.fromArray(synced.position);
+        controls.target.fromArray(synced.target);
+        camera.zoom = synced.zoom || 1;
+        camera.updateProjectionMatrix();
+        const rotating = controls.autoRotate;
+        controls.autoRotate = false;
+        controls.update();
+        controls.autoRotate = rotating;
+      } else {
+        controls.update();
+        if (sync && !sync.owner && autoRotateRef.current && isAutoLeader) publishSyncedView();
+      }
+      composer.render();
+    };
     animate();
 
     // Keep the drawing buffer synced to the container (ResizeObserver catches the
@@ -1441,6 +1507,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       if (ro) ro.disconnect();
       clearTimeout(st.snapshotTimer);
       cancelAnimationFrame(st.raf);
+      controls.removeEventListener('start', onOrbitStart);
+      controls.removeEventListener('change', onOrbitChange);
+      controls.removeEventListener('end', onOrbitEnd);
       controls.dispose();
       clearSelection(st);
       st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
@@ -1452,7 +1521,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       stateRef.current = null;
     };
-  }, [modelUrl, view, interactive]); // eslint-disable-line
+  }, [modelUrl, view, interactive, surfaceSide]); // eslint-disable-line
 
   // re-apply on autoRotate toggle
   useEffect(() => { const st = stateRef.current; if (st && st.controls) st.controls.autoRotate = !!autoRotate; }, [autoRotate]);
@@ -1472,9 +1541,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   useEffect(() => {
     const st = stateRef.current;
     if (st && st.meshes && st.meshes.length) {
-      try { applyDesign(st, spec); updateDecals(st, spec); st.queueSnapshot && st.queueSnapshot(350); } catch (e) {}
+      try { applyDesign(st, spec, liningColor); updateDecals(st, spec); st.queueSnapshot && st.queueSnapshot(350); } catch (e) {}
     }
-  }, [spec]);
+  }, [spec, liningColor]);
 
   // Keep the 3D garment visually tied to the section currently being edited.
   useEffect(() => {

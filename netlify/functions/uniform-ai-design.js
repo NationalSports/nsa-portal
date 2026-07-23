@@ -35,6 +35,11 @@ const GARMENT_ZONES = {
   crew_jersey: ['body', 'yoke', 'sleeveL', 'sleeveR', 'collar', 'sidePanelL', 'sidePanelR'],
   sahrul_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
   octa_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
+  agi1011_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
+  agi1012_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
+  ayson_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
+  flag228187_jersey: ['body', 'sleeveL', 'sleeveR', 'collar'],
+  basketball_4r3chb: ['body', 'sleeveL', 'sleeveR', 'collar'],
   shorts: ['waistband', 'legL', 'legR', 'sidePanelL', 'sidePanelR'],
   hoodie: ['body', 'sleeveL', 'sleeveR', 'hood', 'pocket', 'cuff', 'collar'],
 };
@@ -172,6 +177,15 @@ exports.handler = async (event) => {
         .slice(0, 40)
         .map((p) => `"${p.name.slice(0, 60)}"${p.tintable ? ` (tintable, ${p.tintMode || 'solid'} mode)` : ' (fixed colors)'}`)
     : [];
+  const locked = (ctx.lockedRules && typeof ctx.lockedRules === 'object') ? ctx.lockedRules : {};
+  const lockedLines = [
+    locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
+    locked.frontIdentity ? `- Front identity is locked to ${String(locked.frontIdentity).slice(0, 12)}${locked.frontLogoPresent ? ' (front logo is uploaded)' : ''}.` : '',
+    Number.isFinite(locked.frontNumberInches) ? `- Front number height is locked to ${locked.frontNumberInches} inches.` : '',
+    Number.isFinite(locked.backNumberInches) ? `- Back number height is locked to ${locked.backNumberInches} inches.` : '',
+    `- Player names are ${locked.playerNamesEnabled ? 'enabled by the coach' : 'disabled; leave every player-name field empty'}.`,
+    '- Do not replace or reinterpret any locked value. Concentrate on colors, patterns, fabric, and lettering treatment.',
+  ].filter(Boolean);
 
   const userMsg = [
     `Garment: ${garmentId}`,
@@ -180,6 +194,7 @@ exports.handler = async (event) => {
     ctx.program ? `Program: ${String(ctx.program).slice(0, 20)} (men's/women's/youth cut)` : '',
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
     prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
+    lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
     `Coach's brief: ${prompt}`,
   ].filter(Boolean).join('\n');

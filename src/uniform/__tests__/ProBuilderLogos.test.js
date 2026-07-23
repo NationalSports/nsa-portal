@@ -4,7 +4,7 @@ jest.mock('../renderCanvas', () => ({
   renderProductionSheet: jest.fn(),
 }));
 
-import { logoSpecFromConfig, modelGarmentFor } from '../ProBuilder';
+import { logoSpecFromConfig, modelGarmentFor, presetMatchesSport, sportsWithDesigns } from '../ProBuilder';
 
 describe('logoSpecFromConfig — multiple independent logo placements', () => {
   test('keeps simultaneous front, sleeve, back-neck, and under-number logos', () => {
@@ -44,6 +44,24 @@ describe('artist cut model selection', () => {
     expect(modelGarmentFor({ neckStyle: 'agi1012', artistCut: 'foundation' })).toBe('agi1012_jersey');
     expect(modelGarmentFor({ neckStyle: 'ayson', artistCut: 'vikram' })).toBe('ayson_jersey');
     expect(modelGarmentFor({ neckStyle: 'flag228187', artistCut: 'foundation' })).toBe('flag228187_jersey');
+    expect(modelGarmentFor({ neckStyle: 'basketball4r3chb', artistCut: 'foundation' })).toBe('basketball_4r3chb');
     expect(modelGarmentFor({ neckStyle: 'vneck', artistCut: 'sahrul' })).toBe('sahrul2_jersey');
+  });
+});
+
+describe('sport-specific catalog filtering', () => {
+  const presets = [
+    { id: 'soccer', sports: ['soccer'] },
+    { id: 'basketball', sports: ['basketball'] },
+    { id: 'legacy-generic', sports: [] },
+  ];
+
+  test('never leaks unassigned or other-sport designs into a gallery', () => {
+    expect(presets.filter((preset) => presetMatchesSport(preset, 'basketball')).map((preset) => preset.id)).toEqual(['basketball']);
+  });
+
+  test('hides sports without a usable design', () => {
+    const sports = [{ key: 'soccer' }, { key: 'basketball' }, { key: 'football' }];
+    expect(sportsWithDesigns(sports, presets).map((sport) => sport.key)).toEqual(['soccer', 'basketball']);
   });
 });

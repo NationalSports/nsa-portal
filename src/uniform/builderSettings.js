@@ -42,6 +42,42 @@ export const DEFAULT_PALETTE = [
 ];
 
 const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
+const BASKETBALL_4R3CHB_DESIGNS = [
+  ['all_star', 'All Star', 3], ['argyle', 'Argyle', 3], ['arizona', 'Arizona', 2], ['atlanta', 'Atlanta', 4],
+  ['brooklyn', 'Brooklyn', 5], ['cameron_classic', 'Cameron Classic', 3], ['chicago', 'Chicago', 2],
+  ['custom_design_line', 'Custom Design Line', 1], ['diagonal_stripe', 'Diagonal Stripe', 4], ['digital_wave', 'Digital Wave', 4],
+  ['dominant', 'Dominant', 3], ['dribble', 'Dribble', 3], ['drive', 'Drive', 4], ['fall_away', 'Fall Away', 2],
+  ['fast_break', 'Fast Break', 5], ['indiana', 'Indiana', 4], ['layup', 'Layup', 3], ['mardi_gras', 'Mardi Gras', 4],
+  ['miami', 'Miami', 3], ['nyc', 'NYC', 3], ['okc', 'OKC', 4], ['orlando', 'Orlando', 2],
+  ['over_and_back', 'Over and Back', 3], ['pace', 'Pace', 3], ['portland', 'Portland', 3], ['rebound', 'Rebound', 3],
+  ['seattle', 'Seattle', 3], ['skyline', 'Skyline', 3], ['slash', 'Slash', 2], ['speedy', 'Speedy', 3],
+  ['swish', 'Swish', 3], ['title_shot', 'Title Shot', 3], ['uconn', 'UConn', 3], ['zone_press', 'Zone Press', 3],
+];
+export const BASKETBALL_4R3CHB_PRESETS = BASKETBALL_4R3CHB_DESIGNS.map(([slug, name, colors]) => ({
+  id: `BB-4R3CHB-${slug.toUpperCase()}`,
+  name,
+  sports: ['basketball'],
+  thumbnail: `/uniform/designs/228125/${slug}.svg`,
+  config: {
+    neckStyle: 'basketball4r3chb', numberColor: '#FFFFFF',
+    sections: {
+      body: {
+        color: '#005B9B', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+        pattern: 'custom', patternImage: `/uniform/designs/228125/${slug}.svg`, patternName: name,
+        patternTint: true, patternTintMode: 'atlas', patternColorCount: colors,
+      },
+      sleeves: sec('#005B9B'), collar: sec('#68737A'),
+    },
+    reverseSections: {
+      body: {
+        color: '#FFFFFF', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+        pattern: 'custom', patternImage: `/uniform/designs/228125/${slug}.svg`, patternName: name,
+        patternTint: true, patternTintMode: 'atlas', patternColorCount: colors,
+      },
+      sleeves: sec('#16246E'), collar: sec('#16246E'),
+    },
+  },
+}));
 export const DEFAULT_PRESETS = [
   {
     id: 'AYSONSA', name: 'AYSONSA', sports: ['soccer'],
@@ -67,14 +103,32 @@ export const DEFAULT_PRESETS = [
       },
     },
   },
-  { id: 'bold', name: 'Bold Stripes', sports: [], config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'classic', name: 'Classic Solid', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
-  { id: 'pinstripe', name: 'Pinstripe', sports: [], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'camo', name: 'Camo Sleeves', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'royalgold', name: 'Royal & Gold', sports: [], config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
-  { id: 'fade', name: 'Sunset Fade', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#F47A1F'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'blackout', name: 'Blackout', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
-  { id: 'maroon', name: 'Maroon Stripes', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  {
+    id: 'BB-4R3CHB', name: '228125 Reversible', sports: ['basketball'],
+    thumbnail: '/uniform/4r3chb-reversible-thumbnail.svg',
+    config: {
+      neckStyle: 'basketball4r3chb', numberColor: '#FFFFFF',
+      sections: {
+        body: sec('#192853'),
+        sleeves: sec('#962C32'),
+        collar: sec('#962C32'),
+      },
+      reverseSections: {
+        body: sec('#FFFFFF'),
+        sleeves: sec('#192853'),
+        collar: sec('#192853'),
+      },
+    },
+  },
+  ...BASKETBALL_4R3CHB_PRESETS,
+  { id: 'bold', name: 'Bold Stripes', sports: ['soccer'], config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'classic', name: 'Classic Solid', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
+  { id: 'pinstripe', name: 'Pinstripe', sports: ['soccer'], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'camo', name: 'Camo Sleeves', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'royalgold', name: 'Royal & Gold', sports: ['soccer'], config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
+  { id: 'fade', name: 'Sunset Fade', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#F47A1F'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'blackout', name: 'Blackout', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
+  { id: 'maroon', name: 'Maroon Stripes', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
 ];
 
 const FONT_IDS = new Set(FONT_LIBRARY.map((f) => f.id));
@@ -115,7 +169,10 @@ function upgradeLegacyPalette(palette) {
 function cleanPresets(raw) {
   if (!Array.isArray(raw)) return null;
   const zone = (z, fallback) => (z && typeof z === 'object' && HEX_RE.test(z.color || ''))
-    ? { color: z.color, color2: HEX_RE.test(z.color2 || '') ? z.color2 : '#FFFFFF', pattern: typeof z.pattern === 'string' ? z.pattern : 'solid', ...(z.pattern === 'custom' && typeof z.patternImage === 'string' ? { patternImage: z.patternImage, patternName: z.patternName } : {}) }
+    ? { color: z.color, color2: HEX_RE.test(z.color2 || '') ? z.color2 : '#FFFFFF',
+      ...(HEX_RE.test(z.color3 || '') ? { color3: z.color3 } : {}), ...(HEX_RE.test(z.color4 || '') ? { color4: z.color4 } : {}), ...(HEX_RE.test(z.color5 || '') ? { color5: z.color5 } : {}),
+      pattern: typeof z.pattern === 'string' ? z.pattern : 'solid',
+      ...(z.pattern === 'custom' && typeof z.patternImage === 'string' ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}) }
     : fallback;
   const out = raw
     .filter((p) => p && typeof p === 'object' && p.config && p.config.sections)
@@ -125,15 +182,20 @@ function cleanPresets(raw) {
         id: typeof p.id === 'string' && p.id ? p.id : `preset${i}`,
         name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim().slice(0, 26) : 'Design',
         sports: Array.isArray(p.sports) ? p.sports.filter((x) => typeof x === 'string') : [],
-        ...(typeof p.thumbnail === 'string' && /^\/uniform\/[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
+        ...(typeof p.thumbnail === 'string' && /^\/uniform\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
         config: {
-          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
+          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187', 'basketball4r3chb'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
           numberColor: HEX_RE.test(p.config.numberColor || '') ? p.config.numberColor : '#FFFFFF',
           sections: {
             body: zone(S.body, sec('#192853')),
             sleeves: zone(S.sleeves || S.sleeveL, sec('#FFFFFF')),
             collar: zone(S.collar, sec('#FFFFFF')),
           },
+          ...(p.config.reverseSections ? { reverseSections: {
+            body: zone(p.config.reverseSections.body, sec('#FFFFFF')),
+            sleeves: zone(p.config.reverseSections.sleeves || p.config.reverseSections.sleeveL, sec('#192853')),
+            collar: zone(p.config.reverseSections.collar, sec('#192853')),
+          } } : {}),
         },
       };
     });
