@@ -284,6 +284,14 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const candVendors = [...new Set(cand.items.map((it) => String(it.vendor || '')).filter(Boolean))];
     const vendorCompat = !billVend || !candVendors.length || candVendors.some((v) => vendorsCompatible(billVend, v));
     if (!vendorCompat && !poAnchored) return;
+    // Account (customer) compatibility, computed up front so the BULK rollup below can't tie a
+    // bill tagged for one school onto a bare-NUMBER PO collision with a DIFFERENT school's order
+    // (owner 2026-07-23: an "PO 3283 OLuSOCG" S&S bill bulk-rolled onto Fresno Pacific's
+    // "PO 3283 FPUTN" purely because the number 3283 matched). alpha_tags are the customers this
+    // candidate serves; loose on the bill side (reps glue RE/REP suffixes on), silent when either
+    // side is unknown, and an exact-PO anchor still overrides. Reused by the account gate below.
+    const candTags = (cand.alpha_tags || []).map(_ns).filter((t) => t.length >= 2);
+    const accountMismatch = !!(billPo.tag && billPo.tag.length >= 2 && candTags.length && !candTags.some((t) => billPo.tag === t || billPo.tag.startsWith(t) || (billPo.tag.length >= 3 && t.startsWith(billPo.tag))));
     const used = new Set(); // an order item-size bucket absorbs ONE bill line per proposal
     const ties = [];
     usable.forEach(({ bl, i }) => {
@@ -301,7 +309,10 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // rolls every sized bill line up onto it; so do we — but ONLY under that single-
     // line anchor, so it can never guess between lines. Quantities accumulate.
     const untied = usable.filter(({ i }) => !ties.some((t) => t.bill_idx === i));
-    if (untied.length && billPo.core) {
+    // …but never roll a bill up onto a bare-number PO collision with a different customer's order
+    // (accountMismatch): "3283 OLuSOCG" must not absorb into Fresno Pacific's "3283 FPUTN". An
+    // exact-PO anchor (same flat PO, hence same tag) still allows it.
+    if (untied.length && billPo.core && (!accountMismatch || poAnchored)) {
       const poBuckets = cand.items.map((it, ti) => ({ it, ti }))
         .filter(({ it }) => { const pp = poParts(it.po_id); return pp.core && pp.core === billPo.core; });
       const lineKeys = [...new Set(poBuckets.map(({ it }) => (it.item_id || _ns(it.sku)) + '|' + (it.po_id || '')))];
@@ -389,8 +400,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // weak-tie a batch serving OLuBB/CIVIF. Loose on the bill side (billTag startsWith the
     // customer tag — reps glue REP/RE suffixes on), silent when either side is unknown,
     // and an exact-PO anchor or strong SKU evidence still overrides.
-    const candTags = (cand.alpha_tags || []).map(_ns).filter((t) => t.length >= 2);
-    const accountMismatch = !!(billPo.tag && billPo.tag.length >= 2 && candTags.length && !candTags.some((t) => billPo.tag === t || billPo.tag.startsWith(t) || (billPo.tag.length >= 3 && t.startsWith(billPo.tag))));
+    // candTags / accountMismatch are hoisted above (they also gate the bulk rollup). An exact-PO
+    // anchor or strong SKU evidence (strongBasesEarly) still overrides the mismatch here.
     if (accountMismatch && !poAnchored && strongBasesEarly === 0) return;
     // DATE SANITY: a bill shipped/issued before the order existed cannot be that order.
     // Only fires when both dates parse; 2-day grace absorbs timezone/entry slop.

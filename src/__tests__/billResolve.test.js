@@ -575,6 +575,47 @@ describe('bulk rollup — bought in bulk, billed by size (the KJ3429/CUSTOM clea
   });
 });
 
+describe('bulk rollup must respect the ACCOUNT (the OLuSOCG↔FPUTN cross-customer case, 2026-07-23)', () => {
+  // Real case: an S&S bill tagged "PO 3283 OLuSOCG" (Orange Lutheran) was bulk-rolled onto
+  // Fresno Pacific's "PO 3283 FPUTN" single open line purely because the bare number 3283
+  // matched — a wrong-customer proposal. The bulk rollup now refuses a bare-number collision
+  // with a different account (alpha_tags), so a different-customer order is never proposed.
+  const ssBill = {
+    po_number: 'PO 3283 OLuSOCG',
+    vendor: 'S&S Activewear',
+    items: [
+      { sku: 'B027F8504', size: 'M', color: 'Black/ White', qty: 1, unit_price: 15, desc: "Men's Pregame T-Shirt" },
+      { sku: 'B027F8505', size: 'L', color: 'Black/ White', qty: 10, unit_price: 15, desc: "Men's Pregame T-Shirt" },
+    ],
+  };
+  const fresnoCand = {
+    kind: 'so', id: 'SO-1096', label: 'SO-1096', raw: { id: 'SO-1096' }, alpha_tags: ['FPUTN'],
+    items: [
+      { sku: 'KC0865', name: 'Adidas Tiro W Woven Top', color: 'Navy/ White', size: 'BULK', qty: 18, unit_cost: 28.13, so_id: 'SO-1096', item_id: 'k1', po_id: 'PO 3283 FPUTN' },
+    ],
+  };
+  test('a different customer sharing only the bare PO number is NOT proposed (no cross-account bulk)', () => {
+    const props = proposeResolutions(ssBill, [fresnoCand], { canonSize: canon });
+    expect(props.find((p) => p.target.id === 'SO-1096')).toBeUndefined();
+  });
+  test('the SAME-account order still bulk-rolls — even when the vendor mangled the tag (poAnchored false)', () => {
+    // Orange Lutheran order: alpha_tag matches the bill, but its po_id tag is typo'd (missing G),
+    // so poAnchored is false — the account-gated bulk path (not the exact-PO override) must fire.
+    const orangeCand = {
+      kind: 'so', id: 'SO-1251', label: 'SO-1251', raw: { id: 'SO-1251' }, alpha_tags: ['OLUSOCG'],
+      items: [
+        { sku: 'JX4452', name: 'Adidas Unisex Pregame Tee', color: 'Black/ White', size: 'BULK', qty: 11, unit_cost: 11.25, so_id: 'SO-1251', item_id: 'j1', po_id: 'PO 3283 OLUSOC' },
+      ],
+    };
+    const p = proposeResolutions(ssBill, [orangeCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.target.id).toBe('SO-1251');
+    expect(p.poAnchored).toBe(false);
+    expect(p.ties.length).toBe(2);
+    expect(p.ties.every((t) => t.basis === 'bulk')).toBe(true);
+  });
+});
+
 describe('PO-anchored linking (owner rule: exact PO match ⇒ right order, only lines open)', () => {
   const po = 'PO 5150 KCHS';
   const mkBill = (items) => ({ po_number: po, items });
