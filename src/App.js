@@ -28053,8 +28053,30 @@ export default function App(){
                         const _live=prop&&!prop.weakGuess?prop:null;
                         const _sameTgt=_live&&poMatch&&(String(_live.target.id)===String(poMatch.so_id||poMatch.so?.id||'')||String(_live.target.raw?.po_number||'')===String(poMatch.po_number||poMatch.po_id||''));
                         const _disagree=!!(_live&&poMatch&&!_sameTgt);
+                        // DUPLICATE-INVOICE detector (owner 2026-07-23, the 100898884 case): the bill's
+                        // PO matched an order, no line ties — and the reason is that the PO is ALREADY
+                        // FULLY BILLED by an earlier document. Say that outright instead of "link each
+                        // line by hand" — matching this by hand would book the same goods twice.
+                        const _dupInfo=(()=>{
+                          if(!poMatch)return null;
+                          const soId=poMatch.so_id||poMatch.so?.id;const so2=soId&&sos.find(s2=>s2.id===soId);if(!so2)return null;
+                          const pn=(bill.po_number||'').toLowerCase().replace(/[^a-z0-9]/g,'');if(!pn)return null;
+                          let any=false,open=0;const docs=new Map();
+                          (so2.items||[]).forEach(it2=>(it2.po_lines||[]).forEach(pl=>{
+                            if((pl.po_id||'').toLowerCase().replace(/[^a-z0-9]/g,'')!==pn)return;
+                            any=true;
+                            Object.entries(pl).forEach(([k,v])=>{if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;if(v<=0)return;open+=Math.max(0,v-safeNum((pl.billed||{})[k]))});
+                            (pl._bill_details||[]).forEach(dt=>{if(dt&&dt.doc)docs.set(dt.doc,{doc:dt.doc,date:dt.date||'',cost:safeNum(docs.get(dt.doc)?.cost)+safeNum(dt.cost)})});
+                          }));
+                          const dn2=(bill.doc_number||'').trim().toLowerCase();
+                          if(!any||open>0||!docs.size)return null;
+                          if(dn2&&[...docs.keys()].some(d=>String(d).trim().toLowerCase()===dn2))return null;// same doc = re-open of the pushed bill, not a second invoice
+                          return[...docs.values()];
+                        })();
                         return<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
-                        <span style={{fontSize:12,color:'#3730a3'}}>{_disagree
+                        <span style={{fontSize:12,color:_dupInfo?'#991b1b':'#3730a3',fontWeight:_dupInfo?700:400}}>{_dupInfo
+                          ?'⚠ '+(bill.po_number||'This PO')+' is already FULLY billed — '+_dupInfo.map(d=>'doc #'+d.doc+(d.date?' ('+d.date+', $'+d.cost.toFixed(2)+')':'')).join(', ')+' covered every unit. This bill (#'+(bill.doc_number||'?')+') is either a DUPLICATE invoice or a RE-SHIP after a return (check for an RA / credit memo on the original doc). If it’s a re-ship: apply the credit first, then push this — pushing before the credit double-counts the line.'
+                          :_disagree
                           ?(bill.po_number||'The PO number')+' points at '+_poTgt+', but this bill’s items don’t match anything on it — they fit '+_live.target.label+' (proposal above). Accept the proposal, or match to '+_poTgt+' by hand if the PO is right.'
                           :poMatch?'Matched to '+_poTgt+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.'
                           :'No PO matched automatically — line items parsed and ready.'}</span>
