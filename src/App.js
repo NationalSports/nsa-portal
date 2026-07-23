@@ -29006,10 +29006,15 @@ export default function App(){
           const siBtn=(k,label,bg,fg,onClick,title,border)=><button key={k} onClick={onClick} title={title} style={{border:border||'none',background:bg,color:fg,padding:'7px 13px',fontFamily:FD,fontWeight:700,fontSize:11.5,letterSpacing:.5,textTransform:'uppercase',transform:'skewX(-6deg)',cursor:'pointer',whiteSpace:'nowrap'}}><span style={{display:'inline-block',transform:'skewX(6deg)'}}>{label}</span></button>;
           const Row=(r,opts={})=>{
             const t=r._t||{};const p=t.parsed||{};const open=siExpand===r.si_doc_number;
+            // Invoice date on the row (owner: "need to put dates on this stuff"). Stored as
+            // YYYY-MM-DD; reformat by hand rather than new Date() so a UTC-midnight parse can't
+            // shift it a day. supplier's own doc date first, SI doc date as the fallback.
+            const _dm=/^(\d{4})-(\d{2})-(\d{2})/.exec(String(r.supplier_doc_date||r.si_doc_date||''));
+            const _billDate=_dm?(+_dm[2])+'/'+(+_dm[3])+'/'+_dm[1]:String(r.supplier_doc_date||r.si_doc_date||'').trim();
             return <div key={r.si_doc_number} style={{border:'1px solid '+LGRAY,borderLeft:'4px solid '+(opts.stripe||MGRAY),borderRadius:6,marginBottom:8,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
               <div style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',cursor:'pointer'}} onClick={()=>setSiExpand(open?null:r.si_doc_number)}>
                 <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontFamily:FD,fontWeight:700,fontSize:16,textTransform:'uppercase',letterSpacing:.2,color:NAVY}}>{r.supplier||'—'} <span style={{fontFamily:"'Source Sans 3',sans-serif",fontWeight:400,color:TXTL,fontSize:12,textTransform:'none',letterSpacing:0}}>· Inv {r.supplier_doc_number||r.si_doc_number}</span></div>
+                  <div style={{fontFamily:FD,fontWeight:700,fontSize:16,textTransform:'uppercase',letterSpacing:.2,color:NAVY}}>{r.supplier||'—'} <span style={{fontFamily:"'Source Sans 3',sans-serif",fontWeight:400,color:TXTL,fontSize:12,textTransform:'none',letterSpacing:0}}>· Inv {r.supplier_doc_number||r.si_doc_number}{_billDate?' · '+_billDate:''}</span></div>
                   <div style={{fontSize:12,color:TXTL,marginTop:2}}>{r.po_number||'(no PO)'}{t.match?.candidate?' → '+(t.match.candidate.customer_name||t.match.candidate.po_id):''}{r.is_credit?' · ↩️ credit':''}</div>
                   {t.reason&&<div style={{fontSize:10,color:(t.bucket==='outside'?'#1d4ed8':'#b45309'),marginTop:1}}>{t.reason}</div>}
                 </div>
