@@ -28843,7 +28843,7 @@ export default function App(){
             if(_bk.done.length){
               const open=!!billImport.showDone;
               _children.push(<button key="h-done" onClick={()=>setBillImport(x=>({...x,showDone:!x.showDone}))} style={{display:'block',width:'100%',textAlign:'left',marginTop:14,padding:'9px 14px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:6,cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',color:'#64748b'}}>
-                ✓ Done — pushed & set aside ({_bk.done.length}) {open?'▴':'▾'}</button>);
+                ✓ Done — pushed this session ({_bk.done.length}) {open?'▴':'▾'}</button>);
               if(open)_bk.done.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
             }
             return <div>{_children}</div>;
