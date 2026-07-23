@@ -1580,7 +1580,7 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
     if (/otto/i.test(m)) return find(/otto/i) || find(/s.s\s*active/i);
     if (/adidas/i.test(m)) return find(/adidas/i);
     if (/under\s*armou?r/i.test(m)) return find(/under\s*armou?r/i);
-    if (/badger/i.test(m)) return find(/momentec/i);
+    if (/badger|alleson|augusta|holloway|russell\s*athletic|high\s*five/i.test(m)) return find(/momentec/i);
     if (/momentec/i.test(m)) return find(/momentec/i);
     return null;
   };
@@ -3561,6 +3561,23 @@ function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu,
   );
 }
 
+// Manufacturer → the NSA vendor NAME we buy the blank from — for DISPLAY only. The review's
+// vendor column maps vendor_id through the vendors table, but that read is RLS-gated
+// (is_team_member), so it can come back empty and show "—" even when we clearly know the
+// source. This derives the vendor from the manufacturer with no DB dependency, so an item
+// tagged "Sport-Tek" reads "SanMar" and "Alleson"/"Augusta" read "Momentec".
+const mfgVendorName = (mfg) => {
+  const m = String(mfg || '').toLowerCase();
+  if (!m) return '';
+  if (/badger|alleson|augusta|holloway|russell\s*athletic|high\s*five/.test(m)) return 'Momentec';
+  if (/comfort\s*colors|port\s*(&|and)\s*(company|co)\b|port\s*authority|sport-?tek|gildan|hanes|champion|district|cornerstone|allmade|rabbit\s*skins|jerzees|new\s*era|ogio|eddie\s*bauer|north\s*face|carhartt|mercer|travismathew|bella\s*\+?\s*canvas/.test(m)) return 'SanMar';
+  if (/independent\s*trading|next\s*level|tultex|\blat\b|american\s*apparel|alternative|econscious|threadfast|otto/.test(m)) return 'S&S Activewear';
+  if (/richardson/.test(m)) return 'Richardson';
+  if (/adidas/.test(m)) return 'adidas';
+  if (/under\s*armou?r/.test(m)) return 'Under Armour';
+  return '';
+};
+
 // "Create from OMG" wizard — paste a report link, review/fix every item (SKU, name, price,
 // live stock), then create the draft Club Webstore. Step 1: URL. Step 2: review table.
 function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, name, setName, vendList = [], customerId, setCustomerId, cust, onSkuChange, onSkuBlur, onFieldChange, onToggleIncluded, onCreate, creating, onClose }) {
@@ -3617,10 +3634,7 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
             </div>
             <div style={{ flex: '1 1 260px' }}>
               <label style={{ fontSize: 11, fontWeight: 700, color: '#475569', display: 'block', marginBottom: 4 }}>Customer (for art library + CSR — can set later)</label>
-              <select value={customerId} onChange={(e) => setCustomerId(e.target.value)} style={{ width: '100%', padding: '8px 10px', border: '1px solid #cbd5e1', borderRadius: 6, fontSize: 13, background: '#fff' }}>
-                <option value="">— No customer yet —</option>
-                {sortedCust.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+              <CustomerPicker customers={sortedCust} value={customerId} onChange={setCustomerId} placeholder="Search customer by name or tag…" />
             </div>
           </div>
           <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>Fix any SKU that's wrong — the cost and vendor <b>re-source automatically</b> from the catalog and supplier APIs. Uncheck an item to leave it out entirely.</div>
@@ -3705,7 +3719,7 @@ function OmgImportWizard({ step, url, setUrl, fetching, onFetch, items, stock, n
                           return <span title="This SKU didn't match the catalog or any supplier API." style={{ fontSize: 8, fontWeight: 800, color: '#b91c1c', background: '#fef2f2', padding: '1px 5px', borderRadius: 8, display: 'inline-block', marginTop: 2 }}>⚠ not linked</span>;
                         })()}
                       </td>
-                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontSize: 11, maxWidth: 100, overflow: 'hidden' }}><div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{vendList.find((v) => v.id === p.vendor_id)?.name || '—'}</div></td>
+                      <td style={{ padding: '6px 8px', borderBottom: '1px solid #f1f5f9', color: '#0f172a', fontSize: 11, maxWidth: 100, overflow: 'hidden' }}><div style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{vendList.find((v) => v.id === p.vendor_id)?.name || mfgVendorName(p.manufacturer) || '—'}</div></td>
                     </tr>
                   );
                 })}
