@@ -22092,6 +22092,30 @@ export default function App(){
   const[bulkImp,setBulkImp]=useState({raw:'',parsed:[],issues:[],step:'paste'});// paste|review|done
   const[billImport,setBillImport]=useState({step:'upload',files:[],parsed:[],uploading:false,showRaw:{}});
   const _billImportRef=useRef(null);_billImportRef.current=billImport;// live mirror for async sweeps (post-AI auto-push reads fresh wrappers, not stale closures)
+  // ── Daily auto-pull (owner 2026-07-23: "auto pull should happen at 9:30") ──────────────
+  // The 9:30am SI-side sync fills the queue server-side; the match+push machinery runs in the
+  // browser (it needs the live orders). So: the FIRST visit to Supplier Bills each day runs
+  // ⚡ Pull Bills automatically — same fetch, same matching, same auto-push safety gates, no
+  // click. Skips silently if a review session is already open (never stomps in-progress work,
+  // and doesn't burn the day's slot). pullAllBills lives inside rImport(), so it's reached
+  // through a per-render ref, same pattern as _billImportRef.
+  const _pullAllBillsRef=useRef(null);
+  const _autoPullFired=useRef(false);
+  useEffect(()=>{
+    if(pg!=='import'||impTab!=='bills'||_autoPullFired.current||!supabase)return;
+    const today=new Date().toISOString().slice(0,10);
+    try{if(localStorage.getItem('nsa_bill_autopull_day')===today)return}catch(e){}
+    const t=setTimeout(()=>{
+      const bi=_billImportRef.current;
+      if(bi&&bi.step==='review'&&(bi.parsed||[]).length)return;// active session — leave the slot for later
+      if(!_pullAllBillsRef.current)return;
+      _autoPullFired.current=true;
+      try{localStorage.setItem('nsa_bill_autopull_day',today)}catch(e){}
+      nf('⚡ Daily pull — fetching new bills and auto-matching (all safety gates apply)…','success');
+      _pullAllBillsRef.current();
+    },900);// let the screen paint first
+    return()=>clearTimeout(t);
+  },[pg,impTab]);// eslint-disable-line react-hooks/exhaustive-deps
   // Auto-push (owner rule, 2026-07-21): the ⚡ clean class pushes itself at pull time —
   // same gates and same money path as the human button. Default ON; toggle in the review
   // toolbar persists per device. 'off' is the stored sentinel so a cleared store = ON.
@@ -24405,6 +24429,7 @@ export default function App(){
       }catch(e){nf('Sports Inc queue failed: '+(e.message||e)+' — S&S results are in the list below','error')}
       setSiQueueLoading(false);
     };
+    _pullAllBillsRef.current=pullAllBills;// reachable from the component-scope daily auto-pull effect
     const markSiStatus=async(row,status,verb)=>{
       const upd={status,resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
       try{await supabase.from('si_documents').update(upd).eq('si_doc_number',row.si_doc_number)}catch(e){nf('Update failed: '+(e.message||e),'error');return}
@@ -27232,6 +27257,33 @@ export default function App(){
             const n=id==='upload'?grabN:0;
             return <button key={id} onClick={()=>setBillView(id)} style={swStyle(_bv===id)}><span style={{display:'inline-flex',alignItems:'center',gap:8,transform:'skewX(6deg)'}}>{label}{n?<span style={{fontSize:12,opacity:.7}}>{n}</span>:null}</span></button>;})}
         </div>;})()}
+        {/* ⚡ TODAY'S AUTO-MATCHED (owner 2026-07-23: "i want to see what was auto matched") —
+            everything the machine pushed today, from the applied ledger (resolution.auto_pushed),
+            visible on BOTH sub-tabs the moment you land. Expandable, dismiss-free, read-only. */}
+        {(()=>{
+          const dayStart=new Date();dayStart.setHours(0,0,0,0);
+          const auto=(serverBills||[]).filter(r=>{const t=r.applied_at?Date.parse(r.applied_at):0;return t>=dayStart.getTime()&&r.resolution&&r.resolution.auto_pushed});
+          if(!auto.length)return null;
+          const tot=auto.reduce((a,r)=>a+(Number(r.doc_total)||0),0);
+          return <details style={{marginBottom:14,background:'#E7F2EC',border:'1px solid #bfdfd0',borderLeft:'4px solid '+GREEN,borderRadius:6}}>
+            <summary style={{cursor:'pointer',padding:'10px 16px',fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.4,color:'#14532d'}}>
+              ⚡ Auto-matched &amp; pushed today: {auto.length} bill{auto.length===1?'':'s'} · ${tot.toLocaleString('en-US',{minimumFractionDigits:2})} — open to review
+            </summary>
+            <div style={{padding:'2px 16px 12px'}}>
+              <table style={{width:'100%',fontSize:11.5,borderCollapse:'collapse'}}>
+                <thead><tr style={{color:'#166534',textAlign:'left',fontFamily:FD,textTransform:'uppercase',letterSpacing:.5,fontSize:10}}><th style={{padding:'4px 6px'}}>Vendor</th><th style={{padding:'4px 6px'}}>Invoice #</th><th style={{padding:'4px 6px'}}>PO</th><th style={{padding:'4px 6px',textAlign:'right'}}>Amount</th><th style={{padding:'4px 6px'}}>When</th></tr></thead>
+                <tbody>{auto.map((r,i)=><tr key={i} style={{borderTop:'1px solid #d3e8dc'}}>
+                  <td style={{padding:'4px 6px',fontWeight:700,color:NAVY}}>{r.vendor||'—'}</td>
+                  <td style={{padding:'4px 6px'}}>{r.doc_number||r.doc_norm||''}</td>
+                  <td style={{padding:'4px 6px'}}>{r.po_number||''}</td>
+                  <td style={{padding:'4px 6px',textAlign:'right',fontWeight:700,fontVariantNumeric:'tabular-nums'}}>${(Number(r.doc_total)||0).toFixed(2)}</td>
+                  <td style={{padding:'4px 6px',color:'#64748b'}}>{r.applied_at?new Date(r.applied_at).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'}):''}</td>
+                </tr>)}</tbody>
+              </table>
+              <div style={{fontSize:10.5,color:'#166534',marginTop:6}}>High-confidence matches only — exact/core+tag PO, price within 25%, vendor checked. Full detail in ✅ Pushed (Bill History) below; anything odd also lands in the daily anomaly email.</div>
+            </div>
+          </details>;
+        })()}
         {/* Parsing indicator */}
         {billImport.step==='parsing'&&<div className="card"><div className="card-body" style={{textAlign:'center',padding:40}}>
           <div style={{fontSize:36,marginBottom:8}}>&#8987;</div>
@@ -28882,7 +28934,8 @@ export default function App(){
               <div style={{marginTop:12}}>
                 <div style={{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}}>
                   {skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',disabled:siQueueLoading,onClick:loadSiQueue,children:siQueueLoading?'Loading…':'↻ Refresh queue'})}
-                  {(approve.length+review.length)>0&&skBtn({bg:NAVY,fg:'#fff',fs:12,pad:'9px 16px',title:'Load every matchable document into the review list — same as ⚡ Pull bills; nothing applies from here',onClick:()=>_siSendToReview(approve.concat(review)),children:'→ Send '+(approve.length+review.length)+' matchable to review'})}
+                  {/* "Send N matchable to review" removed (owner 2026-07-23): a duplicate of
+                      ⚡ Pull Bills minus the fresh fetch — one way in keeps the flow simple. */}
                   {outside.length>1&&skBtn({bg:'#fff',fg:NAVY,border:'1.5px solid '+MGRAY,fs:12,pad:'9px 16px',title:'Old-system (no-space) POs are billed through NetSuite/QuickBooks — confirm and clear the whole bucket in one click; they stay auditable and count as captured',onClick:()=>markSiStatusBulk(outside,'outside_portal','Mark outside portal'),children:'✓ Mark all outside ('+outside.length+')'})}
                 </div>
                 {!siQueue.length&&!siQueueLoading&&<div style={{padding:'2px 0 14px',color:TXTL,fontSize:12}}>No Sports Inc documents loaded yet — click <b>↻ Refresh queue</b> (⚡ Pull bills on the Bills tab fetches fresh from the API).</div>}
