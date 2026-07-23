@@ -2330,8 +2330,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
     const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
-    const stamp={api_order_id:oid,api_ordered_at:new Date().toLocaleString(),...( _vkeys?{vendor_keys:_vkeys}:{})};
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,...stamp}:pl)}));
+    // Granularity (owner 2026-07-23): each line carries only ITS item's vendor keys — a
+    // style-matched subset when one exists, the full list as fallback so nothing is lost.
+    const _vkN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const _stampFor=(itemSku)=>{const base={api_order_id:oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
+      const k=_vkN(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
+      return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
+    const stamp=_stampFor('');// legacy shape for the full-page badge below
+    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
     const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
@@ -2350,10 +2356,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!orderedNum)return false;
       const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
       const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
-      const _stamp=_oid?{api_order_id:_oid,api_ordered_at:new Date().toLocaleString(),...(_vkeys?{vendor_keys:_vkeys}:{})}:{};
+      // Granularity (owner 2026-07-23): per-item vendor-key subset, full list as fallback.
+      const _vkN2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const _stampFor2=(itemSku)=>{if(!_oid)return{};const base={api_order_id:_oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
+        const k=_vkN2(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN2(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
+        return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
       const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
       if(myBatchIds.size>0){
-        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stamp}:pl)}));
+        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
         const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);
       }
@@ -8450,10 +8460,36 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 shipToDecoId:_linkDeco.deco_vendor_id,
                 initialDpoNumber:String(_linkDeco.po_id||'').replace(/^DPO\s*/i,'')});
             }else{
-              // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
-              const first=newPoLines[0];
-              const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
-              setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+              // DIRECT-TO-CUSTOMER DROP-SHIP → S&S API (owner 2026-07-23): the API order box
+              // was only offered when a decorator was linked, so direct drop-ships were placed
+              // off-portal and captured no vendor keys (0/26 in July) — the root cause of S&S
+              // bills matching by guesswork instead of by their own numbers. Offer the same
+              // modal with the PO's chosen ship-to prefilled. The modal opens in TEST mode and
+              // shows the address — the human reviews before anything goes live. An incomplete
+              // address falls back to today's Edit-PO flow.
+              const _dsVk=isDropShip?_apiVendorKey(vn):null;
+              const _dsShipTo=(()=>{
+                if(_dsVk!=='sss'||!apiPayloadItems.length)return null;
+                let s=null;
+                if(poShipTo==='custom'&&poShipCustom.line1){s={companyName:poShipCustom.name||cust?.name||'',address1:poShipCustom.line1,city:poShipCustom.city,region:poShipCustom.state,postalCode:poShipCustom.zip}}
+                else{
+                  const m=/_alt_(\d+)$/.exec(String(poShipTo));
+                  if(m){const alts=(cust?.alt_billing_addresses||[]).filter(ab=>ab.type==='shipping'&&(ab.street||ab.city));const ab=alts[parseInt(m[1],10)];
+                    if(ab)s={companyName:ab.label||cust?.name||'',attentionTo:ab.attention||'',address1:ab.street||'',address2:'',city:ab.city||'',region:ab.state||'',postalCode:ab.zip||''}}
+                  else if(poShipTo===cust?.id&&cust?.shipping_address_line1){s={companyName:cust.name||'',address1:cust.shipping_address_line1,address2:cust.shipping_address_line2||'',city:cust.shipping_city||'',region:cust.shipping_state||'',postalCode:cust.shipping_zip||''}}
+                }
+                if(s&&poAttention.trim())s.attentionTo=poAttention.trim();
+                return s&&s.address1&&s.city&&s.region&&s.postalCode?s:null;
+              })();
+              if(_dsShipTo){
+                nf('📦 Drop ship — opening '+vn+' API order shipping to '+(_dsShipTo.companyName||'the customer')+' (review the address before submitting)');
+                setApiOrder({vendorKey:_dsVk,poNumber:effectivePoId,vendorName:vn,batchPOs:[{so_id:o.id,items:apiPayloadItems}],shipTo:_dsShipTo});
+              }else{
+                // Auto-open the PO modal on the newly created PO so the user can immediately email or download.
+                const first=newPoLines[0];
+                const newPo=updatedItems[first.lineIdx].po_lines[first.poIdx];
+                setEditPO({lineIdx:first.lineIdx,poIdx:first.poIdx,po:newPo,allLines:newPoLines});
+              }
             }
           }
         }}><Icon name="cart" size={14}/> {preexistingPO?'Apply Preexisting PO':'Create PO'} ({poItems.filter((_,vi)=>!poExcluded[vi]).length}){poDecoInline?' + 🎨 Deco PO':''}</button>}</div>

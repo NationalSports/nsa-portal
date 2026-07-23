@@ -131,6 +131,15 @@ export default function SSOrderModal({ batchPOs, poNumber, vendorName = 'S&S Act
             </div>
           )}
 
+          {/* Ship-to, plainly visible (owner 2026-07-23): drop-ship orders carry a CUSTOMER
+              address — the human must see where goods will land without digging into the JSON. */}
+          {!done && shipTo && (
+            <div style={{ padding: 10, background: '#faf5ff', border: '1px solid #e9d5ff', borderRadius: 8, marginBottom: 12, fontSize: 12.5, color: '#6b21a8' }}>
+              <strong>📦 Ships to:</strong> {[ship.companyName, ship.attentionTo && 'Attn: ' + ship.attentionTo, ship.address1, ship.address2, [ship.city, ship.region, ship.postalCode].filter(Boolean).join(' ')].filter(Boolean).join(' · ')}
+              <span style={{ marginLeft: 8, color: '#9333ea' }}>— confirm this address before submitting.</span>
+            </div>
+          )}
+
           {!done && resolving && (
             <div style={{ padding: 10, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 8, marginBottom: 12, fontSize: 12, color: '#1e40af' }}>
               <strong>🔄 Looking up S&S SKUs…</strong> Matching each line to its S&S item number. Submit unlocks once every line has one.
