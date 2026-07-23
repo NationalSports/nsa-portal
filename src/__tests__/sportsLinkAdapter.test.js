@@ -367,6 +367,26 @@ describe('poCoreTagMatch (widen auto-push to sloppy-but-certain POs, owner 2026-
   });
 });
 
+describe('looksNetsuiteDocRef (auto-route clearly-NetSuite refs to Outside, owner 2026-07-23)', () => {
+  const { looksNetsuiteDocRef } = require('../sportsLink');
+  it('flags SO-refs and long pure-numeric invoice ids', () => {
+    expect(looksNetsuiteDocRef('SO135806')).toBe(true);
+    expect(looksNetsuiteDocRef('SO 1255')).toBe(true);
+    expect(looksNetsuiteDocRef('302682488263')).toBe(true);
+    expect(looksNetsuiteDocRef('185946680')).toBe(true);
+    expect(looksNetsuiteDocRef('05162026')).toBe(true);
+  });
+  it('never flags a portal PO, an NSA order, or a store-name PO', () => {
+    expect(looksNetsuiteDocRef('PO 3182 LAF')).toBe(false);
+    expect(looksNetsuiteDocRef('NSA 19251 CREW')).toBe(false); // real portal NSA order
+    expect(looksNetsuiteDocRef('NSA4553')).toBe(false);         // ambiguous — left in review, not hidden
+    expect(looksNetsuiteDocRef('SILICONVALLEY')).toBe(false);   // store name
+    expect(looksNetsuiteDocRef('3094 CLHSSP')).toBe(false);     // spaced core+tag (portal shape)
+    expect(looksNetsuiteDocRef('8464Q3019JH')).toBe(false);     // has letters
+    expect(looksNetsuiteDocRef('')).toBe(false);
+  });
+});
+
 describe('siExpectedUpcharge (0.8% of pre-discount subtotal, fill-when-missing)', () => {
   test('0.8% of gross, rounded to cents', () => {
     expect(siExpectedUpcharge(100)).toBe(0.8);

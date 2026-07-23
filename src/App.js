@@ -356,7 +356,7 @@ import SanMarPreviewModal from './SanMarPreviewModal';
 import SSOrderModal from './SSOrderModal';
 import MomentecOrderModal from './MomentecOrderModal';
 import { shipStationCall, testShipStationConnection, convertSOToShipStation, pushSOToShipStation, fetchShipStationUpdates, fetchRecentShipments, createShipStationLabel, fetchShipStationRates, omgFetchAllPages, omgApiCall, probeOMGEndpoints, fetchOMGStores, fetchOMGStoreDetail, convertOMGStore, sanmarApiCall, sanmarGetProduct, sanmarGetProductByBrand, sanmarGetInventory, testSanMarConnection, ssApiCall, ssGetInventory, ssGetStyles, ssGetBrands, ssGetCategories, ssGetOrders, ssGetProductStyles, testSSConnection, richardsonApiCall, richardsonGetProducts, richardsonGetInventory, testRichardsonConnection, momentecApiCall, momentecGetProducts, momentecGetProductById, momentecGetProductByPartNumber, momentecGetProductsByCategory, momentecSearchProducts, momentecGetCategories, testMomentecConnection, sanmarResolveSku, ssResolveSku, momentecResolveSku, richardsonResolveSku, resolveSkuAcrossVendors, sportsLinkGetDocuments, sportsLinkSetStatus } from './vendorApis';
-import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch } from './sportsLink';
+import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
 import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, looksPrePortalGlued, poParts } from './billResolve';
@@ -22007,6 +22007,10 @@ export default function App(){
     // the Reedley PO 3281 case). For non-spaced/unknown formats, confirm against the NetSuite export.
     const core=parseSiPoString(row.po_number).core;
     if(origin!=='portal'&&_isNetsuitePo(core))return{bucket:'outside',parsed,match:null,reason:'Matches NetSuite PO #'+core+' — the order is handled from NetSuite; billed outside the portal.'};
+    // Clearly a NetSuite/manual reference (SO# or a long invoice number) with no portal match —
+    // route off the review queue to Outside. Narrow + collision-free (looksNetsuiteDocRef), so a
+    // real portal bill is never mis-sorted; only fires when nothing confident matched above.
+    if(origin!=='portal'&&(!best||best.confidence==='low')&&looksNetsuiteDocRef(row.po_number))return{bucket:'outside',parsed,match:null,reason:'NetSuite/manual reference (SO# or invoice number) with no portal order — billed outside the portal.'};
     const reason=origin==='portal'
       ?(best?'Weak match — verify the order before approving.':'Portal PO (spaced) not found — the PO line may need to be created.')
       :(best?'Weak match, and no NetSuite record — verify.':'No portal match and not in the NetSuite export — verify (may be old or a data gap).');
