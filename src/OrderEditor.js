@@ -2330,8 +2330,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     // Phase A of order-aware matching: persist the vendor ack + the exact line keys we submitted
     // (their sku/partId, size/color, unit cost) as vendor_keys — pure capture, nothing reads it yet.
     const _vkeys=apiLines&&apiLines.length?{order_no:String(oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
-    const stamp={api_order_id:oid,api_ordered_at:new Date().toLocaleString(),...( _vkeys?{vendor_keys:_vkeys}:{})};
-    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,...stamp}:pl)}));
+    // Granularity (owner 2026-07-23): each line carries only ITS item's vendor keys — a
+    // style-matched subset when one exists, the full list as fallback so nothing is lost.
+    const _vkN=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const _stampFor=(itemSku)=>{const base={api_order_id:oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
+      const k=_vkN(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
+      return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
+    const stamp=_stampFor('');// legacy shape for the full-page badge below
+    const items=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>pl.po_id===desc.poNumber?{...pl,..._stampFor(it.sku)}:pl)}));
     const updated={...o,items,updated_at:new Date().toLocaleString()};setO(updated);onSave(updated);
     // If this PO's full page is open, stamp its snapshot too so the "Placed via API" badge shows
     // and the "Order via API" button hides — a stale page could otherwise invite a double-submit.
@@ -2350,10 +2356,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(!orderedNum)return false;
       const _oid=r&&(r.orderId||r.orderNumber||r.transactionId);
       const _vkeys=_oid&&apiLines&&apiLines.length?{order_no:String(_oid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:Number(l.quantity)||0,unit_cost:Number(l.unitPrice)||0}))}:null;
-      const _stamp=_oid?{api_order_id:_oid,api_ordered_at:new Date().toLocaleString(),...(_vkeys?{vendor_keys:_vkeys}:{})}:{};
+      // Granularity (owner 2026-07-23): per-item vendor-key subset, full list as fallback.
+      const _vkN2=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const _stampFor2=(itemSku)=>{if(!_oid)return{};const base={api_order_id:_oid,api_ordered_at:new Date().toLocaleString()};if(!_vkeys)return base;
+        const k=_vkN2(itemSku);const mine=k?_vkeys.lines.filter(l=>{const st=_vkN2(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
+        return{...base,vendor_keys:mine.length?{..._vkeys,lines:mine}:_vkeys}};
       const myBatchIds=new Set((apiOrder.batchPOs||[]).filter(bp=>bp.so_id===apiOrder.skipSoId).map(bp=>bp.id));
       if(myBatchIds.size>0){
-        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stamp}:pl)}));
+        const items2=safeItems(o).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>myBatchIds.has(pl.batch_queue_id)?{...pl,status:'waiting',batch_po_number:orderedNum,memo:'Batch '+orderedNum+' — '+(apiOrder.vendorName||''),..._stampFor2(it.sku)}:pl)}));
         const updated={...o,items:items2,updated_at:new Date().toLocaleString()};
         setO(updated);onSave(updated);
       }

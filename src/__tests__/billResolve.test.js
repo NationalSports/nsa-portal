@@ -924,10 +924,22 @@ describe('weak-guess demotion — weak-tier ties with a huge price gap never rea
     expect(cleanAutoAccept(p, pulloverBill(30).items)).toBe(false);
     expect(highConfidenceAutoAccept(p)).toBe(false);// the widened auto-push gate must refuse a weak guess too
   });
-  test('the same weak tie with a small gap stays proposable (no weakGuess demotion)', () => {
-    const p = proposeResolutions(pulloverBill(3.79), [teeCand], { canonSize: canon })[0]; // ~9% off
+  test('a small price gap no longer rescues CONFLICTING descriptions (owner 2026-07-23): pullover→tee is a hint even at ~9% off', () => {
+    const p = proposeResolutions(pulloverBill(3.79), [teeCand], { canonSize: canon })[0]; // ~9% off, but "Ultimate365 Pullover" vs "Momentec C2 TEE"
     expect(p).toBeTruthy();
     expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
+    expect(p.descConflict).toBe(true);
+    expect(p.weakGuess).toBe(true);
+    expect(p.confidence).toBe('low');
+  });
+  test('the same weak tie with an AGREEING description and small gap stays proposable', () => {
+    const bill = { po_number: 'Sample', items: [
+      { sku: 'B01153005', size: 'M', color: 'Black', qty: 1, unit_price: 3.79, desc: 'MOMENTEC C2 TEE BLACK' },
+    ] };
+    const p = proposeResolutions(bill, [teeCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties.map((t) => t.basis)).toEqual(['color_size']);
+    expect(p.descConflict).toBeFalsy();
     expect(p.weakGuess).toBeFalsy();
     expect(p.confidence).toBe('medium'); // unanchored full-coverage — unchanged behavior
   });
@@ -1156,5 +1168,89 @@ describe('pdfCrossCheckConflict (PDF reinforces EDI, speak up only on disagreeme
     expect(pdfCrossCheckConflict(100, null)).toBe(false);
     expect(pdfCrossCheckConflict(undefined, 100)).toBe(false);
     expect(pdfCrossCheckConflict(NaN, 100)).toBe(false);
+  });
+});
+
+// ── Account gate + tightened weak-guess rails (owner 2026-07-23: "matches are pulling
+// things that aren't even related" — the A514-for-A430 case, live bill doc 100898884) ──
+describe('account/vendor/description gating of weak proposals', () => {
+  // The REAL failing case: an S&S bill tagged OVHF (B-number SKUs, "Performance Piqué"),
+  // whose own order was fully billed, got offered a BATCH serving OLuBB/CIVIF with a
+  // different product (Ultimate365 @ $29.23 vs billed $20.13) on color+size alone.
+  const ovhfBill = {
+    po_number: 'PO17801OVHF', supplier: 'S&S Activewear',
+    items: [
+      { sku: 'B07953355', desc: "Men's Performance Piqué Polo", color: 'Grey Three', size: 'L', qty: 2, unit_price: 20.13 },
+      { sku: 'B07953356', desc: "Men's Performance Piqué Polo", color: 'Grey Three', size: 'XL', qty: 7, unit_price: 20.13 },
+      { sku: 'B07953357', desc: "Men's Performance Piqué Polo", color: 'Grey Three', size: '2XL', qty: 2, unit_price: 22.49 },
+      { sku: 'B07953358', desc: "Men's Performance Piqué Polo", color: 'Grey Three', size: '3XL', qty: 1, unit_price: 22.49 },
+    ],
+  };
+  const wrongBatch = {
+    kind: 'batch', id: 'NSA 4553', label: 'NSA 4553', sub: 'Batch · S&S Activewear · OLuBB, CIVIF',
+    raw: { po_number: 'NSA 4553' }, alpha_tags: ['OLUBB', 'CIVIF'],
+    items: [
+      { sku: 'A514', name: "Men's Ultimate365 Solid Polo", color: 'Grey Three', size: 'L', qty: 4, unit_cost: 29.23, vendor: 'S&S Activewear' },
+      { sku: 'A514', name: "Men's Ultimate365 Solid Polo", color: 'Grey Three', size: 'XL', qty: 8, unit_cost: 29.23, vendor: 'S&S Activewear' },
+      { sku: 'A514', name: "Men's Ultimate365 Solid Polo", color: 'Grey Three', size: '2XL', qty: 4, unit_cost: 29.23, vendor: 'S&S Activewear' },
+      { sku: 'A514', name: "Men's Ultimate365 Solid Polo", color: 'Grey Three', size: '3XL', qty: 2, unit_cost: 29.23, vendor: 'S&S Activewear' },
+    ],
+  };
+  test('the A514 case: a weak-only tie to a batch serving OTHER schools is never proposed', () => {
+    const props = proposeResolutions(ovhfBill, [wrongBatch], { canonSize: canon });
+    expect(props).toHaveLength(0);
+  });
+  test('without customer info (no alpha_tags), the 31% price gap alone now refuses one-click accept', () => {
+    const cand = { ...wrongBatch, alpha_tags: [] };
+    const props = proposeResolutions(ovhfBill, [cand], { canonSize: canon });
+    if (props.length) { // may surface as a hint, but never as an acceptable answer
+      expect(props[0].weakGuess).toBe(true);
+      expect(props[0].confidence).toBe('low');
+    }
+  });
+  test('description conflict alone (prices close) also refuses one-click accept', () => {
+    const cand = {
+      ...wrongBatch, alpha_tags: [],
+      items: wrongBatch.items.map((it) => ({ ...it, unit_cost: 20.13 })), // price agrees now
+    };
+    const props = proposeResolutions(ovhfBill, [cand], { canonSize: canon });
+    expect(props.length).toBeGreaterThan(0);
+    expect(props[0].descConflict).toBe(true);
+    expect(props[0].weakGuess).toBe(true);
+  });
+  test('the RIGHT customer with agreeing descriptions still proposes cleanly', () => {
+    const rightCand = {
+      kind: 'so', id: 'SO-1574', label: 'SO-1574', sub: 'Sales Order · OVHF', raw: { id: 'SO-1574' },
+      alpha_tags: ['OVHF'],
+      items: [
+        { sku: 'A430', name: "Adidas Men's Performance Piqué Polo", color: 'Grey Three', size: 'L', qty: 2, unit_cost: 20.13, po_id: 'PO 17801 OVHF', vendor: 'S&S Activewear' },
+        { sku: 'A430', name: "Adidas Men's Performance Piqué Polo", color: 'Grey Three', size: 'XL', qty: 7, unit_cost: 20.13, po_id: 'PO 17801 OVHF', vendor: 'S&S Activewear' },
+        { sku: 'A430', name: "Adidas Men's Performance Piqué Polo", color: 'Grey Three', size: '2XL', qty: 2, unit_cost: 22.49, po_id: 'PO 17801 OVHF', vendor: 'S&S Activewear' },
+        { sku: 'A430', name: "Adidas Men's Performance Piqué Polo", color: 'Grey Three', size: '3XL', qty: 1, unit_cost: 22.49, po_id: 'PO 17801 OVHF', vendor: 'S&S Activewear' },
+      ],
+    };
+    const props = proposeResolutions(ovhfBill, [wrongBatch, rightCand], { canonSize: canon });
+    expect(props.length).toBeGreaterThan(0);
+    expect(props[0].target.id).toBe('SO-1574');
+    expect(props[0].accountMismatch).toBeFalsy();
+    expect(props[0].weakGuess).toBeFalsy();
+    expect(props[0].poAnchored).toBe(true); // PO17801OVHF ↔ PO 17801 OVHF normalize equal
+  });
+  test('strong SKU evidence still survives an account mismatch (demoted, with the warning)', () => {
+    const crossBill = { po_number: 'PO 9000 AAAA', supplier: 'S&S Activewear',
+      items: [{ sku: 'A514', desc: 'Ultimate365 Polo', color: 'Grey Three', size: 'L', qty: 4, unit_price: 29.23 }] };
+    const props = proposeResolutions(crossBill, [wrongBatch], { canonSize: canon });
+    expect(props.length).toBeGreaterThan(0);
+    expect(props[0].accountMismatch).toBe(true);
+    expect(props[0].confidence).not.toBe('high');
+    expect(props[0].evidence.join(' ')).toMatch(/wrong account/);
+  });
+  test('bill tag glued with a rep suffix still matches its own customer (no false block)', () => {
+    const cand = { ...wrongBatch, alpha_tags: ['SCF'] };
+    const bill = { ...ovhfBill, po_number: 'PO 3552 SCF REP' };
+    const props = proposeResolutions(bill, [{ ...cand, items: cand.items.map((it) => ({ ...it, unit_cost: 20.13, name: "Men's Performance Piqué Polo" })) }], { canonSize: canon });
+    // SCFREP startsWith SCF → same account, so the account gate must NOT drop it
+    expect(props.length).toBeGreaterThan(0);
+    expect(props[0].accountMismatch).toBeFalsy();
   });
 });

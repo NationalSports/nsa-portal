@@ -8696,6 +8696,17 @@ export default function App(){
     // so the bill matcher can later match on the vendor's own keys instead of fuzzy normalization.
     const vendorKeys=apiOid&&apiLines&&apiLines.length?{order_no:String(apiOid),lines:apiLines.map(l=>({sku:l.sku||l.partId||'',style:l.style||'',color:l.color||'',size:l.size||'',qty:safeNum(l.quantity),unit_cost:safeNum(l.unitPrice)}))}:null;
     const apiStamp=apiOid?{api_order_id:apiOid,api_ordered_at:new Date().toLocaleString(),...(vendorKeys?{vendor_keys:vendorKeys}:{})}:null;
+    // GRANULARITY (owner 2026-07-23): stamp each PO line with only ITS item's vendor keys —
+    // stamping the whole batch's list on every line let a vendor number alias to the wrong
+    // style (AT101/AT102 both carried the same 6 numbers). Style-matched subset when one
+    // exists; the full list stays as the fallback so no capture is ever lost.
+    const _vkNorm=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+    const _stampFor=(itemSku)=>{
+      if(!apiStamp||!vendorKeys)return apiStamp;
+      const k=_vkNorm(itemSku);
+      const mine=k?vendorKeys.lines.filter(l=>{const st=_vkNorm(l.style);return st&&(st===k||k.startsWith(st)||st.startsWith(k))}):[];
+      return mine.length?{...apiStamp,vendor_keys:{...vendorKeys,lines:mine}}:apiStamp;
+    };
     const sb={po_number:poNum,vendor_key:vk,vendor_name:vgName,total_cost:total,total_units:totalUnits,
       submitted_at:new Date().toLocaleString(),submitted_by:cu.name,status:'waiting',
       ...(apiStamp||{}),
@@ -8711,7 +8722,7 @@ export default function App(){
       bps.forEach(bp=>{
         let promoted=false;
         updatedItems.forEach(it=>{it.po_lines=it.po_lines.map(pl=>{
-          if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vgName,...(apiStamp||{})}}
+          if(pl.batch_queue_id===bp.id){promoted=true;return{...pl,status:'waiting',batch_po_number:poNum,memo:'Batch '+poNum+' — '+vgName,...(_stampFor(it.sku)||{})}}
           return pl;
         })});
         // Backstop: if no queued lines matched (legacy batch entries created before the
@@ -8721,7 +8732,7 @@ export default function App(){
         if(!promoted){
           bp.items.forEach(bpIt=>{
             const idx=bpIt.item_idx;if(idx==null||!updatedItems[idx])return;
-            const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(apiStamp||{}),received:{},shipments:[]};
+            const poLine={po_id:bp.po_id||poNum,vendor:vgName,status:'waiting',created_at:new Date().toLocaleDateString(),memo:'Batch '+poNum+' — '+vgName,batch_po_number:poNum,...(_stampFor(bpIt.sku)||{}),received:{},shipments:[]};
             if(bpIt.drop_ship)poLine.drop_ship=true;
             Object.entries(bpIt.sizes||{}).forEach(([sz,v])=>{if(v>0)poLine[sz]=v});
             updatedItems[idx].po_lines=[...updatedItems[idx].po_lines,poLine];
@@ -23904,8 +23915,11 @@ export default function App(){
       // button) so it disappears without the manual click. Matched on the vendor's own invoice
       // number, identical on the API row and the PDF; status-only, reversible, no money path.
       try{
-        const parsedDocs=new Set(results.map(r=>String(r?.parsed?.supplier_doc_number||r?.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
-        const hits=parsedDocs.size?siQueue.filter(r=>r._t?.bucket==='grab'&&parsedDocs.has(String(r.supplier_doc_number||'').trim().toLowerCase())):[];
+        // Both keys, both sides (owner 2026-07-23, the Champro case): the PDF may print the
+        // vendor's invoice number OR Sports Inc's document number — the waiting row carries
+        // both (supplier_doc_number + si_doc_number), so match against either.
+        const parsedDocs=new Set(results.flatMap(r=>[r?.parsed?.supplier_doc_number,r?.parsed?.doc_number].map(v=>String(v||'').trim().toLowerCase()).filter(Boolean)));
+        const hits=parsedDocs.size?siQueue.filter(r=>r._t?.bucket==='grab'&&(parsedDocs.has(String(r.supplier_doc_number||'').trim().toLowerCase())||parsedDocs.has(String(r.si_doc_number||'').trim().toLowerCase()))):[];
         if(hits.length){
           const ids=hits.map(r=>r.si_doc_number),idSet=new Set(ids);
           const upd={status:'manual_done',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
@@ -24707,7 +24721,11 @@ export default function App(){
           Object.entries(it.sizes||{}).forEach(([sz,qty])=>{if(qty>0)items.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,qty,unit_cost:it.unit_cost||0,so_id:sp.so_id||'',vendor:sb.vendor_name||''})});
         }));
         const totalQty=items.reduce((a,it)=>a+it.qty,0);
-        out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds});
+        // alpha_tags: the customer school codes this batch serves (via its source SOs) — the
+        // proposal engine's account gate (billResolve accountMismatch) uses these so a bill
+        // tagged for one school can never weak-tie a batch serving different schools.
+        const batchTags=[...new Set(soIds.map(sid=>{const so=(sos||[]).find(s2=>String(s2.id)===String(sid));const c2=so&&cust.find(cc=>cc.id===so.customer_id);return(c2?.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,'')}).filter(Boolean))];
+        out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds,alpha_tags:batchTags});
       });
       (sos||[]).forEach(so=>{
         const items=[];
@@ -24726,7 +24744,8 @@ export default function App(){
         }));
         if(!items.length)return;
         const c=cust.find(cc=>cc.id===so.customer_id);
-        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id]});
+        const soTag=(c?.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id],alpha_tags:soTag?[soTag]:[]});
       });
       return out;
     };
@@ -28643,8 +28662,29 @@ export default function App(){
             if(sb2)return[...new Set((sb2.source_pos||[]).map(sp=>sp.customer).filter(Boolean))].join(', ');
             return'';
           };
+          // ⬇ SI-archive export (owner 2026-07-23: pushed bills must be markable "archived" at
+          // Sports Inc). One CSV of the pushed rows in the current filter scope — vendor,
+          // invoice #, SI doc #, PO, customer, amount, date, where it went (Portal/QB) — to
+          // work the SI Invoice Center archive list from. Includes auto-pushed EDI bills:
+          // they're in the same savedBills/serverBills union.
+          const _dlArchiveCsv=()=>{
+            const pushedRows=scoped.filter(b=>b.qbStatus==='success'||b.portalStatus==='success');
+            if(!pushedRows.length){nf('Nothing pushed in the current filter scope','error');return}
+            const esc=v=>{const s=String(v==null?'':v);return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s};
+            const lines=[['Vendor','Invoice #','SI Doc #','PO','Customer','Amount','Pushed','Portal','QuickBooks'].join(',')];
+            pushedRows.forEach(sb=>{const p=sb.parsed||{};lines.push([
+              _vendorOf(sb),p.doc_number||'',p.si_doc_number||'',p.po_number||'',_custOf(sb),
+              (safeNum(p.doc_total)||safeNum(p.merchandise_total)).toFixed(2),
+              sb.uploadedAt||'',sb.portalStatus==='success'?'yes':'',sb.qbStatus==='success'?'yes':'',
+            ].map(esc).join(','))});
+            const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+            const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+            a.download='pushed-bills-si-archive-'+new Date().toISOString().slice(0,10)+'.csv';
+            a.click();URL.revokeObjectURL(a.href);
+            nf('⬇ '+pushedRows.length+' pushed bill(s) exported — work the SI Invoice Center archive list from this','success');
+          };
           return<details style={{marginTop:24}}>
-          <summary style={{cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,textTransform:'uppercase',letterSpacing:.4,padding:'6px 0'}}>Pushed to Portal — bill history ({pushed} pushed · {rows.length} shown)</summary>
+          <summary style={{cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:13,color:TXTL,textTransform:'uppercase',letterSpacing:.4,padding:'6px 0'}}>✅ Pushed — Portal &amp; QuickBooks ({pushed} pushed · {rows.length} shown) · archive these at Sports Inc</summary>
           <div className="card" style={{marginTop:8}}>
           <div className="card-header" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
             <h2 style={{margin:0}}>Bill History</h2>
@@ -28654,6 +28694,7 @@ export default function App(){
                 {chip('pushed','Pushed',pushed,'#16a34a')}
                 {chip('all','All',scoped.length,'#475569')}
               </div>;})()}
+            <button className="btn btn-sm btn-secondary" style={{fontSize:10,fontWeight:700}} title="CSV of every pushed bill in the current scope — vendor, invoice #, SI doc #, PO, amount, Portal/QB — for archiving at Sports Inc" onClick={_dlArchiveCsv}>⬇ Download for SI archive</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>{if(window.confirm('Clear all saved bill history?')){setSavedBills([]);localStorage.removeItem('nsa_saved_bills')}}}>Clear History</button>
           </div>
           <div className="card-body" style={{padding:0,maxHeight:500,overflow:'auto'}}>
@@ -28768,7 +28809,7 @@ export default function App(){
           const outBtn=(r,label)=>siBtn('out',label||'Outside','#fff',NAVY,()=>markSiStatus(r,'outside_portal','Marked Outside of Portal'),'Mark as billed outside the Portal','1.5px solid '+MGRAY);
           return <div style={{marginTop:6}}>
             {secHead({dot:'#7c3aed',title:'📄 Upload & Match',count:grab.length||undefined,note:grab.length?money(sumD(grab))+' waiting for a PDF':'AI-heavy intake',mt:false})}
-            <div style={{fontSize:12,color:TXTL,margin:'-6px 0 14px',maxWidth:940}}>Scanned Sports Inc docs arrive with <b>no line detail</b> over the API — download each PDF from the SI Invoice Center, drop it below, then <b>Mark uploaded</b>. Parsing is automatic, and parsed bills land in <b>⚠ To Review / ✓ Matched on the Bills tab</b>, where the ✨ AI matcher (Find order / wizard) takes over if the parse can’t match.</div>
+            <div style={{fontSize:12,color:TXTL,margin:'-6px 0 14px',maxWidth:940}}>Scanned Sports Inc docs arrive with <b>no line detail</b> over the API — download each PDF from the SI Invoice Center and drop it below. Parsing is automatic, <b>the waiting row clears itself</b> when its invoice is recognized, and parsed bills land in <b>⚠ To Review / ✓ Matched on the Bills tab</b>, where the ✨ AI matcher takes over if the parse can’t match.</div>
             <div style={{maxWidth:820}}>
           <div className="card">
             <div className="card-header"><h2>Upload Supplier Bills (PDF)</h2></div>
@@ -28808,7 +28849,10 @@ export default function App(){
             </div>
           </div>
             </div>
-            {grab.length>0&&<div style={{marginTop:18,marginBottom:8}}>{grab.map(r=>Row(r,{actions:rr=>siBtn('g','Mark uploaded','#fff',NAVY,()=>markSiStatus(rr,'manual_done','Marked uploaded'),null,'1.5px solid '+MGRAY),showConf:false,stripe:GOLD}))}</div>}
+            {/* No "Mark uploaded" button (owner 2026-07-23): the row clears ITSELF when its PDF
+                parses (matched on either the vendor invoice # or the SI doc #). The tiny ✓ is a
+                quiet escape hatch for a PDF that can't be read at all. */}
+            {grab.length>0&&<div style={{marginTop:18,marginBottom:8}}>{grab.map(r=>Row(r,{actions:rr=><button key="g" title="Rows clear themselves when their PDF parses — use this only if the PDF can't be read" onClick={()=>markSiStatus(rr,'manual_done','Cleared')} style={{border:'none',background:'none',color:TXTL,fontSize:14,cursor:'pointer',padding:'4px 8px'}}>✓</button>,showConf:false,stripe:GOLD}))}</div>}
             <details style={{marginTop:10}}>
               <summary style={{cursor:'pointer',fontSize:12,fontWeight:700,color:TXTL}}>ℹ What gets extracted from a PDF</summary>
               <div style={{maxWidth:820,marginTop:8}}>

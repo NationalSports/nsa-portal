@@ -134,6 +134,12 @@ export const looksPrePortalGlued = (po) => {
 // Ties ONE bill line to ONE candidate item, unambiguous-only, strongest signal first.
 // Returns {idx, basis} or null. `items` are wizard-candidate items
 // ({sku,name,color,size,qty(open),unit_cost,...}); qty>0 assumed (builder filters).
+// Distinctive words from a product description/name — generic garment words stripped, so
+// "shared words" means the PRODUCTS agree, not that both are men's polos. Used by the
+// weak-proposal description check (owner 2026-07-23).
+const _DESC_STOP = new Set(['MENS', 'WOMENS', 'LADIES', 'YOUTH', 'ADULT', 'UNISEX', 'POLO', 'SHIRT', 'TSHIRT', 'JACKET', 'PANT', 'PANTS', 'SHORT', 'SHORTS', 'SOCK', 'SOCKS', 'HOODIE', 'HOOD', 'PULLOVER', 'CREW', 'NECK', 'LONG', 'SLEEVE', 'SLEEVES', 'SOLID', 'PERFORMANCE', 'CUSTOM', 'ADIDAS', 'NIKE', 'WITH', 'SIZE']);
+const _descToks = (s) => String(s || '').toUpperCase().split(/[^A-Z0-9]+/).filter((w) => w.length >= 4 && !_DESC_STOP.has(w));
+
 const tieLine = (bl, items, canon, billVendor) => {
   const sku = _ns(bl.sku); const size = canon(bl.size); const color = _ns(bl.color);
   // _alias_sku: a learned vendor-number → portal-SKU mapping (bill_sku_aliases, written
@@ -305,6 +311,17 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     // strong ties it survives (the mined tag-differs retarget class) but demoted below.
     const tagMismatch = !!(billPo.tag && candPo.tag && billPo.tag !== candPo.tag);
     if (tagMismatch && !poAnchored && strongBasesEarly === 0) return;
+    // ACCOUNT MISMATCH (owner, 2026-07-23: "Bills all have the team's alpha number at the
+    // end — vendor and account gate"): the tag gate above compares PO STRINGS, so it goes
+    // blind on candidates whose PO carries no tag — batches ("NSA 4553") most of all. This
+    // gate compares the bill's tag against the CUSTOMERS the candidate actually serves
+    // (cand.alpha_tags, attached by _buildMatchCandidates). A bill tagged OVHF must never
+    // weak-tie a batch serving OLuBB/CIVIF. Loose on the bill side (billTag startsWith the
+    // customer tag — reps glue REP/RE suffixes on), silent when either side is unknown,
+    // and an exact-PO anchor or strong SKU evidence still overrides.
+    const candTags = (cand.alpha_tags || []).map(_ns).filter((t) => t.length >= 2);
+    const accountMismatch = !!(billPo.tag && billPo.tag.length >= 2 && candTags.length && !candTags.some((t) => billPo.tag === t || billPo.tag.startsWith(t) || (billPo.tag.length >= 3 && t.startsWith(billPo.tag))));
+    if (accountMismatch && !poAnchored && strongBasesEarly === 0) return;
     // DATE SANITY: a bill shipped/issued before the order existed cannot be that order.
     // Only fires when both dates parse; 2-day grace absorbs timezone/entry slop.
     const _pd = (v) => { const d = new Date(String(v || '')); return isNaN(d.getTime()) ? null : d.getTime(); };
@@ -332,9 +349,9 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       coverage === 1 && (qtyMirror || strongBases === ties.length || (tagMatch && coreDistance <= 1) || poAnchored) ? 'high'
       : poAnchored ? 'medium'
       : coverage >= 0.7 || (coverage >= 0.5 && tagMatch) ? 'medium' : 'low';
-    // Negative-evidence demotions: a surviving tag-mismatch or bill-predates-order
+    // Negative-evidence demotions: a surviving tag/account-mismatch or bill-predates-order
     // proposal is never "high" — real conflicting evidence needs a human.
-    if ((tagMismatch || billPredatesOrder) && confidence === 'high') confidence = 'medium';
+    if ((tagMismatch || accountMismatch || billPredatesOrder) && confidence === 'high') confidence = 'medium';
     // Money honesty: a "sure" match that would rewrite an order cost by >25% needs eyes —
     // the right ORDER can still have the wrong LINES tied (weak-basis tie + big price gap,
     // e.g. $111.37 F50s landing on a $41.25 sibling line by size alone).
@@ -356,7 +373,21 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
       const bp = _num(bl.unit_price); const oc = _num(it.unit_cost);
       if (bp > 0 && oc > 0) weakGapPct = Math.max(weakGapPct, Math.abs(bp - oc) / oc * 100);
     });
-    const weakGuess = weakBasesOnly && weakGapPct > 50 && !poAnchored;
+    // DESCRIPTION check (owner, 2026-07-23): on a weak-only proposal, if the bill's own
+    // description and the order item's name share NO distinctive word across any tied pair
+    // ("Performance Piqué Polo" tied to "Ultimate365 Solid Polo"), the products disagree in
+    // plain text — refuse the one-click Accept. Generic garment words don't count as
+    // agreement; pairs where either side has no distinctive words stay silent.
+    let _descPairs = 0, _descHits = 0;
+    if (weakBasesOnly) ties.forEach((t) => {
+      const b = _descToks((bill.items[t.bill_idx] || {}).desc); const n = _descToks((cand.items[t.target_idx] || {}).name);
+      if (b.length && n.length) { _descPairs++; if (b.some((x) => n.includes(x))) _descHits++; }
+    });
+    const descConflict = weakBasesOnly && _descPairs > 0 && _descHits === 0;
+    // Price bar tightened 50% → 25% (owner 2026-07-23, the A514-for-A430 class: color+size
+    // ties at a 31% gap were still offered with a green Accept) — now aligned with the same
+    // 25% bound every other money gate uses.
+    const weakGuess = weakBasesOnly && !poAnchored && (weakGapPct > 25 || descConflict);
     if (weakGuess) confidence = 'low';
     const evidence = [];
     if (poAnchored) evidence.push('PO number matches this order EXACTLY — near-certain this is the right order (owner rule)');
@@ -371,6 +402,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (coreDistance === 1) evidence.push('the PO number is one digit off (' + billPo.core + ' → ' + candPo.core + ')');
     if (coreDistance === 0 && billPo.tag !== candPo.tag) evidence.push('same PO number, different tag');
     if (tagMismatch) evidence.push('⚠ the bill’s tag “' + billPo.tag + '” names a DIFFERENT customer than this order (“' + candPo.tag + '”) — confirm the school before accepting');
+    if (accountMismatch) evidence.push('⚠ the bill’s tag “' + billPo.tag + '” matches NONE of the customers this order serves (' + candTags.join(', ') + ') — almost certainly the wrong account');
+    if (descConflict) evidence.push('⚠ the bill’s item descriptions share no words with the tied order items — these look like DIFFERENT products');
     if (billPredatesOrder) evidence.push('⚠ the bill is dated before this order was created — it may belong to an earlier order');
     const bulkTies = ties.filter((t) => t.basis === 'bulk').length;
     if (bulkTies) evidence.push(bulkTies + ' sized bill line(s) roll up to the PO’s single bulk line — bought in bulk, billed by size');
@@ -379,7 +412,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (weakGuess) evidence.push('every tie is a color/size-only guess and the billed price is ' + Math.round(weakGapPct) + '% off the order cost — treat this as a hint, not a match');
     const score = coverage * 60 + (poAnchored ? 30 : 0) + (qtyMirror ? 20 : 0) + (tagMatch ? 10 : 0) + (coreDistance <= 1 ? 8 : 0) + strongBases * 2 - (overageUnits ? 4 : 0);
     const unresolved = payable.filter(({ i }) => !ties.some((t) => t.bill_idx === i)).map(({ i }) => i);
-    out.push({ target: cand, coverage, ties, unresolved, poAnchored, qtyMirror, tagMatch, coreDistance, priceChanges, overageUnits, weakGuess, weakGapPct, confidence, evidence, score });
+    out.push({ target: cand, coverage, ties, unresolved, poAnchored, qtyMirror, tagMatch, accountMismatch, descConflict, coreDistance, priceChanges, overageUnits, weakGuess, weakGapPct, confidence, evidence, score });
   });
   out.sort((a, b) => b.score - a.score);
   // Ambiguity honesty: a near-tie between two orders drops both to 'medium' at best —
