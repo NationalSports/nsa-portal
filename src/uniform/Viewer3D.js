@@ -42,6 +42,10 @@ function matchZone(name) {
     ['sleever', 'sleeveR'], ['rightsleeve', 'sleeveR'], ['sleeveright', 'sleeveR'], ['rarm', 'sleeveR'],
     ['sidel', 'sidePanelL'], ['sider', 'sidePanelR'],
     ['collar', 'collar'], ['neck', 'collar'], ['cuff', 'collar'], ['trim', 'collar'], ['rib', 'collar'],
+    // Reversible flag-football jerseys expose the inside as a second material
+    // instead of a separate garment node. Reuse the collar configuration slot
+    // so coaches can color/print the reverse side independently.
+    ['reverse', 'collar'],
     ['yoke', 'yoke'], ['shoulder', 'yoke'], ['pocket', 'pocket'], ['hood', 'hood'],
     ['sleeve', 'sleeveL'],
     ['body', 'body'], ['torso', 'body'], ['front', 'body'], ['main', 'body'], ['chest', 'body'], ['jersey', 'body'],
@@ -91,6 +95,7 @@ const _fabricNormals = {};
 const _designMaskImages = {};
 const _designMaskTextures = {};
 const _selectionMaskTextures = {};
+const _aysonProjectionTextures = {};
 
 // Direct garment targeting uses the exact same UV artwork mask that colors the
 // jersey. This keeps clicks on a chest stripe, side insert or sleeve band tied
@@ -161,6 +166,72 @@ function designMaskTexture(url, baseHex, accentHex, onReady) {
     // The binary source keeps the break crisp; high-quality mip filtering and
     // stronger anisotropy keep that edge stable at steep sleeve angles without
     // introducing shimmer when the full jersey is in view.
+    // Preserve the two selected sublimation inks. Mipmaps average high-contrast
+    // inks into a third, washed-out color at normal builder distance.
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.anisotropy = 16;
+    tex.userData.shared = true;
+    _designMaskTextures[key] = tex;
+    onReady(tex);
+  };
+  if (_designMaskImages[url]) {
+    const cached = _designMaskImages[url];
+    if (cached.complete) build(cached); else cached.addEventListener('load', () => build(cached), { once: true });
+    return;
+  }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  _designMaskImages[url] = img;
+  img.onload = () => build(img);
+  img.src = url;
+}
+
+// Apply an editable print to the BASE side of an approved two-area layout
+// mask while preserving its independently colored accent (AGI-1012 chest
+// stripe / sleeve bands). Without this composite, the fixed layout mask wins
+// over a coach-selected print and only unmasked back panels receive artwork.
+function designMaskPatternTexture(url, patternCanvas, patternKey, accentHex, repeat, onReady) {
+  const rep = Math.max(1, Number(repeat) || 1);
+  const key = ['masked-print', url, patternKey, accentHex, rep.toFixed(4)].join('|');
+  if (_designMaskTextures[key]) { onReady(_designMaskTextures[key]); return; }
+  const build = (img) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth || img.width || 2048;
+    canvas.height = img.naturalHeight || img.height || 2048;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const image = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = image.data;
+    const patternSource = patternCanvas.getContext ? patternCanvas : (() => {
+      const c = document.createElement('canvas');
+      c.width = patternCanvas.naturalWidth || patternCanvas.width || 1;
+      c.height = patternCanvas.naturalHeight || patternCanvas.height || 1;
+      c.getContext('2d').drawImage(patternCanvas, 0, 0, c.width, c.height);
+      return c;
+    })();
+    const pw = patternSource.width || 1, ph = patternSource.height || 1;
+    const pctx = patternSource.getContext('2d', { willReadFrequently: true });
+    const pd = pctx.getImageData(0, 0, pw, ph).data;
+    const accent = rgb255(accentHex);
+    for (let y = 0; y < canvas.height; y++) {
+      const py = Math.min(ph - 1, Math.floor((((y / canvas.height) * rep) % 1) * ph));
+      for (let x = 0; x < canvas.width; x++) {
+        const i = (y * canvas.width + x) * 4;
+        if (d[i] >= 128) {
+          d[i] = accent[0]; d[i + 1] = accent[1]; d[i + 2] = accent[2]; d[i + 3] = 255;
+          continue;
+        }
+        const px = Math.min(pw - 1, Math.floor((((x / canvas.width) * rep) % 1) * pw));
+        const pi = (py * pw + px) * 4;
+        d[i] = pd[pi]; d[i + 1] = pd[pi + 1]; d[i + 2] = pd[pi + 2]; d[i + 3] = pd[pi + 3];
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.flipY = false;
+    tex.colorSpace = THREE.SRGBColorSpace;
     tex.generateMipmaps = true;
     tex.minFilter = THREE.LinearMipmapLinearFilter;
     tex.magFilter = THREE.LinearFilter;
@@ -179,6 +250,104 @@ function designMaskTexture(url, baseHex, accentHex, onReady) {
   _designMaskImages[url] = img;
   img.onload = () => build(img);
   img.src = url;
+}
+
+// AYSONSA is a complete front/back garment layout, not a repeating print tile.
+// Recolor its five stable source inks, then project the two approved elevations
+// over the actual AGI-1012 surface. This preserves the artist's rising hem and
+// underarm pattern while the original PBR fabric, folds and seams stay intact.
+function aysonProjectionTextures(frontUrl, backUrl, zone, onReady) {
+  // The SVG's four magenta shades are one production artwork ink. Keep them
+  // visually unified and expose body, artwork, and collar/cuffs as the three
+  // real color decisions in the builder.
+  const colors = [zone.color, zone.color2, zone.color2, zone.color2, zone.color2].map((c) => ds.toHex(c, '#ffffff'));
+  const key = [frontUrl, backUrl, ...colors].join('|');
+  if (_aysonProjectionTextures[key]) { onReady(_aysonProjectionTextures[key]); return; }
+  const load = (url) => new Promise((resolve) => {
+    const image = new Image(); image.crossOrigin = 'anonymous';
+    image.onload = () => resolve(image); image.src = url;
+  });
+  Promise.all([load(frontUrl), load(backUrl)]).then(([frontImage, backImage]) => {
+    const make = (image, url) => {
+      const canvas = tintedTile(image, url, colors[0], colors[1], colors[2], colors[3], 'atlas', colors[4]);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.generateMipmaps = false;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.anisotropy = 16;
+      texture.userData.shared = true;
+      return texture;
+    };
+    const pair = { front: make(frontImage, frontUrl), back: make(backImage, backUrl) };
+    _aysonProjectionTextures[key] = pair;
+    onReady(pair);
+  }).catch(() => {});
+}
+
+function applyAysonSurface(st, mat, tpl, zone, meshName) {
+  const bounds = tpl.projectionBounds || { xMin: -0.334, xMax: 0.334, yMin: 0, yMax: 0.677, depthCenter: 0 };
+  const isBody = meshName === 'body_front' || meshName === 'body_back';
+  const sourceU = isBody
+    ? (tpl.projectionBodyU || { frontMin: 0.251, frontMax: 0.687, backMin: 0.348, backMax: 0.747 })
+    : (tpl.projectionSleeveU || { frontMin: 0.086, frontMax: 0.852, backMin: 0.180, backMax: 0.916 });
+  const geometryX = isBody ? { min: -0.212, max: 0.212 } : { min: bounds.xMin, max: bounds.xMax };
+  const fixedSide = meshName === 'body_front' ? 1 : meshName === 'body_back' ? 0 : -1;
+  const base = new THREE.Color(textileAlbedo(ds.toHex(zone.color, '#31132a')));
+  const data = mat.userData.nsaAyson || { base, front: null, back: null, shader: null };
+  data.base.copy(base);
+  mat.userData.nsaAyson = data;
+  if (!mat.userData.nsaAysonInstalled) {
+    mat.userData.nsaAysonInstalled = true;
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.nsaAysonBase = { value: data.base };
+      shader.uniforms.nsaAysonFront = { value: data.front };
+      shader.uniforms.nsaAysonBack = { value: data.back };
+      shader.uniforms.nsaAysonBounds = { value: new THREE.Vector4(geometryX.min, geometryX.max, bounds.yMin, bounds.yMax) };
+      shader.uniforms.nsaAysonSourceU = { value: new THREE.Vector4(sourceU.frontMin, sourceU.frontMax, sourceU.backMin, sourceU.backMax) };
+      shader.uniforms.nsaAysonDepth = { value: bounds.depthCenter || 0 };
+      shader.uniforms.nsaAysonSide = { value: fixedSide };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNsaAysonPosition = position;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vNsaAysonPosition;\nuniform vec3 nsaAysonBase;\nuniform sampler2D nsaAysonFront;\nuniform sampler2D nsaAysonBack;\nuniform vec4 nsaAysonBounds;\nuniform vec4 nsaAysonSourceU;\nuniform float nsaAysonDepth;\nuniform float nsaAysonSide;')
+        .replace('#include <color_fragment>', `#include <color_fragment>
+          float nsaAysonX = clamp((vNsaAysonPosition.x - nsaAysonBounds.x) / max(0.00001, nsaAysonBounds.y - nsaAysonBounds.x), 0.0, 1.0);
+          float nsaAysonY = clamp((vNsaAysonPosition.y - nsaAysonBounds.z) / max(0.00001, nsaAysonBounds.w - nsaAysonBounds.z), 0.0, 1.0);
+          bool nsaAysonIsFront = nsaAysonSide > 0.5 || (nsaAysonSide < -0.5 && vNsaAysonPosition.z >= nsaAysonDepth);
+          float nsaAysonAngleX = nsaAysonIsFront
+            ? (atan(vNsaAysonPosition.x, vNsaAysonPosition.z) + 1.5707963) / 3.1415926
+            : (atan(-vNsaAysonPosition.x, -vNsaAysonPosition.z) + 1.5707963) / 3.1415926;
+          float nsaAysonEdge = smoothstep(0.55, 0.85, abs(nsaAysonX * 2.0 - 1.0));
+          float nsaAysonWrappedX = mix(nsaAysonX, clamp(nsaAysonAngleX, 0.0, 1.0), nsaAysonEdge * step(-0.5, nsaAysonSide));
+          // Match source pixels to garment dimensions so circular artwork
+          // stays circular instead of being compressed into wide diamonds.
+          float nsaAysonSourceY = nsaAysonY;
+          if (nsaAysonSide > 0.5) nsaAysonSourceY = mix(0.100, 0.856, nsaAysonY);
+          else if (nsaAysonSide > -0.5) nsaAysonSourceY = mix(0.062, 0.818, nsaAysonY);
+          vec2 nsaAysonUv = vec2(
+            nsaAysonIsFront ? mix(nsaAysonSourceU.x, nsaAysonSourceU.y, nsaAysonWrappedX) : mix(nsaAysonSourceU.z, nsaAysonSourceU.w, nsaAysonWrappedX),
+            nsaAysonSourceY
+          );
+          vec4 nsaAysonInk = nsaAysonIsFront ? texture2D(nsaAysonFront, nsaAysonUv) : texture2D(nsaAysonBack, nsaAysonUv);
+          diffuseColor.rgb = mix(nsaAysonBase, nsaAysonInk.rgb, step(0.04, nsaAysonInk.a));`);
+      data.shader = shader;
+    };
+    mat.customProgramCacheKey = () => `nsa-ayson-projection-v4-${fixedSide}`;
+  }
+  mat.color.set('#ffffff');
+  mat.needsUpdate = true;
+  aysonProjectionTextures(tpl.projectionFront, tpl.projectionBack, zone, (pair) => {
+    data.front = pair.front; data.back = pair.back;
+    if (data.shader) {
+      data.shader.uniforms.nsaAysonFront.value = pair.front;
+      data.shader.uniforms.nsaAysonBack.value = pair.back;
+      data.shader.uniforms.nsaAysonBase.value.copy(data.base);
+    }
+    mat.needsUpdate = true;
+    if (st.queueSnapshot) st.queueSnapshot(120);
+  });
 }
 
 // Convert the artwork mask into an EDGE-ONLY alpha texture for selection. A
@@ -405,6 +574,14 @@ function zoneRepeat(span, targetTiles, fallback) {
   return Math.max(2, Math.min(60, targetTiles / span));
 }
 
+// Hex Flow contains several motifs inside one source tile. Give it a modestly
+// higher density than a conventional all-over print: large enough to read as
+// real garment artwork, but not so dense that the two inks visually merge.
+function customPatternRepeat(zs, span) {
+  const isHexFlow = /hex[\s_-]*flow/i.test(`${zs.patternName || ''} ${zs.patternImage || ''}`);
+  return zoneRepeat(span, isHexFlow ? 3 : 3.5, 5);
+}
+
 // AGI-1011's side insert crosses separate front/back UV shells. Computing the
 // color break from the garment surface itself keeps one continuous, clean edge
 // across that construction seam (and still leaves the UV mask available for
@@ -474,7 +651,7 @@ function applySidePanelSurface(st, mat, baseHex, accentHex) {
   mat.needsUpdate = true;
 }
 
-function applyDesign(st, rawSpec) {
+function applyDesign(st, rawSpec, liningColor = null) {
   const spec = ds.normalizeSpec(rawSpec);
   const tpl = getTemplate(spec.garmentId);
   // One repeat per ZONE, not per mesh: garments cut into several panels per zone
@@ -489,15 +666,51 @@ function applyDesign(st, rawSpec) {
     const zone = entry.zone;
     const zs = (zone && spec.zones[zone]) || spec.zones.body || ds.DEFAULT_ZONE;
     const mat = entry.mesh.material;
-    const color = textileAlbedo(ds.toHex(zs.color, '#1f2a44'));
+    // The small amount of lining visible through a reversible jersey's neck
+    // and arm openings belongs to its opposite colorway, not a generic gray.
+    const materialIdentity = `${mat && mat.name || ''} ${entry.mesh.name || ''}`.toLowerCase();
+    const isReverseLining = materialIdentity.includes('reverse');
+    const color = textileAlbedo(ds.toHex(isReverseLining && liningColor ? liningColor : zs.color, '#1f2a44'));
     const color2 = textileAlbedo(ds.toHex(zs.color2, '#ffffff'));
-    const pat = zs.pattern || 'solid';
+    const patternColor2 = textileAlbedo(ds.toHex(zs.patternColor2, color2));
+    // The opposing print is shown as a separate full proof beside this one.
+    // At openings, a clean opposing base color reads correctly and avoids
+    // projecting this side's atlas onto the physical inner-lining UV shell.
+    const pat = isReverseLining && liningColor ? 'solid' : (zs.pattern || 'solid');
     const meshName = String(entry.mesh.name || '').toLowerCase();
     const maskUrl = tpl.designMasks && tpl.designMasks[meshName];
     if (mat.map) { if (!(mat.map.userData && mat.map.userData.shared)) mat.map.dispose(); mat.map = null; }
-    if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
+    if (tpl.proceduralLayout === 'ayson' && ['body_front', 'body_back', 'sleeve_left', 'sleeve_right'].includes(meshName)) {
+      entry._patGen = (entry._patGen || 0) + 1;
+      applyAysonSurface(st, mat, tpl, zs, meshName);
+    } else if (tpl.proceduralLayout === 'sidePanels' && (meshName === 'body_front' || meshName === 'body_back')) {
       entry._patGen = (entry._patGen || 0) + 1;
       applySidePanelSurface(st, mat, color, color2);
+    } else if (maskUrl && pat === 'custom' && zs.patternImage) {
+      // Composite the selected print into every BASE pixel of the approved
+      // layout mask. The accent pixels remain the independently editable chest
+      // stripe/sleeve band, so the print covers the full chosen panel without
+      // erasing construction artwork.
+      const gen = (entry._patGen = (entry._patGen || 0) + 1);
+      mat.color.set(color);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        if (entry._patGen !== gen || !entry.mesh.material) return;
+        const secondInk = zs.patternTintMode === 'atlas' ? color2 : patternColor2;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, secondInk, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode, ds.toHex(zs.color5, '#ffffff')) : img;
+        // The composite lives in the garment's original UV atlas. Convert the
+        // desired panel-local tile count to atlas-space repetition.
+        const rep = customPatternRepeat(zs, spanByZone[entry.zone]);
+        const patternKey = [zs.patternImage, zs.patternTintMode, color, patternColor2, zs.color3, zs.color4, zs.color5].join('|');
+        designMaskPatternTexture(maskUrl, source, patternKey, color2, rep, (tex) => {
+          if (entry._patGen !== gen || !entry.mesh.material) return;
+          const m = entry.mesh.material;
+          m.map = tex; m.color.set('#ffffff'); m.needsUpdate = true;
+          if (st.queueSnapshot) st.queueSnapshot(120);
+        });
+      };
+      img.src = zs.patternImage;
     } else if (maskUrl) {
       const gen = (entry._patGen = (entry._patGen || 0) + 1);
       mat.color.set('#ffffff');
@@ -518,14 +731,21 @@ function applyDesign(st, rawSpec) {
         if (entry._patGen !== gen || !entry.mesh.material) return;
         // Tintable tiles are grayscale: recolor with the zone's colors so one
         // uploaded tile serves every colorway.
-        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, color2, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode) : img;
+        const secondInk = zs.patternTintMode === 'atlas' ? color2 : patternColor2;
+        const source = zs.patternTint ? tintedTile(img, zs.patternImage, color, secondInk, ds.toHex(zs.color3, '#ffffff'), ds.toHex(zs.color4, '#ffffff'), zs.patternTintMode, ds.toHex(zs.color5, '#ffffff')) : img;
         const tex = new THREE.CanvasTexture(source);
-        tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-        // Same tile-count logic as the built-ins: ~2.5 print repeats across each
-        // panel so a print never balloons on the sleeves.
-        const rep = zoneRepeat(spanByZone[entry.zone], 2.5, 4);
+        const isAtlas = zs.patternTintMode === 'atlas';
+        tex.wrapS = tex.wrapT = isAtlas ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+        // A vendor atlas is already positioned over the garment's exact UV
+        // shells. Ordinary artwork remains a repeated tile.
+        const rep = isAtlas ? 1 : customPatternRepeat(zs, spanByZone[entry.zone]);
         tex.repeat.set(rep, rep);
-        tex.anisotropy = 8;
+        // CanvasTexture follows the browser's top-left image origin. Keep its
+        // normal Y flip so the baked atlas lines up with the garment UVs.
+        if (isAtlas) tex.flipY = tpl.atlasFlipY !== false;
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         tex.colorSpace = THREE.SRGBColorSpace;
         const m = entry.mesh.material;
         if (m.map) m.map.dispose();
@@ -856,7 +1076,7 @@ function applySelection(st, activeArea, rawSpec) {
 // the model center so it stays framed). `shiftPx` pans the model horizontally by
 // N screen pixels — the wizard uses it to sit the jersey under the whole page's
 // center even though the 3D stage only occupies the area left of the rail.
-export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0, view = null, interactive = true, activeArea = null, activeDecoration = null, onDecorationSelect = null, onDecorationMove = null, onZoneSelect = null, onSnapshot = null, fallbackImage = null }) {
+export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDeg = 0, shiftPx = 0, view = null, interactive = true, activeArea = null, activeDecoration = null, onDecorationSelect = null, onDecorationMove = null, onZoneSelect = null, onSnapshot = null, fallbackImage = null, surfaceSide = 'all', liningColor = null, viewSyncRef = null, viewSyncId = null }) {
   const mountRef = useRef(null);
   const stateRef = useRef(null);
   const activeAreaRef = useRef(activeArea); activeAreaRef.current = activeArea;
@@ -906,6 +1126,25 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
     controls.enablePan = false;
     controls.enabled = !!interactive;
     controls.autoRotate = !!autoRotate; controls.autoRotateSpeed = 1.1;
+    // Reversible products render both physical faces at once. Whichever pane
+    // the customer drags becomes the temporary leader; the other pane follows
+    // the same camera pose so front/side/back comparisons stay synchronized.
+    const syncId = viewSyncId || `viewer-${Math.random().toString(36).slice(2)}`;
+    const publishSyncedView = () => {
+      if (!viewSyncRef || !viewSyncRef.current) return;
+      viewSyncRef.current.publisher = syncId;
+      viewSyncRef.current.pose = {
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+        zoom: camera.zoom,
+      };
+    };
+    const onOrbitStart = () => { if (viewSyncRef && viewSyncRef.current) viewSyncRef.current.owner = syncId; };
+    const onOrbitChange = () => { if (viewSyncRef && viewSyncRef.current && viewSyncRef.current.owner === syncId) publishSyncedView(); };
+    const onOrbitEnd = () => { publishSyncedView(); if (viewSyncRef && viewSyncRef.current && viewSyncRef.current.owner === syncId) viewSyncRef.current.owner = null; };
+    controls.addEventListener('start', onOrbitStart);
+    controls.addEventListener('change', onOrbitChange);
+    controls.addEventListener('end', onOrbitEnd);
     // Lens shift: move the rendered image right by `shiftPx` CSS px without
     // moving the camera or orbit target. Re-applied on resize so the shift
     // tracks the current canvas size.
@@ -1129,6 +1368,19 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       // camera gets clamped inside the mesh.
       controls.minDistance = dist * 0.35; controls.maxDistance = dist * 4;
       controls.update();
+      if (viewSyncRef && viewSyncRef.current) {
+        const synced = viewSyncRef.current.pose;
+        if (synced && viewSyncRef.current.initialized) {
+          camera.position.fromArray(synced.position);
+          controls.target.fromArray(synced.target);
+          camera.zoom = synced.zoom || 1;
+          camera.updateProjectionMatrix();
+          controls.update();
+        } else {
+          publishSyncedView();
+          viewSyncRef.current.initialized = true;
+        }
+      }
 
       rootObj.traverse((o) => {
         if (o.isMesh) {
@@ -1138,6 +1390,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
           // catch the lights and wash tinted colors toward pastel. Keep the
           // original name: matchZone falls back to it for zone matching.
           const srcMat = o.material;
+          const materialName = String(srcMat && srcMat.name || '').toLowerCase();
+          if (surfaceSide === 'main' && materialName.includes('reverse')) { o.visible = false; return; }
+          if (surfaceSide === 'reverse' && !materialName.includes('reverse')) { o.visible = false; return; }
           // Sewn topstitch and drawcord geometry is authored as a fixed detail,
           // not a recolorable fabric zone. Preserve those neutral thread/cord
           // materials while the garment panels remain fully editable.
@@ -1192,14 +1447,38 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
         gtao.updateGtaoMaterial({ radius: maxDim * sp.aoRadius, distanceExponent: 1.2, thickness: maxDim * 0.02, scale: sp.aoScale, samples: 16, distanceFallOff: 1, screenSpaceRadius: false });
         gtao.setSceneClipBox(new THREE.Box3().setFromObject(rootObj));
       } catch (e) { /* AO tuning is best-effort */ }
-      try { applyDesign(st, spec); updateDecals(st, spec); applySelection(st, activeAreaRef.current, spec); } catch (e) { /* keep default */ }
+      try { applyDesign(st, spec, liningColor); updateDecals(st, spec); applySelection(st, activeAreaRef.current, spec); } catch (e) { /* keep default */ }
       if (activeDecorationRef.current) focusDecorationView(st, activeDecorationRef.current);
       setStatus('ready');
       queueSnapshot(450);
       draco.dispose();
     }, undefined, () => { setStatus('error'); });
 
-    const animate = () => { st.raf = requestAnimationFrame(animate); controls.update(); composer.render(); };
+    const animate = () => {
+      st.raf = requestAnimationFrame(animate);
+      const sync = viewSyncRef && viewSyncRef.current;
+      const isAutoLeader = !!sync && String(syncId).endsWith('-A');
+      const followsUser = !!(sync && sync.pose && (
+        (sync.owner && sync.owner !== syncId)
+        || (!sync.owner && sync.publisher && sync.publisher !== syncId)
+      ));
+      const followsAuto = !!(sync && !sync.owner && autoRotateRef.current && !isAutoLeader && sync.pose);
+      if (followsUser || followsAuto) {
+        const synced = sync.pose;
+        camera.position.fromArray(synced.position);
+        controls.target.fromArray(synced.target);
+        camera.zoom = synced.zoom || 1;
+        camera.updateProjectionMatrix();
+        const rotating = controls.autoRotate;
+        controls.autoRotate = false;
+        controls.update();
+        controls.autoRotate = rotating;
+      } else {
+        controls.update();
+        if (sync && !sync.owner && autoRotateRef.current && isAutoLeader) publishSyncedView();
+      }
+      composer.render();
+    };
     animate();
 
     // Keep the drawing buffer synced to the container (ResizeObserver catches the
@@ -1228,6 +1507,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       if (ro) ro.disconnect();
       clearTimeout(st.snapshotTimer);
       cancelAnimationFrame(st.raf);
+      controls.removeEventListener('start', onOrbitStart);
+      controls.removeEventListener('change', onOrbitChange);
+      controls.removeEventListener('end', onOrbitEnd);
       controls.dispose();
       clearSelection(st);
       st.decals.forEach((d) => { if (d.material.map) d.material.map.dispose(); d.material.dispose(); d.geometry.dispose(); });
@@ -1239,7 +1521,7 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
       stateRef.current = null;
     };
-  }, [modelUrl, view, interactive]); // eslint-disable-line
+  }, [modelUrl, view, interactive, surfaceSide]); // eslint-disable-line
 
   // re-apply on autoRotate toggle
   useEffect(() => { const st = stateRef.current; if (st && st.controls) st.controls.autoRotate = !!autoRotate; }, [autoRotate]);
@@ -1259,9 +1541,9 @@ export default function Viewer3D({ spec, modelUrl, autoRotate, fit = 1.5, tiltDe
   useEffect(() => {
     const st = stateRef.current;
     if (st && st.meshes && st.meshes.length) {
-      try { applyDesign(st, spec); updateDecals(st, spec); st.queueSnapshot && st.queueSnapshot(350); } catch (e) {}
+      try { applyDesign(st, spec, liningColor); updateDecals(st, spec); st.queueSnapshot && st.queueSnapshot(350); } catch (e) {}
     }
-  }, [spec]);
+  }, [spec, liningColor]);
 
   // Keep the 3D garment visually tied to the section currently being edited.
   useEffect(() => {

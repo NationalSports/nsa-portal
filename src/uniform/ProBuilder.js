@@ -16,9 +16,10 @@
 
 import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { getTemplate } from './templates';
-import { SETTINGS_DEFAULTS, loadBuilderSettings, loadBuilderPatterns } from './builderSettings';
+import { SETTINGS_DEFAULTS, BASKETBALL_4R3CHB_PRESETS, loadBuilderSettings } from './builderSettings';
 import { FABRIC_DETAILS, fabricSwatchDataURL } from './fabricInfo';
 import { renderToDataURL, renderProductionPDF, renderProductionSheet } from './renderCanvas';
+import { renderProductionSVG, downloadSVG } from './renderSvg';
 import { fontStack } from './fonts';
 import { calculateUniformPrice, formatUniformMoney, normalizeUniformDiscount } from './pricing';
 import { canvasFromImage, cloneCanvas, trimTransparentCanvas } from './logoImage';
@@ -45,11 +46,11 @@ const EMBEDDED = (() => { try { return new URLSearchParams(window.location.searc
 // Dedicated review links for the approved soccer layouts. They bypass
 // autosave/catalog state so every URL opens a deterministic starting point.
 const REVIEW_DESIGN = (() => { try { return new URLSearchParams(window.location.search).get('design') || ''; } catch { return ''; } })();
-const AGI_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012';
-// The first procedural shorts study is intentionally withheld from the customer
-// flow. Keep the underlying template/source for a future artist-built replacement,
-// while the released configurator stays focused on the production-ready jersey.
-const SHORTS_PREVIEW_ENABLED = false;
+const DIRECT_PREVIEW = REVIEW_DESIGN === 'AGI-1011' || REVIEW_DESIGN === 'AGI-1012' || REVIEW_DESIGN === 'AYSONSA' || REVIEW_DESIGN === 'FF-228187' || REVIEW_DESIGN === 'BB-4R3CHB';
+// The artist-built Holloway 321821 soccer short replaces the early procedural
+// study. Keep the paired-garment flow enabled so the jersey and short can be
+// reviewed as one kit, while each piece remains independently editable.
+const SHORTS_PREVIEW_ENABLED = true;
 
 // 12-color team palette (+ sky, kept selectable so the Argentina demo maps to
 // real swatches rather than a "custom" hex).
@@ -64,10 +65,40 @@ const nameForHex = (hex) => {
 
 // Full pattern library (ids/labels from designSpec, so they always validate).
 const PATTERNS = ds.PATTERNS;
+// A small built-in library keeps approved test prints available even before an
+// administrator has connected the Uniform Patterns table. These are artwork
+// tiles, not garment layouts: a coach can apply one to any printable section
+// while its construction boundaries remain intact.
+const BUILT_IN_PRINT_PATTERNS = [
+  {
+    id: 'hex-flow-test', name: 'Hex Flow', image: '/uniform/patterns/hex-flow-test.png',
+    tintable: true, tint_mode: 'duotone',
+  },
+];
+// Exact Holloway 228187 UV-atlas artwork. Unlike a repeating print tile, each
+// design line is already positioned across the front, back, sleeves and collar
+// shells of the commissioned flag-football GLB.
+const FLAG_228187_DESIGNS = [
+  ['all-over-pattern', 'All-Over Pattern', 1], ['audible', 'Audible', 4], ['craft', 'Craft', 3],
+  ['fade-out', 'Fade Out', 2], ['flash', 'Flash', 3], ['glide', 'Glide', 5],
+  ['huddle', 'Huddle', 4], ['paint', 'Paint', 5], ['passer', 'Passer', 4],
+  ['playmaker', 'Playmaker', 1], ['safety', 'Safety', 4], ['shift', 'Shift', 4],
+  ['steel-town', 'Steel Town', 4],
+].map(([slug, name, colors]) => ({
+  id: `228187-${slug}`, name, image: `/uniform/patterns/flag-228187/${slug}-atlas.png`,
+  tintable: true, tint_mode: 'atlas', colors,
+}));
+const BASKETBALL_4R3CHB_DESIGNS = BASKETBALL_4R3CHB_PRESETS.map((preset) => {
+  const zone = preset.config.sections.body;
+  return {
+    id: preset.id.toLowerCase(), name: preset.name, image: zone.patternImage,
+    tintable: true, tint_mode: 'atlas', colors: zone.patternColorCount,
+  };
+});
 // Human-readable "Construction Materials" row value for a section/zone.
 const zoneRowValue = (z) => {
   if (z.pattern === 'custom') return `Print: ${z.patternName || 'Custom'}`;
-  if (z.pattern !== 'solid') return `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.color2)}`;
+  if (z.pattern !== 'solid') return `${nameForHex(z.color)} · ${(PATTERNS.find((p) => p.id === z.pattern) || {}).label || 'Solid'} w/ ${nameForHex(z.patternColor2 || z.color2)}`;
   return nameForHex(z.color);
 };
 
@@ -95,6 +126,10 @@ const AGI1012_SPLIT_SECTIONS = [
   { key: 'sleeveBandL', label: 'Left Band', sourceKey: 'sleeveL', colorField: 'color2' },
   { key: 'sleeveR', label: 'Right Sleeve' },
   { key: 'sleeveBandR', label: 'Right Band', sourceKey: 'sleeveR', colorField: 'color2' },
+  { key: 'collar', label: 'Collar & Cuffs' },
+];
+const AYSON_SECTIONS = [
+  { key: 'body', label: 'AYSONSA Artwork' },
   { key: 'collar', label: 'Collar & Cuffs' },
 ];
 const AGI1011_LINKED_SECTIONS = [
@@ -147,9 +182,9 @@ const sectionsFromLegacy = (c) => expandSections({
 // shorts unless they want to; unlinking freezes the current derived look so
 // they can then customize it independently.
 const BOTTOM_SECTIONS = [
-  { key: 'legs', label: 'Legs' },
-  { key: 'waistband', label: 'Waistband' },
-  { key: 'stripe', label: 'Angular Side Inserts' },
+  { key: 'legs', label: 'Shorts Body' },
+  { key: 'stripe', label: 'Corner Kick Artwork' },
+  { key: 'waistband', label: 'Interior / Reverse' },
 ];
 const defaultBottomSections = () => ({
   legs: { color: '#192853', color2: '#FFFFFF', pattern: 'solid' },
@@ -162,7 +197,7 @@ function effectiveBottomSections(cfg) {
   const S = normSections(cfg.sections);
   const bottom = cfg.bottom || defaultBottom();
   if (bottom.linked) {
-    const from = (z) => ({ color: z.color, color2: z.color2, color3: z.color3, color4: z.color4, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode });
+    const from = (z) => ({ color: z.color, color2: z.color2, patternColor2: z.patternColor2, color3: z.color3, color4: z.color4, color5: z.color5, pattern: z.pattern, patternImage: z.patternImage, patternName: z.patternName, patternTint: z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount });
     // Match the supplied shorts construction: body-color legs + waistband,
     // with the jersey's secondary graphic color on the angular side insert.
     const stripe = from(S.body);
@@ -174,17 +209,40 @@ function effectiveBottomSections(cfg) {
 }
 function bottomSpecFromConfig(cfg) {
   const B = effectiveBottomSections(cfg);
+  const basketball = cfg.neckStyle === 'basketball4r3chb';
+  const basketballShortDesigns = new Set([
+    'all_star', 'arizona', 'atlanta', 'brooklyn', 'cameron_classic', 'chicago', 'custom_design_line',
+    'digital_wave', 'dominant', 'drive', 'fast_break', 'indiana', 'mardi_gras', 'miami', 'nyc', 'okc',
+    'orlando', 'pace', 'portland', 'seattle', 'skyline', 'swish', 'title_shot', 'uconn',
+  ]);
+  const jerseySlug = String((B.legs && B.legs.patternImage) || '').match(/\/228125\/([a-z0-9_]+)\.svg/i);
+  const shortSlug = jerseySlug && basketballShortDesigns.has(jerseySlug[1]) ? jerseySlug[1] : 'custom_design_line';
   const zoneOf = (z) => ({
-    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    color3: z.color3, color4: z.color4,
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
+    color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
+    color3: z.color3, color4: z.color4, color5: z.color5,
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
-    garmentId: 'shorts', fabric: cfg.fabric || 'sublimated',
+    garmentId: basketball ? 'basketball_4r3chb_shorts' : 'shorts_321821', fabric: cfg.fabric || 'sublimated',
     zones: {
       legL: zoneOf(B.legs), legR: zoneOf(B.legs),
       waistband: zoneOf(B.waistband),
       sidePanelL: zoneOf(B.stripe), sidePanelR: zoneOf(B.stripe),
+      // The vendor GLB is a production UV garment with one exterior material,
+      // so its design line is applied as a full atlas rather than pretending
+      // that the accent is a separate 3D mesh. Corner Kick gives us a clean,
+      // two-ink first test: jersey body -> shorts body, jersey secondary -> art.
+      body: {
+        ...zoneOf(B.legs),
+        color2: B.stripe.color,
+        pattern: 'custom',
+        patternImage: basketball ? `/uniform/designs/4r3chb/${shortSlug}.svg` : '/uniform/patterns/shorts-321821/corner-kick-atlas.svg',
+        patternName: basketball ? `${String((B.legs && B.legs.patternName) || 'Matching')} Shorts` : 'Corner Kick',
+        patternTint: true,
+        patternTintMode: 'atlas',
+        patternColorCount: basketball ? ((B.legs && B.legs.patternColorCount) || 3) : 2,
+      },
+      collar: zoneOf(B.waistband),
     },
     text: {
       front: { number: { value: '' }, name: { value: '' } },
@@ -227,6 +285,7 @@ const OUTLINE_WIDTHS = { thin: 2, standard: 3.25, bold: 5 };
 // can still move freely across its real panel.
 const DECORATION_SAFE_AREAS = {
   frontNumber: { x: [0.24, 0.76], y: [0.24, 0.50] },
+  frontName: { x: [0.5, 0.5], y: [0.14, 0.34] },
   backNumber: { x: [0.5, 0.5], y: [0.28, 0.72] },
   backName: { x: [0.24, 0.76], y: [0.11, 0.31] },
   'logo:chest': { x: [0.22, 0.78], y: [0.13, 0.78] },
@@ -304,9 +363,20 @@ const SPORTS = [
   { key: 'basketball', label: 'Basketball', icon: '🏀' },
   { key: 'baseball', label: 'Baseball', icon: '⚾' },
   { key: 'track', label: 'Track & Field', icon: '🎽' },
+  { key: 'flagfootball', label: 'Flag Football', icon: '🏈' },
   { key: 'soccer', label: 'Soccer', icon: '⚽' },
 ];
 const SPORT_LABELS = SPORTS.reduce((m, s) => { m[s.key] = s.label; return m; }, {});
+// A design belongs only to the sports explicitly assigned to it. This prevents
+// a soccer cut from leaking into basketball/football merely because it was once
+// treated as a generic preset.
+export const presetMatchesSport = (preset, sport) => !!(
+  preset && Array.isArray(preset.sports) && preset.sports.includes(sport)
+);
+export const sportsWithDesigns = (sports, presets) => sports.filter((sport) => (
+  presets.some((preset) => presetMatchesSport(preset, sport.key))
+));
+export const aiDesignSupportedForSport = (sport) => sport === 'soccer' || sport === 'basketball';
 let DESIGN_PRESETS = SETTINGS_DEFAULTS.presets;
 const thumbCache = {}; // module-level: gallery thumbs render once per session
 const savedThumbsCache = {}; // module-level: My Designs thumbs render once per session
@@ -397,9 +467,12 @@ function garmentFor(cfg) {
   // so a cut comparison never changes the approved 2D proof or design zones.
   if (cfg.neckStyle === 'agi1011') return 'agi1011_jersey';
   if (cfg.neckStyle === 'agi1012') return 'agi1012_jersey';
+  if (cfg.neckStyle === 'ayson') return 'ayson_jersey';
   if (cfg.neckStyle === 'newbase') return 'nsapro_jersey'; // Sahrul (v1)
   if (cfg.neckStyle === 'sahrul2') return 'sahrul2_jersey'; // Sahrul (v2, production spec)
   if (cfg.neckStyle === 'vikram') return 'vikram_jersey';  // Vikram
+  if (cfg.neckStyle === 'flag228187') return 'flag228187_jersey'; // Holloway reversible flag cut
+  if (cfg.neckStyle === 'basketball4r3chb') return 'basketball_4r3chb'; // Holloway reversible basketball cut
   const byNeck = PROGRAM_GARMENTS[cfg.program] || PROGRAM_GARMENTS.mens;
   return byNeck[cfg.neckStyle === 'crew' ? 'crew' : 'vneck'];
 }
@@ -409,7 +482,7 @@ export function modelGarmentFor(cfg) {
   // live viewer through proofing and production. Artist comparisons were
   // useful during model selection, but leaving them selectable on a real
   // design made the customer's view diverge from the production asset.
-  if (cfg.neckStyle === 'agi1011' || cfg.neckStyle === 'agi1012') return garmentFor(cfg);
+  if (cfg.neckStyle === 'agi1011' || cfg.neckStyle === 'agi1012' || cfg.neckStyle === 'ayson') return garmentFor(cfg);
   if (cfg.artistCut === 'sahrul') return 'sahrul2_jersey';
   if (cfg.artistCut === 'vikram') return 'vikram_jersey';
   return garmentFor(cfg);
@@ -422,10 +495,36 @@ const STEPS = [
   { key: 'roster', label: 'Roster' }, { key: 'finalize', label: 'Finalize' },
 ];
 
+// Regulation defaults are a production rule, not an AI suggestion. Keep them
+// in one exported helper so the guided flow, live renderer, proof sheet and
+// tests all agree on the same finished heights.
+export function numberDefaultsFor(sport, program = 'mens') {
+  if (sport === 'flagfootball') return { front: 6, back: 8 };
+  return { front: 4, back: program === 'mens' ? 8 : 6 };
+}
+
+export function hasFrontLogo(logos = {}) {
+  return ['chest', 'rightChest'].some((slot) => !!(logos[slot] && logos[slot].src));
+}
+
+// A coach deliberately chooses what identifies the team on the front. "Both"
+// means both assets are required; this prevents a supposedly complete design
+// from reaching production with half of the requested identity missing.
+export function frontIdentityStatus(cfg = {}) {
+  const mode = cfg.frontIdentity || 'none';
+  const hasWordmark = !!String(cfg.teamName || '').trim();
+  const hasLogo = hasFrontLogo(cfg.logos || {});
+  if (mode === 'wordmark') return { ok: hasWordmark, mode, hasWordmark, hasLogo, detail: hasWordmark ? 'Team wordmark on front' : 'Add the team name' };
+  if (mode === 'logo') return { ok: hasLogo, mode, hasWordmark, hasLogo, detail: hasLogo ? 'Team logo on front' : 'Upload a front logo' };
+  if (mode === 'both') return { ok: hasWordmark && hasLogo, mode, hasWordmark, hasLogo, detail: hasWordmark && hasLogo ? 'Team wordmark and logo on front' : (!hasWordmark ? 'Add the team name' : 'Upload a front logo') };
+  return { ok: false, mode, hasWordmark, hasLogo, detail: 'Choose a team wordmark, logo, or both' };
+}
+
 const DEFAULT_CONFIG = {
   sport: null,
   teamName: 'ARGENTINA',
   sections: defaultSections(),
+  reverseSections: defaultSections(),
   sleevesLinked: true,
   fabric: 'sublimated',
   decorationMethod: 'sublimated',
@@ -434,6 +533,9 @@ const DEFAULT_CONFIG = {
   // The garment starts CLEAN — no number, no name, no logos. The coach adds
   // every decoration themselves (Embellish step), like a real kit order.
   playerName: '', playerNumber: '', includePlayerName: false,
+  // Front identity is required by the guided workflow, but starts unselected so
+  // imported/direct-review garments do not gain surprise artwork.
+  frontIdentity: 'none', frontWordmarkInches: 2,
   numberColor: '#192853', font: 'block',
   outlineColor: 'auto', outlineWeight: 'thin', numberSize: 1, nameSize: 1,
   // Production lettering is specified by finished height in inches. Back
@@ -482,6 +584,121 @@ function agi1011PreviewConfig() {
   };
 }
 
+function aysonPreviewConfig() {
+  const artwork = {
+    color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064',
+    pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4',
+    patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2,
+  };
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'soccer', designId: 'AYSONSA', neckStyle: 'ayson',
+    teamName: 'AYSONSA', playerNumber: '', frontNumber: 'none',
+    numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
+    teamPalette: ['#31132A', '#870064'],
+    sections: {
+      body: { ...artwork },
+      sleeveL: { ...artwork }, sleeveR: { ...artwork },
+      collar: { color: '#870064', color2: '#31132A', pattern: 'solid' },
+    },
+  };
+}
+
+function flag228187PreviewConfig() {
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'flagfootball', designId: 'FF-228187', neckStyle: 'flag228187',
+    teamName: '228187', playerNumber: '23', frontNumber: 'center',
+    frontNumberInches: 6, backNumberInches: 8,
+    numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
+    teamPalette: ['#0B6E4F', '#FFFFFF', '#4A4A4A'],
+    sections: {
+      body: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      sleeveL: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      sleeveR: { color: '#0B6E4F', color2: '#FFFFFF', pattern: 'solid' },
+      collar: { color: '#4A4A4A', color2: '#FFFFFF', pattern: 'solid' },
+    },
+  };
+}
+
+function basketball4r3chbPreviewConfig() {
+  return {
+    ...DEFAULT_CONFIG,
+    sport: 'basketball', designId: 'BB-4R3CHB', neckStyle: 'basketball4r3chb',
+    teamName: '228125', playerNumber: '23', frontNumber: 'center',
+    numberColor: '#FFFFFF', outlineColor: 'auto', bottom: { ...defaultBottom(), enabled: false },
+    teamPalette: ['#192853', '#962C32', '#FFFFFF', '#0B0B0B'],
+    sections: {
+      body: { color: '#192853', color2: '#962C32', pattern: 'solid' },
+      sleeveL: { color: '#192853', color2: '#962C32', pattern: 'solid' },
+      sleeveR: { color: '#192853', color2: '#962C32', pattern: 'solid' },
+      collar: { color: '#962C32', color2: '#FFFFFF', pattern: 'solid' },
+    },
+    reverseSections: {
+      body: { color: '#FFFFFF', color2: '#192853', pattern: 'solid' },
+      sleeveL: { color: '#FFFFFF', color2: '#192853', pattern: 'solid' },
+      sleeveR: { color: '#FFFFFF', color2: '#192853', pattern: 'solid' },
+      collar: { color: '#192853', color2: '#962C32', pattern: 'solid' },
+    },
+  };
+}
+
+// Honest, color-aware fallback for the reversible basketball cut. This is used
+// only while the vendor GLB is unavailable; it must still look like a sleeveless
+// basketball jersey rather than silently substituting the soccer model.
+function basketballFallbackImage(sections, numberColor, playerNumber) {
+  const body = (sections.body && sections.body.color) || '#192853';
+  const accent = (sections.sleeveL && sections.sleeveL.color) || '#962C32';
+  const trim = (sections.collar && sections.collar.color) || accent;
+  const number = String(playerNumber || '23').replace(/[^0-9]/g, '').slice(0, 2) || '23';
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 760">
+    <defs><linearGradient id="cloth" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${body}"/><stop offset="1" stop-color="${body}"/></linearGradient><pattern id="knit" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M0 4h8M4 0v8" stroke="#fff" stroke-opacity=".045"/></pattern><filter id="shadow"><feDropShadow dy="18" stdDeviation="15" flood-color="#111827" flood-opacity=".22"/></filter></defs>
+    <g filter="url(#shadow)">
+      <path d="M220 88l55-28q45 43 90 0l55 28q1 78-30 152l16 439q-86 31-172 0l16-439q-31-74-30-152z" fill="url(#cloth)" stroke="${accent}" stroke-width="10" stroke-linejoin="round"/>
+      <path d="M275 60q45 49 90 0-7 78-45 78t-45-78z" fill="#fff"/>
+      <path d="M223 91q4 78 31 149M417 91q-4 78-31 149" fill="none" stroke="${accent}" stroke-width="14" stroke-linecap="round"/>
+      <path d="M275 62q45 49 90 0" fill="none" stroke="${trim}" stroke-width="19"/>
+      <path d="M220 88l55-28q45 43 90 0l55 28q1 78-30 152l16 439q-86 31-172 0l16-439q-31-74-30-152z" fill="url(#knit)"/>
+      <text x="320" y="460" text-anchor="middle" font-family="Arial Black,Arial,sans-serif" font-size="138" font-weight="900" fill="${numberColor || '#FFFFFF'}">${number}</text>
+    </g>
+  </svg>`;
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+// Catalog cards render the real commissioned GLB once they enter the viewport,
+// capture that frame, then release the WebGL canvas. This gives every design a
+// genuine 3D preview without keeping dozens of simultaneous WebGL contexts
+// alive on a long gallery page.
+function Gallery3DThumbnail({ preset, onReady }) {
+  const hostRef = useRef(null);
+  const [visible, setVisible] = useState(false);
+  const [captured, setCaptured] = useState(false);
+  useEffect(() => {
+    if (!hostRef.current || typeof IntersectionObserver === 'undefined') { setVisible(true); return undefined; }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) { setVisible(true); observer.disconnect(); }
+    }, { rootMargin: '220px' });
+    observer.observe(hostRef.current);
+    return () => observer.disconnect();
+  }, []);
+  const previewConfig = useMemo(() => ({
+    ...DEFAULT_CONFIG, ...preset.config, teamName: '', playerName: '', playerNumber: '', logos: emptyLogos(),
+    sections: normSections(preset.config.sections),
+  }), [preset]);
+  const previewSpec = useMemo(() => ({ ...specFromConfig(previewConfig), garmentId: modelGarmentFor(previewConfig) }), [previewConfig]);
+  const previewModel = getTemplate(previewSpec.garmentId).model3d;
+  return (
+    <span ref={hostRef} style={{ display: 'block', position: 'relative', width: '100%', height: '100%' }}>
+      {visible && !captured ? (
+        <React.Suspense fallback={<span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering 3D…</span>}>
+          <Viewer3D spec={previewSpec} modelUrl={previewModel} interactive={false} autoRotate={false} view="front" fit={1.26} tiltDeg={5}
+            onSnapshot={({ url }) => { if (!url || captured) return; setCaptured(true); onReady(preset.id, url); }} />
+        </React.Suspense>
+      ) : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering 3D…</span>}
+    </span>
+  );
+}
+
 // ── persistence ──────────────────────────────────────────────────────────────
 // Autosave honors the top bar's "Changes save automatically": the in-progress
 // design + roster survive a refresh or accidental close. Saved designs and
@@ -498,6 +715,9 @@ function loadAutosave() {
 function restoredConfig() {
   if (REVIEW_DESIGN === 'AGI-1011') return agi1011PreviewConfig();
   if (REVIEW_DESIGN === 'AGI-1012') return agi1012PreviewConfig();
+  if (REVIEW_DESIGN === 'AYSONSA') return aysonPreviewConfig();
+  if (REVIEW_DESIGN === 'FF-228187') return flag228187PreviewConfig();
+  if (REVIEW_DESIGN === 'BB-4R3CHB') return basketball4r3chbPreviewConfig();
   const a = loadAutosave();
   if (!a || !a.config) return { ...DEFAULT_CONFIG };
   // Merge over defaults so configs saved before new fields/slots existed stay
@@ -511,17 +731,15 @@ function restoredConfig() {
   const includePlayerName = typeof a.config.includePlayerName === 'boolean'
     ? a.config.includePlayerName
     : !!String(a.config.playerName || '').trim();
-  return { ...DEFAULT_CONFIG, ...a.config, includePlayerName, sections, bottom, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
+  const reverseSections = Object.fromEntries(SECTIONS.map((s) => [s.key, { ...base[s.key], ...((a.config.reverseSections || {})[s.key] || {}) }]));
+  return { ...DEFAULT_CONFIG, ...a.config, includePlayerName, sections, reverseSections, bottom, logos: { ...emptyLogos(), ...(a.config.logos || {}) } };
 }
 async function trySupabaseSave(rec) {
   try {
-    // uniform_designs is staff-only under RLS; the public builder saves through
-    // the service-role data function (size-capped server-side). Best-effort.
-    await fetch('/.netlify/functions/uniform-builder-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'save_design', name: rec.name, spec: rec.spec, thumb: rec.thumb || null }),
-    });
+    const mod = await import('../lib/supabase');
+    const sb = mod.supabase;
+    if (!sb) return;
+    await sb.from('uniform_designs').insert({ name: rec.name, spec: rec.spec, thumb: rec.thumb || null });
   } catch (_e) { /* best-effort */ }
 }
 
@@ -544,31 +762,39 @@ function specFromConfig(cfg) {
   // Second outline rings the first — only meaningful when there IS a first.
   const oc2 = cfg.outline2Color || 'none';
   const outline2 = (outlineWidth && oc2 !== 'none') ? oc2 : 'none';
-  const frontNumberInches = Number.isFinite(cfg.frontNumberInches) ? cfg.frontNumberInches : 4;
-  const backNumberInches = Number.isFinite(cfg.backNumberInches) ? cfg.backNumberInches : (cfg.program === 'mens' ? 8 : 6);
+  const regulation = numberDefaultsFor(cfg.sport, cfg.program);
+  const frontNumberInches = Number.isFinite(cfg.frontNumberInches) ? cfg.frontNumberInches : regulation.front;
+  const backNumberInches = Number.isFinite(cfg.backNumberInches) ? cfg.backNumberInches : regulation.back;
   const nameInches = Number.isFinite(cfg.nameInches) ? cfg.nameInches : 2;
+  const frontWordmarkInches = Number.isFinite(cfg.frontWordmarkInches) ? cfg.frontWordmarkInches : 2;
   const num = (cfg.playerNumber || '').toString();
   const logos = logoSpecFromConfig(cfg.logos || {});
   const S = normSections(cfg.sections);
+  const wordmarkBackground = cfg.neckStyle === 'agi1012' ? (S.body.color2 || S.body.color) : S.body.color;
+  const wordmarkFill = ds.toHex(cfg.frontWordmarkColor) || ds.contrastInk(wordmarkBackground || '#FFFFFF');
+  const wordmarkOutline = ds.contrastInk(wordmarkFill);
+  const aysonArtwork = cfg.neckStyle === 'ayson' ? S.body : null;
   const frontX = cfg.frontNumber === 'center'
     ? 0.5
     : (Number.isFinite(cfg.frontNumberX) ? cfg.frontNumberX : (cfg.frontNumber === 'left' ? 0.67 : 0.33));
-  const frontPos = safeDecorationPosition('frontNumber', frontX, Number.isFinite(cfg.frontNumberY) ? cfg.frontNumberY : 0.265);
+  const carriesWordmark = (cfg.frontIdentity === 'wordmark' || cfg.frontIdentity === 'both') && !!String(cfg.teamName || '').trim();
+  const frontPos = safeDecorationPosition('frontNumber', frontX, Number.isFinite(cfg.frontNumberY) ? cfg.frontNumberY : (carriesWordmark && cfg.frontNumber === 'center' ? 0.39 : 0.265));
+  const frontNamePos = safeDecorationPosition('frontName', 0.5, 0.19);
   const backNumberPos = safeDecorationPosition('backNumber', Number.isFinite(cfg.backNumberX) ? cfg.backNumberX : 0.5, Number.isFinite(cfg.backNumberY) ? cfg.backNumberY : 0.46);
   const backNamePos = safeDecorationPosition('backName', Number.isFinite(cfg.backNameX) ? cfg.backNameX : 0.5, Number.isFinite(cfg.backNameY) ? cfg.backNameY : 0.2);
   // Only carry the print-pattern image when the section is actually set to it,
   // so switching back to a built-in pattern fully clears the image fill.
   const zoneOf = (z) => ({
-    color: z.color, color2: z.color2, pattern: z.pattern || 'solid',
-    color3: z.color3, color4: z.color4,
-    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode } : {}),
+    color: z.color, color2: z.color2, patternColor2: z.patternColor2, pattern: z.pattern || 'solid',
+    color3: z.color3, color4: z.color4, color5: z.color5,
+    ...(z.pattern === 'custom' && z.patternImage ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}),
   });
   return ds.normalizeSpec({
     garmentId: garmentFor(cfg), fabric: cfg.fabric || 'sublimated',
     zones: {
       body: zoneOf(S.body),
-      sleeveL: zoneOf(S.sleeveL),
-      sleeveR: zoneOf(S.sleeveR),
+      sleeveL: zoneOf(aysonArtwork || S.sleeveL),
+      sleeveR: zoneOf(aysonArtwork || S.sleeveR),
       collar: zoneOf(S.collar),
     },
     text: {
@@ -579,7 +805,13 @@ function specFromConfig(cfg) {
           ? { value: '' }
           : { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, inches: frontNumberInches,
               x: frontPos.x, y: frontPos.y },
-        name: { value: '', font: 'saira' },
+        // The guided setup makes the front identity explicit. A team wordmark
+        // is centered above a centered number; logo-only designs leave this
+        // text empty and use the uploaded chest artwork instead.
+        name: carriesWordmark
+          ? { value: String(cfg.teamName || '').toUpperCase(), font, fill: wordmarkFill, outline: wordmarkOutline, outlineWidth: 1,
+              inches: frontWordmarkInches, x: frontNamePos.x, y: frontNamePos.y, arch: 0, letterSpacing: 4 }
+          : { value: '', font: 'saira' },
       },
       back: {
         number: { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, inches: backNumberInches,
@@ -634,11 +866,11 @@ function Swatch({ hex, active, onClick, size = 42 }) {
 // team colors (plus white/black staples) so choices stay consistent, with the
 // full palette one tap away. The Team step stays the place where the "main"
 // colors get declared from the full range.
-function QuickColors({ teamColors, hex, onPick, size = 30 }) {
+function QuickColors({ teamColors, hex, onPick, size = 30, testId }) {
   const [more, setMore] = useState(false);
   const shown = more ? PALETTE : teamColors;
   return (
-    <div>
+    <div data-testid={testId}>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', paddingLeft: 4 }}>
         {shown.map((p) => <Swatch key={p.hex} hex={p.hex} size={size} active={String(hex).toUpperCase() === p.hex.toUpperCase()} onClick={() => onPick(p.hex)} />)}
         <button onClick={() => setMore((m) => !m)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.textLight, background: 'none', border: '1px dashed ' + C.mid, borderRadius: 3, padding: '6px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
@@ -766,26 +998,43 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
                 </div>
               </>
             )}
-            {!layoutLocked && printLib.length > 0 && (
+            {printLib.length > 0 && (
               <>
                 <div style={{ ...railLabel, marginBottom: 8 }}>Print Patterns</div>
-                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+                <div style={{ display: 'grid', gap: 8, marginBottom: 14 }}>
                   {printLib.map((p) => {
                     const on = value.pattern === 'custom' && value.patternImage === p.image;
                     return (
-                      <button key={p.id} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: (p.tint_mode === 'blend' || p.tint_mode === 'mono') ? p.tint_mode : 'solid' })}
-                        style={{ width: 46, height: 40, borderRadius: 3, cursor: 'pointer', padding: 0, boxSizing: 'border-box', transform: 'skewX(-12deg)',
+                      <button type="button" key={p.id} data-testid={`pattern-${def.key}-${p.id}`} title={p.name + (p.tintable ? ' (recolors with your team colors)' : '')} aria-pressed={on}
+                        onClick={() => patchSection(def, { pattern: 'custom', patternImage: p.image, patternName: p.name, patternTint: !!p.tintable, patternTintMode: ['blend', 'mono', 'duotone', 'atlas'].includes(p.tint_mode) ? p.tint_mode : 'solid', patternColor2: value.patternColor2 || value.color2, ...(p.colors ? { patternColorCount: p.colors } : {}) })}
+                        style={{ width: '100%', minHeight: 52, borderRadius: 5, cursor: 'pointer', padding: '6px 9px', boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left', background: '#fff',
                           border: on ? '2.5px solid ' + C.navy : '1px solid ' + C.mid,
-                          boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)',
-                          backgroundImage: `url(${p.image})`, backgroundSize: '22px 22px', backgroundRepeat: 'repeat' }} />
+                          boxShadow: on ? '0 2px 8px rgba(25,40,83,0.3)' : '0 1px 2px rgba(15,23,42,0.08)' }}>
+                        <span aria-hidden="true" style={{ width: 42, height: 36, flex: '0 0 42px', borderRadius: 3, border: '1px solid ' + C.mid,
+                          backgroundImage: `url(${p.image})`, backgroundSize: '24px 18px', backgroundRepeat: 'repeat' }} />
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, color: C.navy, textTransform: 'uppercase', letterSpacing: 0.5 }}>{p.name}</span>
+                          <span style={{ display: 'block', marginTop: 2, fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>{on ? 'Applied — edit colors below' : 'Click to apply to this section'}</span>
+                        </span>
+                      </button>
                     );
                   })}
                 </div>
+                {value.pattern === 'custom' && (
+                  <button type="button" onClick={() => patchSection(def, { pattern: 'solid', patternImage: null, patternName: null, patternTint: false, patternTintMode: 'solid' })}
+                    style={{ margin: '-4px 0 14px', padding: 0, border: 0, background: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.7, color: C.red }}>
+                    Remove print
+                  </button>
+                )}
               </>
             )}
-            {!layoutLocked && <div style={{ ...railLabel, marginBottom: 8 }}>Color</div>}
+            {(!layoutLocked || (value.pattern === 'custom' && (value.patternTintMode === 'duotone' || value.patternTintMode === 'atlas'))) && (
+              <div style={{ ...railLabel, marginBottom: 8 }}>
+                {value.pattern === 'custom' && value.patternTintMode === 'atlas' ? 'Body Color' : value.pattern === 'custom' && value.patternTintMode === 'duotone' ? 'Pattern Color 1' : 'Color'}
+              </div>
+            )}
             <div style={{ marginBottom: layoutLocked ? 0 : (value.pattern !== 'solid' ? 14 : 0) }}>
-              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} />
+              <QuickColors teamColors={teamColors} hex={value.color} onPick={(h) => patchSection(def, { color: h })} testId={value.pattern === 'custom' && value.patternTintMode === 'atlas' ? `atlas-body-${def.key}` : value.pattern === 'custom' && value.patternTintMode === 'duotone' ? `pattern-color-1-${def.key}` : undefined} />
             </div>
             {!layoutLocked && value.pattern !== 'solid' && value.pattern !== 'custom' && (
               <>
@@ -796,16 +1045,32 @@ function SectionEditor({ sectionDefs, sections, activeKey, onSelect, onPatch, pr
             {value.pattern === 'custom' && value.patternTint && value.patternTintMode === 'mono' && (
               <div style={{ marginTop: 12, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Monochrome print — shades derive automatically from the section color above.</div>
             )}
-            {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && (
+            {value.pattern === 'custom' && value.patternTint && value.patternTintMode === 'duotone' && (
               <>
-                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Secondary</div>
-                <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} />
+                <div style={{ ...railLabel, margin: '14px 0 8px' }}>Pattern Color 2</div>
+                <QuickColors teamColors={teamColors} hex={value.patternColor2 || value.color2} onPick={(h) => patchSection(def, { patternColor2: h })} testId={`pattern-color-2-${def.key}`} />
+              </>
+            )}
+            {value.pattern === 'custom' && value.patternTint && value.patternTintMode !== 'mono' && value.patternTintMode !== 'duotone' && (
+              <>
+                {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 2) && <>
+                  <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? (value.patternName === 'AYSONSA Layout' ? 'Artwork Color' : 'Accent 1') : 'Print · Secondary'}</div>
+                  <QuickColors teamColors={teamColors} hex={value.color2} onPick={(h) => patchSection(def, { color2: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-1-${def.key}` : undefined} />
+                </>}
                 {value.patternTintMode !== 'blend' && (
                   <>
-                    <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 1</div>
-                    <QuickColors teamColors={teamColors} hex={value.color3 || '#FFFFFF'} onPick={(h) => patchSection(def, { color3: h })} />
-                    <div style={{ ...railLabel, margin: '14px 0 8px' }}>Print · Accent 2</div>
-                    <QuickColors teamColors={teamColors} hex={value.color4 || '#FFFFFF'} onPick={(h) => patchSection(def, { color4: h })} />
+                    {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 3) && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 2' : 'Print · Accent 1'}</div>
+                      <QuickColors teamColors={teamColors} hex={value.color3 || '#FFFFFF'} onPick={(h) => patchSection(def, { color3: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-2-${def.key}` : undefined} />
+                    </>}
+                    {(value.patternTintMode !== 'atlas' || (value.patternColorCount || 4) >= 4) && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>{value.patternTintMode === 'atlas' ? 'Accent 3' : 'Print · Accent 2'}</div>
+                      <QuickColors teamColors={teamColors} hex={value.color4 || '#FFFFFF'} onPick={(h) => patchSection(def, { color4: h })} testId={value.patternTintMode === 'atlas' ? `atlas-accent-3-${def.key}` : undefined} />
+                    </>}
+                    {value.patternTintMode === 'atlas' && (value.patternColorCount || 4) >= 5 && <>
+                      <div style={{ ...railLabel, margin: '14px 0 8px' }}>Accent 4</div>
+                      <QuickColors teamColors={teamColors} hex={value.color5 || '#FFFFFF'} onPick={(h) => patchSection(def, { color5: h })} testId={`atlas-accent-4-${def.key}`} />
+                    </>}
                   </>
                 )}
               </>
@@ -951,22 +1216,23 @@ function useNarrow(bp = 900) {
 export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = [], coachDiscountPercent = 0, pricingPolicy = {} }) {
   const [config, setConfig] = useState(restoredConfig);
   const [orderLink] = useState(initialOrderLink);
-  // Catalog flow: pick a sport → pick a starting design → the wizard.
-  const [screen, setScreen] = useState(orderLink ? 'status' : (AGI_PREVIEW ? 'wizard' : 'sports')); // sports | designs | wizard | status
+  // Catalog flow: pick a sport → deliberately choose AI or templates → the
+  // appropriate guided flow. This keeps AI from appearing unexpectedly inside
+  // a normal template build.
+  const [screen, setScreen] = useState(orderLink ? 'status' : (DIRECT_PREVIEW ? 'wizard' : 'sports')); // sports | designs | wizard | status
   // Admin-managed palette/styles/presets: hydrate once per session, then bump
   // to re-render everything reading the module-level registries.
   const [settingsRev, setSettingsRev] = useState(0);
-  // Admin-configured pricing (uniform_settings/pricing_policy) served by the
-  // builder-data function. Overrides the prop so the public preview always
-  // matches what the server will quote at checkout.
-  const [serverPricingPolicy, setServerPricingPolicy] = useState(null);
-  const effectivePricingPolicy = serverPricingPolicy || pricingPolicy;
   useEffect(() => {
     let alive = true;
     loadBuilderSettings().then((sx) => {
       if (!alive) return;
-      PALETTE = sx.palette; FONTS = sx.numberStyles; DESIGN_PRESETS = sx.presets;
-      if (sx.pricingPolicy) setServerPricingPolicy(sx.pricingPolicy);
+      // Vendor design lines are application assets, not optional admin rows.
+      // Merge any newly shipped 4R3CHB layouts into older persisted settings.
+      const requiredBasketball = SETTINGS_DEFAULTS.presets.filter((preset) => preset.id === 'BB-4R3CHB' || preset.id.startsWith('BB-4R3CHB-'));
+      const existingIds = new Set(sx.presets.map((preset) => preset.id));
+      const presets = [...sx.presets, ...requiredBasketball.filter((preset) => !existingIds.has(preset.id))];
+      PALETTE = sx.palette; FONTS = sx.numberStyles; DESIGN_PRESETS = presets;
       setSettingsRev((r) => r + 1);
     });
     return () => { alive = false; };
@@ -974,9 +1240,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [hasAutosave] = useState(() => !!loadAutosave());
   const [hasSavedDesigns] = useState(() => loadSavedDesigns().length > 0);
   const [thumbs, setThumbs] = useState(() => ({ ...thumbCache }));
-  const [step, setStep] = useState(AGI_PREVIEW ? 'jersey' : 'team');
+  const [step, setStep] = useState(DIRECT_PREVIEW ? 'jersey' : 'team');
   const [spin, setSpin] = useState(false);
   const [stagePiece, setStagePiece] = useState('jersey');
+  const [reversibleSide, setReversibleSide] = useState('A');
+  const reversibleViewRef = useRef({ owner: null, pose: null, initialized: false });
   const [fabricGuide, setFabricGuide] = useState(false);
   const [artPickerOpen, setArtPickerOpen] = useState(false);
   const [logoPlacementOpen, setLogoPlacementOpen] = useState(false);
@@ -1021,6 +1289,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const orderClientRef = useRef(typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `uniform-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   const [busy, setBusy] = useState('');
   const logoInputRef = useRef(null);
+  const teamLogoInputRef = useRef(null);
 
   const callOrderApi = useCallback(async (payload) => {
     const res = await fetch('/.netlify/functions/uniform-order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -1053,15 +1322,32 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [designSection, setDesignSection] = useState('body');
   // Section edits go through the normalized store; while sleeves are mirrored,
   // editing either sleeve writes both.
+  const isReversible = config.neckStyle === 'basketball4r3chb';
   const setSection = (key, patch) => setConfig((c) => {
-    const cur = normSections(c.sections);
+    const storeKey = c.neckStyle === 'basketball4r3chb' && reversibleSide === 'B' ? 'reverseSections' : 'sections';
+    const cur = normSections(c[storeKey]);
     const mirror = c.sleevesLinked !== false && (key === 'sleeveL' || key === 'sleeveR');
     const keys = mirror ? ['sleeveL', 'sleeveR'] : [key];
     const sections = { ...cur };
     for (const k of keys) sections[k] = { ...cur[k], ...patch };
-    return { ...c, sections };
+    if (c.neckStyle !== 'basketball4r3chb' || key !== 'body' || !Object.prototype.hasOwnProperty.call(patch, 'patternImage')) {
+      return { ...c, [storeKey]: sections };
+    }
+    // A reversible set uses the same approved layout on both fabric faces;
+    // each face keeps independent inks. Selecting a new vendor design line on
+    // either side therefore mirrors only the layout metadata—not its colors.
+    const otherKey = storeKey === 'sections' ? 'reverseSections' : 'sections';
+    const other = normSections(c[otherKey]);
+    const layoutPatch = Object.fromEntries(Object.entries(patch).filter(([field]) => [
+      'pattern', 'patternImage', 'patternName', 'patternTint', 'patternTintMode', 'patternColorCount',
+    ].includes(field)));
+    return { ...c, [storeKey]: sections, [otherKey]: { ...other, body: { ...other.body, ...layoutPatch } } };
   });
-  const SX = normSections(config.sections);
+  const sideASections = normSections(config.sections);
+  const sideBSections = normSections(config.reverseSections || config.sections);
+  const basketballFallbackA = config.neckStyle === 'basketball4r3chb' ? basketballFallbackImage(sideASections, config.numberColor, config.playerNumber) : null;
+  const basketballFallbackB = config.neckStyle === 'basketball4r3chb' ? basketballFallbackImage(sideBSections, config.numberColor, config.playerNumber) : null;
+  const SX = isReversible && reversibleSide === 'B' ? sideBSections : sideASections;
   const sleevesLinked = config.sleevesLinked !== false;
   const toggleSleevesLinked = () => setConfig((c) => {
     const cur = normSections(c.sections);
@@ -1116,11 +1402,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const replaceValue = (value) => String(value || '').toUpperCase() === from ? to : value;
     const replaceZone = (zone) => {
       const next = { ...(zone || {}) };
-      for (const key of ['color', 'color2', 'color3', 'color4']) if (next[key]) next[key] = replaceValue(next[key]);
+      for (const key of ['color', 'color2', 'patternColor2', 'color3', 'color4', 'color5']) if (next[key]) next[key] = replaceValue(next[key]);
       return next;
     };
     const sections = {};
     for (const [key, zone] of Object.entries(c.sections || {})) sections[key] = replaceZone(zone);
+    const reverseSections = {};
+    for (const [key, zone] of Object.entries(c.reverseSections || {})) reverseSections[key] = replaceZone(zone);
     const bottom = c.bottom ? {
       ...c.bottom,
       sections: Object.fromEntries(Object.entries((c.bottom && c.bottom.sections) || {}).map(([key, zone]) => [key, replaceZone(zone)])),
@@ -1131,7 +1419,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       if (!palette.some((p) => p.toUpperCase() === String(next).toUpperCase())) palette.push(next);
     }
     return {
-      ...c, sections, bottom, teamPalette: palette,
+      ...c, sections, reverseSections, bottom, teamPalette: palette,
       numberColor: replaceValue(c.numberColor),
       outlineColor: replaceValue(c.outlineColor),
       outline2Color: replaceValue(c.outline2Color),
@@ -1150,14 +1438,29 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const unlinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: false, sections: effectiveBottomSections(c) } }));
   const relinkBottom = () => setConfig((c) => ({ ...c, bottom: { ...(c.bottom || defaultBottom()), linked: true } }));
   const bottomSpec = useMemo(() => bottomSpecFromConfig(config), [config]);
-  const shortsTpl = getTemplate('shorts');
+  const reverseBottomSpec = useMemo(() => bottomSpecFromConfig({
+    ...config,
+    sections: config.reverseSections || config.sections,
+  }), [config]);
+  const shortsTpl = getTemplate(config.neckStyle === 'basketball4r3chb' ? 'basketball_4r3chb_shorts' : 'shorts_321821');
   const showingShorts = stagePiece === 'shorts' && bottom.enabled;
+  useEffect(() => {
+    // Jersey and shorts have very different proportions. Never reuse the
+    // synced jersey camera pose when switching to the shorts pair, or each
+    // half inherits a zoom level that crops the waistband and hems.
+    reversibleViewRef.current = { owner: null, pose: null, initialized: false };
+  }, [showingShorts]);
   // The 3D model may use an artist cut, while `spec` remains on the approved
   // design template for production proofs, exports and fallbacks.
   const jerseyModelSpec = useMemo(() => ({ ...spec, garmentId: modelGarmentFor(config) }), [spec, config.artistCut, config.neckStyle]);
+  const reverseJerseyModelSpec = useMemo(() => ({
+    ...specFromConfig({ ...config, sections: config.reverseSections || config.sections }),
+    garmentId: modelGarmentFor(config),
+  }), [config]);
   const stageSpec = showingShorts ? bottomSpec : jerseyModelSpec;
   const stageTpl = showingShorts ? shortsTpl : modelTpl;
   const [stageFallback, setStageFallback] = useState(null);
+  const [reverseStageFallback, setReverseStageFallback] = useState(null);
   const stageColors = showingShorts
     ? [bottomSections.legs.color, bottomSections.stripe.color, bottomSections.waistband.color]
     : [SX.body.color, SX.sleeveL.color, SX.collar.color];
@@ -1178,6 +1481,17 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     }, 120);
     return () => { alive = false; clearTimeout(timer); };
   }, [showingShorts, bottomSpec, spec]);
+  useEffect(() => {
+    if (!isReversible) { setReverseStageFallback(null); return undefined; }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const image = await renderToDataURL(showingShorts ? reverseBottomSpec : reverseJerseyModelSpec, { view: 'front', width: 760 });
+        if (alive) setReverseStageFallback(image);
+      } catch (_e) { if (alive) setReverseStageFallback(null); }
+    }, 120);
+    return () => { alive = false; clearTimeout(timer); };
+  }, [isReversible, showingShorts, reverseBottomSpec, reverseJerseyModelSpec]);
 
   // Click any assigned player to proof that person's actual name and number on
   // the back of the garment before the order reaches Finalize.
@@ -1202,11 +1516,16 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const selectGarmentZone = useCallback((area) => {
     if (step !== 'jersey' || showingShorts) return;
     let key = area;
+    if (config.neckStyle === 'ayson' && (key === 'body' || key === 'sleeveL' || key === 'sleeveR')) key = 'body';
     if (sleevesLinked) {
       if (key === 'sleeveL' || key === 'sleeveR') key = 'sleeveL';
       if (key === 'sleeveBandL' || key === 'sleeveBandR') key = 'sleeveBands';
     }
-    const definitions = config.neckStyle === 'agi1012'
+    const definitions = config.neckStyle === 'flag228187'
+      ? [{ key: 'body' }, { key: 'collar' }]
+      : config.neckStyle === 'ayson'
+      ? AYSON_SECTIONS
+      : config.neckStyle === 'agi1012'
       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
       : config.neckStyle === 'agi1011'
         ? (sleevesLinked ? AGI1011_LINKED_SECTIONS : AGI1011_SPLIT_SECTIONS)
@@ -1232,6 +1551,14 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       for (const pz of DESIGN_PRESETS) {
         if (thumbCache[pz.id]) continue;
         try {
+          // Basketball cards self-capture the commissioned GLB lazily below.
+          // Do not replace those frames with the flat SVG/2D proof pipeline.
+          if (pz.config.neckStyle === 'basketball4r3chb') continue;
+          if (pz.thumbnail) {
+            thumbCache[pz.id] = pz.thumbnail;
+            if (alive) setThumbs((t) => ({ ...t, [pz.id]: pz.thumbnail }));
+            continue;
+          }
           const tspec = specFromConfig({ ...DEFAULT_CONFIG, ...pz.config, teamName: '', playerName: '', playerNumber: '', logos: emptyLogos() });
           const url = await renderToDataURL(tspec, { view: 'front', width: 320 });
           thumbCache[pz.id] = url;
@@ -1242,21 +1569,82 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     return () => { alive = false; };
   }, [screen]);
 
-  // Admin-curated print patterns (Settings → Uniform Patterns). Best-effort:
-  // the builder works fine with an empty library if Supabase is unreachable.
-  const [printLib, setPrintLib] = useState([]);
+  // Admin-curated print patterns (Settings → Uniform Patterns). The test tile
+  // stays visible offline; database patterns extend it when available.
+  const [printLib, setPrintLib] = useState(BUILT_IN_PRINT_PATTERNS);
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const data = await loadBuilderPatterns();
-        if (alive && Array.isArray(data)) setPrintLib(data);
-      } catch (_e) { /* offline / table missing */ }
+        const mod = await import('../lib/supabase');
+        if (!mod.supabase) return;
+        const { data } = await mod.supabase.from('uniform_patterns')
+          .select('id,name,image,tintable,tint_mode').eq('active', true)
+          .order('created_at', { ascending: false }).limit(40);
+        if (alive && Array.isArray(data)) {
+          const ids = new Set(BUILT_IN_PRINT_PATTERNS.map((pattern) => pattern.id));
+          setPrintLib([...BUILT_IN_PRINT_PATTERNS, ...data.filter((pattern) => !ids.has(pattern.id))]);
+        }
+      } catch (_e) { /* offline / table missing: built-in patterns remain */ }
     })();
     return () => { alive = false; };
   }, []);
 
-  const pickSport = (key) => { set({ sport: key }); setScreen('designs'); };
+  const pickSport = (key) => {
+    setConfig((current) => ({
+      ...current,
+      sport: key,
+      ...(() => { const sizes = numberDefaultsFor(key, current.program); return { frontNumberInches: sizes.front, backNumberInches: sizes.back }; })(),
+      // Direct product previews use the design id as a temporary team name.
+      // Never carry that placeholder into a different sport's real workflow.
+      teamName: String(current.teamName || '').toUpperCase() === String(current.designId || '').toUpperCase() ? '' : current.teamName,
+    }));
+    setScreen('method');
+  };
+  const startTemplatePath = () => {
+    setConfig((current) => ({ ...current, creationMode: 'templates' }));
+    setScreen('designs');
+  };
+  const startAiPath = () => {
+    if (!aiDesignSupportedForSport(config.sport)) return;
+    setConfig((current) => {
+      const sport = current.sport;
+      const sizes = numberDefaultsFor(sport, current.program);
+      const basketballBase = DESIGN_PRESETS.find((preset) => preset.id === 'BB-4R3CHB');
+      const source = sport === 'soccer'
+        ? agi1012PreviewConfig()
+        : { ...DEFAULT_CONFIG, ...((basketballBase && basketballBase.config) || {}) };
+      const hasRealTeamName = !!String(current.teamName || '').trim()
+        && String(current.teamName || '').toUpperCase() !== String(current.designId || '').toUpperCase();
+      const carriedLogos = { ...emptyLogos(), ...(current.logos || {}) };
+      const carriedIdentity = frontIdentityStatus({
+        ...current,
+        teamName: hasRealTeamName ? current.teamName : '',
+        logos: carriedLogos,
+      }).ok ? current.frontIdentity : (hasRealTeamName ? 'wordmark' : 'none');
+      return {
+        ...DEFAULT_CONFIG,
+        ...source,
+        sport,
+        program: current.program || 'mens',
+        creationMode: 'ai',
+        designId: sport === 'soccer' ? 'AGI-1012' : 'BB-4R3CHB',
+        teamName: hasRealTeamName ? current.teamName : '',
+        teamPalette: current.teamPalette,
+        logos: carriedLogos,
+        frontIdentity: carriedIdentity,
+        frontNumberInches: sizes.front,
+        backNumberInches: sizes.back,
+        sections: normSections(source.sections),
+        ...(source.reverseSections ? { reverseSections: normSections(source.reverseSections) } : {}),
+      };
+    });
+    setAiCandidates([]);
+    setAiError('');
+    setAiNote('');
+    setScreen('wizard');
+    setStep('team');
+  };
   // A preset replaces the design (colors/pattern/number color) but keeps the
   // coach's team name, players, logos, and roster.
   const pickDesign = (pz) => {
@@ -1264,13 +1652,24 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     // logos carried over from a previous session's autosave — only the team's
     // identity (sport, name, palette, program) survives. "Start From Scratch"
     // (pz == null) intentionally keeps the current setup, as its card says.
-    if (pz) setConfig((c) => ({
-      ...DEFAULT_CONFIG,
-      sport: c.sport, teamName: c.teamName, teamPalette: c.teamPalette, program: c.program,
-      ...pz.config,
-      designId: pz.id,
-      ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}),
-    }));
+    if (pz) setConfig((c) => {
+      const sport = pz.config.sport || c.sport;
+      const sizes = numberDefaultsFor(sport, c.program);
+      const hasRealTeamName = !!String(c.teamName || '').trim() && String(c.teamName || '').toUpperCase() !== String(c.designId || '').toUpperCase();
+      return {
+        ...DEFAULT_CONFIG,
+        sport, teamName: hasRealTeamName ? c.teamName : '', teamPalette: c.teamPalette, program: c.program,
+        ...pz.config,
+        designId: pz.id,
+        creationMode: 'templates',
+        // Guided designs start with a wordmark when a real team name already
+        // exists; otherwise Team Setup asks the coach to choose name/logo/both.
+        frontIdentity: hasRealTeamName ? 'wordmark' : 'none',
+        frontNumberInches: sizes.front, backNumberInches: sizes.back,
+        ...(pz.config.sections ? { sections: normSections(pz.config.sections) } : {}),
+        ...(pz.config.reverseSections ? { reverseSections: normSections(pz.config.reverseSections) } : {}),
+      };
+    });
     setScreen('wizard'); setStep('team');
   };
 
@@ -1288,8 +1687,12 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const map = new Map([[pPrimary, uPrimary], [pSecondary, uSecondary], [pAccent, uAccent]]);
     const rc = (c) => map.get(String(c || '').toUpperCase()) || uPrimary;
     const zone = (z) => {
-      const out = { color: rc(z.color), color2: rc(z.color2), pattern: z.pattern || 'solid' };
-      // Preset patterns are always built-ins, so clear any custom-print fields.
+      const out = { color: rc(z.color), color2: rc(z.color2), ...(z.patternColor2 ? { patternColor2: rc(z.patternColor2) } : {}),
+        ...(z.color3 ? { color3: rc(z.color3) } : {}), ...(z.color4 ? { color4: rc(z.color4) } : {}), ...(z.color5 ? { color5: rc(z.color5) } : {}), pattern: z.pattern || 'solid' };
+      if (z.pattern === 'custom' && z.patternImage) Object.assign(out, {
+        patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint,
+        patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount,
+      });
       return out;
     };
     return { body: zone(ps.body), sleeveL: zone(ps.sleeveL), sleeveR: zone(ps.sleeveR), collar: zone(ps.collar) };
@@ -1301,8 +1704,12 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   // Render the alt-design thumbnails in the coach's current colors while the
   // dropdown is open (regenerated when colors change so they stay in sync).
   const changeDesigns = useMemo(
-    () => DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)),
+    () => DESIGN_PRESETS.filter((pz) => presetMatchesSport(pz, config.sport)),
     [config.sport, settingsRev] // eslint-disable-line
+  );
+  const availableSports = useMemo(
+    () => sportsWithDesigns(SPORTS, DESIGN_PRESETS),
+    [settingsRev] // eslint-disable-line
   );
   useEffect(() => {
     if (!changeOpen) return;
@@ -1371,6 +1778,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiNote, setAiNote] = useState('');
+  const [aiHistory, setAiHistory] = useState([]);
+  const [teamError, setTeamError] = useState('');
   // 2-3 looks per brief, each a ready-to-apply config patch + thumbnail — the
   // coach compares and picks instead of getting one take forced on them.
   const [aiCandidates, setAiCandidates] = useState([]);
@@ -1385,6 +1794,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       const sec = { color, color2: ds.toHex(z && z.color2) || '#FFFFFF', pattern: (z && z.pattern) || 'solid' };
       const c3 = ds.toHex(z && z.color3); if (c3) sec.color3 = c3;
       const c4 = ds.toHex(z && z.color4); if (c4) sec.color4 = c4;
+      const c5 = ds.toHex(z && z.color5); if (c5) sec.color5 = c5;
       // A named print from the shop library beats a built-in pattern.
       if (z && z.printPattern) {
         const lib = printLib.find((p) => (p.name || '').toLowerCase() === String(z.printPattern).toLowerCase());
@@ -1399,14 +1809,14 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const collarSec = zoneToSection(zones.collar); if (collarSec) sections.collar = collarSec;
     const patch = { sections };
     const st = d.styling || {};
-    if (st.neckStyle === 'vneck' || st.neckStyle === 'crew') patch.neckStyle = st.neckStyle;
+    const approvedCut = ['agi1011', 'agi1012', 'ayson', 'flag228187', 'basketball4r3chb'].includes(config.neckStyle);
+    if (!approvedCut && (st.neckStyle === 'vneck' || st.neckStyle === 'crew')) patch.neckStyle = st.neckStyle;
     if (['right', 'left', 'center', 'none'].includes(st.frontNumber)) patch.frontNumber = st.frontNumber;
     if (st.nameArch === 'arched' || st.nameArch === 'straight') patch.nameArch = st.nameArch;
     if (Number.isFinite(st.nameSpacing)) patch.nameSpacing = Math.min(30, Math.max(0, st.nameSpacing));
     if (['matte', 'mesh', 'heather', 'sublimated', 'gloss'].includes(spec.fabric)) patch.fabric = spec.fabric;
     const t = spec.text || {};
     const numSrc = (t.back && t.back.number) || (t.front && t.front.number);
-    const nameSrc = (t.back && t.back.name) || (t.front && t.front.name);
     if (numSrc) {
       const fill = ds.toHex(numSrc.fill); if (fill) patch.numberColor = fill;
       if (numSrc.outline === 'auto' || numSrc.outline === 'none') patch.outlineColor = numSrc.outline;
@@ -1416,34 +1826,49 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       // The AI names a raw font; the wizard stores a lettering STYLE — pick the
       // first admin style built on that font.
       if (numSrc.font) { const styleDef = FONTS.find((f) => f.font === numSrc.font && !f.hollow) || FONTS.find((f) => f.font === numSrc.font); if (styleDef) patch.font = styleDef.id; }
-      if (numSrc.value) { const n = String(numSrc.value).replace(/[^0-9]/g, '').slice(0, 2); if (n) patch.playerNumber = n; }
     }
-    if (nameSrc && nameSrc.value) {
-      patch.playerName = String(nameSrc.value).slice(0, 14);
-      patch.includePlayerName = true;
-    }
-    if (spec.meta && spec.meta.teamName) patch.teamName = String(spec.meta.teamName).slice(0, 24);
+    // Team identity, player-name inclusion, player number and all finished
+    // lettering heights are intentionally absent from the patch. Those values
+    // are locked by the guided form and production rules, never authored by AI.
     return patch;
   };
 
   const applyAICandidate = (cand) => {
-    setConfig((c) => ({ ...c, ...cand.patch, sections: { ...normSections(c.sections), ...cand.patch.sections } }));
+    setConfig((c) => {
+      const sectionKey = c.neckStyle === 'basketball4r3chb' && reversibleSide === 'B' ? 'reverseSections' : 'sections';
+      return { ...c, ...cand.patch, [sectionKey]: { ...normSections(c[sectionKey]), ...cand.patch.sections } };
+    });
     setAiNote(`"${cand.name}" applied — fine-tune anything below, or try another look.`);
   };
 
   const runAIDesign = async () => {
     const prompt = aiPrompt.trim();
     if (!prompt) return;
+    const identity = frontIdentityStatus(config);
+    if (!identity.ok) {
+      setAiError(`${identity.detail}. Complete Team Identity before generating.`);
+      return;
+    }
+    const sizes = numberDefaultsFor(config.sport, config.program);
     setAiBusy(true); setAiError(''); setAiNote(''); setAiCandidates([]);
+    setAiHistory((history) => [...history, { role: 'coach', text: prompt }].slice(-6));
     try {
       const res = await fetch('/.netlify/functions/uniform-ai-design', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt, garmentId: 'sahrul_jersey', count: 3,
+          prompt, garmentId: garmentFor(config), count: 3,
           context: {
             sport: config.sport || '', program: config.program || 'mens',
             teamColors: teamColors.map((c) => c.hex),
             printPatterns: printLib.map((p) => ({ name: p.name, tintable: !!p.tintable, tintMode: p.tint_mode || 'solid' })),
+            lockedRules: {
+              teamName: String(config.teamName || '').trim(),
+              frontIdentity: config.frontIdentity || 'none',
+              frontLogoPresent: hasFrontLogo(config.logos || {}),
+              playerNamesEnabled: !!config.includePlayerName,
+              frontNumberInches: Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : sizes.front,
+              backNumberInches: Number.isFinite(config.backNumberInches) ? config.backNumberInches : sizes.back,
+            },
           },
         }),
       });
@@ -1464,10 +1889,12 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       }
       if (!cands.length) { setAiError('The AI came back empty — try rewording the brief.'); return; }
       setAiCandidates(cands);
+      setAiHistory((history) => [...history, { role: 'assistant', text: `Created ${cands.length} production-safe direction${cands.length === 1 ? '' : 's'}. Choose one, or refine the brief.` }].slice(-6));
       if (cands.length === 1) { applyAICandidate(cands[0]); setAiCandidates([]); }
       else setAiNote('Pick the look you like — every one stays fully editable.');
     } catch (e) {
       setAiError('Could not reach the AI design service. Please try again.');
+      setAiHistory((history) => [...history, { role: 'assistant', text: 'The design service did not respond. Your guided setup is still saved.' }].slice(-6));
     } finally { setAiBusy(false); }
   };
 
@@ -1482,13 +1909,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     fabric: config.fabric || 'sublimated',
     decorationMethod: config.decorationMethod || 'sublimated',
     discountPercent: normalizeUniformDiscount(coachDiscountPercent),
-    policy: effectivePricingPolicy,
-  }), [totalQty, config.fabric, config.decorationMethod, coachDiscountPercent, effectivePricingPolicy]);
+    policy: pricingPolicy,
+  }), [totalQty, config.fabric, config.decorationMethod, coachDiscountPercent, pricingPolicy]);
   const fabricOptions = useMemo(() => ds.FABRICS.map((fabric) => {
-    const quote = calculateUniformPrice({ fabric: fabric.id, policy: effectivePricingPolicy, quantity: 1 });
+    const quote = calculateUniformPrice({ fabric: fabric.id, policy: pricingPolicy, quantity: 1 });
     const adjustment = quote.fabricAdjustment;
     return { ...fabric, label: adjustment ? `${fabric.label} ${adjustment > 0 ? '+' : '−'}${formatUniformMoney(Math.abs(adjustment))}` : fabric.label };
-  }), [effectivePricingPolicy]);
+  }), [pricingPolicy]);
   const toggleNumber = (num) => setAssignments((s) => {
     const next = {}; for (const k of Object.keys(s)) next[k] = s[k].slice();
     const mine = (next[selectedSize] || []).includes(num);
@@ -1521,15 +1948,21 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   // numbers remain in the roster table/CSV; they never silently replace the
   // number currently shown in the builder.
   const productionSpec = spec;
+  const productionReverseSpec = isReversible
+    ? specFromConfig({ ...config, sections: config.reverseSections || config.sections })
+    : null;
 
   const productionChecks = useMemo(() => {
     const placedLogos = LOGO_SLOTS.map((slot) => ({ slot, logo: config.logos && config.logos[slot.key] })).filter((x) => x.logo && x.logo.src);
     const lowRes = placedLogos.filter(({ logo }) => { const dpi = logoDpi(logo); return dpi != null && dpi < 150; });
     const unknownRes = placedLogos.filter(({ logo }) => logoDpi(logo) == null);
+    const identity = frontIdentityStatus(config);
+    const sizes = numberDefaultsFor(config.sport, config.program);
     return [
-      { ok: !!String(config.teamName || '').trim(), label: 'Team identity', detail: String(config.teamName || '').trim() || 'Add a team name' },
+      { ok: !!String(config.teamName || '').trim(), label: 'Team record', detail: String(config.teamName || '').trim() || 'Add a team name' },
+      { ok: identity.ok, label: 'Front identity', detail: identity.detail },
       { ok: totalQty > 0, label: 'Roster quantities', detail: totalQty > 0 ? `${totalQty} garment${totalQty === 1 ? '' : 's'} assigned` : 'Assign at least one size and number' },
-      { ok: true, label: 'Lettering scale', detail: `Front ${config.frontNumberInches || 4}\u2033 · Back ${Number.isFinite(config.backNumberInches) ? config.backNumberInches : (config.program === 'mens' ? 8 : 6)}\u2033${config.includePlayerName ? ` · Name ${config.nameInches || 2}\u2033` : ''}` },
+      { ok: true, label: 'Lettering scale', detail: `Front ${Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : sizes.front}\u2033 · Back ${Number.isFinite(config.backNumberInches) ? config.backNumberInches : sizes.back}\u2033${config.includePlayerName ? ` · Name ${config.nameInches || 2}\u2033` : ''}` },
       { ok: true, label: 'Placement boundaries', detail: 'Artwork centers constrained to sew-safe garment panels' },
       { ok: lowRes.length === 0 && unknownRes.length === 0, label: 'Logo resolution', detail: !placedLogos.length ? 'No uploaded logos' : lowRes.length ? `${lowRes.map((x) => x.slot.label).join(', ')} below 150 DPI at finished size` : unknownRes.length ? 'Replace legacy artwork to verify print resolution' : `${placedLogos.length} logo${placedLogos.length === 1 ? '' : 's'} at 150+ DPI` },
     ];
@@ -1591,24 +2024,30 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     if (activeDecoration === `logo:${removedSlot}`) setActiveDecoration('');
   };
 
-  const handleLogoFile = (file) => {
-    if (!logoSlot || !file || !/^image\//.test(file.type || '')) return;
+  const handleLogoFileForSlot = (targetSlot, file) => {
+    const targetDef = SLOT_BY_KEY[targetSlot];
+    if (!targetDef || !file || !/^image\//.test(file.type || '')) return;
+    const applyLogo = (patch) => setConfig((c) => ({
+      ...c,
+      logos: { ...emptyLogos(), ...(c.logos || {}), [targetSlot]: { ...((c.logos || {})[targetSlot] || {}), ...patch } },
+    }));
     const reader = new FileReader();
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () => {
         const iw = img.naturalWidth || 1, ih = img.naturalHeight || 1;
         try {
-          setLogo({ ...prepareLogoImage(img), sourcePixelWidth: iw, sourcePixelHeight: ih, x: slotDef.x, y: slotDef.y, scale: slotDef.scale, rot: 0 });
+          applyLogo({ ...prepareLogoImage(img), sourcePixelWidth: iw, sourcePixelHeight: ih, x: targetDef.x, y: targetDef.y, scale: targetDef.scale, rot: 0 });
         } catch (_e) {
-          setLogo({ src: ev.target.result, srcFull: ev.target.result, srcCut: null, bgRemoved: false, aspect: iw / ih, pixelWidth: iw, pixelHeight: ih, sourcePixelWidth: iw, sourcePixelHeight: ih, x: slotDef.x, y: slotDef.y, scale: slotDef.scale, rot: 0 });
+          applyLogo({ src: ev.target.result, srcFull: ev.target.result, srcCut: null, bgRemoved: false, aspect: iw / ih, pixelWidth: iw, pixelHeight: ih, sourcePixelWidth: iw, sourcePixelHeight: ih, x: targetDef.x, y: targetDef.y, scale: targetDef.scale, rot: 0 });
         }
       };
-      img.onerror = () => setLogo({ src: ev.target.result, srcFull: ev.target.result, srcCut: null, bgRemoved: false, aspect: 1, pixelWidth: null, pixelHeight: null });
+      img.onerror = () => applyLogo({ src: ev.target.result, srcFull: ev.target.result, srcCut: null, bgRemoved: false, aspect: 1, pixelWidth: null, pixelHeight: null, x: targetDef.x, y: targetDef.y, scale: targetDef.scale, rot: 0 });
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
   };
+  const handleLogoFile = (file) => { if (logoSlot) handleLogoFileForSlot(logoSlot, file); };
   const onLogoFile = (e) => { handleLogoFile(e.target.files && e.target.files[0]); e.target.value = ''; };
   // Drag-and-drop an image straight onto the logo area (in addition to click-to-
   // upload). Prevent-default on dragover is required for a drop to fire.
@@ -1746,6 +2185,19 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       downloadDataURL(url, `${fileBase()}-production.png`);
     } catch (e) { /* render failed */ } finally { setBusy(''); }
   };
+  const downloadProofSVG = async () => {
+    setBusy('Building editable production SVG…');
+    try {
+      const svg = await renderProductionSVG(productionSpec, {
+        frontImage: review.front || undefined,
+        backImage: review.back || undefined,
+        reverseSpec: productionReverseSpec || undefined,
+        bottomSpec: bottom.enabled ? bottomSpec : undefined,
+        reverseBottomSpec: bottom.enabled && isReversible ? reverseBottomSpec : undefined,
+      });
+      downloadSVG(svg, `${fileBase()}-production.svg`);
+    } catch (e) { /* export failed */ } finally { setBusy(''); }
+  };
 
   // A coach fills in name/email once, then picks how to complete the order —
   // pay by card now, submit a school PO, or add to the queue for a rep to
@@ -1881,19 +2333,79 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   };
 
   const stepIdx = STEPS.findIndex((s) => s.key === step);
-  const goNext = () => { if (step === 'finalize') return; setStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key); };
-  const goPrev = () => { if (stepIdx === 0) { setScreen('designs'); return; } setStep(STEPS[stepIdx - 1].key); };
+  const builderMode = config.creationMode === 'ai' ? 'ai' : 'templates';
+  const guidedIdentity = frontIdentityStatus(config);
+  const regulationNumbers = numberDefaultsFor(config.sport, config.program);
+  const validateTeamStep = () => {
+    if (!String(config.teamName || '').trim()) { setTeamError('Add the team name used for this design and order.'); return false; }
+    if (!guidedIdentity.ok) { setTeamError(guidedIdentity.detail + '.'); return false; }
+    setTeamError(''); return true;
+  };
+  const goToStep = (next) => {
+    const nextIdx = STEPS.findIndex((item) => item.key === next);
+    if (nextIdx > 0 && !validateTeamStep()) { setStep('team'); return; }
+    setStep(next);
+  };
+  const goNext = () => { if (step === 'finalize') return; goToStep(STEPS[Math.min(stepIdx + 1, STEPS.length - 1)].key); };
+  const goPrev = () => { if (stepIdx === 0) { setScreen(builderMode === 'ai' ? 'method' : 'designs'); return; } setStep(STEPS[stepIdx - 1].key); };
   const nextLabel = 'Continue';
 
   const isBuilderStep = step === 'team' || step === 'jersey' || step === 'numbers';
+  const renderAiAssistant = () => (
+    <>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 10 }}>
+        {[
+          SPORT_LABELS[config.sport] || 'Sport',
+          PROGRAM_LABELS[config.program] || "Men's",
+          `${Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : regulationNumbers.front}\u2033 front`,
+          `${Number.isFinite(config.backNumberInches) ? config.backNumberInches : regulationNumbers.back}\u2033 back`,
+          config.includePlayerName ? 'Names enabled' : 'No player names',
+        ].map((label) => <span key={label} style={{ padding: '4px 7px', borderRadius: 999, background: C.light, color: C.navy, fontFamily: F_DISP, fontWeight: 700, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: .4 }}>{label}</span>)}
+      </div>
+      {aiHistory.length > 0 && (
+        <div style={{ display: 'grid', gap: 6, marginBottom: 9, maxHeight: 125, overflowY: 'auto' }}>
+          {aiHistory.map((message, index) => <div key={`${message.role}-${index}`} style={{ padding: '7px 9px', borderRadius: 6, background: message.role === 'coach' ? C.navy : C.offWhite, color: message.role === 'coach' ? '#fff' : C.text, fontFamily: F_BODY, fontSize: 11.5, lineHeight: 1.35 }}><strong>{message.role === 'coach' ? 'You: ' : 'AI: '}</strong>{message.text}</div>)}
+        </div>
+      )}
+      <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} maxLength={800}
+        placeholder="Describe the look: bold black and orange splatter, modern block numbers…"
+        style={{ width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '9px 10px', fontFamily: F_BODY, fontSize: 13, color: C.text, resize: 'vertical' }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
+        <button onClick={runAIDesign} disabled={aiBusy || !aiPrompt.trim() || !guidedIdentity.ok} style={{ ...checkoutBtn(true), width: 'auto', padding: '9px 16px', opacity: (aiBusy || !aiPrompt.trim() || !guidedIdentity.ok) ? 0.55 : 1 }}>{aiBusy ? 'Designing…' : (aiHistory.length ? 'Refine Designs' : 'Create 3 Designs')}</button>
+        {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
+      </div>
+      {!guidedIdentity.ok && (
+        <button onClick={() => setStep('team')} style={{ marginTop: 7, padding: 0, border: 0, background: 'none', cursor: 'pointer', fontFamily: F_BODY, fontWeight: 700, fontSize: 11.5, color: C.red, textAlign: 'left' }}>
+          Set the front identity in Team before generating →
+        </button>
+      )}
+      {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
+      {aiCandidates.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${aiCandidates.length}, 1fr)`, gap: 8 }}>
+            {aiCandidates.map((cand, i) => (
+              <button key={i} onClick={() => applyAICandidate(cand)} title={cand.rationale}
+                style={{ background: '#fff', border: '1px solid ' + C.mid, borderRadius: 6, padding: 0, cursor: 'pointer', overflow: 'hidden', textAlign: 'center' }}>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
+                  {cand.thumb ? <img src={cand.thumb} alt={cand.name} style={{ width: '92%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>…</span>}
+                </span>
+                <span style={{ display: 'block', padding: '6px 4px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: C.navy, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cand.name}</span>
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setAiCandidates([])} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss suggestions</button>
+        </div>
+      )}
+    </>
+  );
 
   return (
     <div style={{ position: 'fixed', inset: 0, background: '#fff', display: 'flex', flexDirection: 'column', fontFamily: F_BODY, zIndex: 40 }}>
       {/* TOP BAR */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: narrow ? '0 14px' : '0 28px', height: narrow ? 56 : 64, borderBottom: '1px solid ' + C.light, flexShrink: 0 }}>
         {(onExit || !EMBEDDED) ? (
-          <button onClick={onExit} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-            <span style={{ fontSize: 16 }}>←</span> {narrow ? 'Exit' : onExit ? 'Exit Builder' : 'Team Stores'}
+          <button onClick={() => setScreen(config.sport ? 'method' : 'sports')} style={{ display: 'flex', alignItems: 'center', gap: 8, fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, background: 'none', border: 'none', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <span style={{ fontSize: 16 }}>←</span> Designs
           </button>
         ) : <div />}
         <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 15 : 18, letterSpacing: 1, color: C.navy, textTransform: 'uppercase', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1978,15 +2490,62 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               </button>
             )}
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 16 }}>
-              {SPORTS.map((s) => (
+              {availableSports.map((s) => (
                 <button key={s.key} onClick={() => pickSport(s.key)} style={{ display: 'flex', alignItems: 'center', gap: 16, background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: '22px 20px', cursor: 'pointer', textAlign: 'left', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
                   <span style={{ fontSize: 34 }}>{s.icon}</span>
                   <span>
                     <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 18, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{s.label}</span>
-                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.filter((p) => !p.sports || !p.sports.length || p.sports.includes(s.key)).length} designs · more garments soon</span>
+                    <span style={{ display: 'block', fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginTop: 2 }}>Jerseys · {DESIGN_PRESETS.filter((p) => presetMatchesSport(p, s.key)).length} designs · more garments soon</span>
                   </span>
                 </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* START METHOD — AI is a distinct route, not a surprise panel inside
+          the regular template editor. Both routes still use approved garment
+          geometry and the same production-safe output pipeline. */}
+      {screen === 'method' && (
+        <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
+          <div style={{ maxWidth: 980, margin: '0 auto', padding: narrow ? '26px 16px 48px' : '40px 28px 60px' }}>
+            <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
+            <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>{SPORT_LABELS[config.sport] || 'Team'} Uniforms</div>
+            <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 32, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>How Do You Want to Start?</h2>
+            <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 20 }}>Choose a guided AI concept or begin with an approved template. You can fine-tune every result in the same builder.</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 24, flexWrap: 'wrap' }}>
+              <span style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 1.2, color: C.textLight, marginRight: 2 }}>Program</span>
+              {PROGRAMS.map((pg) => {
+                const on = (config.program || 'mens') === pg;
+                return (
+                  <button key={pg} onClick={() => setConfig((current) => {
+                    const sizes = numberDefaultsFor(current.sport, pg);
+                    return { ...current, program: pg, frontNumberInches: sizes.front, backNumberInches: sizes.back };
+                  })} style={{
+                    padding: '8px 18px', borderRadius: 20, cursor: 'pointer',
+                    border: '1.5px solid ' + (on ? C.navy : C.mid),
+                    background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy,
+                    fontFamily: F_DISP, fontWeight: 700, fontSize: 13, textTransform: 'uppercase', letterSpacing: 0.6,
+                  }}>{PROGRAM_LABELS[pg]}</button>
+                );
+              })}
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', gap: 18 }}>
+              <button onClick={startAiPath} disabled={!aiDesignSupportedForSport(config.sport)} data-testid="start-ai-design"
+                style={{ minHeight: 250, padding: narrow ? 24 : 30, borderRadius: 12, border: '1.5px solid ' + C.navy, background: C.navy, color: '#fff', textAlign: 'left', cursor: aiDesignSupportedForSport(config.sport) ? 'pointer' : 'not-allowed', opacity: aiDesignSupportedForSport(config.sport) ? 1 : .5, boxShadow: '0 8px 22px rgba(25,40,83,.16)' }}>
+                <span style={{ display: 'block', fontSize: 34, marginBottom: 18 }}>✨</span>
+                <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 23, textTransform: 'uppercase', letterSpacing: .6 }}>Design With AI</span>
+                <span style={{ display: 'block', marginTop: 9, fontFamily: F_BODY, fontSize: 14, lineHeight: 1.55, opacity: .86 }}>Answer a few guided questions, describe the look, and receive three concepts mapped directly onto an approved {SPORT_LABELS[config.sport] || 'uniform'} template.</span>
+                <span style={{ display: 'block', marginTop: 20, fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .7 }}>{aiDesignSupportedForSport(config.sport) ? 'Start AI Design →' : 'AI starts with Soccer & Basketball'}</span>
+              </button>
+              <button onClick={startTemplatePath} data-testid="start-template-design"
+                style={{ minHeight: 250, padding: narrow ? 24 : 30, borderRadius: 12, border: '1.5px solid ' + C.mid, background: '#fff', color: C.navy, textAlign: 'left', cursor: 'pointer', boxShadow: '0 4px 14px rgba(15,23,42,.06)' }}>
+                <span style={{ display: 'block', fontSize: 34, marginBottom: 18 }}>▦</span>
+                <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 23, textTransform: 'uppercase', letterSpacing: .6 }}>Browse Templates</span>
+                <span style={{ display: 'block', marginTop: 9, fontFamily: F_BODY, fontSize: 14, lineHeight: 1.55, color: C.textLight }}>Choose from the approved {SPORT_LABELS[config.sport] || 'uniform'} designs, then manually control colors, patterns, logos, numbers, and trim.</span>
+                <span style={{ display: 'block', marginTop: 20, fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .7, color: C.red }}>View Templates →</span>
+              </button>
             </div>
           </div>
         </div>
@@ -1996,7 +2555,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       {screen === 'designs' && (
         <div style={{ flex: 1, overflowY: 'auto', background: C.offWhite }}>
           <div style={{ maxWidth: 1080, margin: '0 auto', padding: narrow ? '22px 16px 48px' : '32px 28px 60px' }}>
-            <button onClick={() => setScreen('sports')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← All Sports</button>
+            <button onClick={() => setScreen('method')} style={{ background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 0.8, color: C.textLight, padding: 0, marginBottom: 14 }}>← Start Options</button>
             <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 12, textTransform: 'uppercase', letterSpacing: 2, color: C.red }}>{SPORT_LABELS[config.sport] || 'Team'} Uniforms</div>
             <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 30, textTransform: 'uppercase', color: C.navy, margin: '2px 0 6px' }}>Pick a Starting Design</h2>
             <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.textLight, marginBottom: 18 }}>Every design is fully customizable — colors, pattern, trim, lettering, and logos are all yours to change.</div>
@@ -2006,7 +2565,10 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               {PROGRAMS.map((pg) => {
                 const on = (config.program || 'mens') === pg;
                 return (
-                  <button key={pg} onClick={() => setConfig((c) => ({ ...c, program: pg }))} style={{
+                  <button key={pg} onClick={() => setConfig((c) => {
+                    const sizes = numberDefaultsFor(c.sport, pg);
+                    return { ...c, program: pg, frontNumberInches: sizes.front, backNumberInches: sizes.back };
+                  })} style={{
                     padding: '8px 18px', borderRadius: 20, cursor: 'pointer',
                     border: '1.5px solid ' + (on ? C.navy : C.mid),
                     background: on ? C.navy : '#fff', color: on ? '#fff' : C.navy,
@@ -2016,10 +2578,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               })}
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 16 }}>
-              {DESIGN_PRESETS.filter((pz) => !pz.sports || !pz.sports.length || pz.sports.includes(config.sport)).map((pz) => (
+              {DESIGN_PRESETS.filter((pz) => presetMatchesSport(pz, config.sport)).map((pz) => (
                 <button key={pz.id} onClick={() => pickDesign(pz)} style={{ background: '#fff', border: '1px solid ' + C.light, borderRadius: 8, padding: 0, cursor: 'pointer', overflow: 'hidden', boxShadow: '0 1px 4px rgba(15,23,42,.06)' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
-                    {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
+                    {thumbs[pz.id] ? <img src={thumbs[pz.id]} alt={pz.name} style={{ width: '86%', height: 'auto' }} />
+                      : pz.config.neckStyle === 'basketball4r3chb'
+                        ? <Gallery3DThumbnail preset={pz} onReady={(id, url) => { thumbCache[id] = url; setThumbs((t) => ({ ...t, [id]: url })); }} />
+                        : <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Rendering…</span>}
                   </span>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 14px', borderTop: '1px solid ' + C.light }}>
                     <span style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 14, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy }}>{pz.name}</span>
@@ -2045,7 +2610,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         {STEPS.map((s, i) => {
           const on = s.key === step; const done = i < stepIdx;
           return (
-            <button key={s.key} onClick={() => { if (s.key === 'finalize') { /* allow */ } setStep(s.key); }} style={{
+            <button key={s.key} onClick={() => goToStep(s.key)} style={{
               background: 'none', border: 'none', cursor: 'pointer', padding: '4px 0 6px', flexShrink: 0,
               borderBottom: '3px solid ' + (on ? C.red : 'transparent'),
               fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: 1,
@@ -2070,19 +2635,62 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               : { flex: 1, position: 'relative', minHeight: 0, minWidth: 0, background: '#fff' }}>
               <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
-                  <Viewer3D spec={stageSpec} modelUrl={stageTpl.model3d} autoRotate={spin} fit={1.41} tiltDeg={showingShorts ? 2 : 8} shiftPx={narrow ? 0 : 165}
-                    activeArea={stageActiveArea}
-                    fallbackImage={stageFallback}
-                    onZoneSelect={!showingShorts && step === 'jersey' ? selectGarmentZone : null}
-                    activeDecoration={!showingShorts && step === 'numbers' && activeDecorationPresent ? activeDecoration : null}
-                    onDecorationSelect={!showingShorts && step === 'numbers' ? selectDecoration : null}
-                    onDecorationMove={!showingShorts && step === 'numbers' ? moveDecoration : null} />
+                  {isReversible ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', width: '100%', height: '100%', background: '#fff' }}>
+                      {(showingShorts ? [
+                        // Reversible shorts follow the same proofing rule as
+                        // the jersey: show both complete exterior colorways at
+                        // once. The vendor's inner primitive stays hidden so it
+                        // cannot overlap the exterior as large black blocks.
+                        { id: 'A', label: 'Side A', spec: bottomSpec, surface: 'main' },
+                        { id: 'B', label: 'Side B', spec: reverseBottomSpec, surface: 'main' },
+                      ] : [
+                        // The vendor's `reverse` primitive is the physical inner
+                        // lining, not a second complete outward-facing garment.
+                        // Each proof therefore renders the full jersey geometry
+                        // with its own colorway instead of hiding one primitive
+                        // and exposing clipped interior construction.
+                        { id: 'A', label: 'Side A', spec: jerseyModelSpec, surface: 'all' },
+                        { id: 'B', label: 'Side B', spec: reverseJerseyModelSpec, surface: 'all' },
+                      ]).map((face) => (
+                        <div key={face.id} data-testid={`reversible-side-${face.id.toLowerCase()}`} style={{ position: 'relative', minWidth: 0, minHeight: 0, borderLeft: face.id === 'B' && !narrow ? '1px solid ' + C.light : 'none' }}>
+                          <Viewer3D spec={face.spec} modelUrl={stageTpl.model3d} autoRotate={spin} fit={showingShorts ? 1.85 : 1.32} tiltDeg={showingShorts ? 2 : 6} shiftPx={0}
+                            surfaceSide={face.surface} viewSyncRef={reversibleViewRef} viewSyncId={`4r3chb-${showingShorts ? 'shorts-' : ''}${face.id}`}
+                            liningColor={showingShorts ? null : (face.id === 'A' ? sideBSections.body.color : SX.body.color)}
+                            activeArea={reversibleSide === face.id ? stageActiveArea : null}
+                            fallbackImage={showingShorts
+                              ? (face.id === 'B' ? (reverseStageFallback || stageFallback) : stageFallback)
+                              : config.neckStyle === 'basketball4r3chb'
+                              ? (face.id === 'B' ? basketballFallbackB : basketballFallbackA)
+                              : (face.id === 'B' ? (reverseStageFallback || stageFallback) : stageFallback)}
+                            onZoneSelect={!showingShorts && step === 'jersey' ? (area) => { setReversibleSide(face.id); selectGarmentZone(area); } : null}
+                            activeDecoration={!showingShorts && step === 'numbers' && reversibleSide === face.id && activeDecorationPresent ? activeDecoration : null}
+                            onDecorationSelect={!showingShorts && step === 'numbers' ? (key) => { setReversibleSide(face.id); selectDecoration(key); } : null}
+                            onDecorationMove={!showingShorts && step === 'numbers' && reversibleSide === face.id ? moveDecoration : null} />
+                          <button onClick={() => setReversibleSide(face.id)} style={{ position: 'absolute', top: narrow ? 8 : 16, ...(face.id === 'A' ? { right: 16 } : { left: 16 }), zIndex: 6, border: '1px solid ' + (reversibleSide === face.id ? C.navy : C.mid), borderRadius: 999, background: reversibleSide === face.id ? C.navy : 'rgba(255,255,255,.94)', color: reversibleSide === face.id ? '#fff' : C.navy, padding: '7px 12px', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(15,23,42,.12)' }}>
+                            {face.label}{reversibleSide === face.id ? ' · Editing' : ''}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Viewer3D spec={stageSpec} modelUrl={stageTpl.model3d} autoRotate={spin} fit={1.41} tiltDeg={showingShorts ? 2 : 8} shiftPx={narrow ? 0 : 165}
+                      surfaceSide={showingShorts && config.neckStyle === 'basketball4r3chb' ? 'main' : 'all'}
+                      activeArea={stageActiveArea}
+                      fallbackImage={stageFallback}
+                      onZoneSelect={!showingShorts && step === 'jersey' ? selectGarmentZone : null}
+                      activeDecoration={!showingShorts && step === 'numbers' && activeDecorationPresent ? activeDecoration : null}
+                      onDecorationSelect={!showingShorts && step === 'numbers' ? selectDecoration : null}
+                      onDecorationMove={!showingShorts && step === 'numbers' ? moveDecoration : null} />
+                  )}
                 </React.Suspense>
               </div>
               {/* floating info card — top left */}
               <div style={{ position: 'absolute', top: narrow ? 10 : 20, left: narrow ? 14 : 24, maxWidth: narrow ? 220 : 300, pointerEvents: 'none' }}>
                 <div style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: narrow ? 10 : 11, textTransform: 'uppercase', letterSpacing: 1.5, color: C.red }}>Custom Build · {PROGRAM_LABELS[config.program] || "Men's"}</div>
-                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 20, textTransform: 'uppercase', color: C.navy, margin: '3px 0 9px', lineHeight: 1.06 }}>{(config.teamName || 'Team')} {config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}{showingShorts ? 'Shorts' : 'Jersey'}</h2>
+                <h2 style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 16 : 20, textTransform: 'uppercase', color: C.navy, margin: '3px 0 9px', lineHeight: 1.06 }}>{showingShorts && config.neckStyle === 'basketball4r3chb'
+                  ? '4R3CHB Basketball Shorts'
+                  : `${config.teamName || 'Team'} ${config.sport ? SPORT_LABELS[config.sport] + ' ' : ''}${showingShorts ? 'Shorts' : 'Jersey'}`}</h2>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   {stageColors.map((c, i) => (
                     <span key={i} style={{ width: 11, height: 11, borderRadius: 2, background: c, border: '1px solid rgba(15,23,42,.18)', flexShrink: 0 }} />
@@ -2161,8 +2769,27 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               : { width: 384, flexShrink: 0, borderLeft: '1px solid ' + C.light, padding: '18px 18px 28px', overflowY: 'auto', background: C.offWhite }}>
               {step === 'team' && (
                 <div>
-                  <RailCard num={1} title="Team Name">
-                    <LabeledInput label="" value={config.teamName} onChange={(v) => set({ teamName: v })} maxLength={24} />
+                  <RailCard num={1} title="Team Identity" value={guidedIdentity.ok ? 'Ready' : 'Required'}>
+                    <div style={{ ...railLabel, marginBottom: 7 }}>Team name</div>
+                    <LabeledInput label="" value={config.teamName} onChange={(v) => { set({ teamName: v }); setTeamError(''); }} maxLength={24} />
+                    <div style={{ ...railLabel, marginTop: 13, marginBottom: 7 }}>Show on the front</div>
+                    <Pills options={[
+                      { id: 'wordmark', label: 'Team Name' },
+                      { id: 'logo', label: 'Logo' },
+                      { id: 'both', label: 'Both' },
+                    ]} active={config.frontIdentity || 'none'} onPick={(frontIdentity) => { set({ frontIdentity }); setTeamError(''); setAiError(''); }} />
+                    {(config.frontIdentity === 'logo' || config.frontIdentity === 'both') && (
+                      <div style={{ marginTop: 11, padding: '10px 11px', border: '1px dashed ' + (hasFrontLogo(config.logos || {}) ? C.green : C.mid), borderRadius: 7, display: 'flex', alignItems: 'center', gap: 10 }}>
+                        <input ref={teamLogoInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" style={{ display: 'none' }} onChange={(e) => { handleLogoFileForSlot('chest', e.target.files && e.target.files[0]); e.target.value = ''; setTeamError(''); }} />
+                        {hasFrontLogo(config.logos || {}) ? <img src={['chest', 'rightChest'].map((key) => (config.logos || {})[key]).find((logo) => logo && logo.src).src} alt="Team logo" style={{ width: 42, height: 42, objectFit: 'contain', background: '#fff', borderRadius: 5 }} /> : <span style={{ width: 42, height: 42, borderRadius: 5, background: C.light, display: 'grid', placeItems: 'center', color: C.navy, fontSize: 18 }}>↑</span>}
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy }}>{hasFrontLogo(config.logos || {}) ? 'Front logo ready' : 'Upload team logo'}</strong>
+                          <span style={{ display: 'block', marginTop: 2, fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>Transparent space is trimmed automatically. Move it later in Embellish.</span>
+                        </span>
+                        <button onClick={() => teamLogoInputRef.current && teamLogoInputRef.current.click()} style={{ flexShrink: 0, border: '1px solid ' + C.mid, borderRadius: 4, background: '#fff', color: C.navy, padding: '7px 9px', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase' }}>{hasFrontLogo(config.logos || {}) ? 'Change' : 'Choose File'}</button>
+                      </div>
+                    )}
+                    {(teamError || !guidedIdentity.ok) && <div style={{ marginTop: 9, padding: '7px 9px', borderRadius: 5, background: '#fff6f6', color: C.red, fontFamily: F_BODY, fontSize: 11.5 }}>{teamError || guidedIdentity.detail}</div>}
                   </RailCard>
                   {/* Team colors — the one palette every later step leads with.
                       Roles (which color goes where) are assigned per-zone on the
@@ -2173,11 +2800,21 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     </div>
                     <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} onReplace={replaceTeamColor} />
                   </RailCard>
-                  <RailCard num={3} title="Cut &amp; Style" value={config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
-                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012') ? (
+                  {builderMode === 'ai' && (
+                    <RailCard num={3} title="✨ Guided AI Design">
+                      <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, lineHeight: 1.45, marginBottom: 10 }}>Your identity, logo, colors, program, and number sizes stay locked while AI develops the visual direction.</div>
+                      {renderAiAssistant()}
+                    </RailCard>
+                  )}
+                  <RailCard num={builderMode === 'ai' ? 4 : 3} title="Cut &amp; Style" value={config.neckStyle === 'basketball4r3chb' ? '228125 Reversible' : config.neckStyle === 'flag228187' ? '228187 Reversible' : config.neckStyle === 'ayson' ? 'AYSONSA · AGI-1012 Cut' : config.neckStyle === 'agi1011' ? 'AGI-1011 Foundation' : config.neckStyle === 'agi1012' ? 'AGI-1012 Foundation' : config.neckStyle === 'crew' ? 'Crew Neck' : 'V-Neck'}>
+                    {(config.neckStyle === 'agi1011' || config.neckStyle === 'agi1012' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb') ? (
                       <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
-                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.designId} Foundation · Production Cut</strong>
-                        This approved garment is locked so the 3D view, proof, and finished order always match.
+                        <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'flag228187' ? '228187 Reversible · Prototype Cut' : config.neckStyle === 'basketball4r3chb' ? '228125 Reversible · Production Cut' : `${config.designId} · AGI-1012 Production Cut`}</strong>
+                        {config.neckStyle === 'flag228187'
+                          ? 'This commissioned flag-football garment stays locked while its source asset is evaluated.'
+                          : config.neckStyle === 'basketball4r3chb'
+                          ? 'Both reversible faces stay locked to the approved basketball garment and remain visible together.'
+                          : 'This approved garment is locked so the 3D view, proof, and finished order always match.'}
                       </div>
                     ) : (
                       <Pills options={[{ id: 'vneck', label: 'V-Neck' }, { id: 'crew', label: 'Crew Neck' }]}
@@ -2185,7 +2822,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                         onPick={(v) => set({ artistCut: 'foundation', neckStyle: v })} />
                     )}
                   </RailCard>
-                  <RailCard num={4} title="Fabric"
+                  <RailCard num={builderMode === 'ai' ? 5 : 4} title="Fabric"
                     action={<button onClick={() => setFabricGuide(true)} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.5, color: C.red, background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>Fabric guide →</button>}>
                     <Pills options={fabricOptions} active={config.fabric || 'sublimated'} onPick={(f) => set({ fabric: f })} />
                     <div style={{ marginTop: 10, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>
@@ -2197,42 +2834,52 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               )}
               {step === 'jersey' && (
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <div style={{ order: 2 }}>
-                  <RailCard num={2} title="✨ AI Design Assist">
-                    <textarea value={aiPrompt} onChange={(e) => setAiPrompt(e.target.value)} rows={2} maxLength={800}
-                      placeholder="e.g. Aggressive red and black with camo sleeves, bold block number"
-                      style={{ width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '9px 10px', fontFamily: F_BODY, fontSize: 13, color: C.text, resize: 'vertical' }} />
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-                      <button onClick={runAIDesign} disabled={aiBusy || !aiPrompt.trim()} style={{ ...checkoutBtn(true), width: 'auto', padding: '9px 16px', opacity: (aiBusy || !aiPrompt.trim()) ? 0.6 : 1 }}>{aiBusy ? 'Designing…' : 'Generate'}</button>
-                      {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
+                  {builderMode === 'ai' && (
+                    <div style={{ order: 2 }}>
+                      <RailCard num={2} title="✨ AI Design Copilot">
+                        {renderAiAssistant()}
+                      </RailCard>
                     </div>
-                    {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
-                    {aiCandidates.length > 1 && (
-                      <div style={{ marginTop: 12 }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${aiCandidates.length}, 1fr)`, gap: 8 }}>
-                          {aiCandidates.map((cand, i) => (
-                            <button key={i} onClick={() => applyAICandidate(cand)} title={cand.rationale}
-                              style={{ background: '#fff', border: '1px solid ' + C.mid, borderRadius: 6, padding: 0, cursor: 'pointer', overflow: 'hidden', textAlign: 'center' }}>
-                              <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
-                                {cand.thumb ? <img src={cand.thumb} alt={cand.name} style={{ width: '92%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>…</span>}
-                              </span>
-                              <span style={{ display: 'block', padding: '6px 4px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: C.navy, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cand.name}</span>
-                            </button>
-                          ))}
-                        </div>
-                        <button onClick={() => setAiCandidates([])} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss suggestions</button>
-                      </div>
-                    )}
-                  </RailCard>
-                  </div>
+                  )}
                   <div style={{ order: 1 }}>
-                  <RailCard num={1} title="Sections"
-                    action={<button onClick={toggleSleevesLinked}
+                  <RailCard num={1} title={showingShorts ? 'Shorts Sections' : 'Sections'}
+                    action={showingShorts ? <button onClick={bottom.linked ? unlinkBottom : relinkBottom}
+                      style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
+                      {bottom.linked ? 'Customize' : 'Match Jersey'}
+                    </button> : (config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb' || config.neckStyle === 'ayson') ? null : <button onClick={toggleSleevesLinked}
                       style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.5, color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 3, padding: '4px 9px', cursor: 'pointer', transform: 'skewX(-12deg)' }}>
                       {sleevesLinked ? 'Split Sleeves' : 'Mirror Sleeves'}
                     </button>}>
-                  <SectionEditor
-                    sectionDefs={config.neckStyle === 'agi1012'
+                  {isReversible && !showingShorts && (
+                    <div style={{ marginBottom: 14, padding: 10, borderRadius: 7, background: C.offWhite, border: '1px solid ' + C.light }}>
+                      <div style={{ ...railLabel, marginBottom: 8 }}>Choose the face to edit</div>
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                        {['A', 'B'].map((side) => (
+                          <button key={side} onClick={() => setReversibleSide(side)} data-testid={`edit-side-${side.toLowerCase()}`} style={{ border: '1px solid ' + (reversibleSide === side ? C.navy : C.mid), borderRadius: 5, background: reversibleSide === side ? C.navy : '#fff', color: reversibleSide === side ? '#fff' : C.navy, padding: '8px 10px', cursor: 'pointer', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .7 }}>
+                            Side {side}{reversibleSide === side ? ' · Editing' : ''}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ marginTop: 8, fontFamily: F_BODY, fontSize: 11.5, lineHeight: 1.4, color: C.textLight }}>Both sides stay visible. Drag either jersey to rotate and zoom the pair together.</div>
+                    </div>
+                  )}
+                  {showingShorts ? (bottom.linked ? (
+                    <div style={{ padding: '11px 12px', borderRadius: 6, background: C.light, fontFamily: F_BODY, fontSize: 12, lineHeight: 1.5, color: C.text }}>
+                      <strong style={{ display: 'block', fontFamily: F_DISP, fontSize: 12, textTransform: 'uppercase', color: C.navy, marginBottom: 3 }}>{config.neckStyle === 'basketball4r3chb' ? '4R3CHB · Matching Kit' : 'Corner Kick · Matching Kit'}</strong>
+                      Body and artwork colors follow the jersey automatically. Choose Customize only when the shorts need a different colorway.
+                    </div>
+                  ) : (
+                    <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
+                      onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={[]} teamColors={teamColors}
+                      layoutLocked layoutLabel={config.neckStyle === 'basketball4r3chb' ? '4R3CHB matching layout' : '321821 Corner Kick layout'} />
+                  )) : <SectionEditor
+                    sectionDefs={config.neckStyle === 'flag228187'
+                      ? [{ key: 'body', label: 'Exterior' }, { key: 'collar', label: 'Reverse Side' }]
+                      : config.neckStyle === 'basketball4r3chb'
+                      ? [{ key: 'body', label: 'Jersey Artwork' }]
+                      : config.neckStyle === 'ayson'
+                      ? AYSON_SECTIONS
+                      : config.neckStyle === 'agi1012'
                       ? (sleevesLinked ? AGI1012_LINKED_SECTIONS : AGI1012_SPLIT_SECTIONS)
                       : config.neckStyle === 'agi1011'
                         ? (sleevesLinked ? AGI1011_LINKED_SECTIONS : AGI1011_SPLIT_SECTIONS)
@@ -2242,12 +2889,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     sections={SX}
                     activeKey={sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection}
                     onSelect={setDesignSection}
-                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={printLib} teamColors={teamColors}
-                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011'}
-                    layoutLabel={`${config.designId || 'AGI'} approved layout`} />
+                    onPatch={(patch, sourceKey) => setSection(sourceKey || (sleevesLinked && designSection === 'sleeveR' ? 'sleeveL' : designSection), patch)} printLib={config.neckStyle === 'flag228187' ? FLAG_228187_DESIGNS : config.neckStyle === 'basketball4r3chb' ? BASKETBALL_4R3CHB_DESIGNS : (config.neckStyle === 'ayson' ? [] : printLib)} teamColors={teamColors}
+                    layoutLocked={config.neckStyle === 'agi1012' || config.neckStyle === 'agi1011' || config.neckStyle === 'ayson' || config.neckStyle === 'flag228187' || config.neckStyle === 'basketball4r3chb'}
+                    layoutLabel={config.neckStyle === 'flag228187' ? '228187 reversible prototype' : config.neckStyle === 'basketball4r3chb' ? `228125 · Side ${reversibleSide}` : `${config.designId || 'AGI'} approved layout`} />
+                  }
                   </RailCard>
                   </div>
-                  {SHORTS_PREVIEW_ENABLED && <div style={{ order: 3 }}>
+                  {SHORTS_PREVIEW_ENABLED && !showingShorts && <div style={{ order: 3 }}>
                   <RailCard num={3} title="Shorts"
                     action={<label style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}>
                         <input type="checkbox" checked={bottom.enabled} onChange={toggleBottomEnabled} />
@@ -2263,7 +2911,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                         </div>
                         {!bottom.linked && (
                           <SectionEditor sectionDefs={BOTTOM_SECTIONS} sections={bottomSections} activeKey={designBottomSection} onSelect={setDesignBottomSection}
-                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={printLib} teamColors={teamColors} />
+                            onPatch={(patch) => setBottomSection(designBottomSection, patch)} printLib={[]} teamColors={teamColors}
+                            layoutLocked layoutLabel="321821 Corner Kick layout" />
                         )}
                       </>
                     )}
@@ -2452,8 +3101,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     <div style={{ ...railLabel, marginBottom: 8 }}>Front Number</div>
                     <Pills options={INCH_OPTIONS} active={String(Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : 4)} onPick={(v) => set({ frontNumberInches: parseInt(v, 10) })} />
                     <div style={{ ...railLabel, margin: '15px 0 8px' }}>Back Number</div>
-                    <Pills options={INCH_OPTIONS} active={String(Number.isFinite(config.backNumberInches) ? config.backNumberInches : (config.program === 'mens' ? 8 : 6))} onPick={(v) => set({ backNumberInches: parseInt(v, 10) })} />
-                    <div style={{ marginTop: 11, fontFamily: F_BODY, fontSize: 11, lineHeight: 1.4, color: C.textLight }}>Front defaults to 4″. Back defaults to {config.program === 'mens' ? '8\u2033 for men' : '6\u2033 for women and youth'}.</div>
+                    <Pills options={INCH_OPTIONS} active={String(Number.isFinite(config.backNumberInches) ? config.backNumberInches : regulationNumbers.back)} onPick={(v) => set({ backNumberInches: parseInt(v, 10) })} />
+                    <div style={{ marginTop: 11, fontFamily: F_BODY, fontSize: 11, lineHeight: 1.4, color: C.textLight }}>{config.sport === 'flagfootball' ? 'Flag football defaults to 6″ front and 8″ back.' : `Defaults: 4″ front and ${regulationNumbers.back}″ back for this program.`}</div>
                   </RailCard>
                   <RailCard num={config.font !== 'outline' ? 7 : 6} title="Number Style" style={{ padding: '12px 14px 14px', marginBottom: 0 }}>
                     <div style={{ display: 'flex', gap: 9, flexWrap: 'wrap', paddingLeft: 4 }}>
@@ -2599,10 +3248,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               </div>
               <div style={{ padding: '14px 16px', background: '#fff', border: '1px solid ' + C.light, borderRadius: 6, marginBottom: 14 }}>
                 <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: 1, color: C.navy, marginBottom: 4 }}>Send to Production</div>
-                <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 10 }}>Everything your sublimation shop needs — renders, exact hex colors, lettering, and the roster.</div>
-                <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, marginBottom: 10 }}>Everything your sublimation shop needs — renders, editable SVG artwork, exact hex colors, lettering, and the roster.</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                   <button onClick={downloadProofPDF} disabled={!!busy} style={{ ...prodBtn, opacity: busy ? 0.6 : 1 }}>⬇︎ Production PDF</button>
                   <button onClick={downloadProofPNG} disabled={!!busy} style={{ ...prodBtn, opacity: busy ? 0.6 : 1 }}>⬇︎ Production PNG</button>
+                  <button onClick={downloadProofSVG} disabled={!!busy} style={{ ...prodBtn, opacity: busy ? 0.6 : 1 }}>⬇︎ Production SVG</button>
                 </div>
                 {busy && <div style={{ marginTop: 8, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{busy}</div>}
                 {!busy && (!review.front || !review.back) && <div style={{ marginTop: 8, fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>Live 3D views are still rendering; exports use the exact production art until they are ready.</div>}
@@ -2785,8 +3435,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
           {!narrow && <div style={{ fontFamily: F_BODY, fontSize: 14, color: C.text }}>{(config.teamName || 'TEAM').toUpperCase()} · No. {config.playerNumber || '—'}</div>}
         </div>
         <div data-testid="uniform-live-price" style={{ flex: '1 1 auto', minWidth: 0, textAlign: 'center', lineHeight: 1.12 }}>
-          <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: .55, color: C.navy }}>{price.hasDiscount ? 'Coach price ' : 'Public price '}{formatUniformMoney(price.coachUnit)} / jersey</div>
-          {!narrow && <div style={{ marginTop: 4, fontFamily: F_BODY, fontSize: 11.5, color: price.hasDiscount ? C.green : C.textLight }}>{price.hasDiscount ? <><span style={{ color: C.textLight, textDecoration: 'line-through' }}>{formatUniformMoney(price.publicUnit)} public</span> · {price.discountPercent}% account savings · </> : null}{totalQty} jersey{totalQty === 1 ? '' : 's'} · {formatUniformMoney(price.coachTotal)} total</div>}
+          <div style={{ fontFamily: F_DISP, fontWeight: 800, fontSize: narrow ? 13 : 15, textTransform: 'uppercase', letterSpacing: .55, color: C.navy }}>{bottom.enabled ? 'Jersey price ' : (price.hasDiscount ? 'Coach price ' : 'Public price ')}{formatUniformMoney(price.coachUnit)} / jersey</div>
+          {!narrow && <div style={{ marginTop: 4, fontFamily: F_BODY, fontSize: 11.5, color: price.hasDiscount ? C.green : C.textLight }}>{price.hasDiscount ? <><span style={{ color: C.textLight, textDecoration: 'line-through' }}>{formatUniformMoney(price.publicUnit)} public</span> · {price.discountPercent}% account savings · </> : null}{totalQty} jersey{totalQty === 1 ? '' : 's'} · {formatUniformMoney(price.coachTotal)} total{bottom.enabled ? <span style={{ color: C.red }}> · shorts preview price pending</span> : null}</div>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
           <button onClick={goPrev} style={{ fontFamily: F_DISP, fontWeight: 700, fontSize: 13, letterSpacing: 0.6, textTransform: 'uppercase', color: C.navy, background: 'none', border: '1px solid ' + C.mid, borderRadius: 4, padding: '11px 18px', cursor: 'pointer' }}>{stepIdx === 0 ? 'Designs' : 'Back'}</button>

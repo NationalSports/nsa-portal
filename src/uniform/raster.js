@@ -126,11 +126,12 @@ export function preloadPatternImages(spec) {
 function tint(lx, zoneSpec, w, h) {
   const color = ds.toHex(zoneSpec.color, '#1f2a44');
   const color2 = ds.toHex(zoneSpec.color2, '#ffffff');
+  const patternColor2 = ds.toHex(zoneSpec.patternColor2, color2);
   const pat = zoneSpec.pattern || 'solid';
   lx.globalCompositeOperation = 'multiply';
   if (pat === 'custom' && zoneSpec.patternImage) {
     let img = patternImgCache[zoneSpec.patternImage];
-    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, color2, ds.toHex(zoneSpec.color3, '#ffffff'), ds.toHex(zoneSpec.color4, '#ffffff'), zoneSpec.patternTintMode);
+    if (img && zoneSpec.patternTint) img = tintedTile(img, zoneSpec.patternImage, color, zoneSpec.patternTintMode === 'atlas' ? color2 : patternColor2, ds.toHex(zoneSpec.color3, '#ffffff'), ds.toHex(zoneSpec.color4, '#ffffff'), zoneSpec.patternTintMode, ds.toHex(zoneSpec.color5, '#ffffff'));
     const cp = img ? lx.createPattern(img, 'repeat') : null;
     // Tile a fixed ~4 times across the garment width so the print reads at the
     // same physical scale as the 3D preview (which repeats the body 4×) and the

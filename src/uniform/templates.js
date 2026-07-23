@@ -183,6 +183,26 @@ const TEMPLATES = {
     model3d: PUB('/uniform/agi-shorts.glb?v=6'),
     views: { front: SHORTS_FRONT, back: SHORTS_BACK },
   },
+  shorts_321821: {
+    id: 'shorts_321821', name: '321821 Soccer Shorts', category: 'Bottoms',
+    credit: 'Artist-built Holloway 321821 base',
+    model3d: PUB('/uniform/321821-soccer-shorts.glb?v=1'),
+    // This vendor atlas follows glTF's native UV origin. The 228187 flag atlas
+    // is browser-oriented, so Viewer3D keeps that older default unless an
+    // individual garment opts out here.
+    atlasFlipY: false,
+    views: { front: SHORTS_FRONT, back: SHORTS_BACK },
+  },
+  basketball_4r3chb_shorts: {
+    id: 'basketball_4r3chb_shorts', name: '4R3CHB Reversible Basketball Shorts', category: 'Bottoms',
+    credit: 'Holloway 4R3CHB vendor configurator extraction',
+    model3d: PUB('/uniform/4R3CHB-full.glb'),
+    reversible: true,
+    // The companion shorts SVGs were exported from the same vendor UV system
+    // as the jersey. Keep their atlas in glTF UV orientation as well.
+    atlasFlipY: false,
+    views: { front: SHORTS_FRONT, back: SHORTS_BACK },
+  },
   hoodie: {
     id: 'hoodie', name: 'Hoodie', category: 'Tops',
     views: { front: HOODIE_FRONT, back: HOODIE_BACK },
@@ -279,6 +299,40 @@ const TEMPLATES = {
       },
     },
   },
+  // AYSONSA is full garment artwork authored over front and back elevations.
+  // The live renderer projects those elevations over this same approved soccer
+  // foundation, preserving the original PBR fabric and all builder decorations.
+  ayson_jersey: {
+    id: 'ayson_jersey', name: 'AYSONSA Soccer', category: 'Photoreal', type: 'raster',
+    credit: 'NSA soccer foundation · AYSONSA supplied vector layout',
+    model3d: PUB('/uniform/agi-1012-jersey.glb'),
+    proceduralLayout: 'ayson',
+    projectionFront: PUB('/uniform/designs/ayson/projection-front.png?v=3'),
+    projectionBack: PUB('/uniform/designs/ayson/projection-back.png?v=3'),
+    projectionBodyU: { frontMin: 0.243, frontMax: 0.681, backMin: 0.339, backMax: 0.743 },
+    views: {
+      front: {
+        base: PUB('/uniform/agi-1012-proof-base-front.png?v=6'), mask: PUB('/uniform/designs/ayson/proof-mask-front.png?v=2'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
+          { id: 'aysonInk2', label: 'Artwork', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
+          { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.27, size: 86 }, name: { x: 0.5, y: 0.3, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/agi-1012-proof-base-back.png?v=6'), mask: PUB('/uniform/designs/ayson/proof-mask-back.png?v=2'),
+        w: 500, h: 580, viewBox: '0 0 500 580',
+        zones: [
+          { id: 'body', label: 'Main Body', maskColor: '#ff0000' },
+          { id: 'aysonInk2', label: 'Artwork', maskColor: '#00ff00', sourceId: 'body', colorField: 'color2' },
+          { id: 'collar', label: 'Collar', maskColor: '#00ffff' },
+        ], seams: [],
+        anchors: { number: { x: 0.5, y: 0.46, size: 205 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
   // AGI-1011 shares the approved soccer garment and cloth treatment, but its
   // construction artwork is independent: cyan main panels, black vertical side
   // inserts, black opening-tracked sleeve cuffs and a black collar.
@@ -348,6 +402,55 @@ const TEMPLATES = {
         base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
         w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
         anchors: { number: { x: 0.5, y: 0.45, size: 225 }, name: { x: 0.5, y: 0.2, size: 70 } },
+      },
+    },
+  },
+  // Holloway 228187 reversible flag-football cut. The vendor GLB has one
+  // exterior material (main) and one interior material (reverse), both with a
+  // complete UV set and embedded fabric normal. It is a useful live-builder
+  // prototype, but not yet a production master: collar/trim/panels were not
+  // separated into independent meshes and no editable source .blend was sent.
+  flag228187_jersey: {
+    id: 'flag228187_jersey', name: '228187 Reversible Flag Football', category: 'Flag Football', type: 'raster',
+    credit: 'Holloway 228187 vendor configurator extraction',
+    model3d: PUB('/uniform/flag-228187-jersey.glb'),
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.35, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.43, size: 225 }, name: { x: 0.5, y: 0.18, size: 70 } },
+      },
+    },
+  },
+  // Holloway 228125 reversible basketball jersey. 4R3CHB is its matching
+  // short and is intentionally kept as a separate paired-garment asset.
+  // two physical fabric faces as `main` and `reverse`; ProBuilder presents them
+  // together so a coach can design both colorways without mentally flipping a
+  // single model back and forth.
+  basketball_4r3chb: {
+    id: 'basketball_4r3chb', name: '228125 Reversible Basketball Jersey', category: 'Basketball', type: 'raster',
+    credit: 'Holloway 228125 vendor configurator extraction',
+    model3d: PUB('/uniform/228125-full.glb'),
+    reversible: true,
+    // Extracted vendor SVGs share glTF's native lower-left UV origin.
+    // Disabling the browser-image Y flip keeps armhole/hem shells from landing
+    // on the torso as large circular or block-shaped artifacts.
+    atlasFlipY: false,
+    views: {
+      front: {
+        base: PUB('/uniform/octa-base-front.png'), mask: PUB('/uniform/octa-mask-front.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.36, size: 150 }, name: { x: 0.5, y: 0.19, size: 58 } },
+      },
+      back: {
+        base: PUB('/uniform/octa-base-back.png'), mask: PUB('/uniform/octa-mask-back.png'),
+        w: 760, h: 940, viewBox: '0 0 760 940', zones: RASTER_ZONE_MAP.slice(), seams: [],
+        anchors: { number: { x: 0.5, y: 0.43, size: 225 }, name: { x: 0.5, y: 0.18, size: 70 } },
       },
     },
   },

@@ -125,7 +125,7 @@ const FABRICS = [
 const FABRIC_IDS = FABRICS.map((f) => f.id);
 
 // ── Zone / text defaults ────────────────────────────────────────────────────
-const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', color3: '#ffffff', color4: '#ffffff', pattern: 'solid' };
+const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', patternColor2: '#ffffff', color3: '#ffffff', color4: '#ffffff', color5: '#ffffff', pattern: 'solid' };
 
 // A text element (number or name). x/y are fractions of the view box (0–1) so a
 // placement survives switching garments/views; the anchor in the template only
@@ -213,18 +213,24 @@ function cleanZone(z, base = DEFAULT_ZONE) {
   if (z && typeof z === 'object') {
     const c = toHex(z.color); if (c) out.color = c;
     const c2 = toHex(z.color2); if (c2) out.color2 = c2;
+    const pc2 = toHex(z.patternColor2); if (pc2) out.patternColor2 = pc2;
     const c3 = toHex(z.color3); if (c3) out.color3 = c3; // pattern accent 1 (3-color prints)
     const c4 = toHex(z.color4); if (c4) out.color4 = c4; // pattern accent 2 (4-color prints)
+    const c5 = toHex(z.color5); if (c5) out.color5 = c5; // pattern accent 4 (5-color vendor atlases)
     if (typeof z.pattern === 'string' && PATTERN_IDS.includes(z.pattern)) out.pattern = z.pattern;
     // Admin-library print pattern: an image tile fills the zone. Only honored
     // with a valid image URL; carries a display name for spec sheets/PDFs.
-    const pimg = typeof z.patternImage === 'string' && /^(data:image\/|https?:)/i.test(z.patternImage) ? z.patternImage : null;
+    const pimg = typeof z.patternImage === 'string' && (
+      /^(data:image\/|https?:)/i.test(z.patternImage)
+      || /^\/uniform\/(?:patterns|designs)\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+(?:\?v=\d+)?$/i.test(z.patternImage)
+    ) ? z.patternImage : null;
     if (pimg) {
       out.pattern = 'custom';
       out.patternImage = pimg;
       if (typeof z.patternName === 'string' && z.patternName) out.patternName = z.patternName.slice(0, 40);
       if (z.patternTint) out.patternTint = true; // tile → recolor with zone colors
-      if (['blend', 'solid', 'mono'].includes(z.patternTintMode)) out.patternTintMode = z.patternTintMode;
+      if (['blend', 'solid', 'mono', 'duotone', 'atlas'].includes(z.patternTintMode)) out.patternTintMode = z.patternTintMode;
+      if (Number.isInteger(z.patternColorCount)) out.patternColorCount = clamp(z.patternColorCount, 1, 5);
     }
   }
   return out;

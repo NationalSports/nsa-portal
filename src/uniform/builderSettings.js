@@ -42,15 +42,93 @@ export const DEFAULT_PALETTE = [
 ];
 
 const sec = (color, pattern = 'solid', color2 = '#FFFFFF') => ({ color, color2, pattern });
+const BASKETBALL_4R3CHB_DESIGNS = [
+  ['all_star', 'All Star', 3], ['argyle', 'Argyle', 3], ['arizona', 'Arizona', 2], ['atlanta', 'Atlanta', 4],
+  ['brooklyn', 'Brooklyn', 5], ['cameron_classic', 'Cameron Classic', 3], ['chicago', 'Chicago', 2],
+  ['custom_design_line', 'Custom Design Line', 1], ['diagonal_stripe', 'Diagonal Stripe', 4], ['digital_wave', 'Digital Wave', 4],
+  ['dominant', 'Dominant', 3], ['dribble', 'Dribble', 3], ['drive', 'Drive', 4], ['fall_away', 'Fall Away', 2],
+  ['fast_break', 'Fast Break', 5], ['indiana', 'Indiana', 4], ['layup', 'Layup', 3], ['mardi_gras', 'Mardi Gras', 4],
+  ['miami', 'Miami', 3], ['nyc', 'NYC', 3], ['okc', 'OKC', 4], ['orlando', 'Orlando', 2],
+  ['over_and_back', 'Over and Back', 3], ['pace', 'Pace', 3], ['portland', 'Portland', 3], ['rebound', 'Rebound', 3],
+  ['seattle', 'Seattle', 3], ['skyline', 'Skyline', 3], ['slash', 'Slash', 2], ['speedy', 'Speedy', 3],
+  ['swish', 'Swish', 3], ['title_shot', 'Title Shot', 3], ['uconn', 'UConn', 3], ['zone_press', 'Zone Press', 3],
+];
+export const BASKETBALL_4R3CHB_PRESETS = BASKETBALL_4R3CHB_DESIGNS.map(([slug, name, colors]) => ({
+  id: `BB-4R3CHB-${slug.toUpperCase()}`,
+  name,
+  sports: ['basketball'],
+  thumbnail: `/uniform/designs/228125/${slug}.svg`,
+  config: {
+    neckStyle: 'basketball4r3chb', numberColor: '#FFFFFF',
+    sections: {
+      body: {
+        color: '#005B9B', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+        pattern: 'custom', patternImage: `/uniform/designs/228125/${slug}.svg`, patternName: name,
+        patternTint: true, patternTintMode: 'atlas', patternColorCount: colors,
+      },
+      sleeves: sec('#005B9B'), collar: sec('#68737A'),
+    },
+    reverseSections: {
+      body: {
+        color: '#FFFFFF', color2: '#68737A', color3: '#F1582A', color4: '#009949', color5: '#16246E',
+        pattern: 'custom', patternImage: `/uniform/designs/228125/${slug}.svg`, patternName: name,
+        patternTint: true, patternTintMode: 'atlas', patternColorCount: colors,
+      },
+      sleeves: sec('#16246E'), collar: sec('#16246E'),
+    },
+  },
+}));
 export const DEFAULT_PRESETS = [
-  { id: 'bold', name: 'Bold Stripes', sports: [], config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'classic', name: 'Classic Solid', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
-  { id: 'pinstripe', name: 'Pinstripe', sports: [], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
-  { id: 'camo', name: 'Camo Sleeves', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'royalgold', name: 'Royal & Gold', sports: [], config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
-  { id: 'fade', name: 'Sunset Fade', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#F47A1F'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
-  { id: 'blackout', name: 'Blackout', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
-  { id: 'maroon', name: 'Maroon Stripes', sports: [], config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  {
+    id: 'AYSONSA', name: 'AYSONSA', sports: ['soccer'],
+    thumbnail: '/uniform/designs/ayson/reference-front.png',
+    config: {
+      neckStyle: 'ayson', numberColor: '#FFFFFF',
+      sections: {
+        body: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
+        sleeves: { color: '#31132A', color2: '#870064', color3: '#870064', color4: '#870064', color5: '#870064', pattern: 'custom', patternImage: '/uniform/designs/ayson/design-atlas.png?v=4', patternName: 'AYSONSA Layout', patternTint: true, patternTintMode: 'atlas', patternColorCount: 2 },
+        collar: sec('#870064'),
+      },
+    },
+  },
+  {
+    id: 'FF-228187', name: '228187 Reversible', sports: ['flagfootball'],
+    thumbnail: '/uniform/flag-228187-preview.png',
+    config: {
+      neckStyle: 'flag228187', numberColor: '#FFFFFF',
+      sections: {
+        body: sec('#0B6E4F'),
+        sleeves: sec('#0B6E4F'),
+        collar: sec('#4A4A4A'),
+      },
+    },
+  },
+  {
+    id: 'BB-4R3CHB', name: '228125 Reversible', sports: ['basketball'],
+    thumbnail: '/uniform/4r3chb-reversible-thumbnail.svg',
+    config: {
+      neckStyle: 'basketball4r3chb', numberColor: '#FFFFFF',
+      sections: {
+        body: sec('#192853'),
+        sleeves: sec('#962C32'),
+        collar: sec('#962C32'),
+      },
+      reverseSections: {
+        body: sec('#FFFFFF'),
+        sleeves: sec('#192853'),
+        collar: sec('#192853'),
+      },
+    },
+  },
+  ...BASKETBALL_4R3CHB_PRESETS,
+  { id: 'bold', name: 'Bold Stripes', sports: ['soccer'], config: { numberColor: '#192853', sections: { body: sec('#7CB0E0', 'boldstripe'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'classic', name: 'Classic Solid', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#192853'), sleeves: sec('#962C32'), collar: sec('#962C32') } } },
+  { id: 'pinstripe', name: 'Pinstripe', sports: ['soccer'], config: { numberColor: '#192853', sections: { body: sec('#FFFFFF', 'pinstripe', '#192853'), sleeves: sec('#192853'), collar: sec('#192853') } } },
+  { id: 'camo', name: 'Camo Sleeves', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B6E4F', 'camo', '#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'royalgold', name: 'Royal & Gold', sports: ['soccer'], config: { numberColor: '#F2B705', sections: { body: sec('#1E4D8C'), sleeves: sec('#F2B705'), collar: sec('#F2B705') } } },
+  { id: 'fade', name: 'Sunset Fade', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#962C32', 'fade', '#F47A1F'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
+  { id: 'blackout', name: 'Blackout', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#0B0B0B'), sleeves: sec('#0B0B0B', 'carbon', '#4A4A4A'), collar: sec('#4A4A4A') } } },
+  { id: 'maroon', name: 'Maroon Stripes', sports: ['soccer'], config: { numberColor: '#FFFFFF', sections: { body: sec('#7A1F3D', 'boldstripe'), sleeves: sec('#0B0B0B'), collar: sec('#0B0B0B') } } },
 ];
 
 const FONT_IDS = new Set(FONT_LIBRARY.map((f) => f.id));
@@ -91,7 +169,10 @@ function upgradeLegacyPalette(palette) {
 function cleanPresets(raw) {
   if (!Array.isArray(raw)) return null;
   const zone = (z, fallback) => (z && typeof z === 'object' && HEX_RE.test(z.color || ''))
-    ? { color: z.color, color2: HEX_RE.test(z.color2 || '') ? z.color2 : '#FFFFFF', pattern: typeof z.pattern === 'string' ? z.pattern : 'solid', ...(z.pattern === 'custom' && typeof z.patternImage === 'string' ? { patternImage: z.patternImage, patternName: z.patternName } : {}) }
+    ? { color: z.color, color2: HEX_RE.test(z.color2 || '') ? z.color2 : '#FFFFFF',
+      ...(HEX_RE.test(z.color3 || '') ? { color3: z.color3 } : {}), ...(HEX_RE.test(z.color4 || '') ? { color4: z.color4 } : {}), ...(HEX_RE.test(z.color5 || '') ? { color5: z.color5 } : {}),
+      pattern: typeof z.pattern === 'string' ? z.pattern : 'solid',
+      ...(z.pattern === 'custom' && typeof z.patternImage === 'string' ? { patternImage: z.patternImage, patternName: z.patternName, patternTint: !!z.patternTint, patternTintMode: z.patternTintMode, patternColorCount: z.patternColorCount } : {}) }
     : fallback;
   const out = raw
     .filter((p) => p && typeof p === 'object' && p.config && p.config.sections)
@@ -101,13 +182,20 @@ function cleanPresets(raw) {
         id: typeof p.id === 'string' && p.id ? p.id : `preset${i}`,
         name: (typeof p.name === 'string' && p.name.trim()) ? p.name.trim().slice(0, 26) : 'Design',
         sports: Array.isArray(p.sports) ? p.sports.filter((x) => typeof x === 'string') : [],
+        ...(typeof p.thumbnail === 'string' && /^\/uniform\/(?:[a-z0-9._-]+\/)*[a-z0-9._-]+$/i.test(p.thumbnail) ? { thumbnail: p.thumbnail } : {}),
         config: {
+          ...(['vneck', 'crew', 'agi1011', 'agi1012', 'ayson', 'newbase', 'sahrul2', 'vikram', 'flag228187', 'basketball4r3chb'].includes(p.config.neckStyle) ? { neckStyle: p.config.neckStyle } : {}),
           numberColor: HEX_RE.test(p.config.numberColor || '') ? p.config.numberColor : '#FFFFFF',
           sections: {
             body: zone(S.body, sec('#192853')),
             sleeves: zone(S.sleeves || S.sleeveL, sec('#FFFFFF')),
             collar: zone(S.collar, sec('#FFFFFF')),
           },
+          ...(p.config.reverseSections ? { reverseSections: {
+            body: zone(p.config.reverseSections.body, sec('#FFFFFF')),
+            sleeves: zone(p.config.reverseSections.sleeves || p.config.reverseSections.sleeveL, sec('#192853')),
+            collar: zone(p.config.reverseSections.collar, sec('#192853')),
+          } } : {}),
         },
       };
     });
@@ -139,45 +227,12 @@ export const SETTINGS_DEFAULTS = {
   palette: DEFAULT_PALETTE,
   presets: DEFAULT_PRESETS,
   customFonts: [],
-  pricingPolicy: null,
 };
 
 const CLEANERS = { numberStyles: cleanStyles, palette: cleanPalette, presets: cleanPresets, customFonts: cleanCustomFonts };
 
-// Server-authored pricing policy (uniform_settings/pricing_policy). Sanitize to
-// plain numbers so a half-edited row can't NaN the price display; the server
-// re-quotes authoritatively at checkout either way.
-function cleanPricingPolicy(raw) {
-  if (!raw || typeof raw !== 'object') return null;
-  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
-  const table = (t) => {
-    if (!t || typeof t !== 'object') return undefined;
-    const out = {};
-    for (const k of Object.keys(t)) { const v = num(t[k]); if (v !== undefined) out[k] = v; }
-    return Object.keys(out).length ? out : undefined;
-  };
-  const policy = {};
-  const base = num(raw.publicBase); if (base !== undefined) policy.publicBase = base;
-  const fab = table(raw.fabricAdjustments); if (fab) policy.fabricAdjustments = fab;
-  const deco = table(raw.decorationAdjustments); if (deco) policy.decorationAdjustments = deco;
-  return Object.keys(policy).length ? policy : null;
-}
-
 let _cache = null;
 let _inflight = null;
-let _patterns = null;
-
-// The uniform tables are staff-only under RLS, so the login-free builder reads
-// settings + patterns through the uniform-builder-data function (service role
-// behind an allow-list). Staff sessions fall back to a direct read if the
-// function is unreachable (e.g. local dev without netlify functions).
-async function fetchBuilderData() {
-  const res = await fetch('/.netlify/functions/uniform-builder-data', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'bootstrap' }) });
-  if (!res.ok) throw new Error('builder data ' + res.status);
-  const data = await res.json();
-  if (!data || !data.ok) throw new Error('builder data unavailable');
-  return data;
-}
 
 // Load admin overrides (cached per session). Always resolves to a complete,
 // safe settings object.
@@ -186,32 +241,15 @@ export function loadBuilderSettings() {
   if (_inflight) return _inflight;
   _inflight = (async () => {
     const out = { ...SETTINGS_DEFAULTS };
-    let rows = null;
     try {
-      const data = await fetchBuilderData();
-      rows = Object.keys(data.settings || {}).map((key) => ({ key, value: data.settings[key] }));
-      if (Array.isArray(data.patterns)) _patterns = data.patterns;
-    } catch (_e) {
-      // Staff/local fallback: a signed-in team member can read the tables
-      // directly; anonymous coaches simply keep the built-in defaults.
-      try {
-        const mod = await import('../lib/supabase');
-        if (mod.supabase) {
-          const { data } = await mod.supabase.from('uniform_settings').select('key,value');
-          rows = data;
+      const mod = await import('../lib/supabase');
+      if (mod.supabase) {
+        const { data } = await mod.supabase.from('uniform_settings').select('key,value');
+        for (const row of data || []) {
+          const clean = CLEANERS[row.key];
+          const v = clean && clean(row.value);
+          if (v) out[row.key] = row.key === 'palette' ? upgradeLegacyPalette(v) : v;
         }
-      } catch (_e2) { /* defaults stand */ }
-    }
-    try {
-      for (const row of rows || []) {
-        if (row.key === 'pricing_policy') {
-          const policy = cleanPricingPolicy(row.value);
-          if (policy) out.pricingPolicy = policy;
-          continue;
-        }
-        const clean = CLEANERS[row.key];
-        const v = clean && clean(row.value);
-        if (v) out[row.key] = row.key === 'palette' ? upgradeLegacyPalette(v) : v;
       }
     } catch (_e) { /* defaults stand */ }
     // Make uploaded fonts renderable before anything draws with them.
@@ -221,24 +259,6 @@ export function loadBuilderSettings() {
     return out;
   })();
   return _inflight;
-}
-
-// Active print patterns, delivered by the same bootstrap call as the settings.
-// Staff fallback mirrors loadBuilderSettings: direct read if the function is out.
-export async function loadBuilderPatterns() {
-  if (_patterns) return _patterns;
-  await loadBuilderSettings();
-  if (_patterns) return _patterns;
-  try {
-    const mod = await import('../lib/supabase');
-    if (mod.supabase) {
-      const { data } = await mod.supabase.from('uniform_patterns')
-        .select('id,name,image,tintable,tint_mode').eq('active', true)
-        .order('created_at', { ascending: false }).limit(40);
-      if (Array.isArray(data)) _patterns = data;
-    }
-  } catch (_e) { /* empty library is fine */ }
-  return _patterns || [];
 }
 
 // Save one registry (admin screens). Refreshes the session cache on success.
