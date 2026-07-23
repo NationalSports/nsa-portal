@@ -24753,10 +24753,39 @@ export default function App(){
       return updated;
     };
 
+    // Turn ONE sales order into a wizard candidate (the SO half of _buildMatchCandidates,
+    // extracted so the manual paths can build a single target directly without scanning every SO).
+    // includeBilled keeps fully-billed lines — shown as "0 open" — so the manual wizard can TARGET
+    // an order the auto-matcher skipped: the owner's vendor-substitution case (an Adidas PO filled
+    // by S&S, already fully billed) must still be appliable to the sales order its PO references.
+    // Overage is approved at confirm and push raises the order to what was billed (audit kept).
+    // Default (open-only) is byte-for-byte the old behavior, so the auto-match / proposal / AI
+    // callers never see billed orders — only the three manual "match by hand" doors pass true.
+    const _soCandidate=(so,includeBilled)=>{
+      const items=[];
+      (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
+        Object.entries(po).forEach(([k,v])=>{
+          if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
+          if(v<=0)return;
+          const billedQty=(po.billed||{})[k]||0;
+          const openQty=v-billedQty;
+          if(openQty<=0&&!includeBilled)return;
+          items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:Math.max(0,openQty),unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it),vendor:String(po.vendor||''),_billed:openQty<=0});
+        });
+      }));
+      if(!items.length)return null;
+      const c=cust.find(cc=>cc.id===so.customer_id);
+      const soTag=(c?.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const openUnits=items.reduce((a,it)=>a+it.qty,0);
+      return{kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`+(openUnits<=0?' · already fully billed':''),total_units:openUnits,items,raw:so,so_ids:[so.id],alpha_tags:soTag?[soTag]:[],_fullyBilled:openUnits<=0};
+    };
     // Build the candidate list for the "Match manually" wizard. Returns an array of pickable
     // targets (open Batch POs + Sales Orders with open PO lines), each with a display label
-    // and an items[] summary used by the per-line mapper.
-    const _buildMatchCandidates=()=>{
+    // and an items[] summary used by the per-line mapper. opts.includeBilled also returns orders
+    // whose lines are ALL billed (the manual "apply to the PO's order anyway" path); omitted/false
+    // = open orders only, which is what every auto-match, proposal, and AI caller relies on.
+    const _buildMatchCandidates=(opts)=>{
+      const includeBilled=!!(opts&&opts.includeBilled);
       const out=[];
       (submittedBatches||[]).forEach(sb=>{
         const soIds=(sb.source_pos||[]).map(sp=>sp.so_id).filter(Boolean);
@@ -24772,26 +24801,9 @@ export default function App(){
         const batchTags=[...new Set(soIds.map(sid=>{const so=(sos||[]).find(s2=>String(s2.id)===String(sid));const c2=so&&cust.find(cc=>cc.id===so.customer_id);return(c2?.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,'')}).filter(Boolean))];
         out.push({kind:'batch',id:sb.id||sb.po_number,label:sb.po_number,sub:`Batch · ${sb.vendor_name||''} · ${customers.join(', ')||'—'}${soIds.length?' · '+soIds.join(', '):''}`,total_units:totalQty,items,raw:sb,so_ids:soIds,alpha_tags:batchTags});
       });
-      (sos||[]).forEach(so=>{
-        const items=[];
-        (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{
-          Object.entries(po).forEach(([k,v])=>{
-            // size keys on the po_line object are arbitrary (S/M/L/numeric). Filter out known non-size fields.
-            if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;
-            if(v<=0)return;
-            const billedQty=(po.billed||{})[k]||0;
-            const openQty=v-billedQty;
-            if(openQty<=0)return;
-            // vendor: the PO line's supplier — lets the proposal engine refuse cross-vendor
-            // size-coincidence ties (billResolve vendor gate, 2026-07-21).
-            items.push({sku:it.sku,name:it.name,color:it.color||'',size:k,qty:openQty,unit_cost:po.unit_cost||0,so_id:so.id,item_id:it.id,po_id:po.po_id||'',so_item_idx:(so.items||[]).indexOf(it),vendor:String(po.vendor||'')});
-          });
-        }));
-        if(!items.length)return;
-        const c=cust.find(cc=>cc.id===so.customer_id);
-        const soTag=(c?.alpha_tag||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
-        out.push({kind:'so',id:so.id,label:so.id,sub:`Sales Order · ${c?.name||so.customer_name||''}${so.po_number?' · PO '+so.po_number:''}`,total_units:items.reduce((a,it)=>a+it.qty,0),items,raw:so,so_ids:[so.id],alpha_tags:soTag?[soTag]:[]});
-      });
+      // vendor on each item is the PO line's supplier — lets the proposal engine refuse
+      // cross-vendor size-coincidence ties (billResolve vendor gate, 2026-07-21).
+      (sos||[]).forEach(so=>{const c=_soCandidate(so,includeBilled);if(c)out.push(c)});
       return out;
     };
 
@@ -27554,7 +27566,7 @@ export default function App(){
                   :(tri.errs[0]||'Needs review'))
                 :('✓ Matched'+(soId?' → '+soId:'')+' — will push');
               const dot=failedPush?'#dc2626':!tri?(portalPushed?GREEN:GOLD):tri.issue?(isDup?'#94a3b8':'#d97706'):GREEN;
-              const openWizardPre=()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(soId)):null;
+              const openWizardPre=()=>{const _so=poMatch&&sos.find(s2=>String(s2.id)===String(soId));const pre=_so?_soCandidate(_so,true):null;
                 setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:true},parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,_wizard:{open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}}}}:p)}));};
               return<div key={bi} onClick={toggleExpand} style={{display:'flex',alignItems:'center',gap:10,padding:'9px 14px',marginBottom:6,background:failedPush?'#fef2f2':'#fff',border:'1px solid '+(failedPush?'#fecaca':LGRAY),borderLeft:'4px solid '+dot,borderRadius:6,cursor:'pointer',opacity:!tri&&!portalPushed?0.75:1}}>
                 <div style={{flex:'1 1 230px',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
@@ -28196,13 +28208,13 @@ export default function App(){
                         })();
                         return<div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
                         <span style={{fontSize:12,color:_dupInfo?'#991b1b':'#3730a3',fontWeight:_dupInfo?700:400}}>{_dupInfo
-                          ?'⚠ '+(bill.po_number||'This PO')+' is already FULLY billed — '+_dupInfo.map(d=>'doc #'+d.doc+(d.date?' ('+d.date+', $'+d.cost.toFixed(2)+')':'')).join(', ')+' covered every unit. This bill (#'+(bill.doc_number||'?')+') is either a DUPLICATE invoice or a RE-SHIP after a return (check for an RA / credit memo on the original doc). If it’s a re-ship: apply the credit first, then push this — pushing before the credit double-counts the line.'
+                          ?'⚠ '+(bill.po_number||'This PO')+' is already FULLY billed — '+_dupInfo.map(d=>'doc #'+d.doc+(d.date?' ('+d.date+', $'+d.cost.toFixed(2)+')':'')).join(', ')+' covered every unit. This bill (#'+(bill.doc_number||'?')+') is either a DUPLICATE, a RE-SHIP after a return, or the SAME goods filled by a different vendor (a substitution). If it’s a re-ship: apply the credit memo first, then push — pushing before the credit double-counts the line. If it’s a substitution or an intentional extra: use “🧵 Match to '+_poTgt+' by hand” below to book it onto that order anyway — the overage is approved and push raises the order to what was billed (audit kept).'
                           :_disagree
                           ?(bill.po_number||'The PO number')+' points at '+_poTgt+', but this bill’s items don’t match anything on it — they fit '+_live.target.label+' (proposal above). Accept the proposal, or match to '+_poTgt+' by hand if the PO is right.'
                           :poMatch?'Matched to '+_poTgt+' by PO number, but its lines don’t map to that order — link each line to an item to reconcile.'
                           :'No PO matched automatically — line items parsed and ready.'}</span>
                         <button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#4f46e5',color:'#fff'}}
-                          onClick={()=>{const pre=poMatch?_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(poMatch.so_id||poMatch.so?.id||'')):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?('🧵 Match to '+_poTgt+' by hand'+(_live?' instead':'')):'Match manually…'}</button>
+                          onClick={()=>{const _sid=poMatch&&String(poMatch.so_id||poMatch.so?.id||'');const _so=_sid&&sos.find(s2=>String(s2.id)===_sid);const pre=_so?_soCandidate(_so,true):null;setW({open:true,query:bill.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bill,pre):{}});}}>{poMatch?('🧵 Match to '+_poTgt+' by hand'+(_live?' instead':'')):'Match manually…'}</button>
                         {b._aiRunning?<span style={{fontSize:11,color:'#6d28d9',fontWeight:700}}>✨ AI searching your open orders…</span>
                           :!poMatch&&!fp&&<button className="btn btn-sm" style={{fontSize:11,padding:'4px 10px',background:'#7c3aed',color:'#fff'}}
                             title="Let AI search your open POs/SOs for the one this bill belongs to and map its lines"
@@ -28210,7 +28222,10 @@ export default function App(){
                       </div>;})()}
                     </div>;
                   }
-                  const candidates=_buildMatchCandidates();
+                  // includeBilled: the manual wizard can target a fully-billed order (the owner's
+                  // vendor-substitution case) — a bill must be appliable to the SO its PO references
+                  // even when nothing is open. Auto-match / proposals stay open-only (see callers).
+                  const candidates=_buildMatchCandidates({includeBilled:true});
                   const filtered=_filterMatchCandidates(candidates,w.query);
                   return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
