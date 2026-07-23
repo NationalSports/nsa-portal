@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -23958,6 +23958,7 @@ export default function App(){
       const failed=results.filter(r=>(r.parsed&&r.parsed.warnings||[]).some(w=>/PDF read failed|timed out/i.test(w))).length;
       nf(results.length+' bill(s) '+verb+' from '+sourceCount+' '+sourceNoun+dupNote+extraNote+(failed?' — '+failed+' could not be read':''),failed?'error':'success');
       await _autoPushSweep(results);
+      await _autoCreditSweep(results);
       _aiReconcilePass(results);
     };
 
@@ -25816,10 +25817,11 @@ export default function App(){
     // records the credit (credit_of anchors the original invoice), _bill_cost follows. Human
     // click only — credits never auto-anything. Ledger row keyed doc_norm+is_credit, so the
     // credit doc can't be applied twice and never collides with its invoice.
-    const _applyCreditToPortal=async(b,plan,targets)=>{
+    const _applyCreditToPortal=async(b,plan,targets,opts={})=>{
       const p=b.parsed;
       const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;const so=sos.find(s2=>s2.id===soId);
-      if(!so){nf('Order not found — reload and retry','error');return}
+      if(!so){if(!opts.auto)nf('Order not found — reload and retry','error');return}
+      if(opts.auto)p._auto_pushed=true;// → ledger resolution.auto_pushed → the daily ⚡ banner
       let reversedCost=0;
       const items=(so.items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
         const mine=plan.ties.map(t=>({t,tg:targets[t.target_idx]})).filter(({tg})=>tg.item_id===it.id&&tg.po_id===(pl.po_id||''));
@@ -25842,7 +25844,30 @@ export default function App(){
       setSavedBills(prev=>{const u=prev.map(sb=>sb.id===b.id?{...sb,portalStatus:'success',parsed:{...sb.parsed,_credit_applied:p._credit_applied}}:sb);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
       try{await _recordAppliedBills([b])}catch(e){/* ledger retry path already loud */}
       if(p.si_doc_number)_siMarkDoc(p.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:p.doc_number||null,updated_at:new Date().toISOString()});
-      nf('↩ Credit applied — un-billed '+plan.totalUnits+' unit(s) ($'+reversedCost.toFixed(2)+') on '+so.id+(plan.originalDoc?' against doc #'+plan.originalDoc:'')+'. The re-ship invoice can now push normally.','success');
+      nf((opts.auto?'⚡↩ Credit auto-applied':'↩ Credit applied')+' — un-billed '+plan.totalUnits+' unit(s) ($'+reversedCost.toFixed(2)+') on '+so.id+(plan.originalDoc?' against doc #'+plan.originalDoc:'')+'. The re-ship invoice can now push normally.','success');
+      return true;
+    };
+    // Auto-apply sweep for OBVIOUS credits (owner 2026-07-23): matched credit, every line
+    // tied, anchored to the original invoice it names, nothing clamped (creditAutoApplySafe).
+    // Same toggle as invoice auto-push; scanned/AI-read credits never auto-apply. Runs at the
+    // ONE review door (_finishBillReview), sequential like the other sweeps.
+    const _autoCreditSweep=async(bills)=>{
+      try{
+        let autoOn=true;try{autoOn=localStorage.getItem('nsa_bill_autopush')!=='off'}catch(e){}
+        if(!autoOn)return 0;
+        let n=0;
+        for(const b of (bills||[])){
+          const p=b&&b.parsed;
+          if(!p||!p.is_credit||p._ai_parsed||b.portalStatus||p._credit_applied||!p.matchedPO)continue;
+          try{
+            const targets=_buildCreditTargets(p);if(!targets)continue;
+            const plan=proposeCreditReversal(p,targets,{canonSize:_canonBillSize});
+            if(!creditAutoApplySafe(plan))continue;
+            if(await _applyCreditToPortal(b,plan,targets,{auto:true}))n++;
+          }catch(e){console.warn('auto-credit sweep — left for review',e)}
+        }
+        return n;
+      }catch(e){console.warn('auto-credit sweep',e);return 0}
     };
     const _validateBillForPush=(p)=>{
       const errs=[];

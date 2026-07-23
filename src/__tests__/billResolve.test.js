@@ -1320,3 +1320,40 @@ describe('proposeCreditReversal — tie a credit to the BILLED goods it reverses
     expect(creditOriginalDoc('no reference here')).toBe('');
   });
 });
+
+// ── creditAutoApplySafe — only OBVIOUS credits auto-apply (owner 2026-07-23) ──
+describe('creditAutoApplySafe — stricter than invoice auto-push', () => {
+  const { proposeCreditReversal, creditAutoApplySafe } = require('../billResolve');
+  const targets = [
+    { sku: 'A430', size: 'L',  billed: 2, unit_cost: 20.13, docs: [{ doc: '100785124', cost: 40.26 }] },
+    { sku: 'A430', size: 'XL', billed: 7, unit_cost: 20.13, docs: [{ doc: '100785124', cost: 140.91 }] },
+  ];
+  const base = { is_credit: true, rawText: 'C1: 100785124', items: [
+    { sku: 'A430', size: 'L',  qty: -2, unit_price: 20.13, extension: -40.26 },
+    { sku: 'A430', size: 'XL', qty: -7, unit_price: 20.13, extension: -140.91 },
+  ] };
+  test('fully tied + anchored to the named original invoice + nothing clamped → safe', () => {
+    const plan = proposeCreditReversal(base, targets, {});
+    expect(plan.ok).toBe(true);
+    expect(creditAutoApplySafe(plan)).toBe(true);
+  });
+  test('no original-invoice reference → NOT safe (waits for the human)', () => {
+    const plan = proposeCreditReversal({ ...base, rawText: '' }, targets, {});
+    expect(plan.ok).toBe(true); // still manually applicable
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('references a doc that did not bill these lines → NOT safe', () => {
+    const plan = proposeCreditReversal({ ...base, rawText: 'C1: 999999999' }, targets, {});
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('clamped quantities → NOT safe', () => {
+    const over = { ...base, items: [{ sku: 'A430', size: 'L', qty: -5, unit_price: 20.13, extension: -100.65 }] };
+    const plan = proposeCreditReversal(over, targets, {});
+    expect(plan.ok).toBe(true); // human can still apply the clamped 2
+    expect(creditAutoApplySafe(plan)).toBe(false);
+  });
+  test('any unresolved line → NOT safe', () => {
+    const stray = { ...base, items: [...base.items, { sku: 'ZZZ1', size: 'M', qty: -1, unit_price: 5, extension: -5 }] };
+    expect(creditAutoApplySafe(proposeCreditReversal(stray, targets, {}))).toBe(false);
+  });
+});

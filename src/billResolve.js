@@ -101,6 +101,14 @@ export const proposeCreditReversal = (bill, targets, opts = {}) => {
   return { ties, unresolved, totalUnits, totalCost, ok, reasons, originalDoc, originalDocKnown };
 };
 
+// Auto-apply gate for OBVIOUS credits (owner 2026-07-23: "if credits are obvious can they
+// auto apply?"). Stricter than invoice auto-push: every money line tied, the credit NAMES
+// its original invoice and that doc is what actually billed these lines, and nothing was
+// clamped or warned. Anything less waits for the human click. The reversal itself is
+// directionally safe — clamped subtraction of provably-billed quantities, audited, dedup'd.
+export const creditAutoApplySafe = (plan) =>
+  !!(plan && plan.ok && plan.totalUnits > 0 && plan.originalDocKnown && (plan.reasons || []).length === 0);
+
 // Summary+detail cross-check (owner 2026-07-23). Some vendors (Champro et al.) come through
 // Sports Inc as a deterministic SUMMARY page ("SEE VENDOR INVOICE FOR DETAIL") plus a scanned
 // DETAIL page whose lines we read with AI vision. The AI is only trusted when its line items
