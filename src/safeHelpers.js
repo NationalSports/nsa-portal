@@ -598,6 +598,17 @@ export const garmentsNeedingMockCheck = (job, so, priorByArtKey = {}) => {
       const im = a?.item_mockups || {};
       const hasOwn = Object.entries(im).some(([k, v]) => isOwnKey(k) && safeArr(v).length > 0);
       if (hasOwn) return;
+      // Legacy single-design art carries ONE mock in the shared mockup_files bucket (or a
+      // displayable sew-out proof in prod_files) that stands in for every garment — the same
+      // fallback skusMissingMockups accepts and every mock-display surface renders. That mock is
+      // already shown and approved on this order, so the garment is NOT missing one: don't nag
+      // "Check Mock" just because the SAME design was later mocked per-garment on another order
+      // (which arrives via priorByArtKey / this order's other-garment keys). Without this, a
+      // fully-approved legacy mock kept re-surfacing "Check Mock" that normal approval could never
+      // clear — there was nothing per-item to write. artProofFallback returns [] the moment the
+      // art has ANY per-item mock, so genuinely reused art (per-item mocks for siblings, none for
+      // this garment) still falls through and flags below.
+      if (artProofFallback(a).length > 0) return;
       // Gather candidate prior mocks, grouped by where they were approved (each group keeps its
       // front/back together), deduped by URL across all sources for this art file.
       const seen = new Set();
