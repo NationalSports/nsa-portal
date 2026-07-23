@@ -22158,6 +22158,7 @@ export default function App(){
   const[billView,setBillView]=useState('upload');// Bills-screen tab: 'upload' (📄 Upload & Match — the front door) | 'import' (Bills, the EDI/API working list). PDF parse is now primary; EDI keeps running underneath as the confirmation/backstop. Legacy deep-link values still arrive and are normalized at render ('sportsinc' → upload, 'later' → import).
   const[billStepMode,setBillStepMode]=useState(true);// To Review as a stepper: ONE bill needing a decision at a time (owner: "step by step process, not a mass of bills"). "See all" flips to the classic sectioned list. A view over existing state — no separate queue.
   const[billStepIdx,setBillStepIdx]=useState(0);// current position in the needs-decision queue (clamped at render)
+  const[billKanban,setBillKanban]=useState('');// active To-Review kanban pile (tie|nopo|check|parked); ''/emptied pile → falls to the first non-empty (owner 2026-07-23 kanban redesign)
   const[laterCollapse,setLaterCollapse]=useState({});// Look at Later: collapsed bucket keys
   const[billResolveId,setBillResolveId]=useState(null);// Look at Later: bill id with the resolve-disposition chips open
   const[billOverrideModal,setBillOverrideModal]=useState(null);// Look at Later: {id} — accept-overage push, note required
@@ -28486,48 +28487,64 @@ export default function App(){
             const _children=[];
             const reviewN=_bk.lines.length+_bk.no_order.length+_bk.over.length+_bk.dup.length+_bk.other.length;
             const _aiN=_inReview?billImport.parsed.filter(b=>b._aiRunning).length:0;
-            _children.push(<React.Fragment key="h-toreview">{secHead({dot:RED,title:'⚠ To Review',count:reviewN+_bk.failed.length+_parkedBills.length,note:'Each row shows its one fix'+(_aiN?' · ✨ AI working on '+_aiN:''),mt:false})}</React.Fragment>);
+            _children.push(<React.Fragment key="h-toreview">{secHead({dot:RED,title:'⚠ To Review',count:reviewN+_bk.failed.length+_parkedBills.length,note:'one pile at a time'+(_aiN?' · ✨ AI working on '+_aiN:''),mt:false})}</React.Fragment>);
             if(_vtHidden)_children.push(<div key="vt-hidden" style={{fontSize:11,fontWeight:700,color:'#b45309',margin:'0 0 8px'}}>{_vtHidden} bill(s) hidden by the vendor/date filters above — pushing still includes them.</div>);
-            // STEP MODE (owner directive): work the queue ONE bill at a time, worst-first —
-            // failed pushes, then each fix-shaped bucket. Pure view over the same _bk buckets;
-            // "See all" shows the classic sectioned list unchanged.
-            const _stepLabels={failed:'Push failed — retry the save',lines:'🧵 Tie the lines to the order’s items',no_order:'🔍 No order matched — accept the AI suggestion or find it',over:'⚖ Over-billed — correct the order or accept the overage',dup:'♻ Duplicate — you re-opened this one',other:'⚠ Check this one'};
-            const _stepQ=[..._bk.failed.map(x=>[...x,'failed']),..._bk.lines.map(x=>[...x,'lines']),..._bk.no_order.map(x=>[...x,'no_order']),..._bk.over.map(x=>[...x,'over']),..._bk.dup.map(x=>[...x,'dup']),..._bk.other.map(x=>[...x,'other'])];
-            if(billStepMode&&_stepQ.length){
-              const si2=Math.min(billStepIdx,_stepQ.length-1);
-              const[sb2,sbi2,skind2]=_stepQ[si2];
-              const _stepGo=(ni)=>{const t2=_stepQ[Math.min(Math.max(ni,0),_stepQ.length-1)];setBillStepIdx(Math.min(Math.max(ni,0),_stepQ.length-1));if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}));};
-              _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:12,padding:'10px 14px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:6,flexWrap:'wrap'}}>
-                <span style={{fontFamily:FD,fontWeight:800,fontSize:15,textTransform:'uppercase',letterSpacing:.4,color:'#92400e'}}>Bill {si2+1} of {_stepQ.length}</span>
-                <span style={{fontSize:12,fontWeight:700,color:'#b45309',flex:1,minWidth:180}}>{_stepLabels[skind2]}</span>
-                <span style={{display:'flex',gap:6}}>
-                  <button disabled={si2===0} onClick={()=>_stepGo(si2-1)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:si2===0?'not-allowed':'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:NAVY,opacity:si2===0?0.5:1}}>‹ Back</button>
-                  <button disabled={si2>=_stepQ.length-1} onClick={()=>_stepGo(si2+1)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:si2>=_stepQ.length-1?'not-allowed':'pointer',fontWeight:700,background:NAVY,border:'1px solid '+NAVY,color:'#fff',opacity:si2>=_stepQ.length-1?0.5:1}}>Skip ›</button>
-                  <button onClick={()=>setBillStepMode(false)} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>See all ({_stepQ.length})</button>
-                </span>
-              </div>);
-              _children.push(renderBillCard(sb2,sbi2));
-            }else{
-            if(_stepQ.length>1&&!billStepMode)_children.push(<div key="step-on" style={{margin:'0 0 8px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:11,padding:'5px 12px',borderRadius:4,cursor:'pointer',fontWeight:700,background:'#fffbeb',border:'1px solid #fcd34d',color:'#92400e'}}>▸ Step through one at a time</button></div>);
-            if(_bk.failed.length){
-              _children.push(<React.Fragment key="h-failed">{secHead({dot:'#dc2626',title:'Push failed — retry',count:_bk.failed.length,note:'The order save didn’t confirm. ↻ Retry each row.',mt:false})}</React.Fragment>);
-              _bk.failed.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
-            }
-            if(reviewN){
-              [['lines','🧵 Tie the lines — matched to an order, but the lines need connecting to its items'],
-               ['no_order','🔍 No order matched — accept the AI suggestion or find the order'],
-               ['over','⚖ Over-billed — open to correct the order from the bill, or accept the overage'],
-               ['dup','♻ Duplicates — kept because you re-opened them (new copies auto-resolve to history)'],
-               ['other','⚠ Check these']].forEach(([k,label])=>{
-                if(!_bk[k].length)return;
-                _children.push(<div key={'sh-'+k} style={{fontSize:11,fontWeight:800,color:'#92400e',margin:'10px 0 6px',letterSpacing:.3}}>{label} ({_bk[k].length})</div>);
-                _bk[k].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
-              });
-            }
+            // ── KANBAN (owner redesign 2026-07-23: "horizontal kanban at the top, only the items
+            // that apply show under; PO matching is the strong signal; PO-not-in-system is its own
+            // pile"). The queue hangs off ONE question — is this bill's PO in our system? Big
+            // tiles, ONLY the active pile below, one bill at a time in large type. Accept and
+            // Set aside both remove the bill from its pile, so the next one pops up on its own;
+            // an emptied pile falls through to the next non-empty one.
+            const _kbDefs=[
+              ['tie','🧵','PO matched — tie the items',[..._bk.lines,..._bk.over],'#4f46e5','This bill’s PO IS in the system — the order is known. Connect each bill line to the order item it pays for; the order’s items are on the card right below.'],
+              ['nopo','🔍','PO not in the system',_bk.no_order,'#7c3aed','No order carries this bill’s PO number. Don’t force it onto another order — find the right one, set it aside, or it’s billed outside the Portal.'],
+              ['check','⚠','Check these',[..._bk.failed,..._bk.dup,..._bk.other],'#b45309','Failed pushes, re-opened duplicates, odd cases — each card says what happened.'],
+              ['parked','🕒','Set aside',_parkedBills.map(sb=>[sb,-1]),'#d97706','Out of every push until you act. Synced across machines; pulls won’t re-add them.'],
+            ];
+            const _kbSum=list=>list.reduce((a,[b])=>a+(safeNum(b.parsed?.doc_total)||safeNum(b.parsed?.merchandise_total)),0);
+            const _kbFirstDef=_kbDefs.find(d=>d[3].length);
+            const _kbCur=_kbDefs.find(d=>d[0]===billKanban&&d[3].length)||_kbFirstDef;
+            const _kbActive=_kbCur?_kbCur[0]:null;
+            if(_kbFirstDef)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+              {_kbDefs.map(([k,ico,label,list,color])=>{if(!list.length)return null;const on=k===_kbActive;
+                return <button key={k} onClick={()=>{setBillKanban(k);setBillStepIdx(0)}} style={{flex:'1 1 190px',minWidth:175,textAlign:'left',padding:'13px 16px',borderRadius:8,cursor:'pointer',background:on?color:'#fff',border:'2px solid '+(on?color:LGRAY),boxShadow:on?'0 4px 14px rgba(0,0,0,.16)':'0 1px 4px rgba(0,0,0,.05)'}}>
+                  <div style={{fontFamily:FD,fontWeight:800,fontSize:27,lineHeight:1,color:on?'#fff':color}}>{ico} {list.length}</div>
+                  <div style={{fontFamily:FD,fontWeight:700,fontSize:12.5,textTransform:'uppercase',letterSpacing:.5,marginTop:7,color:on?'#fff':NAVY}}>{label}</div>
+                  <div style={{fontSize:11.5,fontWeight:700,marginTop:2,color:on?'rgba(255,255,255,.85)':TXTL,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(_kbSum(list))}</div>
+                </button>;})}
+            </div>);
+            if(_kbCur&&_kbActive!=='parked'){
+              const _kbList=_kbCur[3],_kbHint=_kbCur[5];
+              _children.push(<div key="kb-hint" style={{fontSize:13.5,fontWeight:600,color:TXTL,margin:'0 0 12px',maxWidth:960,lineHeight:1.45}}>{_kbHint}</div>);
+              if(billStepMode){
+                const si2=Math.min(billStepIdx,_kbList.length-1);
+                const[sb2,sbi2]=_kbList[si2];
+                const bp2=sb2.parsed||{};
+                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))};
+                _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,flexWrap:'wrap'}}>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.5,color:'#92400e',whiteSpace:'nowrap'}}>Bill {si2+1} of {_kbList.length}</span>
+                  <span style={{flex:1,minWidth:230}}>
+                    <span style={{fontFamily:FD,fontWeight:800,fontSize:20,textTransform:'uppercase',letterSpacing:.3,color:NAVY}}>{bp2.vendor||bp2.supplier||sb2.file}</span>
+                    <span style={{fontSize:13.5,color:TXTL,marginLeft:10}}>{[bp2.doc_number&&('Inv '+bp2.doc_number),bp2.doc_date,bp2.po_number].filter(Boolean).join(' · ')}</span>
+                  </span>
+                  <span style={{fontFamily:FD,fontWeight:800,fontSize:24,color:NAVY,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(bp2.doc_total||bp2.merchandise_total)}</span>
+                  <span style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <button onClick={()=>{_parkBillsForLater([sb2]);nf('🕒 Set aside — next bill up')}} title="Park this bill (out of every push, synced across machines) and move on to the next one" style={{fontSize:13,padding:'9px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fef3c7',border:'1.5px solid #d97706',color:'#92400e'}}>🕒 Set aside ▸ next</button>
+                    <button disabled={si2===0} onClick={()=>_stepGo(si2-1)} style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:si2===0?'not-allowed':'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:NAVY,opacity:si2===0?0.45:1}}>‹ Back</button>
+                    <button disabled={si2>=_kbList.length-1} onClick={()=>_stepGo(si2+1)} style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:si2>=_kbList.length-1?'not-allowed':'pointer',fontWeight:700,background:NAVY,border:'1px solid '+NAVY,color:'#fff',opacity:si2>=_kbList.length-1?0.45:1}}>Skip ›</button>
+                    <button onClick={()=>setBillStepMode(false)} title="Show this pile as a list instead" style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>☰ List</button>
+                  </span>
+                </div>);
+                _children.push(renderBillCard(sb2,sbi2));
+              }else{
+                _children.push(<div key="step-on" style={{margin:'0 0 10px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:12.5,padding:'8px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fffbeb',border:'1.5px solid #fcd34d',color:'#92400e'}}>▸ Work one at a time</button></div>);
+                _kbList.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+              }
             }
             if(_inReview&&!reviewN&&!_bk.failed.length)_children.push(<div key="rev-empty" style={{padding:'12px 16px',marginBottom:6,background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,fontSize:12.5,fontWeight:600,color:'#166534'}}>Nothing needs review — everything from the pull is matched or already done.</div>);
-            // 🕒 Set aside — the parked-bill workspace folds into To Review (no separate tab)
-            if(_parkedBills.length)_children.push(<React.Fragment key="parked-workspace">{(()=>{
+            // 🕒 Set aside — the parked-bill workspace renders ONLY when its kanban tile is
+            // active (owner: "only the items that apply show up under" the strip).
+            if(_parkedBills.length&&_kbActive==='parked')_children.push(<React.Fragment key="parked-workspace">{(()=>{
           const _billTs=sb=>{const t=sb.uploadedTs||Date.parse(sb.uploadedAt||'');return Number.isFinite(t)?t:0};
           const _timeOk=sb=>{
             if(billHistTime==='all')return true;
