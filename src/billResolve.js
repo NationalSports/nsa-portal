@@ -39,6 +39,20 @@ export const skuNumBase = (s) => {
   return m ? m[1] : null;
 };
 
+// Summary+detail cross-check (owner 2026-07-23). Some vendors (Champro et al.) come through
+// Sports Inc as a deterministic SUMMARY page ("SEE VENDOR INVOICE FOR DETAIL") plus a scanned
+// DETAIL page whose lines we read with AI vision. The AI is only trusted when its line items
+// SUM to the summary's authoritative merchandise total — an independent number we parsed
+// deterministically. reconciled=true → the read is self-consistent with a known-good total
+// (safe to book); false → flag for a human. Tolerance ignores sub-$2 / sub-1% rounding.
+export const detailLinesReconcile = (items, merchTotal) => {
+  const lineSum = Math.round((items || []).reduce((a, it) => a + Number((it && it.extension) || 0), 0) * 100) / 100;
+  const m = Number(merchTotal) || 0;
+  const diff = Math.round((lineSum - m) * 100) / 100;
+  const reconciled = m > 0 && lineSum > 0 && Math.abs(diff) <= Math.max(2, m * 0.01);
+  return { reconciled, lineSum, merchTotal: m, diff };
+};
+
 // ── PDF-as-reinforcement cross-check (owner, 2026-07-22: "EDI matches work
 // automatically… the PDF upload just reinforces even though we don't need to see it").
 // A later PDF upload of a bill EDI already pushed is a silent confirmation — normally

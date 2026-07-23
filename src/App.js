@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -1413,7 +1413,7 @@ const extractPdfText=async(file,opts={})=>{
 // layer — the Sports Inc "Needs Manual Upload" bucket). ~1400px wide keeps line items
 // legible while the payload stays small; capped pages mirror ai-bill-parse's cap.
 const extractPdfImages=async(file,opts={})=>{
-  const maxPages=opts.maxPages||8;const targetW=opts.targetWidth||1400;
+  const maxPages=opts.maxPages||16;const targetW=opts.targetWidth||1400;// 16 so a multi-invoice summary+detail PDF (e.g. 5 Champro invoices = 10 pages) isn't truncated
   const _extract=async()=>{
     await loadPdfJs();
     const ab=await file.arrayBuffer();
@@ -24031,12 +24031,36 @@ export default function App(){
           // SAME parsed shape; downstream matching/validation/push is unchanged. _ai_parsed
           // bills are excluded from auto-push — a scanned read always gets human eyes.
           const noLines=!bills.length||bills.every(bb=>!(bb.items||[]).length);
-          if(noLines&&String(text).replace(/\s+/g,'').length<200&&supabase){
-            setBillImport(x=>({...x,progress:{current:fi+1,total:files.length,name:file.name+' — 📷 AI reading scan…'}}));
+          // SUMMARY+DETAIL (owner 2026-07-23). Sports Inc prints a consistent SUMMARY page whose
+          // totals we parse deterministically, then the vendor's own DETAIL page — often a scanned
+          // image, different layout per vendor. So when the parse got summaries but no lines and
+          // the page says "SEE VENDOR INVOICE FOR DETAIL", read the detail with AI vision and MERGE
+          // its lines onto our reliable summary (keeping the summary's authoritative PO/totals/fee).
+          const _summaryNoDetail=noLines&&bills.length>0&&/SEE\s+VENDOR\s+INVOICE\s+FOR\s+DETAIL/i.test(text);
+          if(noLines&&supabase&&(String(text).replace(/\s+/g,'').length<200||_summaryNoDetail)){
+            setBillImport(x=>({...x,progress:{current:fi+1,total:files.length,name:file.name+(_summaryNoDetail?' — 📷 AI reading vendor detail…':' — 📷 AI reading scan…')}}));
             const imgs=await extractPdfImages(file);
             const d=await invokeEdgeFn(supabase,'ai-bill-parse',{filename:file.name,pages:imgs});
             if(d?.ok&&Array.isArray(d.bills)&&d.bills.length){
-              bills=d.bills.map(bb=>({...bb,_ai_parsed:true,rawText:'',warnings:[...(bb.warnings||[]),'📷 Read from a scanned PDF by AI — verify lines and totals before pushing']}));
+              if(_summaryNoDetail){
+                // Merge: take LINES from the AI read, keep the deterministic summary's authoritative
+                // header/totals. Trust the lines only when they SUM to the summary merch total
+                // (detailLinesReconcile) — an independent, known-good number. Reconciled → book like
+                // any bill; not reconciled → _ai_parsed so it never auto-pushes; a human confirms.
+                const _norm=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                bills=bills.map(sb=>{
+                  const v=d.bills.find(vb=>_norm(vb.po_number)&&_norm(vb.po_number)===_norm(sb.po_number))
+                        ||d.bills.find(vb=>_norm(vb.doc_number)&&_norm(vb.doc_number)===_norm(sb.doc_number));
+                  if(!v||!(v.items||[]).length)return{...sb,warnings:[...(sb.warnings||[]),'⚠ Could not read the vendor detail page for this invoice — enter costs manually or re-upload']};
+                  const rec=detailLinesReconcile(v.items,sb.merchandise_total);
+                  const w=[...(sb.warnings||[]).filter(x=>!/SEE VENDOR INVOICE|see vendor invoice/i.test(x)),
+                    rec.reconciled?'📷 Line detail read by AI from the vendor page — reconciles to the Sports Inc total ($'+rec.lineSum.toFixed(2)+')'
+                    :'📷 Line detail read by AI — ⚠ lines sum to $'+rec.lineSum.toFixed(2)+' vs the Sports Inc total $'+safeNum(sb.merchandise_total).toFixed(2)+'; verify before pushing'];
+                  return{...sb,items:v.items,_detail_ai_read:true,_detail_reconciled:rec.reconciled,_ai_parsed:true,warnings:w};
+                });
+              }else{
+                bills=d.bills.map(bb=>({...bb,_ai_parsed:true,rawText:'',warnings:[...(bb.warnings||[]),'📷 Read from a scanned PDF by AI — verify lines and totals before pushing']}));
+              }
             }else if(!bills.length)throw new Error(d?.error||'Scanned PDF — the AI read found no invoice on its pages');
           }
           if(!bills.length&&!text)throw new Error('PDF has no text layer and could not be read');

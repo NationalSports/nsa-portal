@@ -28,6 +28,8 @@ const CORS = {
 
 const SYSTEM_PROMPT = `You read scanned supplier invoices (bills) for National Sports Activewear and transcribe them into structured JSON. The pages you receive are images of ONE PDF, which may contain one or more invoices.
 
+IMPORTANT — summary + detail pairs: a single invoice often spans TWO pages — a Sports Inc SUMMARY page (header totals, a "PO NUMBER", and the text "SEE VENDOR INVOICE FOR DETAIL" instead of line items) immediately followed by the vendor's own DETAIL page listing the line items. Treat that pair as ONE invoice: take the po_number and totals from the summary page and the item lines from the detail page that follows it. Do not emit the summary as its own line-less invoice and the detail as a separate PO-less one — merge them. Carry the summary's "PO NUMBER" onto the merged invoice so it can be matched.
+
 Transcribe EXACTLY what is printed — never invent, estimate, or "fix" a value. If a field is unreadable or absent, use "" for strings and 0 for numbers, and add a note to warnings.
 
 For each invoice, extract:
@@ -59,7 +61,9 @@ serve(async (req: Request) => {
     }
     const body = await req.json();
     const pages: Array<{ media_type?: string; data?: string }> = Array.isArray(body?.pages) ? body.pages : [];
-    const usable = pages.filter((p) => p && typeof p.data === "string" && p.data.length > 100).slice(0, 8);
+    // Up to 16 pages: a multi-invoice summary+detail PDF (e.g. 5 Champro invoices = 10 pages)
+    // must not be truncated, which would silently drop whole invoices.
+    const usable = pages.filter((p) => p && typeof p.data === "string" && p.data.length > 100).slice(0, 16);
     if (!usable.length) {
       return new Response(JSON.stringify({ ok: false, error: "pages[] (base64 images) is required" }), { status: 200, headers: CORS });
     }
@@ -75,7 +79,7 @@ serve(async (req: Request) => {
       headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 8192,
+        max_tokens: 16000,
         system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
         messages: [{ role: "user", content }],
       }),
