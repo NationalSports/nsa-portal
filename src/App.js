@@ -24815,6 +24815,10 @@ export default function App(){
         if(c.label.toLowerCase().includes(q))return true;
         if((c.sub||'').toLowerCase().includes(q))return true;
         if(c.items.some(it=>(it.sku||'').toLowerCase().includes(q)))return true;
+        // Also match the line's PO id, so the wizard's pre-filled PO query ("PO 3283 OLuSOCG")
+        // surfaces the order that PO belongs to — the sub only carries the SO header PO, which
+        // often differs from the per-line po_id the bill actually cites.
+        if(c.items.some(it=>(it.po_id||'').toLowerCase().includes(q)))return true;
         return false;
       });
     };
