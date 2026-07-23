@@ -39,6 +39,68 @@ export const skuNumBase = (s) => {
   return m ? m[1] : null;
 };
 
+// ── Credit-memo reversal (owner 2026-07-23: the RA 74599650 return/re-ship cycle) ────────
+// A vendor credit reverses goods ALREADY BILLED, so normal matching (open quantities only)
+// can never tie it. These helpers are the mirror image: tie the credit's lines to BILLED
+// buckets, clamped so a reversal can never exceed what was billed, on SKU evidence only —
+// no color/size guessing on a money reversal. The App applies the plan only on an explicit
+// human click (credits never auto-anything).
+
+// The original-invoice reference printed on credit memos/RAs ("C1: 100785124",
+// "Original Invoice: 100785124") — anchors the credit to the exact doc it reverses.
+export const creditOriginalDoc = (text) => {
+  const m = String(text || '').match(/(?:ORIGINAL\s+INVOICE|ORIG\.?\s*INV(?:OICE)?|C1)\s*[:#]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
+  return m ? m[1] : '';
+};
+
+// proposeCreditReversal(bill, targets, opts?)
+//   bill:    parsed credit bill (is_credit; line qty/price may print negative — abs is used)
+//   targets: billed buckets [{sku,size,color,billed,unit_cost,po_id,so_id,item_id,docs:[{doc,cost,date}]}]
+// Returns { ties:[{bill_idx,target_idx,qty}], unresolved:[bill_idx], totalUnits, totalCost,
+//           ok, reasons:[], originalDoc, originalDocKnown }
+export const proposeCreditReversal = (bill, targets, opts = {}) => {
+  const canon = opts.canonSize || ((s) => String(s || '').toUpperCase().trim());
+  const items = (bill && bill.items) || [];
+  const tgts = (targets || []).map((t, i) => ({ t, i }));
+  const skuMatches = (a, b) => {
+    const x = _ns(a), y = _ns(b);
+    if (!x || !y) return false;
+    if (x === y) return true;
+    const bx = skuNumBase(x), by = skuNumBase(y);
+    if ((bx && bx === y) || (by && by === x) || (bx && by && bx === by)) return true; // letter-suffix variants
+    return x.length >= 5 && y.length >= 5 && (x.includes(y) || y.includes(x));        // contained variants
+  };
+  const ties = []; const unresolved = []; const reasons = [];
+  const used = {}; // target_idx -> units already reversed by this plan
+  items.forEach((bl, bi) => {
+    const qty = Math.abs(_num(bl.qty));
+    const money = Math.abs(_num(bl.unit_price)) > 0 || Math.abs(_num(bl.extension)) > 0;
+    if (qty <= 0 && !money) return; // memo/noise line — owes nothing
+    const alias = bl._alias_sku;
+    const hits = tgts.filter(({ t }) => (skuMatches(bl.sku, t.sku) || (alias && skuMatches(alias, t.sku))) && (!bl.size || canon(t.size) === canon(bl.size)));
+    if (hits.length !== 1) {
+      unresolved.push(bi);
+      reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': ' + (hits.length ? 'matches more than one billed bucket — pick by hand' : 'no billed bucket matches by SKU+size'));
+      return;
+    }
+    const { t, i } = hits[0];
+    const avail = Math.max(0, _num(t.billed) - (used[i] || 0));
+    if (avail <= 0) { unresolved.push(bi); reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': nothing left billed to reverse'); return; }
+    const take = Math.min(qty || avail, avail);
+    if (qty > avail) reasons.push('Line ' + (bl.sku || '?') + ' ' + (bl.size || '') + ': credit is for ' + qty + ' but only ' + avail + ' billed — clamped');
+    used[i] = (used[i] || 0) + take;
+    ties.push({ bill_idx: bi, target_idx: i, qty: take });
+  });
+  const totalUnits = ties.reduce((a, t) => a + t.qty, 0);
+  const totalCost = items.reduce((a, bl) => a + Math.abs(_num(bl.extension)), 0) || Math.abs(_num(bill && bill.merchandise_total)) || 0;
+  const originalDoc = creditOriginalDoc((bill && bill.rawText) || '');
+  const allDocs = new Set(); (targets || []).forEach((t) => (t.docs || []).forEach((d) => d && d.doc && allDocs.add(String(d.doc).trim().toLowerCase())));
+  const originalDocKnown = !!(originalDoc && allDocs.has(originalDoc.trim().toLowerCase()));
+  if (originalDoc && !originalDocKnown) reasons.push('The credit references original invoice #' + originalDoc + ', which is not among the docs billed on these lines — confirm the target before applying');
+  const ok = ties.length > 0 && unresolved.length === 0;
+  return { ties, unresolved, totalUnits, totalCost, ok, reasons, originalDoc, originalDocKnown };
+};
+
 // Summary+detail cross-check (owner 2026-07-23). Some vendors (Champro et al.) come through
 // Sports Inc as a deterministic SUMMARY page ("SEE VENDOR INVOICE FOR DETAIL") plus a scanned
 // DETAIL page whose lines we read with AI vision. The AI is only trusted when its line items

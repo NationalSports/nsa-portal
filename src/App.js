@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -25794,9 +25794,62 @@ export default function App(){
     // qty only alongside freight, so a $0-freight auto-matched bill used to no-op silently while
     // still reporting "Applied to SO" (and then dedup blocked ever re-importing it). Those now
     // auto-map to explicit line mappings at push time; here we pre-flag the ones that can't.
+    // ── Credit-memo reversal (owner 2026-07-23: the RA return/re-ship cycle) ────────────
+    // Targets for a credit = the matched SO's BILLED buckets (any po_line, any PO id on the
+    // SO — SI relabels POs across docs, e.g. billed on 17801, RA says 17802; the strict
+    // SKU+size tie in proposeCreditReversal is the real gate). Each bucket carries the docs
+    // that billed it so the plan can anchor to the credit's original-invoice reference.
+    const _buildCreditTargets=(p)=>{
+      const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;const so=soId&&sos.find(s2=>s2.id===soId);
+      if(!so)return null;
+      const out=[];
+      (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(pl=>{
+        Object.entries(pl.billed||{}).forEach(([sz,q])=>{
+          if(safeNum(q)<=0)return;
+          out.push({sku:it.sku,name:it.name,color:it.color||'',size:sz,billed:safeNum(q),unit_cost:safeNum(pl.unit_cost),po_id:pl.po_id||'',so_id:so.id,item_id:it.id,
+            docs:(pl._bill_details||[]).map(dt=>({doc:dt.doc,cost:safeNum(dt.cost),date:dt.date||''}))});
+        });
+      }));
+      return out.length?out:null;
+    };
+    // Apply a confirmed reversal plan: billed[size] comes DOWN, a negative _bill_details entry
+    // records the credit (credit_of anchors the original invoice), _bill_cost follows. Human
+    // click only — credits never auto-anything. Ledger row keyed doc_norm+is_credit, so the
+    // credit doc can't be applied twice and never collides with its invoice.
+    const _applyCreditToPortal=async(b,plan,targets)=>{
+      const p=b.parsed;
+      const soId=p.matchedPO?.so_id||p.matchedPO?.so?.id;const so=sos.find(s2=>s2.id===soId);
+      if(!so){nf('Order not found — reload and retry','error');return}
+      let reversedCost=0;
+      const items=(so.items||[]).map(it=>({...it,po_lines:(it.po_lines||[]).map(pl=>{
+        const mine=plan.ties.map(t=>({t,tg:targets[t.target_idx]})).filter(({tg})=>tg.item_id===it.id&&tg.po_id===(pl.po_id||''));
+        if(!mine.length)return pl;
+        const billed={...(pl.billed||{})};const detSizes={};let cost=0;
+        mine.forEach(({t,tg})=>{
+          billed[tg.size]=Math.max(0,safeNum(billed[tg.size])-t.qty);
+          detSizes[tg.size]=-t.qty;
+          const unit=Math.abs(safeNum((p.items[t.bill_idx]||{}).unit_price))||tg.unit_cost;
+          cost+=t.qty*unit;
+        });
+        cost=Math.round(cost*100)/100;reversedCost+=cost;
+        const det=[...(pl._bill_details||[]),{doc:(p.doc_number||'credit'),cost:-cost,date:p.doc_date||new Date().toLocaleDateString(),sizes:detSizes,credit_of:plan.originalDoc||undefined,tracking:''}];
+        return{...pl,billed,_bill_details:det,_bill_cost:Math.round((safeNum(pl._bill_cost)-cost)*100)/100};
+      })}));
+      savSO({...so,items,updated_at:new Date().toLocaleString()});
+      // Bill bookkeeping: ledger (is_credit-keyed dedup), local status, SI queue capture.
+      b.portalStatus='success';p._credit_applied={units:plan.totalUnits,cost:reversedCost,so_id:so.id,at:new Date().toISOString()};
+      setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,portalStatus:'success',parsed:{...pp.parsed,_credit_applied:p._credit_applied}}:pp)}));
+      setSavedBills(prev=>{const u=prev.map(sb=>sb.id===b.id?{...sb,portalStatus:'success',parsed:{...sb.parsed,_credit_applied:p._credit_applied}}:sb);_lsSet('nsa_saved_bills',JSON.stringify(u));return u});
+      try{await _recordAppliedBills([b])}catch(e){/* ledger retry path already loud */}
+      if(p.si_doc_number)_siMarkDoc(p.si_doc_number,{status:'approved',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString(),applied_doc_number:p.doc_number||null,updated_at:new Date().toISOString()});
+      nf('↩ Credit applied — un-billed '+plan.totalUnits+' unit(s) ($'+reversedCost.toFixed(2)+') on '+so.id+(plan.originalDoc?' against doc #'+plan.originalDoc:'')+'. The re-ship invoice can now push normally.','success');
+    };
     const _validateBillForPush=(p)=>{
       const errs=[];
       if(_docAlreadyApplied(p.doc_number))errs.push('Already pushed to the Portal (duplicate doc #'+(p.doc_number||'').trim()+')');
+      // Credits reverse goods; the normal push ADDS. Block the normal path outright — the
+      // ↩ Apply-credit panel on the card is the one door for credits (owner 2026-07-23).
+      if(p.is_credit)errs.push('Credit memo — use ↩ Apply credit on the card (it un-bills the returned goods); the normal push would ADD what the credit reverses.');
       // A numeric-core match (bill tag ≠ order tag) is a GUESS about which order this is —
       // proven capable of picking the wrong school (a typo'd "3132 TUH" bill core-matched
       // Stockdale's 3132 STOV while the real order was 3131 TUH). It never pushes until a
@@ -27626,6 +27679,25 @@ export default function App(){
                   </div>
                   {tri.errs.map((e,ei)=><div key={ei} style={{fontSize:11,color:'#b91c1c'}}>&bull; {e}</div>)}
                 </div>}
+                {/* ↩ CREDIT PANEL (owner 2026-07-23: the RA return/re-ship cycle) — the ONE door
+                    for credits. Ties the credit's lines to BILLED buckets (SKU+size, clamped),
+                    shows exactly what un-bills, applies only on this click. */}
+                {bill.is_credit&&!portalPushed&&!bill._credit_applied&&(()=>{
+                  const targets=poMatch?_buildCreditTargets(bill):null;
+                  if(!targets)return <div style={{padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a',fontSize:11.5,color:'#92400e'}}>
+                    ↩ <b>Credit memo.</b> Match it to its order first (✨ Find order or Match manually) — the apply-credit panel appears here once the order is known.</div>;
+                  const plan=proposeCreditReversal(bill,targets,{canonSize:_canonBillSize});
+                  return <div style={{padding:'10px 14px',background:'#fffbeb',borderBottom:'1px solid #fde68a'}}>
+                    <div style={{fontSize:12,fontWeight:800,color:'#92400e',marginBottom:6}}>↩ Credit memo — reverses goods already billed{plan.originalDoc?' (original invoice #'+plan.originalDoc+(plan.originalDocKnown?'':' — ⚠ not found on this order'):''}{plan.originalDoc?')':''}</div>
+                    {plan.ties.map((t,ti)=>{const tg=targets[t.target_idx];const bl=bill.items[t.bill_idx]||{};
+                      return <div key={ti} style={{fontSize:11,color:'#78350f'}}>&bull; {bl.sku||tg.sku} {tg.size} × {t.qty} → un-bills {tg.sku} on {tg.po_id||tg.so_id}{tg.docs.length?' (billed by '+[...new Set(tg.docs.map(d2=>d2.doc))].join(', ')+')':''}</div>;})}
+                    {plan.reasons.map((r2,ri)=><div key={'r'+ri} style={{fontSize:11,color:'#b45309',fontWeight:700}}>⚠ {r2}</div>)}
+                    {plan.ok
+                      ?<button onClick={()=>_applyCreditToPortal(b,plan,targets)} style={{marginTop:8,fontSize:11,padding:'6px 14px',borderRadius:4,cursor:'pointer',fontWeight:800,background:'#b45309',border:'1px solid #92400e',color:'#fff'}}>↩ Apply credit — un-bill {plan.totalUnits} unit(s) (${plan.totalCost.toFixed(2)})</button>
+                      :<div style={{fontSize:11,color:'#92400e',marginTop:6}}>Some lines can’t be tied automatically — adjust the order by hand (open the SO), or fix the credit’s SKUs above and it will re-plan.</div>}
+                  </div>;
+                })()}
+                {bill._credit_applied&&<div style={{padding:'8px 14px',background:'#ecfdf5',borderBottom:'1px solid #a7f3d0',fontSize:11.5,fontWeight:700,color:'#047857'}}>↩ Credit applied — {bill._credit_applied.units} unit(s) un-billed (${safeNum(bill._credit_applied.cost).toFixed(2)}) on {bill._credit_applied.so_id}. The re-ship invoice can now push normally.</div>}
                 {/* AI reconciliation banner — shows the size/SKU label fixes Claude applied
                     against the matched order, so the change is auditable before pushing. */}
                 {bill._aiMatched&&(()=>{

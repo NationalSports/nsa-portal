@@ -1254,3 +1254,69 @@ describe('account/vendor/description gating of weak proposals', () => {
     expect(props[0].accountMismatch).toBeFalsy();
   });
 });
+
+// ── Credit-memo reversal (owner 2026-07-23: RA 74599650 — burgundy A430s returned off
+// invoice 100785124, greys re-shipped on 100898884) ──
+describe('proposeCreditReversal — tie a credit to the BILLED goods it reverses', () => {
+  const { proposeCreditReversal, creditOriginalDoc } = require('../billResolve');
+  const targets = [
+    { sku: 'A430', size: 'L',   billed: 2, unit_cost: 20.13, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 40.26, date: '07/17/2026' }] },
+    { sku: 'A430', size: 'XL',  billed: 7, unit_cost: 20.13, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 140.91, date: '07/17/2026' }] },
+    { sku: 'A430', size: '2XL', billed: 2, unit_cost: 22.49, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 44.98, date: '07/17/2026' }] },
+    { sku: 'A430', size: '3XL', billed: 1, unit_cost: 22.49, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 22.49, date: '07/17/2026' }] },
+    { sku: '41800', size: 'M',  billed: 28, unit_cost: 8.14, po_id: 'PO 17801 OVHF', docs: [{ doc: '100785124', cost: 227.92, date: '07/17/2026' }] },
+  ];
+  const raCredit = {
+    is_credit: true, po_number: 'PO 17802 OVHF', doc_number: '74599650', merchandise_total: -248.64,
+    rawText: 'Return Order Confirmation RA Confirmation: 74599650 ... C1: 100785124 C2: Do Not Need',
+    items: [ // RA prints negative pieces — abs() is used
+      { sku: 'A430', size: 'XL',  qty: -7, unit_price: 20.13, extension: -140.91 },
+      { sku: 'A430', size: '3XL', qty: -1, unit_price: 22.49, extension: -22.49 },
+      { sku: 'A430', size: 'L',   qty: -2, unit_price: 20.13, extension: -40.26 },
+      { sku: 'A430', size: '2XL', qty: -2, unit_price: 22.49, extension: -44.98 },
+    ],
+  };
+  test('the real RA: every line ties to its billed bucket, anchored to the original invoice', () => {
+    const plan = proposeCreditReversal(raCredit, targets, {});
+    expect(plan.ok).toBe(true);
+    expect(plan.ties).toHaveLength(4);
+    expect(plan.totalUnits).toBe(12);
+    expect(plan.originalDoc).toBe('100785124');
+    expect(plan.originalDocKnown).toBe(true);
+    // XL line reverses 7 from the XL bucket
+    const xl = plan.ties.find(t => t.bill_idx === 0);
+    expect(targets[xl.target_idx].size).toBe('XL');
+    expect(xl.qty).toBe(7);
+  });
+  test('clamps to what was billed and says so', () => {
+    const over = { ...raCredit, items: [{ sku: 'A430', size: 'L', qty: -5, unit_price: 20.13, extension: -100.65 }] };
+    const plan = proposeCreditReversal(over, targets, {});
+    expect(plan.ties[0].qty).toBe(2); // only 2 billed
+    expect(plan.reasons.join(' ')).toMatch(/clamped/);
+  });
+  test('never guesses: an unknown SKU stays unresolved and the plan is not ok', () => {
+    const stray = { ...raCredit, items: [{ sku: 'ZZZ999', size: 'L', qty: -2, unit_price: 20.13, extension: -40.26 }] };
+    const plan = proposeCreditReversal(stray, targets, {});
+    expect(plan.ok).toBe(false);
+    expect(plan.unresolved).toHaveLength(1);
+  });
+  test('vendor letter-suffix SKUs still tie (5162436D reverses billed 5162436)', () => {
+    const t2 = [{ sku: '5162436', size: 'L', billed: 3, unit_cost: 7.5, docs: [{ doc: 'X1', cost: 22.5 }] }];
+    const c2 = { is_credit: true, rawText: '', items: [{ sku: '5162436D', size: 'L', qty: -3, unit_price: 7.5, extension: -22.5 }] };
+    const plan = proposeCreditReversal(c2, t2, {});
+    expect(plan.ok).toBe(true);
+    expect(plan.ties[0].qty).toBe(3);
+  });
+  test('warns when the referenced original invoice is not among the billed docs', () => {
+    const other = { ...raCredit, rawText: 'C1: 999999999' };
+    const plan = proposeCreditReversal(other, targets, {});
+    expect(plan.originalDocKnown).toBe(false);
+    expect(plan.reasons.join(' ')).toMatch(/not among the docs/);
+  });
+  test('creditOriginalDoc reads the common formats', () => {
+    expect(creditOriginalDoc('blah C1: 100785124 blah')).toBe('100785124');
+    expect(creditOriginalDoc('Original Invoice: 100785124')).toBe('100785124');
+    expect(creditOriginalDoc('ORIG INV 100785124')).toBe('100785124');
+    expect(creditOriginalDoc('no reference here')).toBe('');
+  });
+});
