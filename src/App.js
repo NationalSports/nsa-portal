@@ -23673,6 +23673,23 @@ export default function App(){
       }catch(e){console.warn('auto-match sweep',e)}
       // Append mode (queue → review) adds to whatever is already under review instead of replacing it.
       setBillImport(x=>({...x,parsed:append?[...x.parsed,...results]:results,step:'review',uploading:false,progress:null,skipped:skippedInfo,showSkipped:false}));
+      // Auto-clear the "Upload & Match" waiting list (owner: uploaded items should drop off
+      // the list, even the API ones). A scanned SI doc sits in the grab bucket until its PDF
+      // arrives; now that the PDF is parsed, any waiting row whose supplier invoice # matches
+      // a bill we just brought in is done — mark it 'manual_done' (same as the "Mark uploaded"
+      // button) so it disappears without the manual click. Matched on the vendor's own invoice
+      // number, identical on the API row and the PDF; status-only, reversible, no money path.
+      try{
+        const parsedDocs=new Set(results.map(r=>String(r?.parsed?.supplier_doc_number||r?.parsed?.doc_number||'').trim().toLowerCase()).filter(Boolean));
+        const hits=parsedDocs.size?siQueue.filter(r=>r._t?.bucket==='grab'&&parsedDocs.has(String(r.supplier_doc_number||'').trim().toLowerCase())):[];
+        if(hits.length){
+          const ids=hits.map(r=>r.si_doc_number),idSet=new Set(ids);
+          const upd={status:'manual_done',resolved_by:(cu?.name||cu?.email||''),resolved_at:new Date().toISOString()};
+          setSiQueue(prev=>prev.map(r=>idSet.has(r.si_doc_number)?{...r,...upd,_t:{...r._t,bucket:'captured'}}:r));
+          if(supabase){try{await supabase.from('si_documents').update(upd).in('si_doc_number',ids)}catch(e){console.warn('auto-clear grab rows (db)',e)}}
+          nf('✓ '+hits.length+' waiting bill'+(hits.length===1?'':'s')+' cleared from Upload & Match — the PDF is now in review','success');
+        }
+      }catch(e){console.warn('auto-clear grab',e)}
       // Auto-save to history
       const toSave=results.map(r=>({id:r.id,file:r.file,parsed:{...r.parsed,rawText:undefined},uploadedAt:r.uploadedAt,uploadedTs:r.uploadedTs,qbStatus:null}));
       setSavedBills(prev=>{const updated=[...toSave,...prev].slice(0,200);_lsSet('nsa_saved_bills',JSON.stringify(updated));return updated});
