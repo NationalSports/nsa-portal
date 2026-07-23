@@ -20483,6 +20483,26 @@ export default function App(){
             if(typeof nf==='function')nf('Mockup removed from '+sku);
           }finally{setArtJobDetailUploading(false)}
         };
+        // Clear (or restore) the auto-shown sew-out proof for a garment slot. The proof is derived
+        // from the art's prod_files (artProofFallback) and owns no file to delete, so "remove" is a
+        // non-destructive flag: proof_dismissed makes the sew-out stop standing in for a mockup on
+        // every surface — this modal, the SO/coach approval views, and the send-for-approval gate —
+        // reverting the slot to an empty upload zone. Production files (incl. the .dst/.emb machine
+        // files) are kept; restore un-sets the flag. Persists before touching local state.
+        const setArtProofDismissed=async(artId,dismissed)=>{
+          if(artJobDetailUploading)return;
+          setArtJobDetailUploading(true);
+          try{
+            const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+            const updArt=safeArt(liveSO).map(a=>a.id===artId?{...a,proof_dismissed:dismissed}:a);
+            const pendingSO={...liveSO,art_files:updArt};
+            const ok=await _dbSaveSO(pendingSO);
+            if(ok===false){if(typeof nf==='function')nf(dismissed?'Failed to clear proof. Please retry.':'Failed to restore proof. Please retry.','error');return}
+            const newSO=savSO(pendingSO);
+            setArtMockupModal({...j,so:newSO,artFile:updArt.find(a=>a.id===j.art_file_id)||updArt[0]});
+            if(typeof nf==='function')nf(dismissed?'Sew-out proof cleared — upload a garment mockup for this item':'Sew-out proof restored');
+          }finally{setArtJobDetailUploading(false)}
+        };
         // ── Mock links ── stored on the job's primary design: garment -> source garment.
         const _linkAnchorId=af?.id||null;
         // Link a garment to another garment's mockup (sourceKey), or unlink (null). Chains
@@ -20700,10 +20720,11 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title="Clear this sew-out proof from the slot — keeps the production files" onClick={()=>{if(window.confirm('Clear the sew-out proof from this item?\n\nThe production files (including the .dst/.emb machine files) stay attached — this only removes the sew-out standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
                              </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's sew-out proof in the slot again">↺ Restore sew-out proof</button>}</div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
                             <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
@@ -21074,6 +21095,23 @@ export default function App(){
           nf('Mockup removed from '+sku);
         };
 
+        // Clear (or restore) the auto-shown sew-out proof for a garment slot. The proof is derived
+        // from the art's prod_files (artProofFallback) and owns no file to delete, so "remove" is a
+        // non-destructive flag: proof_dismissed makes the sew-out stop standing in for a mockup on
+        // every surface — this modal, the SO/coach approval views, and the send-for-approval gate —
+        // reverting the slot to an empty upload zone. Production files (incl. the .dst/.emb machine
+        // files) are kept; restore un-sets the flag. Persists to the DB before the toast fires.
+        const setArtProofDismissed=async(artId,dismissed)=>{
+          if(artJobDetailUploading)return;
+          const liveSO=sos.find(s=>s.id===(j.soId||so.id))||so;
+          const updArt=safeArt(liveSO).map(a=>a.id===artId?{...a,proof_dismissed:dismissed}:a);
+          const newSO=savSO({...liveSO,art_files:updArt});
+          setArtJobDetailModal({...j,artFile:updArt.find(a=>a.id===j.art_file_id)});
+          const ok=await _dbSaveSO(newSO);
+          if(ok===false){nf(dismissed?'Failed to clear proof. Please retry.':'Failed to restore proof. Please retry.','error');return}
+          nf(dismissed?'Sew-out proof cleared — upload a garment mockup for this item':'Sew-out proof restored');
+        };
+
         // Upload handler for production files. Accepts [{file, artId}] so multi-art jobs can route each file to the correct art.
         const handleProdFileUpload=async(entries)=>{
           setArtJobDetailUploading(true);
@@ -21317,10 +21355,11 @@ export default function App(){
                                <div style={{marginTop:'auto',padding:'4px 8px',borderTop:'1px solid #fde68a',fontSize:10,color:'#92400e',display:'flex',alignItems:'center',gap:4}}>
                                  <span style={{flex:1,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{pName}{proof.length>1?' (+'+(proof.length-1)+')':''}</span>
                                  <button className="btn btn-sm" style={{fontSize:9,padding:'1px 6px'}} onClick={()=>openFile(pUrl)}>Open</button>
+                                 <button style={{background:'none',border:'none',color:'#ef4444',cursor:'pointer',fontSize:13,padding:'0 2px',lineHeight:1,fontWeight:700}} title="Clear this sew-out proof from the slot — keeps the production files" onClick={()=>{if(window.confirm('Clear the sew-out proof from this item?\n\nThe production files (including the .dst/.emb machine files) stay attached — this only removes the sew-out standing in as the mockup, so you can upload a garment mockup instead.'))setArtProofDismissed(slot.artId,true)}}>×</button>
                                </div>
                                <div style={{padding:'4px 8px',borderTop:'1px solid #fde68a',textAlign:'center',fontSize:10,color:'#92400e',fontWeight:600,cursor:'pointer'}} onClick={pick} title="Proof comes from the art's production files — uploading a garment mockup replaces it here">Sew-out proof · + upload garment mockup</div>
                              </>
-                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div></div>}
+                             :<div style={{margin:'auto',textAlign:'center',padding:12}}><div style={{fontSize:20,marginBottom:2}}>📎</div><div style={{fontSize:11,fontWeight:600,color:'#7c3aed'}}>Drop mockup here or click to upload</div>{a?.proof_dismissed&&artProofFallback({...a,proof_dismissed:false}).length>0&&<button onClick={e=>{e.stopPropagation();setArtProofDismissed(slot.artId,false)}} style={{marginTop:8,background:'none',border:'1px solid #fde68a',color:'#92400e',fontSize:10,fontWeight:600,cursor:'pointer',padding:'2px 8px',borderRadius:4}} title="Show this art's sew-out proof in the slot again">↺ Restore sew-out proof</button>}</div>}
                           </div>
                           <div style={{marginTop:6,textAlign:'center'}}>
                             <div style={{fontSize:11,fontWeight:700,color:'#1e3a5f',lineHeight:1.2}}>{slot.label||'Unnamed art'}</div>
