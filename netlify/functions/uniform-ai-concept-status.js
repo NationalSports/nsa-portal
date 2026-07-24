@@ -6,7 +6,7 @@ const {
   downloadObject,
   getSupabaseAdmin,
   validJobId,
-} = require('./uniform-ai-concept-store');
+} = require('./_uniform-ai-concept-store');
 
 exports.handler = async (event) => {
   const headers = {
@@ -71,4 +71,3 @@ exports.handler = async (event) => {
     };
   }
 };
-

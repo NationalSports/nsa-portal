@@ -10,7 +10,7 @@ const {
   uploadJson,
   uploadObject,
   validJobId,
-} = require('./uniform-ai-concept-store');
+} = require('./_uniform-ai-concept-store');
 const { _runtime } = require('./uniform-ai-concept');
 
 async function saveFailure(sb, jobId, error) {
@@ -29,12 +29,6 @@ async function saveFailure(sb, jobId, error) {
 }
 
 exports.handler = async (event) => {
-  const expected = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const provided = event.headers && (event.headers['x-internal-secret'] || event.headers['X-Internal-Secret']);
-  if (!expected || !safeEqualStr(provided, expected)) {
-    return { statusCode: 401, body: 'Unauthorized' };
-  }
-
   let body = {};
   try {
     body = JSON.parse(event.body || '{}');
@@ -48,6 +42,10 @@ exports.handler = async (event) => {
   try {
     await ensureBucket(sb);
     const request = await downloadJson(sb, jobId, 'request.json');
+    const provided = event.headers && (event.headers['x-job-token'] || event.headers['X-Job-Token']);
+    if (!request.workerToken || !safeEqualStr(provided, request.workerToken)) {
+      return { statusCode: 401, body: 'Unauthorized' };
+    }
     await uploadJson(sb, jobId, 'status.json', {
       ok: true,
       pending: true,
@@ -117,4 +115,3 @@ exports.handler = async (event) => {
     return { statusCode: 500, body: JSON.stringify({ ok: false, jobId }) };
   }
 };
-

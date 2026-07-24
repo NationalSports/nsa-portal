@@ -12,7 +12,7 @@
 
 const crypto = require('crypto');
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
-const { createJob } = require('./uniform-ai-concept-store');
+const { createJob } = require('./_uniform-ai-concept-store');
 
 const OPENAI_URL = 'https://api.openai.com/v1/images';
 const MODEL = process.env.UNIFORM_IMAGE_MODEL || 'gpt-image-2';
@@ -143,18 +143,17 @@ async function openAiRequest({ apiKey, prompt, referenceImages, count }) {
   });
 }
 
-async function triggerBackground(event, jobId) {
-  const baseUrl = process.env.DEPLOY_PRIME_URL
+async function triggerBackground(event, jobId, workerToken) {
+  const baseUrl = (event.headers && event.headers.host ? `https://${event.headers.host}` : '')
+    || process.env.DEPLOY_PRIME_URL
     || process.env.DEPLOY_URL
-    || process.env.URL
-    || (event.headers && event.headers.host ? `https://${event.headers.host}` : '');
-  const secret = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!baseUrl || !secret) throw new Error('Background concept generation is not configured');
+    || process.env.URL;
+  if (!baseUrl || !workerToken) throw new Error('Background concept generation is not configured');
   const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/.netlify/functions/uniform-ai-concept-background`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'x-internal-secret': secret,
+      'x-job-token': workerToken,
     },
     body: JSON.stringify({ jobId }),
   });
@@ -215,16 +214,18 @@ exports.handler = async (event) => {
   const conceptPrompt = buildConceptPrompt({ ...body, prompt });
 
   const jobId = crypto.randomUUID();
+  const workerToken = crypto.randomBytes(24).toString('hex');
   try {
     await createJob(jobId, {
       count,
       conceptPrompt,
+      workerToken,
       referenceImages: referenceImages.map((image) => ({
         mediaType: image.mediaType,
         data: image.bytes.toString('base64'),
       })),
     });
-    await triggerBackground(event, jobId);
+    await triggerBackground(event, jobId, workerToken);
     return {
       statusCode: 202,
       headers,

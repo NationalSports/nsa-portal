@@ -2,7 +2,7 @@
 
 const { _test } = require('../../../netlify/functions/uniform-ai-concept');
 const { _test: designTest } = require('../../../netlify/functions/uniform-ai-design');
-const { validJobId } = require('../../../netlify/functions/uniform-ai-concept-store');
+const { validJobId } = require('../../../netlify/functions/_uniform-ai-concept-store');
 
 const ONE_PIXEL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
