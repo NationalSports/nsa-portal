@@ -180,6 +180,9 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
   const nsaLogo = `${portal}/NEW%20NSA%20Logo%20on%20white.png`;
   const first = (rep.name || '').trim().split(/\s+/)[0] || 'there';
   const invLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}`;
+  // Same portal deep-link plus &dl=1, which auto-downloads the invoice PDF once the
+  // invoice opens (see InvoicesPage.js). Opens in the rep's browser like any other link.
+  const dlLink = (id) => `${portal}/?inv=${encodeURIComponent(id)}&dl=1`;
   const total = rows.reduce((a, r) => a + r.balance, 0);
 
   // Aging summary tiles.
@@ -200,8 +203,10 @@ function buildArHtml({ rep, rows, dateLabel, portal, custName, testNote, ccFor }
         <div style="font-size:12px;color:${SUB}">${esc(r.inv.id)}${r.inv.memo ? ` · ${esc(r.inv.memo)}` : ''} · due ${esc(String(r.inv.due_date).slice(0, 10))}</div></td>
       <td align="right" style="padding:8px 0;border-bottom:1px solid #f1ece1;vertical-align:top;white-space:nowrap">
         <div style="font-weight:800;color:${RED};font-size:14px">${money(r.balance)}</div>
-        <span style="font-size:12px;font-weight:800;color:${heat}">${r.dpd}d</span>
-        <a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700"> Open →</a></td></tr>`;
+        <div style="margin-top:1px"><span style="font-size:12px;font-weight:800;color:${heat}">${r.dpd}d</span></div>
+        <div style="margin-top:4px">
+          <a href="${invLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700">Open →</a>
+          <a href="${dlLink(r.inv.id)}" style="font-size:12px;color:${ACCENT};text-decoration:none;font-weight:700;margin-left:14px">↓ Download</a></div></td></tr>`;
   }).join('');
 
   return `<div style="background:${CREAM};padding:0;margin:0">
