@@ -25312,7 +25312,20 @@ export default function App(){
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
             })};
           });
-          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Cost-only "add to PO" lines (owner 2026-07-24, option B): a SKU the bill charged that's on
+          // no order line → append it to the SO as a NEW cost line. unit_sell 0 (no customer charge),
+          // billed = ordered (no overage), flagged _added_from_bill for audit and downstream.
+          const addedItems=soMaps.filter(mp=>mp.add_to_po).map(mp=>{
+            const q=safeNum(mp.allocated_qty);const sz=mp.size||'OSFA';const uc=safeNum(mp.bill_unit||mp.unit_cost||0);
+            return{product_id:null,sku:mp.sku||'',name:mp.name||mp.sku||'Added from bill',brand:'',color:mp.color||'',
+              nsa_cost:uc,retail_price:0,unit_sell:0,available_sizes:[sz],sizes:{[sz]:q},
+              decorations:[],is_custom:false,pick_lines:[],_added_from_bill:true,
+              po_lines:[{po_id:mp.po_id||'',unit_cost:uc,[sz]:q,billed:{[sz]:q},
+                tracking_numbers:bill.tracking?[bill.tracking]:[],
+                _bill_cost:safeNum(mp.bill_cost||0),_added_from_bill:true,
+                _bill_details:[{doc:bill.doc_number,date:bill.doc_date,sizes:{[sz]:q},tracking:bill.tracking,cost:safeNum(mp.bill_cost||0)}]}]};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:[...updatedItems,...addedItems],updated_at:new Date().toLocaleString()};
           _billApplySave(bill,updatedSO);
           return updatedSO;
         }));
@@ -28495,9 +28508,10 @@ export default function App(){
                       // $0 lines (service memos) bill nothing — they never count as "still to tie"
                       // and are auto-treated as skipped unless the operator ties one on purpose.
                       const _zeroLn=(bl)=>safeNum(bl.unit_price)<=0&&safeNum(bl.extension)<=0;
-                      let matched=0,skipped=0,zeroAuto=0,untied=0;
+                      let matched=0,skipped=0,zeroAuto=0,untied=0,addedToPo=0;
                       bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};
                         if(mm.skipped){skipped++;return}
+                        if(mm.add_to_po){addedToPo++;return}// owner: no item to match → add it to the PO as a cost line
                         if(mm.target_idx!=null){matched++;return}
                         if(_zeroLn(bl)){zeroAuto++;return}
                         untied++;});
@@ -28508,7 +28522,7 @@ export default function App(){
                       bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const q=safeNum(mm.allocated_qty);billSum+=safeNum(bl.extension)||safeNum(bl.unit_price)*q;applySum+=q*safeNum(tt&&tt.unit_cost);});
                       const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
-                        <div style={{fontSize:13,color:'#334155',marginBottom:10,fontWeight:600,lineHeight:1.5}}>Click a bill line on the <b>left</b>, then click the order item it pays for on the <b>right</b>. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{zeroAuto?<> · <span style={{color:'#64748b'}}>{zeroAuto} × $0 — nothing to apply</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null} · <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
+                        <div style={{fontSize:13,color:'#334155',marginBottom:10,fontWeight:600,lineHeight:1.5}}>Click a bill line on the <b>left</b>, then click the order item it pays for on the <b>right</b>. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{zeroAuto?<> · <span style={{color:'#64748b'}}>{zeroAuto} × $0 — nothing to apply</span></>:null}{addedToPo?<> · <span style={{color:'#1e40af'}}>{addedToPo} added to PO</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null} · <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
                         {/* TAP-TAP TIE VIEW (owner redesign 2026-07-23: "very easily and clearly — and
                             not in tiny text — see the items on the PO... dummy proof"). Two panels:
                             bill lines LEFT, the order's items ALWAYS VISIBLE on the RIGHT. Click a
@@ -28518,7 +28532,7 @@ export default function App(){
                             active bill line; w._pkq searches the right panel. All money logic
                             (mappings shape, reconcile, confirm) unchanged. */}
                         {(()=>{
-                          const _untiedIdx=(maps,except)=>bill.items.findIndex((b2,i)=>{if(i===except)return false;const mm=maps[i]||{};return !mm.skipped&&mm.target_idx==null&&!_zeroLn(b2)});
+                          const _untiedIdx=(maps,except)=>bill.items.findIndex((b2,i)=>{if(i===except)return false;const mm=maps[i]||{};return !mm.skipped&&!mm.add_to_po&&mm.target_idx==null&&!_zeroLn(b2)});
                           const act=(w._pk!=null&&bill.items[w._pk])?w._pk:_untiedIdx(mappings,-1);
                           const actBl=act>=0?bill.items[act]:null;
                           const _tie=(ti)=>{if(act<0)return;const bl=bill.items[act];const nm={...mappings,[act]:{target_idx:ti,allocated_qty:safeNum(bl.qty),ambiguous:false}};const nx=_untiedIdx(nm,-1);setW({...w,mappings:nm,_pk:nx>=0?nx:null,_pkq:''})};
@@ -28570,6 +28584,7 @@ export default function App(){
                                     {bl.desc?<div style={{color:'#64748b',fontSize:12,marginTop:3,lineHeight:1.4}}>{bl.desc}</div>:null}
                                     <div style={{marginTop:7,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                                       {m.skipped?<><span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>Skipped — this line won’t bill</span><button onClick={e=>{e.stopPropagation();setMap(bli,{})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>Undo</button></>
+                                      :m.add_to_po?<><span style={{fontSize:12.5,fontWeight:800,color:'#1e40af'}}>➕ Add to the PO as a cost line — {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)} <span style={{fontWeight:600,color:'#64748b'}}>(no customer charge)</span></span><button onClick={e=>{e.stopPropagation();setMap(bli,{})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700,marginLeft:'auto'}}>Undo</button></>
                                       :tgt?<>
                                         <span style={{fontSize:12.5,color:'#166534',fontWeight:700}}>→ pays for <b style={{fontFamily:'monospace'}}>{tgt.sku}</b> {[tgt.color,tgt.size].filter(Boolean).join(' ')}</span>
                                         {basis&&<span style={{fontSize:11,fontWeight:800,color:basis.c,background:basis.bg,borderRadius:5,padding:'2px 8px',whiteSpace:'nowrap'}}>{basis.t}</span>}
@@ -28581,7 +28596,8 @@ export default function App(){
                                       :_zeroLn(bl)?<span style={{fontSize:12,color:'#94a3b8',fontWeight:700}}>$0 line — nothing to apply</span>
                                       :<>
                                         <span style={{fontSize:12.5,fontWeight:800,color:isAct?'#4f46e5':'#dc2626'}}>{isAct?'▸ now pick its item on the right':'not tied yet — click to work this line'}</span>
-                                        <button onClick={e=>{e.stopPropagation();setMap(bli,{skipped:true})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #fbbf24',background:'#fffbeb',color:'#92400e',fontWeight:700,marginLeft:'auto'}}>Skip</button>
+                                        {target.kind==='so'&&<button onClick={e=>{e.stopPropagation();setMap(bli,{add_to_po:true,allocated_qty:safeNum(bl.qty)})}} title="This bill line isn't on the order — add it to the PO as a cost-only line (captures the vendor cost; the customer isn't charged)" style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',fontWeight:700,marginLeft:'auto'}}>➕ Add to PO</button>}
+                                        <button onClick={e=>{e.stopPropagation();setMap(bli,{skipped:true})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #fbbf24',background:'#fffbeb',color:'#92400e',fontWeight:700}}>Skip</button>
                                       </>}
                                     </div>
                                   </div>;})}
@@ -28634,10 +28650,19 @@ export default function App(){
                               else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
                               // Persist per-line mappings on the bill so the apply path can target the
                               // exact SO item / po_line (rather than matching by PO-number string).
+                              const _addPoId=(target.items||[]).map(it=>it.po_id).find(Boolean)||bill.po_number||'';
                               const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
+                                const bl=bill.items[parseInt(bi2)]||{};
+                                // Cost-only "add to PO" line (owner 2026-07-24 chose option B): no order item to
+                                // tie to → the apply path creates a NEW cost line on the SO's PO from the bill
+                                // (unit_sell 0 = no customer charge; billed = ordered = no overage).
+                                if(m.add_to_po&&target.kind==='so'){
+                                  const q=safeNum(m.allocated_qty||bl.qty||0);
+                                  const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*q;
+                                  return{bill_idx:parseInt(bi2),add_to_po:true,target_kind:target.kind,target_id:target.id,sku:bl.sku||'',name:bl.desc||bl.sku||'',size:bl.size||'',color:bl.color||'',so_id:target.id,po_id:_addPoId,allocated_qty:q,unit_cost:safeNum(bl.unit_price||0),bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
+                                }
                                 if(m.skipped||m.target_idx==null)return null;
                                 const it=target.items[m.target_idx];
-                                const bl=bill.items[parseInt(bi2)]||{};
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
                                 return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
@@ -28647,9 +28672,9 @@ export default function App(){
                               const _bk2={};Object.values(w.mappings||{}).forEach(m2=>{if(m2.skipped||m2.target_idx==null)return;_bk2[m2.target_idx]=(_bk2[m2.target_idx]||0)+safeNum(m2.allocated_qty)});
                               const _ovr=Object.entries(_bk2).some(([ti2,al])=>al>safeNum((target.items[ti2]||{}).qty));
                               setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_overage_ok:_ovr||undefined,_wizard:{open:false}}}:p)}));
-                              nf('Bill manually matched to '+target.label+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
+                              nf((addedToPo>0?('Added '+addedToPo+' line'+(addedToPo===1?'':'s')+' to the PO'+(matched>0?', tied '+matched:'')+' — '+target.label):('Bill manually matched to '+target.label))+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
                               _advanceTieStepper(b.id);// jump into the next tie bill's matcher (owner: stop re-clicking "Tie lines")
-                            }}>Confirm match</button>
+                            }}>{addedToPo>0?(matched>0?'Confirm — tie '+matched+' · add '+addedToPo:'Add '+addedToPo+' to PO'):'Confirm match'}</button>
                         </div>
                       </>;
                     })()}
