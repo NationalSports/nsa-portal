@@ -314,6 +314,48 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 export const missingMockupsMsg = (action, missing) =>
   'Cannot ' + action + ' — no mockup yet for: ' + missing.join(', ') + '. Upload a mockup or link one ("use the same mockup as…") first.';
 
+// ── Colorway image bridging (Momentec & other big-catalog API vendors) ──
+// The Momentec catalog (vendor v8) is excluded from the capped in-memory `prod`, and its
+// order lines are usually saved at STYLE level — sku '705A', product_id null, color as
+// free text ("Vegas Gold") — while the actual per-colorway photo lives on the
+// '{style}.{color}' product row (id 'mt-{style}-{color}', image_front_url set by the
+// momentec-image-verify job). So the SO/art image resolver, which matches a product only
+// by id/exact-sku, lands on the imageless style-level parent row and shows a placeholder.
+// These pure helpers bridge the two: given a set of colorway rows fetched on demand, a
+// style-level line item resolves its correct-color image (exact color first, then any
+// imaged colorway of that style as a generic garment thumbnail).
+const _mtColorKey = (styleSku, color) =>
+  `${String(styleSku || '').trim().toLowerCase()}|${String(color || '').trim().toLowerCase()}`;
+// '*' can never appear in a real color name, so it's a safe "any colorway of this style" key.
+const _MT_ANY = '*';
+
+// Build a { 'style|color': {front, back} } lookup from fetched colorway product rows.
+// Accepts either DB column names (image_front_url/image_back_url) or the in-memory
+// mirror names (image_url/back_image_url). Rows with no front image are skipped.
+export const buildColorwayImageMap = (rows) => {
+  const map = {};
+  safeArr(rows).forEach((r) => {
+    const style = String((r && r.sku) || '').split('.')[0];
+    const front = (r && (r.image_front_url || r.image_url)) || null;
+    if (!style || !front) return;
+    const back = (r && (r.image_back_url || r.back_image_url)) || null;
+    const exact = _mtColorKey(style, r && r.color);
+    if (!map[exact]) map[exact] = { front, back };
+    const any = _mtColorKey(style, _MT_ANY);
+    if (!map[any]) map[any] = { front, back }; // first imaged colorway wins as the generic
+  });
+  return map;
+};
+
+// Resolve a line item's { front, back } image from a colorway map, or null. Only bridges
+// STYLE-level skus (no '.') — a colorway-level sku already matches its own product row.
+export const lookupColorwayImage = (map, item) => {
+  if (!map || !item) return null;
+  const sku = String(item.sku || '').trim();
+  if (!sku || sku.includes('.')) return null;
+  return map[_mtColorKey(sku, item.color)] || map[_mtColorKey(sku, _MT_ANY)] || null;
+};
+
 // ── Auto-link a copy-swapped garment to its source's mockup ──
 // The style-swap flows clone a line to a NEW sku ("copy decorations from JM5228 →
 // KD5416") rather than editing in place, so rekeyGarmentMocks can't apply (the source
