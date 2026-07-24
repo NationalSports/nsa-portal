@@ -89,19 +89,20 @@ config ──specFromConfig()──▶ design spec ──┬─▶ Viewer3D.js  
 
 ### AI design
 
-Guided AI is an explicit two-stage Kimi flow:
+Guided AI is an explicit two-provider flow:
 
 1. `netlify/functions/uniform-ai-concept.js` sends the coach's brief and neutral front/back
-   proofs of the approved garment to Kimi. Kimi returns three garment-grounded structured
-   visual directions, which the server renders as safe vector concept boards. The boards are
-   approval direction only and are never exported as production artwork.
+   proofs of the approved garment to OpenAI GPT Image. It returns three photorealistic,
+   garment-grounded visual concepts. They are approval direction only and are never exported
+   as production artwork.
 2. After the coach chooses a concept, `netlify/functions/uniform-ai-design.js` sends the
-   selected direction and locked production rules to Kimi using Structured Output
+   selected concept image and locked production rules to Kimi using Structured Output
    (`propose_uniform_designs`). Its production-safe reconstruction applies as normal editable
    zones, colors, motifs and lettering.
 
-Both stages use the server-side Netlify variable `AIUniBuilder`. Model selection is configurable
-with `UNIFORM_AI_MODEL` (default `kimi-k2.6`).
+The image stage uses the server-side Netlify variable `OPENAI_API_KEY` and defaults to
+`gpt-image-2` (override with `UNIFORM_IMAGE_MODEL`). The editable mapping stage uses
+`AIUniBuilder` and defaults to `kimi-k2.6` (override with `UNIFORM_AI_MODEL`).
 
 Both stages degrade with an honest setup message when their server-side key is absent.
 

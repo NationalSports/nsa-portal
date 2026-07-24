@@ -1990,13 +1990,13 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       const data = await res.json();
       if (!data.ok) { setAiError(data.error || 'AI concepts are not available right now.'); return; }
       const concepts = Array.isArray(data.concepts) ? data.concepts.filter((item) => item && item.image).slice(0, 3) : [];
-      if (!concepts.length) { setAiError('Kimi came back empty — try rewording the brief.'); return; }
+      if (!concepts.length) { setAiError('OpenAI returned no concept images — try rewording the brief.'); return; }
       setAiConcepts(concepts);
       setAiHistory((history) => [...history, { role: 'assistant', text: `Created ${concepts.length} garment-grounded visual concept${concepts.length === 1 ? '' : 's'}. Choose one to build its editable production version.` }].slice(-6));
-      setAiNote('Vector concepts are visual direction. Choose one to map it onto the live uniform.');
+      setAiNote('Photorealistic concepts are visual direction. Choose one for Kimi to rebuild on the live editable uniform.');
     } catch (e) {
-      setAiError('Could not reach Kimi. Please try again.');
-      setAiHistory((history) => [...history, { role: 'assistant', text: 'Kimi did not respond. Your guided setup is still saved.' }].slice(-6));
+      setAiError('Could not reach OpenAI image generation. Please try again.');
+      setAiHistory((history) => [...history, { role: 'assistant', text: 'OpenAI did not return concept images. Your guided setup is still saved.' }].slice(-6));
     } finally { setAiBusy(false); setAiAction(''); }
   };
 
@@ -2552,7 +2552,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
             })}
           </div>
           <div style={{ padding: '8px 10px', borderRadius: 6, background: '#fffbeb', border: '1px solid #fde68a', color: '#713f12', fontFamily: F_BODY, fontSize: 11.5, lineHeight: 1.4 }}>
-            Vector concepts guide the look. Production exports use the editable reconstruction applied to the live uniform—not the concept preview.
+            Concept images guide the look. Production exports use the editable reconstruction applied to the live uniform—not the concept preview.
           </div>
           <button onClick={() => { setAiConcepts([]); setAiAppliedConceptId(''); }} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss concepts</button>
         </div>
