@@ -89,12 +89,20 @@ config ──specFromConfig()──▶ design spec ──┬─▶ Viewer3D.js  
 
 ### AI design
 
-`netlify/functions/uniform-ai-design.js` — a plain-English brief goes to Claude, which is
-**forced through a tool schema** (`propose_uniform_designs`) to return 2–3 structured design
-candidates (colors, neck style, number style, patterns, etc.). Candidates auto-apply to the
-editable spec — nothing is a locked image. Model is configurable via `UNIFORM_AI_MODEL`
-(default `claude-haiku-4-5`); degrades gracefully with a friendly message if
-`ANTHROPIC_API_KEY` isn't set.
+Guided AI is an explicit two-stage flow:
+
+1. `netlify/functions/uniform-ai-concept.js` sends the coach's brief and neutral front/back
+   proofs of the approved garment to OpenAI's Image API. GPT Image returns three
+   photorealistic visual directions. These are approval concepts only and are never exported
+   as production artwork. Configure with `OPENAI_API_KEY`; `UNIFORM_IMAGE_MODEL`,
+   `UNIFORM_IMAGE_QUALITY`, `UNIFORM_IMAGE_SIZE`, and `UNIFORM_IMAGE_COMPRESSION` are optional.
+2. After the coach chooses a concept, `netlify/functions/uniform-ai-design.js` sends the
+   selected image and locked production rules to Claude, which is **forced through a tool
+   schema** (`propose_uniform_designs`). Its production-safe reconstruction applies as normal
+   editable zones, colors, motifs and lettering. Model is configurable via `UNIFORM_AI_MODEL`
+   (default `claude-haiku-4-5`) and requires `ANTHROPIC_API_KEY`.
+
+Both stages degrade with an honest setup message when their server-side key is absent.
 
 ---
 

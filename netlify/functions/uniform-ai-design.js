@@ -82,6 +82,8 @@ const SYSTEM = [
   '- Only reference zone ids that exist on the given garment. Not every zone needs a pattern; solid is fine.',
   '- Pick a fabric and number/name fonts that fit the vibe (block/anton & bebas for bold, graduate for collegiate, pirata for gothic, pacifico for script).',
   '- When the coach requests diagonal, slanted, or italic numbers, set italic=true on both front and back number objects.',
+  '- If a selected visual concept image is supplied, translate its major color balance, motif placement, scale and lettering treatment into the closest PRODUCTION-SAFE version allowed by this schema. Do not invent unsupported raster artwork or claim pixel-perfect reproduction.',
+  '- Preserve the coach brief when it conflicts with incidental text or rendering mistakes in the concept image. The concept is visual direction; locked production rules and the written brief win.',
   '- neckStyle picks the cut; frontNumber places the chest number (right chest is the classic kit look; none drops it).',
   '- outline is the number\'s border; outline2 adds a second border ring outside the first (the pro "double border" look) — use it when the brief wants extra pop, otherwise "none".',
   '- nameArch "arched" curves the back name over the number (classic); "straight" is modern.',
@@ -190,6 +192,15 @@ function toStyling(out) {
   return s;
 }
 
+function parseConceptImage(value) {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/.exec(String(value || ''));
+  if (!match) return null;
+  const data = match[2].replace(/\s/g, '');
+  const bytes = Buffer.from(data, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) return null;
+  return { mediaType: match[1], data };
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
@@ -222,6 +233,7 @@ exports.handler = async (event) => {
     : [];
   const originalMode = ctx.designMode === 'original';
   const locked = (ctx.lockedRules && typeof ctx.lockedRules === 'object') ? ctx.lockedRules : {};
+  const conceptImage = parseConceptImage(body.conceptImage);
   const lockedLines = [
     locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
     locked.frontIdentity ? `- Front identity is locked to ${String(locked.frontIdentity).slice(0, 12)}${locked.frontLogoPresent ? ' (front logo is uploaded)' : ''}.` : '',
@@ -238,6 +250,7 @@ exports.handler = async (event) => {
     ctx.program ? `Program: ${String(ctx.program).slice(0, 20)} (men's/women's/youth cut)` : '',
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
     originalMode ? 'Design mode: original artwork. Do not use printPattern or any saved vendor pattern.' : '',
+    conceptImage ? 'A coach-selected visual concept is attached. Rebuild its visual direction with the editable production-safe schema; do not merely describe it.' : '',
     !originalMode && prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
     lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
@@ -254,7 +267,20 @@ exports.handler = async (event) => {
         system: SYSTEM,
         tools: [TOOL],
         tool_choice: { type: 'tool', name: 'propose_uniform_designs' },
-        messages: [{ role: 'user', content: userMsg }],
+        messages: [{
+          role: 'user',
+          content: conceptImage ? [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: conceptImage.mediaType,
+                data: conceptImage.data,
+              },
+            },
+            { type: 'text', text: userMsg },
+          ] : userMsg,
+        }],
       }),
     });
     if (!resp.ok) {
@@ -280,4 +306,4 @@ exports.handler = async (event) => {
 
 // Pure contract helpers for regression tests. They are not exposed by Netlify's
 // HTTP handler, but keep reversible/original-mode behavior directly testable.
-exports._test = { cleanZones, toClientSpec, toStyling };
+exports._test = { cleanZones, parseConceptImage, toClientSpec, toStyling };

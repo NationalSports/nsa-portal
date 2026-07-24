@@ -1656,7 +1656,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         ...(source.reverseSections ? { reverseSections: normSections(source.reverseSections) } : {}),
       };
     });
-    setAiCandidates([]);
+    setAiConcepts([]);
+    setAiAppliedConceptId('');
     setAiError('');
     setAiNote('');
     setScreen('wizard');
@@ -1793,13 +1794,16 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
   // the octa jersey's sections map onto it directly.
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiAction, setAiAction] = useState('');
   const [aiError, setAiError] = useState('');
   const [aiNote, setAiNote] = useState('');
   const [aiHistory, setAiHistory] = useState([]);
   const [teamError, setTeamError] = useState('');
-  // 2-3 looks per brief, each a ready-to-apply config patch + thumbnail — the
-  // coach compares and picks instead of getting one take forced on them.
-  const [aiCandidates, setAiCandidates] = useState([]);
+  // Image concepts are deliberately kept separate from the editable builder
+  // config. Selecting one sends it through the production-safe mapper before
+  // any 3D or exported artwork changes.
+  const [aiConcepts, setAiConcepts] = useState([]);
+  const [aiAppliedConceptId, setAiAppliedConceptId] = useState('');
 
   // Turn one AI design (spec + styling) into a wizard config patch. Everything
   // is validated here: unknown patterns/fonts/colors just don't make it in.
@@ -1907,6 +1911,60 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     setAiNote(`"${cand.name}" applied — fine-tune anything below, or try another look.`);
   };
 
+  const guidedAIContext = () => {
+    const sizes = numberDefaultsFor(config.sport, config.program);
+    return {
+      sport: config.sport || '',
+      program: config.program || 'mens',
+      teamColors: teamColors.map((c) => c.hex),
+      reversible: config.neckStyle === 'basketball4r3chb',
+      // Guided AI creates original production artwork. Saved vendor prints
+      // remain available in the template/manual design path, but are
+      // deliberately excluded here.
+      designMode: 'original',
+      lockedRules: {
+        teamName: String(config.teamName || '').trim(),
+        frontIdentity: config.frontIdentity || 'none',
+        frontLogoPresent: hasFrontLogo(config.logos || {}),
+        playerNamesEnabled: !!config.includePlayerName,
+        frontNumberInches: Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : sizes.front,
+        backNumberInches: Number.isFinite(config.backNumberInches) ? config.backNumberInches : sizes.back,
+      },
+    };
+  };
+
+  const conceptReferenceImages = async () => {
+    // The image model sees a neutral proof of the exact approved cut rather
+    // than the previously selected template artwork. That keeps the silhouette
+    // grounded while allowing a genuinely new visual direction.
+    const neutralize = (source) => Object.fromEntries(
+      Object.entries(normSections(source)).map(([key, value], index) => [key, {
+        ...value,
+        color: index % 2 ? '#D1D5DB' : '#E5E7EB',
+        color2: '#F8FAFC',
+        pattern: 'solid',
+        patternImage: null,
+        patternName: '',
+      }]),
+    );
+    const neutralA = neutralize(config.sections);
+    const referenceConfig = { ...config, sections: neutralA, logos: emptyLogos(), playerName: '', teamName: '' };
+    const references = [
+      await renderToDataURL(specFromConfig(referenceConfig), { view: 'front', width: 760 }),
+    ];
+    if (config.neckStyle === 'basketball4r3chb') {
+      const neutralB = neutralize(config.reverseSections || config.sections);
+      references.push(await renderToDataURL(specFromConfig({ ...referenceConfig, sections: neutralB }), { view: 'front', width: 760 }));
+    } else {
+      references.push(await renderToDataURL(specFromConfig(referenceConfig), { view: 'back', width: 760 }));
+    }
+    const frontLogo = ['chest', 'rightChest']
+      .map((key) => config.logos && config.logos[key])
+      .find((logo) => logo && (logo.srcCut || logo.srcFull || logo.src));
+    if (frontLogo) references.push(frontLogo.srcCut || frontLogo.srcFull || frontLogo.src);
+    return references;
+  };
+
   const runAIDesign = async () => {
     const prompt = aiPrompt.trim();
     if (!prompt) return;
@@ -1915,60 +1973,76 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       setAiError(`${identity.detail}. Complete Team Identity before generating.`);
       return;
     }
-    const sizes = numberDefaultsFor(config.sport, config.program);
-    setAiBusy(true); setAiError(''); setAiNote(''); setAiCandidates([]);
+    setAiBusy(true); setAiAction('concepts'); setAiError(''); setAiNote(''); setAiConcepts([]); setAiAppliedConceptId('');
     setAiHistory((history) => [...history, { role: 'coach', text: prompt }].slice(-6));
+    try {
+      const referenceImages = await conceptReferenceImages();
+      const res = await fetch('/.netlify/functions/uniform-ai-concept', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          garmentId: garmentFor(config),
+          count: 3,
+          referenceImages,
+          context: guidedAIContext(),
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) { setAiError(data.error || 'AI image concepts are not available right now.'); return; }
+      const concepts = Array.isArray(data.concepts) ? data.concepts.filter((item) => item && item.image).slice(0, 3) : [];
+      if (!concepts.length) { setAiError('The image AI came back empty — try rewording the brief.'); return; }
+      setAiConcepts(concepts);
+      setAiHistory((history) => [...history, { role: 'assistant', text: `Created ${concepts.length} garment-grounded visual concept${concepts.length === 1 ? '' : 's'}. Choose one to build its editable production version.` }].slice(-6));
+      setAiNote('Concept images are visual direction. Choose one to map it onto the live uniform.');
+    } catch (e) {
+      setAiError('Could not reach the AI image service. Please try again.');
+      setAiHistory((history) => [...history, { role: 'assistant', text: 'The image service did not respond. Your guided setup is still saved.' }].slice(-6));
+    } finally { setAiBusy(false); setAiAction(''); }
+  };
+
+  const applyAIConcept = async (concept) => {
+    if (!concept || !concept.image || aiBusy) return;
+    const prompt = aiPrompt.trim();
+    setAiBusy(true); setAiAction('mapping'); setAiError(''); setAiAppliedConceptId(concept.id);
+    setAiNote('Translating the selected image into editable colors, motifs and lettering…');
     try {
       const res = await fetch('/.netlify/functions/uniform-ai-design', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          prompt, garmentId: garmentFor(config), count: 3,
-          context: {
-            sport: config.sport || '', program: config.program || 'mens',
-            teamColors: teamColors.map((c) => c.hex),
-            // Guided AI creates original production artwork. Saved vendor
-            // prints remain available in the template/manual design path, but
-            // are deliberately excluded here so the model cannot substitute a
-            // merely similar catalog pattern for the coach's brief.
-            designMode: 'original',
-            lockedRules: {
-              teamName: String(config.teamName || '').trim(),
-              frontIdentity: config.frontIdentity || 'none',
-              frontLogoPresent: hasFrontLogo(config.logos || {}),
-              playerNamesEnabled: !!config.includePlayerName,
-              frontNumberInches: Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : sizes.front,
-              backNumberInches: Number.isFinite(config.backNumberInches) ? config.backNumberInches : sizes.back,
-            },
-          },
+          prompt,
+          garmentId: garmentFor(config),
+          count: 1,
+          conceptImage: concept.image,
+          context: guidedAIContext(),
         }),
       });
       const data = await res.json();
-      if (!data.ok) { setAiError(data.error || 'AI design is not available right now.'); return; }
-      const raw = Array.isArray(data.designs) && data.designs.length ? data.designs : [{ name: 'Design', spec: data.spec, styling: {}, rationale: data.rationale || '' }];
-      const cands = [];
-      for (const d of raw.slice(0, 3)) {
-        const patch = aiDesignToPatch(d, prompt);
-        if (!patch.sections.body) continue; // a look with no body color isn't a look
-        let thumb = '';
-        try {
-          // Thumbnail from the exact spec Apply would produce, so what the coach
-          // picks is what they get.
-          const previewSections = { ...normSections(config.sections), ...patch.sections };
-          thumb = config.neckStyle === 'basketball4r3chb'
-            ? basketballFallbackImage(previewSections, patch.numberColor || config.numberColor, config.playerNumber || '23')
-            : await renderToDataURL(specFromConfig({ ...config, ...patch, sections: previewSections }), { view: 'front', width: 200 });
-        } catch (_e) { /* thumb optional */ }
-        cands.push({ name: d.name || 'Design', rationale: d.rationale || '', patch, thumb });
+      if (!data.ok) {
+        setAiError(data.error || 'The selected concept could not be mapped right now.');
+        setAiAppliedConceptId('');
+        return;
       }
-      if (!cands.length) { setAiError('The AI came back empty — try rewording the brief.'); return; }
-      setAiCandidates(cands);
-      setAiHistory((history) => [...history, { role: 'assistant', text: `Created ${cands.length} production-safe direction${cands.length === 1 ? '' : 's'}. Choose one, or refine the brief.` }].slice(-6));
-      if (cands.length === 1) { applyAICandidate(cands[0]); setAiCandidates([]); }
-      else setAiNote('Pick the look you like — every one stays fully editable.');
-    } catch (e) {
-      setAiError('Could not reach the AI design service. Please try again.');
-      setAiHistory((history) => [...history, { role: 'assistant', text: 'The design service did not respond. Your guided setup is still saved.' }].slice(-6));
-    } finally { setAiBusy(false); }
+      const design = Array.isArray(data.designs) && data.designs.length
+        ? data.designs[0]
+        : { name: concept.name || 'Concept', spec: data.spec, styling: {}, rationale: data.rationale || '' };
+      const patch = aiDesignToPatch(design, prompt);
+      if (!patch.sections.body) {
+        setAiError('The mapper could not find a production-safe body treatment in that concept.');
+        setAiAppliedConceptId('');
+        return;
+      }
+      applyAICandidate({ name: design.name || concept.name || 'Concept', patch });
+      setAiHistory((history) => [...history, {
+        role: 'assistant',
+        text: `Mapped ${concept.name || 'the selected concept'} to the editable uniform. The live garment and production export now use the production-safe reconstruction.`,
+      }].slice(-6));
+      setAiNote('Editable version applied. Compare it with the concept, then fine-tune any section below.');
+    } catch (_error) {
+      setAiAppliedConceptId('');
+      setAiError('Could not map the selected concept. Please try again.');
+    } finally {
+      setAiBusy(false); setAiAction('');
+    }
   };
 
   // ── roster helpers ──
@@ -2444,7 +2518,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         placeholder="Describe the look: bold black and orange splatter, modern block numbers…"
         style={{ width: '100%', boxSizing: 'border-box', border: '1.5px solid ' + C.mid, borderRadius: 6, padding: '9px 10px', fontFamily: F_BODY, fontSize: 13, color: C.text, resize: 'vertical' }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 8 }}>
-        <button onClick={runAIDesign} disabled={aiBusy || !aiPrompt.trim() || !guidedIdentity.ok} style={{ ...checkoutBtn(true), width: 'auto', padding: '9px 16px', opacity: (aiBusy || !aiPrompt.trim() || !guidedIdentity.ok) ? 0.55 : 1 }}>{aiBusy ? 'Designing…' : (aiHistory.length ? 'Refine Designs' : 'Create 3 Designs')}</button>
+        <button onClick={runAIDesign} disabled={aiBusy || !aiPrompt.trim() || !guidedIdentity.ok} style={{ ...checkoutBtn(true), width: 'auto', padding: '9px 16px', opacity: (aiBusy || !aiPrompt.trim() || !guidedIdentity.ok) ? 0.55 : 1 }}>
+          {aiBusy && aiAction === 'concepts' ? 'Creating Images…' : aiConcepts.length ? 'Create New Concepts' : 'Create 3 Image Concepts'}
+        </button>
         {aiNote && !aiError && <span style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight }}>{aiNote}</span>}
       </div>
       {!guidedIdentity.ok && (
@@ -2453,20 +2529,31 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         </button>
       )}
       {aiError && <div style={{ marginTop: 8, padding: '8px 10px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, color: '#991b1b', fontSize: 12 }}>{aiError}</div>}
-      {aiCandidates.length > 0 && (
+      {aiConcepts.length > 0 && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${aiCandidates.length}, 1fr)`, gap: 8 }}>
-            {aiCandidates.map((cand, i) => (
-              <button key={i} onClick={() => applyAICandidate(cand)} title={cand.rationale}
-                style={{ background: '#fff', border: '1px solid ' + C.mid, borderRadius: 6, padding: 0, cursor: 'pointer', overflow: 'hidden', textAlign: 'center' }}>
-                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '760 / 820', background: '#fff', overflow: 'hidden' }}>
-                  {cand.thumb ? <img src={cand.thumb} alt={cand.name} style={{ width: '92%', height: 'auto' }} /> : <span style={{ fontFamily: F_BODY, fontSize: 11, color: C.textLight }}>…</span>}
+          <div style={{ marginBottom: 7, fontFamily: F_DISP, fontWeight: 800, fontSize: 10.5, color: C.navy, textTransform: 'uppercase', letterSpacing: .7 }}>1 · Choose a visual direction</div>
+          <div style={{ display: 'flex', gap: 9, overflowX: 'auto', paddingBottom: 7, scrollSnapType: 'x mandatory' }}>
+            {aiConcepts.map((concept, i) => {
+              const applied = aiAppliedConceptId === concept.id;
+              return (
+              <button key={concept.id || i} onClick={() => applyAIConcept(concept)} disabled={aiBusy}
+                style={{ position: 'relative', flex: '0 0 86%', scrollSnapAlign: 'start', background: '#fff', border: '2px solid ' + (applied ? C.green : C.mid), borderRadius: 7, padding: 0, cursor: aiBusy ? 'wait' : 'pointer', overflow: 'hidden', textAlign: 'center', opacity: aiBusy && !applied ? .62 : 1 }}>
+                <span style={{ position: 'absolute', top: 7, left: 7, zIndex: 2, padding: '4px 7px', borderRadius: 999, background: 'rgba(15,34,78,.9)', color: '#fff', fontFamily: F_DISP, fontWeight: 800, fontSize: 9.5, textTransform: 'uppercase', letterSpacing: .55 }}>Concept image</span>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', aspectRatio: '3 / 2', background: '#eef0f4', overflow: 'hidden' }}>
+                  <img src={concept.image} alt={`${concept.name || `Visual ${i + 1}`} uniform concept`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 </span>
-                <span style={{ display: 'block', padding: '6px 4px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: C.navy, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{cand.name}</span>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 10px', borderTop: '1px solid ' + C.light, fontFamily: F_DISP, fontWeight: 800, fontSize: 11, textTransform: 'uppercase', letterSpacing: 0.4, color: applied ? '#166534' : C.navy }}>
+                  <span>{concept.name || `Visual ${i + 1}`}</span>
+                  <span>{aiBusy && applied && aiAction === 'mapping' ? 'Building…' : applied ? '✓ Mapped to 3D' : 'Build editable version →'}</span>
+                </span>
               </button>
-            ))}
+              );
+            })}
           </div>
-          <button onClick={() => setAiCandidates([])} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss suggestions</button>
+          <div style={{ padding: '8px 10px', borderRadius: 6, background: '#fffbeb', border: '1px solid #fde68a', color: '#713f12', fontFamily: F_BODY, fontSize: 11.5, lineHeight: 1.4 }}>
+            Concept images guide the look. Production exports use the editable reconstruction applied to the live uniform—not the AI pixels.
+          </div>
+          <button onClick={() => { setAiConcepts([]); setAiAppliedConceptId(''); }} style={{ marginTop: 8, background: 'none', border: 'none', cursor: 'pointer', fontFamily: F_BODY, fontSize: 11, color: C.textLight, padding: 0 }}>Dismiss concepts</button>
         </div>
       )}
     </>
@@ -2609,7 +2696,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                 style={{ minHeight: 250, padding: narrow ? 24 : 30, borderRadius: 12, border: '1.5px solid ' + C.navy, background: C.navy, color: '#fff', textAlign: 'left', cursor: aiDesignSupportedForSport(config.sport) ? 'pointer' : 'not-allowed', opacity: aiDesignSupportedForSport(config.sport) ? 1 : .5, boxShadow: '0 8px 22px rgba(25,40,83,.16)' }}>
                 <span style={{ display: 'block', fontSize: 34, marginBottom: 18 }}>✨</span>
                 <span style={{ display: 'block', fontFamily: F_DISP, fontWeight: 800, fontSize: 23, textTransform: 'uppercase', letterSpacing: .6 }}>Design With AI</span>
-                <span style={{ display: 'block', marginTop: 9, fontFamily: F_BODY, fontSize: 14, lineHeight: 1.55, opacity: .86 }}>Answer a few guided questions, describe the look, and receive three concepts mapped directly onto an approved {SPORT_LABELS[config.sport] || 'uniform'} template.</span>
+                <span style={{ display: 'block', marginTop: 9, fontFamily: F_BODY, fontSize: 14, lineHeight: 1.55, opacity: .86 }}>Answer a few guided questions, describe the look, and receive three photorealistic concepts grounded on the approved {SPORT_LABELS[config.sport] || 'uniform'} garment. Choose one to build its editable production version.</span>
                 <span style={{ display: 'block', marginTop: 20, fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .7 }}>{aiDesignSupportedForSport(config.sport) ? 'Start AI Design →' : 'AI starts with Soccer & Basketball'}</span>
               </button>
               <button onClick={startTemplatePath} data-testid="start-template-design"
@@ -2896,8 +2983,8 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                     <TeamPaletteEditor colors={teamColors} onAdd={addTeamColor} onRemove={removeTeamColor} onReplace={replaceTeamColor} />
                   </RailCard>
                   {builderMode === 'ai' && (
-                    <RailCard num={3} title="✨ Guided AI Design">
-                      <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, lineHeight: 1.45, marginBottom: 10 }}>Your identity, logo, colors, program, and number sizes stay locked while AI develops the visual direction.</div>
+                    <RailCard num={3} title="✨ AI Concept Studio">
+                      <div style={{ fontFamily: F_BODY, fontSize: 12, color: C.textLight, lineHeight: 1.45, marginBottom: 10 }}>First, AI creates high-end concept images on the approved garment. Choose one and the builder reconstructs it with editable production controls. Identity, logo, colors, program, and number sizes stay locked.</div>
                       {renderAiAssistant()}
                     </RailCard>
                   )}

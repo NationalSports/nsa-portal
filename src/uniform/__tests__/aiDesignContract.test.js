@@ -1,3 +1,5 @@
+/** @jest-environment node */
+
 const { _test } = require('../../../netlify/functions/uniform-ai-design');
 
 describe('guided AI design contract', () => {
