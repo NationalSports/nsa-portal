@@ -357,6 +357,21 @@ export const artDstOnFile=(af)=>!!af&&(af.deco_type||'')==='embroidery'&&artLive
 // Tag every DST in a file list stale — called by the pull-back paths (recall, update request, coach
 // send-back) alongside prod_files_attached:false, so the old stitch file can't auto-release the redo.
 export const markDstsStale=(list)=>(list||[]).map(f=>isDstFile(f)&&!isStaleFile(f)?(typeof f==='string'?{url:f,stale:true}:{...f,stale:true}):f);
+// Inverse of markDstsStale, for the *adopt* case. When a rep EXPLICITLY marks embroidery art
+// complete and a previously-retired DST is the ONLY stitch file on the art (no live DST ever arrived
+// to replace it), that click IS the sign-off that the attached DST is the production file — so drop
+// the stale tag. No-op when a live DST already exists, so a genuine redo (old retired DST + new live
+// DST) keeps the old one retired and the machine never sees two designs. Returns {files, prod_files}.
+// Machine-neutral by itself (emb-machine-manifest already ignores the stale tag); its real effect is
+// that the next re-approval and the "DST On File" banner stop overlooking a DST the rep just
+// confirmed — the SO-1638 loop where a re-completed job re-prompts "upload the DST" with the file in
+// plain sight on every subsequent coach round.
+export const reviveSoleStaleDst=(af)=>{
+  const files=(af&&af.files)||[];const prod=(af&&af.prod_files)||[];
+  if([...files,...prod].some(f=>isDstFile(f)&&!isStaleFile(f)))return{files,prod_files:prod};
+  const _un=arr=>(arr||[]).map(f=>{if(f&&typeof f==='object'&&isDstFile(f)&&isStaleFile(f)){const _r={...f};delete _r.stale;return _r;}return f;});
+  return{files:_un(files),prod_files:_un(prod)};
+};
 // prod_files_attached===false is an explicit invalidation (art recalled/updated for a design change,
 // or cloned prior art whose inherited files are unreviewed) — the OLD files still sitting on the row
 // must not satisfy either gate until someone re-confirms them. Legacy rows leave the flag undefined

@@ -24,7 +24,7 @@
  * SAFE: pure functions from constants.js — no Supabase, no UI, no network.
  */
 
-const { artProdFilesReady, artProdFilesConfirmed, artDstOnFile, markDstsStale } = require('../constants');
+const { artProdFilesReady, artProdFilesConfirmed, artDstOnFile, markDstsStale, reviveSoleStaleDst } = require('../constants');
 
 describe('artProdFilesConfirmed — explicit gate for skipping the separations stage', () => {
   test('a stray PDF in prod_files is NOT confirmation (the reported bug)', () => {
@@ -132,5 +132,42 @@ describe('markDstsStale — pull-back paths retire the old stitch file', () => {
   test('handles empty/missing lists', () => {
     expect(markDstsStale(undefined)).toEqual([]);
     expect(markDstsStale([])).toEqual([]);
+  });
+});
+
+describe('reviveSoleStaleDst — Mark-Complete adopts a retired DST that is the only stitch file', () => {
+  test('clears the stale tag when the retired DST is the sole DST (SO-1638 loop)', () => {
+    // A recalled-then-re-completed embroidery design: the same DG delivery, only the DST retired.
+    const af = { deco_type: 'embroidery', prod_files: [
+      { name: 'DG-701011.JPG' }, { name: 'DG-701011.pdf' },
+      { name: 'DG-701011.DST', stale: true }, { name: 'DG-701011.EMB' },
+    ] };
+    const out = reviveSoleStaleDst(af);
+    expect(out.prod_files[2]).toEqual({ name: 'DG-701011.DST' }); // stale tag dropped
+    expect(out.prod_files).toHaveLength(4); // nothing added or removed
+    // Now the re-approval gate and the "DST On File" banner see a live DST again.
+    expect(artDstOnFile({ deco_type: 'embroidery', prod_files: out.prod_files })).toBe(true);
+  });
+
+  test('leaves a retired DST retired when a live DST already exists (genuine redo — no double design)', () => {
+    const af = { deco_type: 'embroidery', prod_files: [
+      { name: 'DG-OLD.DST', stale: true }, { name: 'DG-NEW.DST' },
+    ] };
+    const out = reviveSoleStaleDst(af);
+    expect(out.prod_files[0]).toEqual({ name: 'DG-OLD.DST', stale: true }); // still retired
+    expect(out.prod_files[1]).toEqual({ name: 'DG-NEW.DST' });
+  });
+
+  test('revives a sole retired DST living in files (not just prod_files)', () => {
+    const af = { deco_type: 'embroidery', files: [{ name: 'logo.dst', stale: true }], prod_files: [{ name: 'sew.pdf' }] };
+    const out = reviveSoleStaleDst(af);
+    expect(out.files[0]).toEqual({ name: 'logo.dst' });
+  });
+
+  test('no-op on art with no DST at all, and on empty/missing art', () => {
+    const af = { deco_type: 'embroidery', prod_files: [{ name: 'sew.pdf' }] };
+    expect(reviveSoleStaleDst(af).prod_files).toEqual([{ name: 'sew.pdf' }]);
+    expect(reviveSoleStaleDst({})).toEqual({ files: [], prod_files: [] });
+    expect(reviveSoleStaleDst(null)).toEqual({ files: [], prod_files: [] });
   });
 });
