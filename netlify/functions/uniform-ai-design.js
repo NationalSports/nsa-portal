@@ -1,10 +1,10 @@
 // Uniform Builder — AI design generator.
 //
 // Takes a coach's plain-English brief ("aggressive red and black with camo
-// sleeves") plus the garment they're on, and asks Claude to return structured
+// sleeves") plus the garment they're on, and asks Kimi to return structured
 // design candidates: a color + pattern for each zone, a fabric, cut, lettering
-// treatment, and number/name typography. Claude is forced through a tool schema
-// so the output is always JSON, never prose. The client re-validates via
+// treatment, and number/name typography. Kimi is constrained by JSON Schema so
+// the output is always JSON, never prose. The client re-validates via
 // designSpec.normalizeSpec before rendering, so this function only has to
 // produce a best-effort shape.
 //
@@ -12,7 +12,7 @@
 // model is told to make them genuinely different); the advanced editor's older
 // single-design path still works — `spec` in the response is candidate #1.
 //
-// Degrades gracefully: with no ANTHROPIC_API_KEY it returns ok:false + a reason
+// Degrades gracefully: with no AIUniBuilder key it returns ok:false + a reason
 // so the builder can show a friendly message instead of breaking. Kept auth-free
 // so the standalone /uniform-builder demo works for logged-out coaches; spend is
 // bounded by daily per-IP and global caps (app_counters).
@@ -43,8 +43,8 @@ async function underAiBudget(event) {
   } catch (_e) { return true; }
 }
 
-const MODEL = process.env.UNIFORM_AI_MODEL || 'claude-haiku-4-5';
-const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const MODEL = process.env.UNIFORM_AI_MODEL || 'kimi-k2.6';
+const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 
 // Vocabularies the model must stay inside. Kept in sync with src/uniform/*.
 const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'splatter', 'camo', 'digicamo', 'carbon', 'hex'];
@@ -201,13 +201,27 @@ function parseConceptImage(value) {
   return { mediaType: match[1], data };
 }
 
+function parseJsonContent(value) {
+  const text = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch (_nestedError) { return null; }
+    }
+    return null;
+  }
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, reason: 'missing_api_key', error: 'AI design is not configured yet (no API key).' }) };
+  const apiKey = process.env.AIUniBuilder || process.env.MOONSHOT_API_KEY;
+  if (!apiKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, reason: 'missing_api_key', error: 'Kimi is not configured yet. Add AIUniBuilder in Netlify.' }) };
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (_e) { /* ignore */ }
@@ -234,6 +248,9 @@ exports.handler = async (event) => {
   const originalMode = ctx.designMode === 'original';
   const locked = (ctx.lockedRules && typeof ctx.lockedRules === 'object') ? ctx.lockedRules : {};
   const conceptImage = parseConceptImage(body.conceptImage);
+  const conceptDirection = body.conceptDirection && typeof body.conceptDirection === 'object'
+    ? JSON.stringify(body.conceptDirection).slice(0, 1800)
+    : String(body.conceptDirection || '').slice(0, 1000);
   const lockedLines = [
     locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
     locked.frontIdentity ? `- Front identity is locked to ${String(locked.frontIdentity).slice(0, 12)}${locked.frontLogoPresent ? ' (front logo is uploaded)' : ''}.` : '',
@@ -251,6 +268,7 @@ exports.handler = async (event) => {
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
     originalMode ? 'Design mode: original artwork. Do not use printPattern or any saved vendor pattern.' : '',
     conceptImage ? 'A coach-selected visual concept is attached. Rebuild its visual direction with the editable production-safe schema; do not merely describe it.' : '',
+    conceptDirection ? `Coach-selected visual direction from Kimi: ${conceptDirection}` : '',
     !originalMode && prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
     lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
@@ -258,38 +276,45 @@ exports.handler = async (event) => {
   ].filter(Boolean).join('\n');
 
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
+    const resp = await fetch(KIMI_URL, {
       method: 'POST',
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 4096,
-        system: SYSTEM,
-        tools: [TOOL],
-        tool_choice: { type: 'tool', name: 'propose_uniform_designs' },
-        messages: [{
-          role: 'user',
-          content: conceptImage ? [
+        max_completion_tokens: 4096,
+        thinking: { type: 'disabled' },
+        response_format: {
+          type: 'json_schema',
+          json_schema: {
+            name: TOOL.name,
+            description: TOOL.description,
+            schema: TOOL.input_schema,
+            strict: false,
+          },
+        },
+        messages: [
+          { role: 'system', content: `${SYSTEM}\nReturn valid JSON matching the supplied schema.` },
+          {
+            role: 'user',
+            content: conceptImage ? [
             {
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: conceptImage.mediaType,
-                data: conceptImage.data,
-              },
+              type: 'image_url',
+              image_url: { url: `data:${conceptImage.mediaType};base64,${conceptImage.data}` },
             },
             { type: 'text', text: userMsg },
-          ] : userMsg,
-        }],
+            ] : userMsg,
+          },
+        ],
       }),
     });
     if (!resp.ok) {
-      const t = await resp.text().catch(() => '');
-      return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: `Anthropic ${resp.status}`, detail: t.slice(0, 300) }) };
+      const data = await resp.json().catch(() => ({}));
+      const detail = data && data.error && data.error.message;
+      return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: detail || `Kimi ${resp.status}` }) };
     }
     const data = await resp.json();
-    const toolUse = (data.content || []).find((b) => b && b.type === 'tool_use' && b.name === 'propose_uniform_designs');
-    const raw = toolUse && toolUse.input && Array.isArray(toolUse.input.designs) ? toolUse.input.designs : [];
+    const parsed = parseJsonContent(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content);
+    const raw = parsed && Array.isArray(parsed.designs) ? parsed.designs : [];
     if (!raw.length) return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: 'AI did not return a design.' }) };
     const designs = raw.slice(0, count).map((d) => ({
       name: (typeof d.name === 'string' && d.name.trim()) ? d.name.trim().slice(0, 30) : 'Design',
@@ -306,4 +331,4 @@ exports.handler = async (event) => {
 
 // Pure contract helpers for regression tests. They are not exposed by Netlify's
 // HTTP handler, but keep reversible/original-mode behavior directly testable.
-exports._test = { cleanZones, parseConceptImage, toClientSpec, toStyling };
+exports._test = { cleanZones, parseConceptImage, parseJsonContent, toClientSpec, toStyling };

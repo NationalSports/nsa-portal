@@ -24,13 +24,14 @@ describe('guided AI concept contract', () => {
       },
     });
 
-    expect(prompt).toContain('exact physical template');
-    expect(prompt).toContain('Show coordinated Side A and Side B');
+    expect(prompt).toContain('exact blank garment');
+    expect(prompt).toContain('This is reversible; coordinate two distinct faces');
     expect(prompt).toContain('NORTH GATE');
-    expect(prompt).toContain('approximately 4" tall on the front and 8" tall on the back');
+    expect(prompt).toContain('Front number height: 4 inches. Back number height: 8 inches');
     expect(prompt).toContain('Do not add a player name');
     expect(prompt).toContain('#111111, #F97316');
     expect(prompt).toContain('Black and orange paint splatter');
+    expect(prompt).toContain('Return valid JSON only');
   });
 
   test('accepts supported image data URLs and rejects unsafe payloads', () => {
@@ -46,5 +47,30 @@ describe('guided AI concept contract', () => {
     expect(parsed.mediaType).toBe('image/png');
     expect(parsed.data.length).toBeGreaterThan(10);
     expect(designTest.parseConceptImage('not-an-image')).toBeNull();
+  });
+
+  test('renders Kimi directions as safe displayable SVG concept boards', () => {
+    const direction = _test.normalizeConcept({
+      name: 'Solar Strike',
+      bodyColor: '#111111',
+      secondaryColor: '#F97316',
+      accentColor: '#FFFFFF',
+      accentColor2: '#334155',
+      motif: 'splatter',
+      layout: 'allover',
+      numberFill: '#FFFFFF',
+      numberOutline: '#111111',
+      typography: 'italic athletic block',
+    }, 0, []);
+    const image = _test.renderConceptSvg(direction, {
+      sport: 'basketball',
+      reversible: true,
+      lockedRules: { teamName: 'NORTH GATE', frontIdentity: 'wordmark' },
+    }, 0);
+    expect(image).toMatch(/^data:image\/svg\+xml;base64,/);
+    const svg = Buffer.from(image.split(',')[1], 'base64').toString('utf8');
+    expect(svg).toContain('NORTH GATE');
+    expect(svg).toContain('#F97316');
+    expect(svg).not.toMatch(/<script|onload=/i);
   });
 });

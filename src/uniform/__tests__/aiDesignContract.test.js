@@ -45,4 +45,11 @@ describe('guided AI design contract', () => {
     expect(spec.text.front.number).toMatchObject({ fill: '#eaff00', outline: '#111827', italic: true });
     expect(spec.text.back.number.italic).toBe(true);
   });
+
+  test('parses Kimi structured output without Markdown leakage', () => {
+    expect(_test.parseJsonContent('```json\n{"designs":[{"zones":{}}]}\n```')).toEqual({
+      designs: [{ zones: {} }],
+    });
+    expect(_test.parseJsonContent('not json')).toBeNull();
+  });
 });
