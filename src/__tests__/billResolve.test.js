@@ -2,9 +2,76 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, skuZeroBase } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
+
+// ── Augusta family trailing-"00" (owner 2026-07-24: Momentec/Alleson/C2 "4120 = 412000") ──
+// The bill prints the full style+color number ("410500" = style 4105 + color "00"/white);
+// our order line often carries just the style ("4105"). skuZeroBase drops a trailing "00".
+describe('skuZeroBase — Augusta trailing-"00" base', () => {
+  test('strips a trailing 00 from a ≥5-digit numeric style', () => {
+    expect(skuZeroBase('410500')).toBe('4105');
+    expect(skuZeroBase('412000')).toBe('4120');
+    expect(skuZeroBase('227200')).toBe('2272');
+  });
+  test('leaves real SKUs untouched (null): short styles, non-00 tails, alphanumerics', () => {
+    expect(skuZeroBase('4105')).toBeNull();   // already the base, no trailing 00
+    expect(skuZeroBase('4120')).toBeNull();
+    expect(skuZeroBase('2000')).toBeNull();   // only 2 digits before "00" (<3) — not collapsed
+    expect(skuZeroBase('410518')).toBeNull(); // a non-white color code, not "00"
+    expect(skuZeroBase('258')).toBeNull();    // Richardson cap style
+    expect(skuZeroBase('B00708043')).toBeNull(); // S&S B-number
+    expect(skuZeroBase('JX4499')).toBeNull();
+    expect(skuZeroBase('')).toBeNull();
+  });
+});
+
+// Real shape from the owner's screenshot: a Momentec/Augusta bill keyed "410500" against an
+// order whose lines were entered short ("4105"), with two colors sharing the same size so
+// color+size alone is ambiguous — only the style#+color tie resolves it.
+const augustaBill = (supplier) => ({
+  po_number: 'NSA 5501 AUG', supplier,
+  items: [
+    { sku: '410500', size: '2XL', color: 'White', qty: 1, unit_price: 10.54 },
+    { sku: '412000', size: 'L', color: 'White', qty: 2, unit_price: 2.83 },
+  ],
+});
+const augustaCand = {
+  kind: 'so', id: 'SO-AUG', label: 'SO-AUG', sub: 'Sales Order · Augusta test', raw: { id: 'SO-AUG' },
+  items: [
+    { sku: '4105', name: 'Alleson Tee', color: 'White', size: '2XL', qty: 2, unit_cost: 10.54, so_id: 'SO-AUG', item_id: 'a1', po_id: 'NSA 5501 AUG' },
+    { sku: '4105', name: 'Alleson Tee', color: 'Black', size: '2XL', qty: 2, unit_cost: 10.54, so_id: 'SO-AUG', item_id: 'a1', po_id: 'NSA 5501 AUG' },
+    { sku: '4120', name: 'Alleson Short', color: 'White', size: 'L', qty: 2, unit_cost: 2.83, so_id: 'SO-AUG', item_id: 'a2', po_id: 'NSA 5501 AUG' },
+  ],
+};
+
+describe('proposeResolutions — Augusta trailing-"00" (Momentec/Alleson/C2)', () => {
+  test('ties the full bill number to the short order style, gated by color+size', () => {
+    const p = proposeResolutions(augustaBill('AUGUSTA SPORTSWEAR/ASI'), [augustaCand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.target.id).toBe('SO-AUG');
+    expect(p.coverage).toBe(1);
+    expect(p.ties).toHaveLength(2);
+    expect(p.ties.every((t) => /^augusta00/.test(t.basis))).toBe(true);
+    // 410500/White/2XL must land on 4105 WHITE (not the Black sibling of the same size).
+    const t0 = p.ties.find((t) => t.bill_idx === 0);
+    expect(augustaCand.items[t0.target_idx].color).toBe('White');
+  });
+  test('also matches when the bill is the short form and the order is the full form', () => {
+    const bill = { po_number: 'NSA 5501 AUG', supplier: 'Momentec', items: [{ sku: '4105', size: '2XL', color: 'White', qty: 1, unit_price: 10.54 }] };
+    const cand = { kind: 'so', id: 'SO-R', label: 'SO-R', raw: { id: 'SO-R' }, items: [{ sku: '410500', color: 'White', size: '2XL', qty: 2, unit_cost: 10.54, so_id: 'SO-R', item_id: 'r1', po_id: 'NSA 5501 AUG' }] };
+    const p = proposeResolutions(bill, [cand], { canonSize: canon })[0];
+    expect(p).toBeTruthy();
+    expect(p.ties).toHaveLength(1);
+    expect(/^augusta00/.test(p.ties[0].basis)).toBe(true);
+  });
+  test('vendor-gated: a NON-Augusta vendor never collapses "00" (no augusta00 basis)', () => {
+    const p = proposeResolutions(augustaBill('SanMar'), [augustaCand], { canonSize: canon })[0];
+    // It may still tie some lines by color+size, but never via the Augusta "00" rule.
+    if (p) expect(p.ties.every((t) => !/augusta00/.test(t.basis))).toBe(true);
+  });
+});
 
 // ── Real case: Trinity United (bill "PO 3132 TUH" — true order PO 3131 TUH) ──
 const trinityBill = {
