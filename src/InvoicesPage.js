@@ -17,7 +17,8 @@ import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedA
 // (?inv=<id>&dl=1) — it is only rendered while that flag is present in the URL.
 function AutoRunOnce({run}){
   const done=React.useRef(false);
-  React.useEffect(()=>{if(done.current)return;done.current=true;run();},[]);// eslint-disable-line react-hooks/exhaustive-deps
+  // Fires once — the ref guard makes re-runs (when `run` changes identity) no-ops.
+  React.useEffect(()=>{if(done.current)return;done.current=true;run();},[run]);
   return null;
 }
 
