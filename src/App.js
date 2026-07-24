@@ -27625,6 +27625,15 @@ export default function App(){
             const _reconNeeded=bill.kind!=='decoration'&&(bill.items||[]).length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&((tri&&tri.issue)||!_billApplyPlan(bill))));
             const _cardProps=_reconNeeded?proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3}):[];
             const _cardPi=Math.min(b._propIdx||0,Math.max(0,_cardProps.length-1));
+            // Bill & order detail (summary, edit fields, raw line table, totals) tucks behind one
+            // bar so the "best answer" proposal below is the hero the operator actually reads.
+            // Default collapsed when there's a real proposal to judge; open for clean matches —
+            // their line-match table IS the confirmation and there's no proposal to look at
+            // instead. Operator can toggle either way; the choice sticks per bill.
+            const _hasProposal=_reconNeeded&&!!_cardProps[_cardPi]&&!_cardProps[_cardPi].weakGuess;
+            const _detailPref=(billImport.showDetail||{})[b.id];
+            const detailOpen=_detailPref==null?!_hasProposal:_detailPref;
+            const toggleDetail=()=>setBillImport(x=>({...x,showDetail:{...(x.showDetail||{}),[b.id]:!detailOpen}}));
             const _acceptProposal=(pr)=>{
                       const target=pr.target;
                       // Merge the operator's click-links (chips on unresolved lines) into the ties,
@@ -27890,6 +27899,21 @@ export default function App(){
                     {plan.note&&<div style={{fontSize:10,color:'#0369a1',marginTop:3,opacity:0.85}}>{plan.note}</div>}
                   </div>;
                 })()}
+                {/* Bill & order details — one collapsible bar. The "best answer" proposal below
+                    is the hero; the raw summary, editable fields, line table and totals tuck in
+                    here so the operator judges the answer, not the source data. */}
+                <div onClick={toggleDetail} title={detailOpen?'Hide the bill & order detail':'Show the full bill — line items, totals, and the editable PO / vendor / tracking fields'}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'7px 14px',cursor:'pointer',background:'#f8fafc',borderTop:'1px solid #eef2f7',borderBottom:detailOpen?'1px solid #eef2f7':'none',userSelect:'none'}}>
+                  <span style={{fontSize:11.5,fontWeight:800,color:'#475569',letterSpacing:.2}}>{detailOpen?'▾':'▸'} Bill &amp; order details</span>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>{(bill.items||[]).length} line{(bill.items||[]).length===1?'':'s'}</span>
+                  {!detailOpen&&<span style={{fontSize:11,color:'#64748b',display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                    <span>Merch <b style={{color:'#334155'}}>{nsaMoney(bill.merchandise_total)}</b></span>
+                    {safeNum(bill.freight)>0&&<span>Freight <b style={{color:'#334155'}}>{nsaMoney(bill.freight)}</b></span>}
+                    <span>Total <b style={{color:NAVY}}>{nsaMoney(bill.doc_total||bill.merchandise_total)}</b></span>
+                  </span>}
+                  <span style={{marginLeft:'auto',fontSize:10,fontWeight:700,color:'#94a3b8'}}>{detailOpen?'Hide':'Edit / view lines'}</span>
+                </div>
+                {detailOpen&&<>
                 {/* Summary row */}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
                   {[['PO Number',bill.po_number||'—','#7c3aed'],['Vendor',bill.vendor||bill.supplier||'Unknown','#1e40af'],['Tracking',bill.tracking||'—','#475569'],
@@ -27952,7 +27976,7 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
-                        {showMatch&&<td style={{fontSize:10}}>{mp
+                        {showMatch&&<td style={{fontSize:12.5}}>{mp
                           ?<span style={{color:'#166534',fontWeight:600}} title={'This line will bill '+mp.allocated_qty+' × '+mp.sku+' '+mp.size+(mp.po_id?' on '+mp.po_id:'')}>
                             ✓ → {mp.sku} {mp.size}{via?<span style={{color:'#64748b',fontWeight:500}}> · {via}</span>:null}</span>
                           :hit
@@ -27994,6 +28018,7 @@ export default function App(){
                         onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i2)=>i2===bi?{...p,parsed:{...p.parsed,[key]:parseFloat(e.target.value)||0}}:p)}))}/>
                     </div>)}
                 </div>
+                </>}
                 {/* Warnings */}
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
@@ -28111,7 +28136,7 @@ export default function App(){
                                   </div>
                                   {it.name&&<div style={{fontSize:9.5,color:'#94a3b8',maxWidth:360}}>{it.name}</div>}
                                 </td>
-                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:9,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
+                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:11,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
                               </tr>;})}</tbody>
                           </table>
                         </div>
