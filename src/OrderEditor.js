@@ -5745,8 +5745,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         const val=inp.value;const pos=inp.selectionStart;
         const before=val.slice(0,pos);const after=val.slice(pos);
         const atIdx=before.lastIndexOf('@');
-        if(atIdx>=0){inp.value=before.slice(0,atIdx)+'@'+member.name+' '+after;
-          const newPos=atIdx+member.name.length+2;inp.setSelectionRange(newPos,newPos)}
+        if(atIdx>=0){const firstName=(member.name||'').split(' ')[0];inp.value=before.slice(0,atIdx)+'@'+firstName+' '+after;
+          const newPos=atIdx+firstName.length+2;inp.setSelectionRange(newPos,newPos)}
         setMentionQuery(null);setMentionIdx(0);inp.focus();
       };
       const handleMsgInput=(e)=>{
