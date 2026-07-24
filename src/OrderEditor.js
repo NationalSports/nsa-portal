@@ -10681,11 +10681,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           if(g.quickMock&&activateAll){artStatus='waiting_approval'}
           // When releasing for art with an assigned artist, create a proper art request
           const hasArtist=activateAll&&g.artist&&!g.skipArtist&&!g.quickMock;
-          const allArtTbd=artIds.length===0||artIds.every(aid=>aid==='__tbd');
+          // A '__tbd' placeholder IS declared art — the rep flagged "Art TBD" and is handing it to
+          // the artist to create, so it must generate an art request (→ art_requested) and land on
+          // the Art Dashboard, exactly like a real needs_art design. Previously an all-__tbd job was
+          // lumped in with "no art at all" and skipped the request, so releasing it did nothing: the
+          // job stayed needs_art with no request and never reached the artist (SO-1476/JOB-1476-01).
+          // Only a job with NO art decoration (names/numbers-only → artIds empty) has nothing to request.
+          const hasArtToRequest=artIds.length>0;
           // Create an art request whenever the artist path is chosen — including for art that was
           // already approved (reused art being sent back for a fresh mock), which otherwise would
           // skip the request and stay art_complete.
-          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&!allArtTbd&&(artStatus==='needs_art'||(hasArtist&&allApproved));
+          const autoArtRequest=activateAll&&!g.skipArtist&&!g.quickMock&&hasArtToRequest&&(artStatus==='needs_art'||(hasArtist&&allApproved));
           if(autoArtRequest)artStatus='art_requested';
           const totalUnits=releaseItems.reduce((a,it)=>a+it.units,0);
           const positions=[...new Set(releaseItems.map(it=>it.position))].join(', ');
