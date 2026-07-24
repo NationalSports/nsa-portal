@@ -2,6 +2,7 @@
 
 const { _test } = require('../../../netlify/functions/uniform-ai-concept');
 const { _test: designTest } = require('../../../netlify/functions/uniform-ai-design');
+const { validJobId } = require('../../../netlify/functions/uniform-ai-concept-store');
 
 const ONE_PIXEL_PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=';
 
@@ -46,6 +47,12 @@ describe('guided AI concept contract', () => {
     expect(parsed.mediaType).toBe('image/png');
     expect(parsed.data.length).toBeGreaterThan(10);
     expect(designTest.parseConceptImage('not-an-image')).toBeNull();
+  });
+
+  test('only unguessable UUID job ids can be polled', () => {
+    expect(validJobId('252fd472-1f06-4db7-9c41-7f1182fd429a')).toBe('252fd472-1f06-4db7-9c41-7f1182fd429a');
+    expect(validJobId('../another-job')).toBe('');
+    expect(validJobId('concept-1')).toBe('');
   });
 
 });

@@ -1987,8 +1987,31 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
           context: guidedAIContext(),
         }),
       });
-      const data = await res.json();
+      let data = await res.json();
       if (!data.ok) { setAiError(data.error || 'AI concepts are not available right now.'); return; }
+      if (data.pending && data.jobId) {
+        setAiNote('OpenAI is rendering three garment-grounded concepts. This usually takes one to three minutes; you can stay on this page.');
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          const statusRes = await fetch(`/.netlify/functions/uniform-ai-concept-status?jobId=${encodeURIComponent(data.jobId)}`, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store',
+          });
+          const status = await statusRes.json().catch(() => ({}));
+          if (status.status === 'complete' || (!status.pending && Array.isArray(status.concepts))) {
+            data = status;
+            break;
+          }
+          if (status.status === 'failed' || status.ok === false) {
+            setAiError(status.error || 'OpenAI could not finish these concept images. Please try again.');
+            return;
+          }
+          if (attempt === 119) {
+            setAiError('The concept images are taking longer than expected. Please try again in a moment.');
+            return;
+          }
+        }
+      }
       const concepts = Array.isArray(data.concepts) ? data.concepts.filter((item) => item && item.image).slice(0, 3) : [];
       if (!concepts.length) { setAiError('OpenAI returned no concept images — try rewording the brief.'); return; }
       setAiConcepts(concepts);

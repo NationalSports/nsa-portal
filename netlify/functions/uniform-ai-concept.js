@@ -12,6 +12,7 @@
 
 const crypto = require('crypto');
 const { corsHeaders, getSupabaseAdmin } = require('./_shared');
+const { createJob } = require('./uniform-ai-concept-store');
 
 const OPENAI_URL = 'https://api.openai.com/v1/images';
 const MODEL = process.env.UNIFORM_IMAGE_MODEL || 'gpt-image-2';
@@ -142,6 +143,27 @@ async function openAiRequest({ apiKey, prompt, referenceImages, count }) {
   });
 }
 
+async function triggerBackground(event, jobId) {
+  const baseUrl = process.env.DEPLOY_PRIME_URL
+    || process.env.DEPLOY_URL
+    || process.env.URL
+    || (event.headers && event.headers.host ? `https://${event.headers.host}` : '');
+  const secret = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!baseUrl || !secret) throw new Error('Background concept generation is not configured');
+  const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/.netlify/functions/uniform-ai-concept-background`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-internal-secret': secret,
+    },
+    body: JSON.stringify({ jobId }),
+  });
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => '')).slice(0, 300);
+    throw new Error(`Background concept job was not accepted (${response.status}) ${detail}`);
+  }
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
@@ -192,58 +214,34 @@ exports.handler = async (event) => {
     .slice(0, 3);
   const conceptPrompt = buildConceptPrompt({ ...body, prompt });
 
+  const jobId = crypto.randomUUID();
   try {
-    const response = await openAiRequest({
-      apiKey,
-      prompt: conceptPrompt,
-      referenceImages,
+    await createJob(jobId, {
       count,
+      conceptPrompt,
+      referenceImages: referenceImages.map((image) => ({
+        mediaType: image.mediaType,
+        data: image.bytes.toString('base64'),
+      })),
     });
-    const requestId = response.headers.get('x-request-id') || '';
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const message = data && data.error && data.error.message;
-      console.error('uniform-ai-concept OpenAI error', response.status, requestId, message || 'unknown');
-      return {
-        statusCode: response.status >= 500 ? 502 : response.status,
-        headers,
-        body: JSON.stringify({
-          ok: false,
-          reason: data && data.error && data.error.code,
-          error: message || 'OpenAI could not create the visual concepts.',
-        }),
-      };
-    }
-
-    const concepts = (Array.isArray(data.data) ? data.data : [])
-      .map((item, index) => item && item.b64_json ? {
-        id: `concept-${index + 1}`,
-        name: `Visual ${index + 1}`,
-        image: `data:image/${OUTPUT_FORMAT};base64,${item.b64_json}`,
-        revisedPrompt: String(item.revised_prompt || '').slice(0, 1200),
-      } : null)
-      .filter(Boolean);
-
-    if (!concepts.length) {
-      return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: 'OpenAI returned no concept images.' }) };
-    }
+    await triggerBackground(event, jobId);
     return {
-      statusCode: 200,
+      statusCode: 202,
       headers,
       body: JSON.stringify({
         ok: true,
-        concepts,
-        model: MODEL,
-        format: 'photorealistic-concept-image',
-        requestId,
+        pending: true,
+        status: 'queued',
+        jobId,
+        message: 'Creating three garment-grounded concepts…',
       }),
     };
   } catch (error) {
-    console.error('uniform-ai-concept OpenAI request failed', error && error.message);
+    console.error('uniform-ai-concept queue failed', error && error.message);
     return {
       statusCode: 502,
       headers,
-      body: JSON.stringify({ ok: false, error: 'Could not reach OpenAI image generation. Please try again.' }),
+      body: JSON.stringify({ ok: false, error: 'Could not start the image-generation job. Please try again.' }),
     };
   }
 };
@@ -251,5 +249,12 @@ exports.handler = async (event) => {
 exports._test = {
   buildConceptPrompt,
   cleanHexes,
+  openAiRequest,
   parseImageDataUrl,
+};
+
+exports._runtime = {
+  MODEL,
+  OUTPUT_FORMAT,
+  openAiRequest,
 };
