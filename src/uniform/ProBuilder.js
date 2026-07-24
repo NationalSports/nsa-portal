@@ -1993,7 +1993,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       if (!concepts.length) { setAiError('OpenAI returned no concept images — try rewording the brief.'); return; }
       setAiConcepts(concepts);
       setAiHistory((history) => [...history, { role: 'assistant', text: `Created ${concepts.length} garment-grounded visual concept${concepts.length === 1 ? '' : 's'}. Choose one to build its editable production version.` }].slice(-6));
-      setAiNote('Photorealistic concepts are visual direction. Choose one for Kimi to rebuild on the live editable uniform.');
+      setAiNote('Photorealistic concepts are visual direction. Choose one for AI to rebuild on the live editable uniform.');
     } catch (e) {
       setAiError('Could not reach OpenAI image generation. Please try again.');
       setAiHistory((history) => [...history, { role: 'assistant', text: 'OpenAI did not return concept images. Your guided setup is still saved.' }].slice(-6));

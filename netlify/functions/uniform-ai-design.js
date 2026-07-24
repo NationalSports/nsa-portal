@@ -1,10 +1,12 @@
 // Uniform Builder — AI design generator.
 //
 // Takes a coach's plain-English brief ("aggressive red and black with camo
-// sleeves") plus the garment they're on, and asks Kimi to return structured
-// design candidates: a color + pattern for each zone, a fabric, cut, lettering
-// treatment, and number/name typography. Kimi is constrained by JSON Schema so
-// the output is always JSON, never prose. The client re-validates via
+// sleeves") plus the garment they're on, and asks an AI mapper to return
+// structured design candidates: a color + pattern for each zone, a fabric, cut,
+// lettering treatment, and number/name typography. Kimi is the lower-cost first
+// choice; OpenAI is the automatic fallback when Kimi is unavailable. Both are
+// constrained by JSON Schema so the output is always JSON, never prose. The
+// client re-validates via
 // designSpec.normalizeSpec before rendering, so this function only has to
 // produce a best-effort shape.
 //
@@ -12,9 +14,8 @@
 // model is told to make them genuinely different); the advanced editor's older
 // single-design path still works — `spec` in the response is candidate #1.
 //
-// Degrades gracefully: with no AIUniBuilder key it returns ok:false + a reason
-// so the builder can show a friendly message instead of breaking. Kept auth-free
-// so the standalone /uniform-builder demo works for logged-out coaches; spend is
+// Degrades gracefully when neither provider is configured. Kept auth-free so
+// the standalone /uniform-builder demo works for logged-out coaches; spend is
 // bounded by daily per-IP and global caps (app_counters).
 
 const crypto = require('crypto');
@@ -43,8 +44,10 @@ async function underAiBudget(event) {
   } catch (_e) { return true; }
 }
 
-const MODEL = process.env.UNIFORM_AI_MODEL || 'kimi-k2.6';
+const KIMI_MODEL = process.env.UNIFORM_AI_MODEL || 'kimi-k2.6';
+const OPENAI_MODEL = process.env.UNIFORM_MAPPING_MODEL || 'gpt-5.6-luna';
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
 // Vocabularies the model must stay inside. Kept in sync with src/uniform/*.
 const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'splatter', 'camo', 'digicamo', 'carbon', 'hex'];
@@ -215,13 +218,79 @@ function parseJsonContent(value) {
   }
 }
 
+function providerOrder({ kimiKey, openAiKey, preference = process.env.UNIFORM_AI_PROVIDER }) {
+  const providers = [];
+  const preferOpenAI = String(preference || '').toLowerCase() === 'openai';
+  const addKimi = () => {
+    if (kimiKey) providers.push({ id: 'kimi', apiKey: kimiKey, url: KIMI_URL, model: KIMI_MODEL });
+  };
+  const addOpenAI = () => {
+    if (openAiKey) providers.push({ id: 'openai', apiKey: openAiKey, url: OPENAI_URL, model: OPENAI_MODEL });
+  };
+  if (preferOpenAI) {
+    addOpenAI();
+    addKimi();
+  } else {
+    addKimi();
+    addOpenAI();
+  }
+  return providers;
+}
+
+async function requestDesigns({ provider, messages }) {
+  const body = {
+    model: provider.model,
+    max_completion_tokens: 4096,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: TOOL.name,
+        description: TOOL.description,
+        schema: TOOL.input_schema,
+        strict: false,
+      },
+    },
+    messages,
+  };
+  if (provider.id === 'kimi') body.thinking = { type: 'disabled' };
+
+  const response = await fetch(provider.url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${provider.apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data && data.error && data.error.message;
+    const error = new Error(detail || `${provider.id} ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return parseJsonContent(
+    data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content,
+  );
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
-  const apiKey = process.env.AIUniBuilder || process.env.MOONSHOT_API_KEY;
-  if (!apiKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, reason: 'missing_api_key', error: 'Kimi is not configured yet. Add AIUniBuilder in Netlify.' }) };
+  const providers = providerOrder({
+    kimiKey: process.env.AIUniBuilder || process.env.MOONSHOT_API_KEY,
+    openAiKey: process.env.OPENAI_API_KEY,
+  });
+  if (!providers.length) {
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        ok: false,
+        reason: 'missing_api_key',
+        error: 'AI design is not configured yet. Add AIUniBuilder or OPENAI_API_KEY in Netlify.',
+      }),
+    };
+  }
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (_e) { /* ignore */ }
@@ -268,7 +337,7 @@ exports.handler = async (event) => {
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
     originalMode ? 'Design mode: original artwork. Do not use printPattern or any saved vendor pattern.' : '',
     conceptImage ? 'A coach-selected visual concept is attached. Rebuild its visual direction with the editable production-safe schema; do not merely describe it.' : '',
-    conceptDirection ? `Coach-selected visual direction from Kimi: ${conceptDirection}` : '',
+    conceptDirection ? `Coach-selected visual direction: ${conceptDirection}` : '',
     !originalMode && prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
     lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
@@ -276,46 +345,45 @@ exports.handler = async (event) => {
   ].filter(Boolean).join('\n');
 
   try {
-    const resp = await fetch(KIMI_URL, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: MODEL,
-        max_completion_tokens: 4096,
-        thinking: { type: 'disabled' },
-        response_format: {
-          type: 'json_schema',
-          json_schema: {
-            name: TOOL.name,
-            description: TOOL.description,
-            schema: TOOL.input_schema,
-            strict: false,
-          },
-        },
-        messages: [
-          { role: 'system', content: `${SYSTEM}\nReturn valid JSON matching the supplied schema.` },
+    const messages = [
+      { role: 'system', content: `${SYSTEM}\nReturn valid JSON matching the supplied schema.` },
+      {
+        role: 'user',
+        content: conceptImage ? [
           {
-            role: 'user',
-            content: conceptImage ? [
-            {
-              type: 'image_url',
-              image_url: { url: `data:${conceptImage.mediaType};base64,${conceptImage.data}` },
-            },
-            { type: 'text', text: userMsg },
-            ] : userMsg,
+            type: 'image_url',
+            image_url: { url: `data:${conceptImage.mediaType};base64,${conceptImage.data}` },
           },
-        ],
-      }),
-    });
-    if (!resp.ok) {
-      const data = await resp.json().catch(() => ({}));
-      const detail = data && data.error && data.error.message;
-      return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: detail || `Kimi ${resp.status}` }) };
+          { type: 'text', text: userMsg },
+        ] : userMsg,
+      },
+    ];
+    let parsed = null;
+    let selectedProvider = null;
+    const failures = [];
+    for (const provider of providers) {
+      try {
+        parsed = await requestDesigns({ provider, messages });
+        selectedProvider = provider;
+        if (parsed && Array.isArray(parsed.designs) && parsed.designs.length) break;
+        failures.push(`${provider.id}: empty design`);
+      } catch (error) {
+        failures.push(`${provider.id}: ${(error && error.message) || 'request failed'}`);
+        console.warn('uniform-ai-design provider failed', provider.id, error && error.status, error && error.message);
+      }
     }
-    const data = await resp.json();
-    const parsed = parseJsonContent(data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content);
     const raw = parsed && Array.isArray(parsed.designs) ? parsed.designs : [];
-    if (!raw.length) return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: 'AI did not return a design.' }) };
+    if (!raw.length) {
+      return {
+        statusCode: 502,
+        headers,
+        body: JSON.stringify({
+          ok: false,
+          error: 'The AI mapper is temporarily unavailable. Your concept and setup are still saved.',
+          providerFailures: failures.map((value) => value.split(':')[0]),
+        }),
+      };
+    }
     const designs = raw.slice(0, count).map((d) => ({
       name: (typeof d.name === 'string' && d.name.trim()) ? d.name.trim().slice(0, 30) : 'Design',
       spec: toClientSpec(garmentId, d, { originalMode }),
@@ -323,7 +391,18 @@ exports.handler = async (event) => {
       rationale: (typeof d.rationale === 'string' ? d.rationale : '').slice(0, 200),
     }));
     // Back-compat: older callers (the advanced editor) read `spec` directly.
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, designs, spec: designs[0].spec, rationale: designs[0].rationale }) };
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        ok: true,
+        designs,
+        spec: designs[0].spec,
+        rationale: designs[0].rationale,
+        provider: selectedProvider && selectedProvider.id,
+        model: selectedProvider && selectedProvider.model,
+      }),
+    };
   } catch (e) {
     return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: (e && e.message) || 'AI request failed.' }) };
   }
@@ -331,4 +410,11 @@ exports.handler = async (event) => {
 
 // Pure contract helpers for regression tests. They are not exposed by Netlify's
 // HTTP handler, but keep reversible/original-mode behavior directly testable.
-exports._test = { cleanZones, parseConceptImage, parseJsonContent, toClientSpec, toStyling };
+exports._test = {
+  cleanZones,
+  parseConceptImage,
+  parseJsonContent,
+  providerOrder,
+  toClientSpec,
+  toStyling,
+};

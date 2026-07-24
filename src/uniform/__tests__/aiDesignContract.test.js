@@ -46,10 +46,23 @@ describe('guided AI design contract', () => {
     expect(spec.text.back.number.italic).toBe(true);
   });
 
-  test('parses Kimi structured output without Markdown leakage', () => {
+  test('parses provider structured output without Markdown leakage', () => {
     expect(_test.parseJsonContent('```json\n{"designs":[{"zones":{}}]}\n```')).toEqual({
       designs: [{ zones: {} }],
     });
     expect(_test.parseJsonContent('not json')).toBeNull();
+  });
+
+  test('uses Kimi first for cost, with OpenAI fallback', () => {
+    expect(_test.providerOrder({
+      kimiKey: 'kimi-key',
+      openAiKey: 'openai-key',
+      preference: '',
+    }).map(({ id }) => id)).toEqual(['kimi', 'openai']);
+    expect(_test.providerOrder({
+      kimiKey: 'kimi-key',
+      openAiKey: 'openai-key',
+      preference: 'openai',
+    }).map(({ id }) => id)).toEqual(['openai', 'kimi']);
   });
 });

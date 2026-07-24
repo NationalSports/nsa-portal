@@ -96,13 +96,17 @@ Guided AI is an explicit two-provider flow:
    garment-grounded visual concepts. They are approval direction only and are never exported
    as production artwork.
 2. After the coach chooses a concept, `netlify/functions/uniform-ai-design.js` sends the
-   selected concept image and locked production rules to Kimi using Structured Output
-   (`propose_uniform_designs`). Its production-safe reconstruction applies as normal editable
-   zones, colors, motifs and lettering.
+   selected concept image and locked production rules to an AI mapper using Structured Output
+   (`propose_uniform_designs`). It tries Kimi first for cost and automatically falls back to
+   OpenAI. Its production-safe reconstruction applies as normal editable zones, colors, motifs
+   and lettering.
 
 The image stage uses the server-side Netlify variable `OPENAI_API_KEY` and defaults to
 `gpt-image-2` (override with `UNIFORM_IMAGE_MODEL`). The editable mapping stage uses
-`AIUniBuilder` and defaults to `kimi-k2.6` (override with `UNIFORM_AI_MODEL`).
+`AIUniBuilder` and defaults to `kimi-k2.6` (override with `UNIFORM_AI_MODEL`). When Kimi
+is unavailable, mapping falls back to `OPENAI_API_KEY` with `gpt-5.6-luna` (override with
+`UNIFORM_MAPPING_MODEL`). Set `UNIFORM_AI_PROVIDER=openai` only when OpenAI should be tried
+before Kimi.
 
 Both stages degrade with an honest setup message when their server-side key is absent.
 
