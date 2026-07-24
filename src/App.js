@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -24771,7 +24771,12 @@ export default function App(){
         // same SO are one candidate, but the same po_id text on two different SOs (hand-typed —
         // nothing prevents it) is ambiguous and must fall through rather than pick one arbitrarily.
         const owners=[...new Set(hits.map(h=>h.kind+'|'+(h.kind==='so_po'?h.m.so_id:(h.m.id||h.m.po_number||''))+'|'+h.canon))];
-        if(owners.length===1&&hits.length){
+        // Tag guard (owner 2026-07-24, the "PO 3132 TUH → PO 3132 STOV" wrong-school class): the
+        // core tier recovers a MANGLED or dropped alpha tag, but a fully DIFFERENT tag on the same
+        // number is a different customer's job that merely shares the number — refuse it. The bill
+        // then falls through to the proposal/AI path, which finds the RIGHT order (same tag, number
+        // one off — e.g. PO 3131 TUH) by line fingerprint instead of force-matching the wrong one.
+        if(owners.length===1&&hits.length&&numberMatchTagOk(poParts(bill.po_number).tag,poParts(hits[0].canon).tag)){
           const h=hits[0];
           updated.matchedPO=h.m;updated.matchedPOSource=h.kind;
           updated._po_raw=bill.po_number;updated.po_number=h.canon;updated._core_match=true;
