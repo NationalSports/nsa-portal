@@ -12,6 +12,16 @@ import { Icon, FollowUpAutoPanel, seedFollowUp, custShipAddrSub, orderShipToSub,
 import { buildDocHtml, printDoc, downloadDoc, sendBrevoEmail, invokeEdgeFn, buildBrandedEmailHtml, buildReviewButtonHtml, reviewTextBlock, getBillingContacts, _smsUiEnabled } from './utils';
 import { dP, RowLink, _brevoKey, _buildTabHref, buildInvoicePdfRows, fmtCreatedAt, sendBrevoSms } from './App';
 
+// Fires its `run` callback exactly once, when it mounts. Used to auto-trigger the
+// invoice PDF download when an invoice is opened from an email "Download" deep-link
+// (?inv=<id>&dl=1) — it is only rendered while that flag is present in the URL.
+function AutoRunOnce({run}){
+  const done=React.useRef(false);
+  // Fires once — the ref guard makes re-runs (when `run` changes identity) no-ops.
+  React.useEffect(()=>{if(done.current)return;done.current=true;run();},[run]);
+  return null;
+}
+
 export default function InvoicesPage(){
   const {CC_FEE_PCT,PAY_METHODS,REPS,canDelete,changeDocRep,changeLog,companyInfo,createAndSettleOmgInvoice,createAndSettleWebstoreInvoice,cu,cust,deleteInvoice,editingInvRep,histInvs,invBackPg,invEditModal,invF,invSendModalDirect,invSort,invs,nf,omgStores,payModal,pdBulkModal,portalSettings,setESO,setESOC,setEditingInvRep,setHistInvs,setInvBackPg,setInvEditModal,setInvF,setInvSendModalDirect,setInvSort,setInvs,setPayModal,setPdBulkModal,setPg,setSplitModal,setViewInvoice,sos,splitInvoice,splitModal,viewInvoice,webstoreSettle}=useAppData();
 
@@ -154,7 +164,23 @@ export default function InvoicesPage(){
             ]}],footer:inv.inv_type==='deposit'?companyInfo.depositTerms:companyInfo.terms,companyInfo:companyInfo};
       };
 
+      // Shared by the "Download PDF" button and the email deep-link auto-download.
+      const downloadInvoicePdf=async()=>{
+        const billToName=inv.billing_name||ic?.name||'';
+        await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
+      };
+      // Auto-download when opened from an email "Download" deep-link (?inv=<id>&dl=1):
+      // reuse the exact client PDF path as the button, gated by the portal's own
+      // session (same as the "Open →" links). One-shot — the flag is stripped from
+      // the URL the moment it fires so a refresh or Back won't re-download.
+      const _dlOnOpen=(()=>{try{return typeof window!=='undefined'&&new URLSearchParams(window.location.search).get('dl')==='1';}catch{return false;}})();
+
       return(<>
+        {_dlOnOpen&&<AutoRunOnce run={async()=>{
+          try{const u=new URL(window.location);u.searchParams.delete('dl');window.history.replaceState({},'',u);}catch{}
+          try{nf('Preparing invoice PDF…');await downloadInvoicePdf();}
+          catch(err){console.warn('Auto PDF download failed:',err);nf('Could not generate the invoice PDF','error');}
+        }}/>}
         {/* Back button + breadcrumb */}
         <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:16}}>
           <button className="btn btn-secondary" style={{display:'flex',alignItems:'center',gap:6,fontSize:12}} onClick={()=>{setViewInvoice(null);if(invBackPg){const b=invBackPg;setInvBackPg(null);setPg(b)}}}><Icon name="arrow-left" size={14}/> {invBackPg?({customers:'Back to Customer',estimates:'Back to Estimate',orders:'Back to Sales Order',dashboard:'Back to Dashboard'}[invBackPg]||'Back'):'Back to Invoices'}</button>
@@ -268,10 +294,7 @@ export default function InvoicesPage(){
               }}>Print</button>
             <button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}}
               onClick={async()=>{
-                try{
-                  const billToName=inv.billing_name||ic?.name||'';
-                  await downloadDoc(buildInvDocOpts(),'Invoice-'+inv.id+(billToName?'-'+billToName:''));
-                }catch(err){console.warn('PDF download failed:',err)}
+                try{await downloadInvoicePdf();}catch(err){console.warn('PDF download failed:',err)}
               }}>📥 Download PDF</button>
             {ic?.alpha_tag&&<button className="btn btn-sm btn-secondary" style={{fontSize:12,padding:'6px 14px'}} title="Copy this customer's coach portal link to share"
               onClick={()=>{const purl='https://nationalsportsapparel.com/coach?portal='+ic.alpha_tag;navigator.clipboard.writeText(purl).then(()=>nf('Coach portal link copied!')).catch(()=>{window.prompt('Copy:',purl)})}}>🔗 Copy Portal Link</button>}
