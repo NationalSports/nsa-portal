@@ -2009,6 +2009,7 @@ export default function App(){
   const[adminRepFilter,setAdminRepFilter]=useState('me');// 'me'|'all'|repId
   const[dashSalesPeriod,setDashSalesPeriod]=useState('this_month');// dashboard sales box window: this_month|last_month|last_3|ytd|last_12
   const[dashSalesReport,setDashSalesReport]=useState('by_rep');// admin sales box report: by_rep|top_customers|kpis
+  const[dashSalesBasis,setDashSalesBasis]=useState('sales');// By Rep / Top Customers basis: sales (new SO revenue) | billed (invoices issued)
   const[dashCustRepFilter,setDashCustRepFilter]=useState('all');// Top Customers report: 'all' or a rep id
   const[prodDashFilter,setProdDashFilter]=useState(null);// null|'hold'|'ready'|'staging'|'in_process'|'completed'
   const[qbConfig,setQBConfig]=useState({connected:false,companyId:'',companyName:'',lastSync:null,autoSync:'daily',syncInterval:'daily',
@@ -7666,7 +7667,7 @@ export default function App(){
       const _lbl={fontSize:10,color:'#64748b',textTransform:'uppercase',fontWeight:700,letterSpacing:0.4};
       const periodSelect=<select value={dashSalesPeriod} onChange={e=>setDashSalesPeriod(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}>{PERIODS.map(p=><option key={p[0]} value={p[0]}>{p[1]}</option>)}</select>;
       const _summary=(tiles)=><div style={{display:'flex',gap:22,marginBottom:12,flexWrap:'wrap'}}>{tiles.map(([l,v,c],i)=><div key={i}><div style={_lbl}>{l}</div><div style={{fontSize:20,fontWeight:800,color:c||NAVY}}>{v}</div></div>)}</div>;
-      const _barRows=(rows,labelWidth,highlightTop)=>{const maxRev=Math.max(...rows.map(r=>r.rev),1);return rows.length===0?<div className="empty" style={{padding:'24px 8px'}}>No sales in this period</div>:<div style={{display:'flex',flexDirection:'column',gap:7}}>{rows.map((s,i)=>{const top=highlightTop&&i===0;return<div key={i} style={{display:'flex',alignItems:'center',gap:8}} title={s.label+': '+_$(s.rev)+' · '+s.orders+' order'+(s.orders!==1?'s':'')}>
+      const _barRows=(rows,labelWidth,highlightTop,unit)=>{const _u=unit||'order';const maxRev=Math.max(...rows.map(r=>r.rev),1);return rows.length===0?<div className="empty" style={{padding:'24px 8px'}}>No sales in this period</div>:<div style={{display:'flex',flexDirection:'column',gap:7}}>{rows.map((s,i)=>{const top=highlightTop&&i===0;return<div key={i} style={{display:'flex',alignItems:'center',gap:8}} title={s.label+': '+_$(s.rev)+' · '+s.orders+' '+_u+(s.orders!==1?'s':'')}>
         <div style={{width:labelWidth,fontSize:12,fontWeight:700,color:'#334155',flexShrink:0,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{top?'🥇 ':''}{s.label}</div>
         <div style={{flex:1,background:'#e2e8f0',borderRadius:6,height:18,position:'relative',overflow:'hidden'}}><div style={{position:'absolute',left:0,top:0,bottom:0,width:Math.max(2,(s.rev/maxRev)*100)+'%',background:top?RED:NAVY2,borderRadius:6,transition:'width 0.3s'}}/></div>
         <div style={{width:58,textAlign:'right',fontSize:12,fontWeight:700,color:NAVY,flexShrink:0}}>{_$k(s.rev)}</div>
@@ -7688,15 +7689,31 @@ export default function App(){
       }
       // ── Admin view: multi-report panel ──
       const periodSOs=sos.filter(so=>inPeriod(so)&&so.status!=='cancelled'&&so.status!=='deleted'&&!so.deleted_at);
-      const report=dashSalesReport;
+      // Billings in the active period: portal invoices + NetSuite history (customer_invoices),
+      // deduped on document id, void/deleted excluded. One source of truth shared by the Billings
+      // basis (By Rep / Top Customers) and the Sales vs Billed report so the two never drift.
+      // cb(inv, amount, isHist) fires once per counted billing.
+      const _histIds=new Set((histInvs||[]).map(h=>h.id));
+      const _eachBilled=(cb)=>{
+        invs.forEach(inv=>{if(inv.status==='void'||inv.deleted_at||_histIds.has(inv.id))return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;cb(inv,Number(inv.total)||0,false)});
+        (histInvs||[]).forEach(hi=>{if(hi.status==='void')return;const dt=_invDate(hi.date);if(!dt||dt<pStart||dt>=pEnd)return;cb(hi,Number(hi.total)||0,true)});
+      };
+      // Rep a billing attributes to: portal invoice → its linked SO's rep, else the customer's
+      // primary rep; NetSuite history → the customer's primary rep.
+      const _billRep=(inv,isHist)=>{if(isHist)return cust.find(x=>x.id===inv.customer_id)?.primary_rep_id;const so=sos.find(s=>s.id===inv.so_id);return so?repOf(so):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id)};
+      const report=dashSalesReport,basis=dashSalesBasis;
       const titles={by_rep:'📊 Sales by Rep',top_customers:'🏆 Top Customers',kpis:'📈 KPIs',sales_vs_billed:'💰 Sales vs Billed'};
       let body=null;
       if(report==='top_customers'){
         const byCust=new Map();
-        periodSOs.forEach(so=>{if(dashCustRepFilter!=='all'&&repOf(so)!==dashCustRepFilter)return;const c=cust.find(x=>x.id===so.customer_id);const id=so.customer_id||'?';const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byCust.set(id,seg)});
+        if(basis==='billed'){
+          _eachBilled((inv,amt,isHist)=>{if(dashCustRepFilter!=='all'&&_billRep(inv,isHist)!==dashCustRepFilter)return;const id=inv.customer_id||'?';const c=cust.find(x=>x.id===inv.customer_id);const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=amt;seg.orders++;byCust.set(id,seg)});
+        }else{
+          periodSOs.forEach(so=>{if(dashCustRepFilter!=='all'&&repOf(so)!==dashCustRepFilter)return;const c=cust.find(x=>x.id===so.customer_id);const id=so.customer_id||'?';const seg=byCust.get(id)||{label:c?.name||c?.alpha_tag||'Unknown',rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byCust.set(id,seg)});
+        }
         const rows=[...byCust.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev).slice(0,15);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
-        body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true)}</>;
+        body=<>{_summary(basis==='billed'?[['Billed',_$(tRev)],['Invoices',tOrders+''],['Customers',rows.length+'',RED]]:[['Revenue',_$(tRev)],['Orders',tOrders+''],['Customers',rows.length+'',RED]])}{_barRows(rows,120,true,basis==='billed'?'invoice':'order')}</>;
       }else if(report==='kpis'){
         let rev=0,cost=0,shipRev=0,orders=0;const custSet=new Set();const perRep=new Map();
         // Shipping charged offsets shipping cost (mirrors calcOrderMargin/calcGP): margin runs on
@@ -7728,10 +7745,8 @@ export default function App(){
         // Billed = portal invoices + NetSuite history (customer_invoices) — either alone is a
         // partial view since invoicing split across the two systems in May 2026. Dedupe on
         // document number: the hist row wins when a portal invoice was round-tripped to NetSuite.
-        const _histIds=new Set((histInvs||[]).map(h=>h.id));
         const _addBilled=(repId,amt)=>{if(!repId)return;const seg=byRep.get(repId)||{label:repName(repId),sales:0,billed:0,orders:0};seg.billed+=amt;byRep.set(repId,seg)};
-        invs.forEach(inv=>{if(inv.status==='void'||inv.deleted_at||_histIds.has(inv.id))return;const dt=_invDate(inv.date);if(!dt||dt<pStart||dt>=pEnd)return;const linkedSO=sos.find(s=>s.id===inv.so_id);const repId=linkedSO?repOf(linkedSO):(cust.find(x=>x.id===inv.customer_id)?.primary_rep_id);_addBilled(repId,Number(inv.total)||0)});
-        (histInvs||[]).forEach(hi=>{if(hi.status==='void')return;const dt=_invDate(hi.date);if(!dt||dt<pStart||dt>=pEnd)return;const repId=cust.find(x=>x.id===hi.customer_id)?.primary_rep_id;_addBilled(repId,Number(hi.total)||0)});
+        _eachBilled((inv,amt,isHist)=>_addBilled(_billRep(inv,isHist),amt));
         const rows=[...byRep.values()].filter(s=>s.sales>0||s.billed>0).sort((a,b)=>b.sales-a.sales);
         const tSales=rows.reduce((a,s)=>a+s.sales,0),tBilled=rows.reduce((a,s)=>a+s.billed,0);
         const maxVal=Math.max(...rows.map(r=>Math.max(r.sales,r.billed)),1);
@@ -7756,17 +7771,22 @@ export default function App(){
         </>;
       }else{
         const byRep=new Map();
-        periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
+        if(basis==='billed'){
+          _eachBilled((inv,amt,isHist)=>{const id=_billRep(inv,isHist);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=amt;seg.orders++;byRep.set(id,seg)});
+        }else{
+          periodSOs.forEach(so=>{const id=repOf(so);if(!id)return;const seg=byRep.get(id)||{label:repName(id),rev:0,orders:0};seg.rev+=calcOrderMargin(so,sos).rev;seg.orders++;byRep.set(id,seg)});
+        }
         const rows=[...byRep.values()].filter(s=>s.rev>0).sort((a,b)=>b.rev-a.rev);
         const tRev=rows.reduce((a,s)=>a+s.rev,0),tOrders=rows.reduce((a,s)=>a+s.orders,0);
-        body=<>{_summary([['Revenue',_$(tRev)],['Orders',tOrders+''],['Reps',rows.length+'',RED]])}{_barRows(rows,96,true)}</>;
+        body=<>{_summary(basis==='billed'?[['Billed',_$(tRev)],['Invoices',tOrders+''],['Reps',rows.length+'',RED]]:[['Revenue',_$(tRev)],['Orders',tOrders+''],['Reps',rows.length+'',RED]])}{_barRows(rows,96,true,basis==='billed'?'invoice':'order')}</>;
       }
       return(<div className="card">
         <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>{titles[report]}</h2>{periodSelect}</div>
         <div className="card-body" style={{padding:'12px 14px',maxHeight:392,overflow:'auto'}}>
           <div style={{display:'flex',gap:4,marginBottom:12,flexWrap:'wrap',alignItems:'center'}}>
             {[['by_rep','By Rep'],['top_customers','Top Customers'],['kpis','KPIs'],['sales_vs_billed','Sales vs Billed']].map(([v,l])=><button key={v} onClick={()=>setDashSalesReport(v)} style={{fontSize:11,padding:'4px 10px',borderRadius:6,border:'1px solid '+(report===v?NAVY:'#e2e8f0'),background:report===v?NAVY:'white',color:report===v?'white':SLATE,fontWeight:700,cursor:'pointer'}}>{l}</button>)}
-            {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:'auto',fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
+            {(report==='by_rep'||report==='top_customers')&&<div style={{marginLeft:'auto',display:'inline-flex',border:'1px solid #e2e8f0',borderRadius:6,overflow:'hidden'}}>{[['sales','Sales Orders'],['billed','Billings']].map(([v,l])=><button key={v} onClick={()=>setDashSalesBasis(v)} title={v==='sales'?'New sales orders written in this period':'Invoices billed in this period (portal + NetSuite)'} style={{fontSize:11,padding:'4px 10px',border:'none',borderLeft:v==='billed'?'1px solid #e2e8f0':'none',background:basis===v?RED:'white',color:basis===v?'white':SLATE,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>{l}</button>)}</div>}
+            {report==='top_customers'&&<select value={dashCustRepFilter} onChange={e=>setDashCustRepFilter(e.target.value)} style={{marginLeft:8,fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:SLATE,cursor:'pointer'}}><option value="all">All Reps</option>{REPS.filter(r=>isCommissionRep(r)||r.role==='gm').map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}</select>}
           </div>
           {body}
         </div>
