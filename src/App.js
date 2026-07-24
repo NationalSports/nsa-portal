@@ -28319,9 +28319,16 @@ export default function App(){
                             <div style={{fontSize:13,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
                             <div style={{fontSize:12,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
                             {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
+                              // Show OUR style (learned alias → S&S style → the style token in the desc) as the
+                              // headline SKU, not the vendor's internal catalog number (owner 2026-07-24: "it still
+                              // reads the S&S / SanMar internal 1207621 … can that show our SKU?"). Vendor # kept small.
+                              const _skN=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                              const _ourSku=bl._alias_sku||bl._ss_style||descStyleToken(bl.desc||'')||'';
+                              const _showOur=_ourSku&&_skN(_ourSku)!==_skN(bl.sku);
                               return<div key={i2} style={{padding:'7px 0',borderTop:'1px solid #fef3c7'}}>
                                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                                  <span style={{fontFamily:'monospace',fontSize:13,fontWeight:800,color:'#0f172a'}}>{bl.sku}</span>
+                                  <span style={{fontFamily:'monospace',fontSize:13,fontWeight:800,color:'#0f172a'}}>{_showOur?_ourSku:bl.sku}</span>
+                                  {_showOur&&<span style={{fontSize:10,color:'#94a3b8',fontFamily:'monospace'}} title="The vendor's own catalog number as printed on the bill">bill&nbsp;{bl.sku}</span>}
                                   <span style={{fontSize:12,color:'#475569'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
                                   {linked&&<><span style={{fontSize:10,padding:'2px 9px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:800}}>✓ Linked → {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''}</span>
                                     <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 7px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c',fontWeight:700}}>✕ undo</button></>}
