@@ -313,7 +313,7 @@ export const buildDocHtml=({title,docNum,docType,date,headerRight,infoBoxes,tabl
     const boxes=infoBoxes.filter(b=>b.label!=='Bill To');
     if(boxes.length>0){
       h+='<div class="info-row">';
-      boxes.forEach(b=>{h+='<div class="info-cell"><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>'});
+      boxes.forEach(b=>{h+='<div class="info-cell"'+(b.flex?' style="flex:'+b.flex+'"':'')+'><div class="label">'+b.label+'</div><div class="value">'+b.value+(b.sub?'<br/><span style="font-size:10px;color:#666">'+b.sub+'</span>':'')+'</div></div>'});
       h+='</div>';
     }
   }
