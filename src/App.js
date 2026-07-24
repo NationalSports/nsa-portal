@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -24961,7 +24961,16 @@ export default function App(){
       const indexed=items.map((it,ti)=>({...it,_idx:ti}));
       // The SKU must exist on the target at all — otherwise it's a genuine no-match. Custom/special
       // items keep a placeholder SKU with the real style number in the name, so match either.
-      const sameSku=indexed.filter(it=>_billSkuMatchesItem(sku,it));
+      // Vendors that bill with their OWN per-size catalog number (SanMar "1596681") carry the mfr
+      // style WE order ("NL6210") only in the line DESCRIPTION. Bridge it: a style token from the
+      // description that EXACTLY equals a target item's SKU is a real hit — the same signal the
+      // proposal engine's style tier already uses, so the two matchers stop disagreeing (a bill the
+      // wizard could tie but auto-push called "no match"). Size/color narrowing below still applies,
+      // so this can't land on the wrong size. (Owner 2026-07-24: SanMar "1596681 · NL6210. NL Unisex
+      // CVC Tee" wasn't auto-matching its NL6210 order line.)
+      const _dStyle=descStyleToken(bl.desc||'');
+      const _skuNorm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const sameSku=indexed.filter(it=>_billSkuMatchesItem(sku,it)||(_dStyle&&_skuNorm(it.sku)===_dStyle));
       if(sameSku.length===0)return null;
       // Prefer an exact SKU+size hit. Fall back to SKU-only when the bill line has no size OR the
       // parsed size doesn't line up with any target row. One-size goods (OSFA hats, bags) often get

@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -223,6 +223,23 @@ describe('numberMatchTagOk — number-only PO match tag guard', () => {
   });
   test('does not let a 2-char coincidence through the prefix rule', () => {
     expect(numberMatchTagOk('BB', 'BBCVB')).toBe(false); // shorter side <3 chars, and edit distance >1
+  });
+});
+
+// ── descStyleToken — the mfr style pulled from a bill line's description ─────────────
+// The apply-path matcher (_matchLineToItems in App.js) uses this to bridge SanMar's own
+// catalog number ("1596681") to our order line's SKU ("NL6210"), which appears only in the
+// description "NL6210. NL Unisex CVC Tee". This test locks the token this fix depends on.
+describe('descStyleToken — leading mfr style from a description', () => {
+  test('pulls the SanMar/Next Level style that the auto-push matcher needs', () => {
+    expect(descStyleToken('NL6210. NL Unisex CVC Tee')).toBe('NL6210');
+    expect(descStyleToken('DM130. DT Perfect Tri Tee')).toBe('DM130');
+    expect(descStyleToken('64800L. GLDN Softstyle Wms Piq')).toBe('64800L');
+  });
+  test('stays empty on a leading word with no digit — never a false SKU bridge', () => {
+    expect(descStyleToken('Youth Garment-Dyed Heavyweight T-Shirt')).toBe('');
+    expect(descStyleToken('Mens Polo')).toBe('');
+    expect(descStyleToken('')).toBe('');
   });
 });
 
