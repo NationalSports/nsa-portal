@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -23895,7 +23895,12 @@ export default function App(){
         if(!supabase)return;
         const vend=_aliasVendor(bill);if(!vend)return;
         const rows={};
-        maps.forEach(mp=>{const bl=(bill.items||[])[mp.bill_idx]||{};const vs=String(bl.sku||'').trim();const ps=String(mp.sku||'').trim();
+        maps.forEach(mp=>{const bl=(bill.items||[])[mp.bill_idx]||{};
+          // _vendor_sku holds the ORIGINAL vendor number when auto-resolution rewrote bl.sku to
+          // our style (S&S: _ssResolveLineMappings moves the "B" number to _vendor_sku and sets
+          // sku = our SKU). Without this the pair reads as vendor_sku===portal_sku and never
+          // gets learned — why 31 pushed S&S bills produced only 10 aliases. Prefer it.
+          const vs=String(bl._vendor_sku||bl.sku||'').trim();const ps=String(mp.sku||'').trim();
           if(!vs||!ps||_skuKey(vs)===_skuKey(ps)||_skuKey(ps)==='CUSTOM')return;
           // Learn only when the billed price agreed with the order cost (±2¢): a human can
           // push a questionable tie on purpose, but a price-agreeing tie is near-certainly
@@ -24557,6 +24562,13 @@ export default function App(){
       if(is===bs)return true;
       const bBase=skuNumBase(bs),iBase=skuNumBase(is);// tolerate the Agron letter suffix either side
       if((bBase&&(bBase===is||bBase===iBase))||(iBase&&iBase===bs))return true;
+      // Augusta family (Alleson/C2/Holloway, billed via Momentec/ASI) bill the full style+color
+      // number ("410500" = style 4105 + color "00"/white) while our order line often carries just
+      // the style ("4105") — treat a trailing "00" as optional. skuZeroBase (billResolve, shared+
+      // tested) only collapses ≥5-digit pure-numeric styles, the Augusta signature, so adidas/
+      // SanMar/S&S/Richardson SKUs are never touched. Owner 2026-07-24: "4120 should = 412000".
+      const bZ=skuZeroBase(bs),iZ=skuZeroBase(is);
+      if((bZ&&(bZ===is||bZ===iZ))||(iZ&&iZ===bs))return true;
       if(bs.length<4)return false;// too short to safely token-match inside a name
       return new RegExp('\\b'+bs+'\\b').test((item?.name||'').toUpperCase().replace(/[^A-Z0-9]/g,' '));
     };
@@ -28329,6 +28341,14 @@ export default function App(){
                       const setMap=(idx,m)=>setW({...w,mappings:{...mappings,[idx]:m}});
                       const _ns=s=>String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
                       const _cz=s=>_canonBillSize?_canonBillSize(s):String(s||'').toUpperCase().trim();
+                      // Augusta family (Alleson/C2/Holloway via Momentec/ASI) bill the full
+                      // style+color number ("410500"=style 4105 + color "00"/white) while our
+                      // order line carries just the style ("4105"). Owner 2026-07-24. Drop a
+                      // trailing "00" so the two forms compare equal; vendor-scoped so it can't
+                      // over-collapse another feed's numbering.
+                      const _augFam=/AUGUSTA|MOMENTEC|ALLESON|HOLLOWAY|\bC2\b/i.test(String(bill.vendor||bill.supplier||''));
+                      const _zb=s=>skuZeroBase(s)||_ns(s); // shared helper (billResolve): "410500"→"4105", else self
+                      const _augMatch=(a,b)=>_augFam&&_ns(a)!==_ns(b)&&_zb(a)===_zb(b)&&_zb(a).length>=3;
                       // Best guesses for an untied line, scored on signals a human would use:
                       // SKU variant (5162436D ⊇ 5162436 — vendors love suffix letters), exact
                       // price, size, description tokens. Rendered as one-click picks with the
@@ -28346,6 +28366,9 @@ export default function App(){
                             else if(bsku.startsWith(tsku)||tsku.startsWith(bsku)){sc+=60;why.push('SKU variant')}
                             else if(bsku.includes(tsku)||tsku.includes(bsku)){sc+=40;why.push('SKU inside')}
                           }
+                          // Augusta "00": "410500" ⇄ "4105" (trailing 00 dropped) — a real SKU
+                          // tie the length-guarded block above misses when our line is the short form.
+                          else if(_augMatch(bsku,tsku)){sc+=60;why.push('style (00)')}
                           if(price>0&&Math.abs(price-safeNum(it.unit_cost))<=0.02){sc+=25;why.push('$ match')}
                           if(bl.size&&_cz(bl.size)===_cz(it.size)){sc+=15;why.push('size')}
                           if(bdesc){const name=String(it.name||'').toUpperCase();const hits=bdesc.split(/[^A-Z0-9]+/).filter(t=>t.length>=4&&name.includes(t)).length;if(hits){sc+=Math.min(15,hits*5);why.push('name')}}
@@ -28408,9 +28431,10 @@ export default function App(){
                                   // Why did it match? exact SKU beats color+size beats size-only — surfaced
                                   // big so a near-miss (bill 5157175 → order 5157176) can't hide.
                                   const exact=tgt&&_ns(bl.sku)&&_ns(bl.sku)===_ns(tgt.sku);
+                                  const augZero=tgt&&!exact&&_augMatch(bl.sku,tgt.sku);
                                   const sameSize=tgt&&_cz(bl.size)===_cz(tgt.size);
                                   const sameColor=tgt&&bl.color&&tgt.color&&_ns(bl.color)===_ns(tgt.color);
-                                  const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
+                                  const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:augZero?{t:'Style # (00)',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
                                   const isAct=bli===act;
                                   // Collapsed row for a settled tie (owner 2026-07-24: "once the left column is
                                   // matched it should minimize so the left and right line up row-by-row"). The
@@ -29728,7 +29752,7 @@ export default function App(){
       const inp=mThreadInputRef.current;if(!inp)return;
       const val=inp.value;const pos=inp.selectionStart;const before=val.slice(0,pos);const after=val.slice(pos);
       const atIdx=before.lastIndexOf('@');
-      if(atIdx>=0){inp.value=before.slice(0,atIdx)+'@'+member.name+' '+after;const newPos=atIdx+member.name.length+2;inp.setSelectionRange(newPos,newPos)}
+      if(atIdx>=0){const firstName=(member.name||'').split(' ')[0];inp.value=before.slice(0,atIdx)+'@'+firstName+' '+after;const newPos=atIdx+firstName.length+2;inp.setSelectionRange(newPos,newPos)}
       setMThreadMentionQuery(null);setMThreadMentionIdx(0);inp.focus();
     };
     const threadHandleInput=(e)=>{

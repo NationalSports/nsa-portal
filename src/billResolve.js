@@ -39,6 +39,20 @@ export const skuNumBase = (s) => {
   return m ? m[1] : null;
 };
 
+// Augusta Sportswear family (Alleson, C2 Sport, Holloway — billed via Momentec / Sports Inc)
+// prints the FULL style+color number ("410500" = style 4105 + color "00"/white) while our
+// order line often carries just the style ("4105"). "00" (white) is the common suffix — owner
+// 2026-07-24: "our orders add 00 at the end … 4120 should = 412000". Returns the base with a
+// trailing "00" removed from a numeric SKU when a ≥3-digit base remains, else null — so
+// "410500"→"4105", "412000"→"4120", but "4120"/"258"/"B00708043"/"JX4499" → null (untouched).
+export const skuZeroBase = (s) => {
+  const m = String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').match(/^([0-9]{3,})00$/);
+  return m ? m[1] : null;
+};
+// Vendors that use the trailing-"00" numbering above. Sports Inc bills them as "AUGUSTA
+// SPORTSWEAR/ASI"; the direct API route bills as "Momentec". Brand names added for safety.
+const _isAugustaFamily = (v) => /AUGUSTA|MOMENTEC|ALLESON|HOLLOWAY|\bC2\b/i.test(String(v || ''));
+
 // ── Credit-memo reversal (owner 2026-07-23: the RA 74599650 return/re-ship cycle) ────────
 // A vendor credit reverses goods ALREADY BILLED, so normal matching (open quantities only)
 // can never tie it. These helpers are the mirror image: tie the credit's lines to BILLED
@@ -239,6 +253,8 @@ const tieLine = (bl, items, canon, billVendor) => {
   // every time a pushed bill taught us the vendor's numbering). Trusted like an exact SKU.
   const asku = _ns(bl._alias_sku);
   const style = _ns(bl._ss_style) || descStyleToken(bl.desc); const price = _num(bl.unit_price);
+  // Augusta-family trailing-"00" base of the bill SKU (see skuZeroBase): "410500" → "4105".
+  const zbSku = skuZeroBase(sku) || sku;
   const sizeOk = (it) => !size || canon(it.size) === size;
   // Weak tiers (no SKU/style evidence) refuse a target from a clearly different supplier —
   // size/price coincidences across vendors are exactly the Momentec→SanMar wrong-cost class.
@@ -254,6 +270,10 @@ const tieLine = (bl, items, canon, billVendor) => {
     ['exact', idx.filter(({ it }) => sku && _ns(it.sku) === sku && sizeOk(it))],
     ['alias', asku ? idx.filter(({ it }) => _ns(it.sku) === asku && sizeOk(it)) : []],
     ['variant', idx.filter(({ it }) => { const t = _ns(it.sku); return sku.length >= 5 && t.length >= 5 && t !== sku && (sku.startsWith(t) || t.startsWith(sku) || sku.includes(t) || t.includes(sku)) && sizeOk(it); })],
+    // Augusta family (Alleson/C2/Holloway via Momentec/ASI): bill "410500" ⇄ our "4105", i.e.
+    // equal once a trailing "00" is dropped. Vendor-scoped + color/size-gated + the unambiguous
+    // only() check below, so a stray "…00" on another feed can never collapse two real SKUs.
+    ['augusta00', _isAugustaFamily(billVendor) ? idx.filter(({ it }) => { const b = skuZeroBase(_ns(it.sku)) || _ns(it.sku); return zbSku.length >= 3 && zbSku === b && _ns(it.sku) !== sku && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
     ['style', style.length >= 3 ? idx.filter(({ it }) => { const t = _ns(it.sku); return t.length >= 3 && (t === style || t.includes(style) || style.includes(t)) && sizeOk(it) && (!color || !_ns(it.color) || _ns(it.color) === color); }) : []],
     ['color_size', color && size ? idx.filter(({ it }) => vendOk(it) && _ns(it.color) === color && canon(it.size) === size) : []],
     ['size_price', size && price > 0 ? idx.filter(({ it }) => vendOk(it) && canon(it.size) === size && Math.abs(_num(it.unit_cost) - price) <= 0.02) : []],
@@ -407,7 +427,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const qtyMirror = ties.length > 1 && Object.values(_bk).every((b) => b.alloc === b.open);
     const candPo = poParts(((ties.length ? cand.items[ties[0].target_idx] : cand.items.find((it) => poParts(it.po_id).flat === billPo.flat)) || {}).po_id || (cand.raw && cand.raw.po_number) || cand.label);
     const tagMatch = !!(billPo.tag && candPo.tag && billPo.tag === candPo.tag);
-    const strongBasesEarly = ties.filter((t) => /^(exact|alias|variant|style|bulk)/.test(t.basis)).length;
+    const strongBasesEarly = ties.filter((t) => /^(exact|alias|variant|style|bulk|augusta00)/.test(t.basis)).length;
     // ── Negative-evidence gates (owner, 2026-07-22) ─────────────────────────────
     // TAG MISMATCH: the PO tag is the CUSTOMER (school code). A bill tagged for one
     // school weak-tying to another school's order is the wrong-school class (3132 TUH
@@ -434,7 +454,7 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     const billPredatesOrder = !!(billDate && orderCreated && billDate + 2 * 86400000 < orderCreated);
     if (billPredatesOrder && !poAnchored && strongBasesEarly === 0) return;
     const coreDistance = billPo.core && candPo.core ? editDistance(billPo.core, candPo.core) : 9;
-    const strongBases = ties.filter((t) => /^(exact|alias|variant|style|bulk)/.test(t.basis)).length;
+    const strongBases = ties.filter((t) => /^(exact|alias|variant|style|bulk|augusta00)/.test(t.basis)).length;
     const overageUnits = bucketOver;
     // Price changes an accept would sync (per po_line, consistent-only mirrors the apply rule).
     const priceChanges = [];
@@ -501,6 +521,8 @@ export const proposeResolutions = (bill, candidates, opts = {}) => {
     if (strongBases) evidence.push(strongBases + ' line(s) tie by SKU/style, not guesswork');
     const aliasTies = ties.filter((t) => t.basis.startsWith('alias')).length;
     if (aliasTies) evidence.push(aliasTies + ' line(s) tie by a learned vendor-number alias (from your past accepts)');
+    const augustaTies = ties.filter((t) => t.basis.startsWith('augusta00')).length;
+    if (augustaTies) evidence.push(augustaTies + ' line(s) tie by the Augusta style+color number (trailing “00” dropped: 410500 = 4105)');
     if (sharpPrice) evidence.push('billed price differs sharply from the order cost — confirm the tied lines before accepting');
     if (tagMatch) evidence.push('the bill’s tag “' + billPo.tag + '” matches this order');
     if (coreDistance === 1) evidence.push('the PO number is one digit off (' + billPo.core + ' → ' + candPo.core + ')');
