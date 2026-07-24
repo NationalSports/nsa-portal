@@ -198,7 +198,7 @@ async function textLayer(spec, viewName, view, vb, prefix, defs) {
     const fill = ds.toHex(item.fill, '#ffffff');
     const outline = item.outline === 'auto' ? ds.contrastInk(fill) : (item.outline === 'none' ? 'none' : ds.toHex(item.outline, '#111827'));
     const outline2 = item.outline2 && item.outline2 !== 'none' ? ds.toHex(item.outline2, '#111827') : 'none';
-    const baseAttrs = `x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-family="${esc(fontStack(item.font))}" font-weight="${fontWeight(item.font)}" font-size="${size}" letter-spacing="${Number(item.letterSpacing || 0)}" data-role="${role}" data-finished-height-in="${Number.isFinite(item.inches) ? item.inches : ''}" data-font-id="${esc(item.font || '')}"`;
+    const baseAttrs = `x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" font-family="${esc(fontStack(item.font))}" font-weight="${fontWeight(item.font)}" font-style="${item.italic ? 'italic' : 'normal'}" font-size="${size}" letter-spacing="${Number(item.letterSpacing || 0)}" data-role="${role}" data-finished-height-in="${Number.isFinite(item.inches) ? item.inches : ''}" data-font-id="${esc(item.font || '')}"`;
     const renderText = (extra = '') => `<text ${baseAttrs} ${extra}>${esc(value)}</text>`;
     let layers = '';
     if (outline2 !== 'none') {

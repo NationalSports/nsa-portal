@@ -17,8 +17,12 @@ import { fontShorthand } from './fonts';
 // can be much shorter than a varsity "15" at the same CSS size). Production
 // sizing is specified by finished visible height, so scale each face from its
 // real bounding-box metrics before measuring or drawing it.
-function normalizedDrawSize(ctx, value, font, targetSize) {
-  ctx.font = fontShorthand(font, targetSize);
+function athleticFont(font, size, italic) {
+  return `${italic ? 'italic ' : ''}${fontShorthand(font, size)}`;
+}
+
+function normalizedDrawSize(ctx, value, font, targetSize, italic) {
+  ctx.font = athleticFont(font, targetSize, italic);
   const metrics = ctx.measureText(value || '88');
   const visible = Number(metrics.actualBoundingBoxAscent || 0) + Number(metrics.actualBoundingBoxDescent || 0);
   if (!Number.isFinite(visible) || visible < 1) return targetSize;
@@ -28,9 +32,9 @@ function normalizedDrawSize(ctx, value, font, targetSize) {
 
 // Measure the text block: total advance width, and the arc sagitta (extra
 // height above the baseline block) when arched.
-export function measureAthleticText(ctx, { value, font, size, letterSpacing = 0, arch = 0 }) {
-  const drawSize = normalizedDrawSize(ctx, value, font, size);
-  ctx.font = fontShorthand(font, drawSize);
+export function measureAthleticText(ctx, { value, font, size, letterSpacing = 0, arch = 0, italic = false }) {
+  const drawSize = normalizedDrawSize(ctx, value, font, size, italic);
+  ctx.font = athleticFont(font, drawSize, italic);
   const chars = [...value];
   // Canvas centers the font's advance box, but many athletic faces have
   // asymmetric side bearings (especially a leading "1"). Measure the actual
@@ -81,9 +85,9 @@ export function measureAthleticText(ctx, { value, font, size, letterSpacing = 0,
 // upward so the CENTER letter stays at y and the ends fall below it — the
 // classic "name over number" curve.
 export function drawAthleticText(ctx, opts) {
-  const { value, font, size, fill, outline, outlineWidth = 0, outline2, outline2Width = 0, letterSpacing = 0, arch = 0, x, y } = opts;
+  const { value, font, size, fill, outline, outlineWidth = 0, outline2, outline2Width = 0, letterSpacing = 0, arch = 0, italic = false, x, y } = opts;
   const m = measureAthleticText(ctx, opts);
-  ctx.font = fontShorthand(font, m.drawSize || size);
+  ctx.font = athleticFont(font, m.drawSize || size, italic);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';

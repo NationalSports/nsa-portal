@@ -536,7 +536,7 @@ const DEFAULT_CONFIG = {
   // Front identity is required by the guided workflow, but starts unselected so
   // imported/direct-review garments do not gain surprise artwork.
   frontIdentity: 'none', frontWordmarkInches: 2,
-  numberColor: '#192853', font: 'block',
+  numberColor: '#192853', font: 'block', numberItalic: false,
   outlineColor: 'auto', outlineWeight: 'thin', numberSize: 1, nameSize: 1,
   // Production lettering is specified by finished height in inches. Back
   // number remains null until resolved from program (8" men, 6" women/youth).
@@ -648,13 +648,27 @@ function basketball4r3chbPreviewConfig() {
 // basketball jersey rather than silently substituting the soccer model.
 function basketballFallbackImage(sections, numberColor, playerNumber) {
   const body = (sections.body && sections.body.color) || '#192853';
+  const body2 = (sections.body && sections.body.color2) || '#FFFFFF';
+  const bodyPattern = (sections.body && sections.body.pattern) || 'solid';
   const accent = (sections.sleeveL && sections.sleeveL.color) || '#962C32';
   const trim = (sections.collar && sections.collar.color) || accent;
   const number = String(playerNumber || '23').replace(/[^0-9]/g, '').slice(0, 2) || '23';
+  const splatter = bodyPattern === 'splatter'
+    ? `<pattern id="bodyPrint" width="150" height="150" patternUnits="userSpaceOnUse">
+        <rect width="150" height="150" fill="${body}"/>
+        <g fill="${body2}">
+          <path d="M11 55l22-9 8-24 12 21 28-8-13 22 22 13-28 5-8 29-13-24-29 9 19-23z"/>
+          <path d="M103 112l14-5 7-17 8 15 18-3-11 14 12 10-18 1-7 18-8-16-19 6 12-14z"/>
+          <circle cx="109" cy="27" r="7"/><circle cx="134" cy="56" r="4"/><circle cx="23" cy="125" r="6"/>
+          <circle cx="76" cy="119" r="3"/><circle cx="93" cy="78" r="5"/><circle cx="58" cy="11" r="3"/>
+        </g>
+      </pattern>`
+    : '';
+  const bodyFill = bodyPattern === 'splatter' ? 'url(#bodyPrint)' : 'url(#cloth)';
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 760">
-    <defs><linearGradient id="cloth" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${body}"/><stop offset="1" stop-color="${body}"/></linearGradient><pattern id="knit" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M0 4h8M4 0v8" stroke="#fff" stroke-opacity=".045"/></pattern><filter id="shadow"><feDropShadow dy="18" stdDeviation="15" flood-color="#111827" flood-opacity=".22"/></filter></defs>
+    <defs><linearGradient id="cloth" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${body}"/><stop offset="1" stop-color="${body}"/></linearGradient>${splatter}<pattern id="knit" width="8" height="8" patternUnits="userSpaceOnUse"><path d="M0 4h8M4 0v8" stroke="#fff" stroke-opacity=".045"/></pattern><filter id="shadow"><feDropShadow dy="18" stdDeviation="15" flood-color="#111827" flood-opacity=".22"/></filter></defs>
     <g filter="url(#shadow)">
-      <path d="M220 88l55-28q45 43 90 0l55 28q1 78-30 152l16 439q-86 31-172 0l16-439q-31-74-30-152z" fill="url(#cloth)" stroke="${accent}" stroke-width="10" stroke-linejoin="round"/>
+      <path d="M220 88l55-28q45 43 90 0l55 28q1 78-30 152l16 439q-86 31-172 0l16-439q-31-74-30-152z" fill="${bodyFill}" stroke="${accent}" stroke-width="10" stroke-linejoin="round"/>
       <path d="M275 60q45 49 90 0-7 78-45 78t-45-78z" fill="#fff"/>
       <path d="M223 91q4 78 31 149M417 91q-4 78-31 149" fill="none" stroke="${accent}" stroke-width="14" stroke-linecap="round"/>
       <path d="M275 62q45 49 90 0" fill="none" stroke="${trim}" stroke-width="19"/>
@@ -803,7 +817,7 @@ function specFromConfig(cfg) {
         // the anchor per design; 'none' drops the front number entirely.
         number: (cfg.frontNumber === 'none')
           ? { value: '' }
-          : { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, inches: frontNumberInches,
+          : { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, italic: !!cfg.numberItalic, inches: frontNumberInches,
               x: frontPos.x, y: frontPos.y },
         // The guided setup makes the front identity explicit. A team wordmark
         // is centered above a centered number; logo-only designs leave this
@@ -814,7 +828,7 @@ function specFromConfig(cfg) {
           : { value: '', font: 'saira' },
       },
       back: {
-        number: { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, inches: backNumberInches,
+        number: { value: num, font, fill, outline, outlineWidth, outline2, outline2Width: 1.5, italic: !!cfg.numberItalic, inches: backNumberInches,
           x: backNumberPos.x, y: backNumberPos.y },
         // The name follows the chosen lettering style (it used to be pinned to
         // one condensed font) and arches over the number by default.
@@ -1633,6 +1647,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         teamPalette: current.teamPalette,
         logos: carriedLogos,
         frontIdentity: carriedIdentity,
+        // A concept needs a visible sample number so the coach can judge the
+        // requested type treatment before the roster supplies final numbers.
+        playerNumber: current.playerNumber || '23',
         frontNumberInches: sizes.front,
         backNumberInches: sizes.back,
         sections: normSections(source.sections),
@@ -1786,7 +1803,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
 
   // Turn one AI design (spec + styling) into a wizard config patch. Everything
   // is validated here: unknown patterns/fonts/colors just don't make it in.
-  const aiDesignToPatch = (d) => {
+  const aiDesignToPatch = (d, coachBrief = '') => {
     const spec = d.spec || {}; const zones = spec.zones || {};
     const zoneToSection = (z) => {
       const color = ds.toHex(z && z.color);
@@ -1802,12 +1819,17 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       }
       return sec;
     };
-    const sections = {};
-    const bodySec = zoneToSection(zones.body); if (bodySec) sections.body = bodySec;
-    const sl = zoneToSection(zones.sleeveL || zones.sleeveR); if (sl) sections.sleeveL = sl;
-    const sr = zoneToSection(zones.sleeveR || zones.sleeveL); if (sr) sections.sleeveR = sr;
-    const collarSec = zoneToSection(zones.collar); if (collarSec) sections.collar = collarSec;
-    const patch = { sections };
+    const sectionsFromZones = (src) => {
+      const result = {};
+      const bodySec = zoneToSection(src.body); if (bodySec) result.body = bodySec;
+      const sl = zoneToSection(src.sleeveL || src.sleeveR); if (sl) result.sleeveL = sl;
+      const sr = zoneToSection(src.sleeveR || src.sleeveL); if (sr) result.sleeveR = sr;
+      const collarSec = zoneToSection(src.collar); if (collarSec) result.collar = collarSec;
+      return result;
+    };
+    const sections = sectionsFromZones(zones);
+    const reverseSections = sectionsFromZones(spec.reverseZones || {});
+    const patch = { sections, ...(Object.keys(reverseSections).length ? { reverseSections } : {}) };
     const st = d.styling || {};
     const approvedCut = ['agi1011', 'agi1012', 'ayson', 'flag228187', 'basketball4r3chb'].includes(config.neckStyle);
     if (!approvedCut && (st.neckStyle === 'vneck' || st.neckStyle === 'crew')) patch.neckStyle = st.neckStyle;
@@ -1823,9 +1845,46 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       else { const o = ds.toHex(numSrc.outline); if (o) patch.outlineColor = o; }
       if (numSrc.outline2 === 'none') patch.outline2Color = 'none';
       else { const o2 = ds.toHex(numSrc.outline2); if (o2) patch.outline2Color = o2; }
+      if (typeof numSrc.italic === 'boolean') patch.numberItalic = numSrc.italic;
       // The AI names a raw font; the wizard stores a lettering STYLE — pick the
       // first admin style built on that font.
       if (numSrc.font) { const styleDef = FONTS.find((f) => f.font === numSrc.font && !f.hollow) || FONTS.find((f) => f.font === numSrc.font); if (styleDef) patch.font = styleDef.id; }
+    }
+    const wordmark = t.front && t.front.name;
+    const wordmarkFill = ds.toHex(wordmark && wordmark.fill);
+    if (wordmarkFill) patch.frontWordmarkColor = wordmarkFill;
+
+    // Literal production requests are enforced locally after the AI response.
+    // That keeps a named motif/color exact even if the model tries to swap in
+    // a visually adjacent premium print or a saved team-color quick pick.
+    const brief = String(coachBrief || '').toLowerCase();
+    if (/\b(splatter|paint splash)\b/.test(brief)) {
+      const forceSplatter = (target) => {
+        if (!target || !target.body) return;
+        target.body = { ...target.body, pattern: 'splatter' };
+        delete target.body.patternImage;
+        delete target.body.patternName;
+        delete target.body.patternTint;
+        delete target.body.patternTintMode;
+      };
+      forceSplatter(patch.sections);
+      forceSplatter(patch.reverseSections);
+    }
+    if (/\bblack\s+outline\b/.test(brief)) patch.outlineColor = '#111827';
+    if (/\b(?:neon|safety)\s+yellow\s+(?:fill|text|number|lettering)\b/.test(brief)
+      || /\b(?:fill|text|number|lettering)\s+(?:in\s+)?(?:neon|safety)\s+yellow\b/.test(brief)) {
+      patch.numberColor = '#eaff00';
+      patch.frontWordmarkColor = '#eaff00';
+    }
+    if (/\b(diagonal|slanted|italic)\b/.test(brief)) patch.numberItalic = true;
+
+    // Older responses have no reverseZones. Do not leave Side B unchanged:
+    // build a coordinated contrast face by swapping each zone's two inks.
+    if (config.neckStyle === 'basketball4r3chb' && !patch.reverseSections) {
+      patch.reverseSections = Object.fromEntries(Object.entries(patch.sections).map(([key, section]) => [
+        key,
+        { ...section, color: section.color2 || section.color, color2: section.color },
+      ]));
     }
     // Team identity, player-name inclusion, player number and all finished
     // lettering heights are intentionally absent from the patch. Those values
@@ -1835,8 +1894,15 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
 
   const applyAICandidate = (cand) => {
     setConfig((c) => {
-      const sectionKey = c.neckStyle === 'basketball4r3chb' && reversibleSide === 'B' ? 'reverseSections' : 'sections';
-      return { ...c, ...cand.patch, [sectionKey]: { ...normSections(c[sectionKey]), ...cand.patch.sections } };
+      if (c.neckStyle === 'basketball4r3chb') {
+        return {
+          ...c,
+          ...cand.patch,
+          sections: { ...normSections(c.sections), ...cand.patch.sections },
+          reverseSections: { ...normSections(c.reverseSections || c.sections), ...(cand.patch.reverseSections || cand.patch.sections) },
+        };
+      }
+      return { ...c, ...cand.patch, sections: { ...normSections(c.sections), ...cand.patch.sections } };
     });
     setAiNote(`"${cand.name}" applied — fine-tune anything below, or try another look.`);
   };
@@ -1860,7 +1926,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
           context: {
             sport: config.sport || '', program: config.program || 'mens',
             teamColors: teamColors.map((c) => c.hex),
-            printPatterns: printLib.map((p) => ({ name: p.name, tintable: !!p.tintable, tintMode: p.tint_mode || 'solid' })),
+            // Guided AI creates original production artwork. Saved vendor
+            // prints remain available in the template/manual design path, but
+            // are deliberately excluded here so the model cannot substitute a
+            // merely similar catalog pattern for the coach's brief.
+            designMode: 'original',
             lockedRules: {
               teamName: String(config.teamName || '').trim(),
               frontIdentity: config.frontIdentity || 'none',
@@ -1877,13 +1947,16 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
       const raw = Array.isArray(data.designs) && data.designs.length ? data.designs : [{ name: 'Design', spec: data.spec, styling: {}, rationale: data.rationale || '' }];
       const cands = [];
       for (const d of raw.slice(0, 3)) {
-        const patch = aiDesignToPatch(d);
+        const patch = aiDesignToPatch(d, prompt);
         if (!patch.sections.body) continue; // a look with no body color isn't a look
         let thumb = '';
         try {
           // Thumbnail from the exact spec Apply would produce, so what the coach
           // picks is what they get.
-          thumb = await renderToDataURL(specFromConfig({ ...config, ...patch, sections: { ...normSections(config.sections), ...patch.sections } }), { view: 'front', width: 200 });
+          const previewSections = { ...normSections(config.sections), ...patch.sections };
+          thumb = config.neckStyle === 'basketball4r3chb'
+            ? basketballFallbackImage(previewSections, patch.numberColor || config.numberColor, config.playerNumber || '23')
+            : await renderToDataURL(specFromConfig({ ...config, ...patch, sections: previewSections }), { view: 'front', width: 200 });
         } catch (_e) { /* thumb optional */ }
         cands.push({ name: d.name || 'Design', rationale: d.rationale || '', patch, thumb });
       }
@@ -2636,7 +2709,9 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
               <div style={{ position: 'absolute', inset: 0 }}>
                 <React.Suspense fallback={<div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.textLight }}>Loading 3D…</div>}>
                   {isReversible ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: narrow ? '1fr' : '1fr 1fr', width: '100%', height: '100%', background: '#fff' }}>
+                    <div
+                      data-testid="reversible-paired-stage"
+                      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: '#fff' }}>
                       {(showingShorts ? [
                         // Reversible shorts follow the same proofing rule as
                         // the jersey: show both complete exterior colorways at
@@ -2653,7 +2728,24 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                         { id: 'A', label: 'Side A', spec: jerseyModelSpec, surface: 'all' },
                         { id: 'B', label: 'Side B', spec: reverseJerseyModelSpec, surface: 'all' },
                       ]).map((face) => (
-                        <div key={face.id} data-testid={`reversible-side-${face.id.toLowerCase()}`} style={{ position: 'relative', minWidth: 0, minHeight: 0, borderLeft: face.id === 'B' && !narrow ? '1px solid ' + C.light : 'none' }}>
+                        <div
+                          key={face.id}
+                          data-testid={`reversible-side-${face.id.toLowerCase()}`}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            bottom: 0,
+                            // Both colorways now read as one Adidas-style product
+                            // scene. The canvases meet on the same white stage
+                            // with no divider, and their linked cameras keep the
+                            // garments at the same front/side/back angle.
+                            width: narrow ? '56%' : '52%',
+                            ...(face.id === 'A'
+                              ? { left: narrow ? '-3%' : '0' }
+                              : { right: narrow ? '-3%' : '0' }),
+                            minWidth: 0,
+                            minHeight: 0,
+                          }}>
                           <Viewer3D spec={face.spec} modelUrl={stageTpl.model3d} autoRotate={spin} fit={showingShorts ? 1.85 : 1.32} tiltDeg={showingShorts ? 2 : 6} shiftPx={0}
                             surfaceSide={face.surface} viewSyncRef={reversibleViewRef} viewSyncId={`4r3chb-${showingShorts ? 'shorts-' : ''}${face.id}`}
                             liningColor={showingShorts ? null : (face.id === 'A' ? sideBSections.body.color : SX.body.color)}
@@ -2667,11 +2759,14 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
                             activeDecoration={!showingShorts && step === 'numbers' && reversibleSide === face.id && activeDecorationPresent ? activeDecoration : null}
                             onDecorationSelect={!showingShorts && step === 'numbers' ? (key) => { setReversibleSide(face.id); selectDecoration(key); } : null}
                             onDecorationMove={!showingShorts && step === 'numbers' && reversibleSide === face.id ? moveDecoration : null} />
-                          <button onClick={() => setReversibleSide(face.id)} style={{ position: 'absolute', top: narrow ? 8 : 16, ...(face.id === 'A' ? { right: 16 } : { left: 16 }), zIndex: 6, border: '1px solid ' + (reversibleSide === face.id ? C.navy : C.mid), borderRadius: 999, background: reversibleSide === face.id ? C.navy : 'rgba(255,255,255,.94)', color: reversibleSide === face.id ? '#fff' : C.navy, padding: '7px 12px', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(15,23,42,.12)' }}>
+                          <button onClick={() => setReversibleSide(face.id)} style={{ position: 'absolute', top: narrow ? 8 : 16, left: '50%', transform: 'translateX(-50%)', zIndex: 6, border: '1px solid ' + (reversibleSide === face.id ? C.navy : C.mid), borderRadius: 999, background: reversibleSide === face.id ? C.navy : 'rgba(255,255,255,.94)', color: reversibleSide === face.id ? '#fff' : C.navy, padding: '7px 12px', fontFamily: F_DISP, fontWeight: 800, fontSize: 12, textTransform: 'uppercase', letterSpacing: .8, cursor: 'pointer', boxShadow: '0 2px 8px rgba(15,23,42,.12)', whiteSpace: 'nowrap' }}>
                             {face.label}{reversibleSide === face.id ? ' · Editing' : ''}
                           </button>
                         </div>
                       ))}
+                      <div style={{ position: 'absolute', left: '50%', bottom: narrow ? 10 : 20, transform: 'translateX(-50%)', zIndex: 7, padding: '6px 10px', borderRadius: 999, background: 'rgba(255,255,255,.9)', border: '1px solid ' + C.light, color: C.textLight, fontFamily: F_BODY, fontSize: narrow ? 10 : 11, fontWeight: 700, letterSpacing: .35, pointerEvents: 'none', whiteSpace: 'nowrap' }}>
+                        Drag either side · both rotate together
+                      </div>
                     </div>
                   ) : (
                     <Viewer3D spec={stageSpec} modelUrl={stageTpl.model3d} autoRotate={spin} fit={1.41} tiltDeg={showingShorts ? 2 : 8} shiftPx={narrow ? 0 : 165}

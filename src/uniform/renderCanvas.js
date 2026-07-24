@@ -147,7 +147,7 @@ function drawText(ctx, el, view, vb) {
   drawAthleticText(ctx, {
     value, font: el.font, size, fill, outline, outlineWidth: el.outlineWidth,
     outline2, outline2Width: el.outline2Width || 0,
-    letterSpacing: el.letterSpacing || 0, arch: el.arch || 0, x: px, y: py,
+    letterSpacing: el.letterSpacing || 0, arch: el.arch || 0, italic: !!el.italic, x: px, y: py,
   });
   ctx.restore();
 }

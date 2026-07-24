@@ -21,7 +21,8 @@ const COLOR_HEX = {
   cardinal: '#9b1c31', scarlet: '#c8102e', burgundy: '#7b1e3b', forest: '#14532d',
   'forest green': '#14532d', green: '#16a34a', kelly: '#16a34a', 'kelly green': '#16a34a',
   lime: '#84cc16', 'safety green': '#c6ff00', 'neon green': '#39ff14', gold: '#d4af37',
-  'old gold': '#caa53d', 'vegas gold': '#c5b358', yellow: '#facc15', orange: '#f47a1f',
+  'old gold': '#caa53d', 'vegas gold': '#c5b358', yellow: '#facc15',
+  'neon yellow': '#eaff00', 'safety yellow': '#eaff00', orange: '#f47a1f',
   'burnt orange': '#bf5700', 'texas orange': '#bf5700', purple: '#7c3aed',
   grey: '#9ca3af', gray: '#9ca3af', 'light grey': '#c0c0c0', 'light gray': '#c0c0c0',
   'dark grey': '#4a4a4a', 'dark gray': '#4a4a4a', 'heather grey': '#b6bcc4',
@@ -106,6 +107,7 @@ const PATTERNS = [
   { id: 'chevron', label: 'Chevron' },
   { id: 'fade', label: 'Fade' },
   { id: 'dots', label: 'Dots' },
+  { id: 'splatter', label: 'Paint Splatter' },
   { id: 'camo', label: 'Camo' },
   { id: 'digicamo', label: 'Digital Camo' },
   { id: 'carbon', label: 'Carbon' },
@@ -134,7 +136,7 @@ const DEFAULT_ZONE = { color: '#1f2a44', color2: '#ffffff', patternColor2: '#fff
 const DEFAULT_TEXT = {
   value: '', font: 'anton', fill: '#ffffff', outline: 'auto', outlineWidth: 5,
   outline2: 'none', outline2Width: 3,
-  size: 1, inches: null, x: null, y: null, letterSpacing: 0, arch: 0,
+  size: 1, inches: null, x: null, y: null, letterSpacing: 0, arch: 0, italic: false,
 };
 
 function makeDefaultSpec(garmentId = 'crew_jersey') {
@@ -254,6 +256,7 @@ function cleanText(t, base = DEFAULT_TEXT) {
     if (Number.isFinite(t.y)) out.y = clamp(t.y, 0, 1);
     if (Number.isFinite(t.letterSpacing)) out.letterSpacing = clamp(t.letterSpacing, -10, 40);
     if (Number.isFinite(t.arch)) out.arch = clamp(t.arch, 0, 0.6);
+    if (typeof t.italic === 'boolean') out.italic = t.italic;
   }
   return out;
 }

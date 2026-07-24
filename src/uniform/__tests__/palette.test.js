@@ -21,5 +21,12 @@ describe('uniform builder palette', () => {
     expect(ds.toHex('vegas gold')).toBe('#c5b358');
     expect(ds.toHex('orange')).toBe('#f47a1f');
     expect(ds.toHex('burnt orange')).toBe('#bf5700');
+    expect(ds.toHex('neon yellow')).toBe('#eaff00');
+  });
+
+  test('includes an editable production-safe paint splatter motif', () => {
+    expect(ds.PATTERNS).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'splatter', label: 'Paint Splatter' }),
+    ]));
   });
 });

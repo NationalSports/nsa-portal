@@ -47,7 +47,7 @@ const MODEL = process.env.UNIFORM_AI_MODEL || 'claude-haiku-4-5';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 
 // Vocabularies the model must stay inside. Kept in sync with src/uniform/*.
-const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'camo', 'digicamo', 'carbon', 'hex'];
+const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'splatter', 'camo', 'digicamo', 'carbon', 'hex'];
 const FABRICS = ['matte', 'mesh', 'heather', 'sublimated', 'gloss'];
 const FONTS = ['anton', 'bebas', 'saira', 'oswald', 'graduate', 'squada', 'rye', 'pirata', 'pacifico', 'baloo'];
 const NECK_STYLES = ['vneck', 'crew'];
@@ -74,14 +74,19 @@ const SYSTEM = [
   'Guidelines:',
   '- When asked for multiple designs, make them GENUINELY different takes on the brief — different color balance, different pattern strategy, different lettering — not three shades of the same idea. Give each a short evocative name ("Midnight Camo", "Home Classic").',
   '- Use real, legible team colors. Prefer strong contrast between the body and lettering so numbers read from the stands. If team colors are provided, build around them.',
+  '- Follow literal coach requests for motifs, colors, outlines, and lettering treatment. An explicitly requested color may be added even when it is not one of the saved team-color quick picks.',
   '- Colors are 6-digit hex (e.g. #1f2a44). Patterns other than "solid" also need a secondaryColor.',
+  '- "Paint splatter", "paint splash", and "splatter" MUST use the built-in "splatter" pattern. Never substitute a premium print library image for an explicitly requested built-in motif.',
+  '- When Design mode is original, create the look from the production-safe built-in vector motifs. Do not set printPattern or reuse a saved vendor design.',
   '- If a list of print patterns is provided, you may set a zone\'s printPattern to one of those exact names instead of a built-in pattern — these are the shop\'s premium sublimation prints; tintable ones recolor to the zone\'s colors (color/secondaryColor, plus accentColor/accentColor2 for 4-color prints). Use at most one print pattern per design, usually on the body.',
   '- Only reference zone ids that exist on the given garment. Not every zone needs a pattern; solid is fine.',
   '- Pick a fabric and number/name fonts that fit the vibe (block/anton & bebas for bold, graduate for collegiate, pirata for gothic, pacifico for script).',
+  '- When the coach requests diagonal, slanted, or italic numbers, set italic=true on both front and back number objects.',
   '- neckStyle picks the cut; frontNumber places the chest number (right chest is the classic kit look; none drops it).',
   '- outline is the number\'s border; outline2 adds a second border ring outside the first (the pro "double border" look) — use it when the brief wants extra pop, otherwise "none".',
   '- nameArch "arched" curves the back name over the number (classic); "straight" is modern.',
   '- Numbers are short (1-2 digits); names are UPPERCASE last names when the brief implies a player look, otherwise leave name empty.',
+  '- For basketball_4r3chb, design BOTH reversible faces. zones is Side A and reverseZones is Side B. They must be coordinated but clearly different colorways with the same requested motif and lettering treatment.',
 ].join('\n');
 
 const zoneSchema = {
@@ -104,6 +109,7 @@ const textSchema = {
     fill: { type: 'string', description: '6-digit hex' },
     outline: { type: 'string', description: '6-digit hex, or "auto", or "none"' },
     outline2: { type: 'string', description: '6-digit hex for a second outer outline, or "none"' },
+    italic: { type: 'boolean', description: 'True for diagonal, slanted, or italic athletic lettering' },
   },
 };
 
@@ -117,7 +123,8 @@ const designSchema = {
     nameArch: { type: 'string', enum: NAME_ARCH },
     nameSpacing: { type: 'number', description: 'Back-name letter spacing as % of font size, 0-30' },
     teamName: { type: 'string' },
-    zones: { type: 'object', additionalProperties: zoneSchema, description: 'Map of zoneId -> {color, secondaryColor?, pattern?, printPattern?}' },
+    zones: { type: 'object', additionalProperties: zoneSchema, description: 'Map of zoneId -> Side A {color, secondaryColor?, pattern?, printPattern?}' },
+    reverseZones: { type: 'object', additionalProperties: zoneSchema, description: 'For reversible garments only: coordinated Side B zone map' },
     text: {
       type: 'object',
       properties: {
@@ -142,24 +149,32 @@ const TOOL = {
 
 // Map one tool-output design (which uses secondaryColor) into the client's zone
 // shape (which uses color2). Everything else the client re-validates.
-function toClientSpec(garmentId, out) {
+function cleanZones(garmentId, source, allowPrintPatterns = true) {
   const zones = {};
   const valid = GARMENT_ZONES[garmentId] || GARMENT_ZONES.crew_jersey;
-  const src = (out && out.zones) || {};
+  const src = source || {};
   for (const id of Object.keys(src)) {
     if (!valid.includes(id)) continue;
     const z = src[id] || {};
     zones[id] = {
       color: z.color, color2: z.secondaryColor || z.color2, pattern: z.pattern || 'solid',
-      ...(z.printPattern ? { printPattern: String(z.printPattern).slice(0, 60) } : {}),
+      ...(allowPrintPatterns && z.printPattern ? { printPattern: String(z.printPattern).slice(0, 60) } : {}),
       ...(z.accentColor ? { color3: z.accentColor } : {}),
       ...(z.accentColor2 ? { color4: z.accentColor2 } : {}),
     };
   }
+  return zones;
+}
+
+function toClientSpec(garmentId, out, options = {}) {
+  const allowPrintPatterns = options.originalMode !== true;
+  const zones = cleanZones(garmentId, out && out.zones, allowPrintPatterns);
+  const reverseZones = cleanZones(garmentId, out && out.reverseZones, allowPrintPatterns);
   return {
     garmentId,
     fabric: out && out.fabric,
     zones,
+    ...(Object.keys(reverseZones).length ? { reverseZones } : {}),
     text: (out && out.text) || undefined,
     meta: { teamName: (out && out.teamName) || '', notes: (out && out.rationale) || '' },
   };
@@ -205,6 +220,7 @@ exports.handler = async (event) => {
         .slice(0, 40)
         .map((p) => `"${p.name.slice(0, 60)}"${p.tintable ? ` (tintable, ${p.tintMode || 'solid'} mode)` : ' (fixed colors)'}`)
     : [];
+  const originalMode = ctx.designMode === 'original';
   const locked = (ctx.lockedRules && typeof ctx.lockedRules === 'object') ? ctx.lockedRules : {};
   const lockedLines = [
     locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
@@ -221,7 +237,8 @@ exports.handler = async (event) => {
     ctx.sport ? `Sport: ${String(ctx.sport).slice(0, 30)}` : '',
     ctx.program ? `Program: ${String(ctx.program).slice(0, 20)} (men's/women's/youth cut)` : '',
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
-    prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
+    originalMode ? 'Design mode: original artwork. Do not use printPattern or any saved vendor pattern.' : '',
+    !originalMode && prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
     lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
     `Coach's brief: ${prompt}`,
@@ -250,7 +267,7 @@ exports.handler = async (event) => {
     if (!raw.length) return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: 'AI did not return a design.' }) };
     const designs = raw.slice(0, count).map((d) => ({
       name: (typeof d.name === 'string' && d.name.trim()) ? d.name.trim().slice(0, 30) : 'Design',
-      spec: toClientSpec(garmentId, d),
+      spec: toClientSpec(garmentId, d, { originalMode }),
       styling: toStyling(d),
       rationale: (typeof d.rationale === 'string' ? d.rationale : '').slice(0, 200),
     }));
@@ -260,3 +277,7 @@ exports.handler = async (event) => {
     return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: (e && e.message) || 'AI request failed.' }) };
   }
 };
+
+// Pure contract helpers for regression tests. They are not exposed by Netlify's
+// HTTP handler, but keep reversible/original-mode behavior directly testable.
+exports._test = { cleanZones, toClientSpec, toStyling };
