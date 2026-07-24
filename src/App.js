@@ -27572,7 +27572,7 @@ export default function App(){
               </div>
             </div>;
           })();
-            const renderBillCard=(b,bi)=>{
+            const renderBillCard=(b,bi,stepMode)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
@@ -27580,10 +27580,13 @@ export default function App(){
             const portalPushed=b.portalStatus==='success';
             const stripe=portalPushed?GREEN:b.reviewLater?GOLD:b.qbStatus==='error'?RED:tri&&tri.issue?RED:bucket==='ready'?GREEN:poMatch?NAVY:MGRAY;
             const hdrBg=portalPushed?'#F0F7F2':b.reviewLater?GOLD_BG:b.qbStatus==='error'?REDBG:tri&&tri.issue?REDBG:'#fff';
-            // Collapsed one-line row is the DEFAULT — the list stays scannable at 200+ bills.
-            // Each row carries its one status phrase and its one next action; the full card
-            // (items, wizard, write plan) renders only when the operator opens that bill.
-            const expanded=(billImport.expand||{})[b.id];
+            // Collapsed one-line row is the DEFAULT in list view — the list stays scannable at
+            // 200+ bills. Each row carries its one status phrase and its one next action; the full
+            // card renders only when the operator opens that bill. In "work one at a time" mode the
+            // current bill defaults OPEN so the next one pops up ready to tie (not collapsed behind
+            // an Open click) — an explicit ▴ Collapse still wins, so it stays a default, not a force.
+            const _expPref=(billImport.expand||{})[b.id];
+            const expanded=_expPref==null?!!stepMode:_expPref;
             const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!(x.expand||{})[b.id]}}));
             if(!expanded){
               const soId=poMatch?.so_id||poMatch?.so?.id||'';
@@ -28579,7 +28582,7 @@ export default function App(){
                     <button onClick={()=>setBillStepMode(false)} title="Show this pile as a list instead" style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>☰ List</button>
                   </span>
                 </div>);
-                _children.push(renderBillCard(sb2,sbi2));
+                _children.push(renderBillCard(sb2,sbi2,true));
               }else{
                 _children.push(<div key="step-on" style={{margin:'0 0 10px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:12.5,padding:'8px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fffbeb',border:'1.5px solid #fcd34d',color:'#92400e'}}>▸ Work one at a time</button></div>);
                 _kbList.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
