@@ -28649,10 +28649,15 @@ export default function App(){
               ['parked','🕒','Set aside',_parkedBills.map(sb=>[sb,-1]),'#d97706','Out of every push until you act. Synced across machines; pulls won’t re-add them.'],
             ];
             const _kbSum=list=>list.reduce((a,[b])=>a+(safeNum(b.parsed?.doc_total)||safeNum(b.parsed?.merchandise_total)),0);
-            const _kbFirstDef=_kbDefs.find(d=>d[3].length);
+            const _kbAny=_kbDefs.find(d=>d[3].length);// any non-empty pile → the kanban tile strip shows
+            // Set Aside never auto-opens its workspace (owner 2026-07-24: pre-pull, when parked bills are
+            // the only pile, the heavy Set-aside section shouldn't dominate the screen — the kanban tile
+            // is enough; click it to work them). So the default active pile SKIPS 'parked'; it opens only
+            // when the operator clicks its tile.
+            const _kbFirstDef=_kbDefs.find(d=>d[0]!=='parked'&&d[3].length);
             const _kbCur=_kbDefs.find(d=>d[0]===billKanban&&d[3].length)||_kbFirstDef;
             const _kbActive=_kbCur?_kbCur[0]:null;
-            if(_kbFirstDef)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+            if(_kbAny)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
               {_kbDefs.map(([k,ico,label,list,color])=>{if(!list.length)return null;const on=k===_kbActive;
                 return <button key={k} onClick={()=>{setBillKanban(k);setBillStepIdx(0)}} style={{flex:'1 1 190px',minWidth:175,textAlign:'left',padding:'13px 16px',borderRadius:8,cursor:'pointer',background:on?color:'#fff',border:'2px solid '+(on?color:LGRAY),boxShadow:on?'0 4px 14px rgba(0,0,0,.16)':'0 1px 4px rgba(0,0,0,.05)'}}>
                   <div style={{fontFamily:FD,fontWeight:800,fontSize:27,lineHeight:1,color:on?'#fff':color}}>{ico} {list.length}</div>
@@ -28777,28 +28782,8 @@ export default function App(){
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
               <div style={{fontSize:14,color:'#7a2429'}}><span style={{fontFamily:FD,fontWeight:800,fontSize:17,color:NAVY,letterSpacing:.3}}>Over-billed ({overBills.length})</span> <strong style={{color:RED,fontFamily:FD,fontSize:16}}>{nsaMoney(overValue)}</strong> — the bill exceeds what the order says was ordered. Correct the order to match, or accept the overage.</div>
             </div>}
-            {/* Step-by-step: how to clear the queue. Collapsible (remembered via laterCollapse['__guide']). */}
-            {rows.length>0&&(()=>{
-              const guideOpen=!laterCollapse['__guide'];
-              const steps=[
-                ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
-                ['⚠️','Over-billed','🧵 Reconcile in Review is the easy road now: the Best answer shows the ties and the money check, and accepting the flagged overage lets push correct the order automatically. Or handle it here: ✏️ Correct order from bill, or ⚠️ Accept overage & push with a note.'],
-                ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
-                ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
-                ['♻️','Duplicate','These clear themselves — a bill whose doc # is already applied auto-resolves to history. Anything still here was re-opened on purpose; push it with the override if it’s a true re-bill.'],
-              ];
-              return <div style={{marginBottom:16,border:'1px solid '+LGRAY,borderRadius:6,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
-                <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 16px',background:NAVY,backgroundImage:HASH}}>
-                  <span style={{fontSize:11,color:'rgba(255,255,255,.7)'}}>{guideOpen?'▼':'▶'}</span>
-                  <span style={{fontFamily:FD,fontWeight:800,fontSize:15,letterSpacing:.5,textTransform:'uppercase',color:'#fff'}}>📋 How to clear this queue</span>
-                  <span style={{fontSize:11,color:'rgba(255,255,255,.6)'}}>{guideOpen?'work the buckets top to bottom':'show the steps'}</span>
-                </div>
-                {guideOpen&&<ol style={{margin:0,padding:'10px 16px 12px 34px'}}>
-                  {steps.map(([ic,t,d],i)=><li key={i} style={{fontSize:12.5,color:TXTL,marginBottom:6,lineHeight:1.55}}>
-                    <b style={{color:NAVY,fontFamily:FD,letterSpacing:.3}}>{ic} {t}.</b> {d}</li>)}
-                </ol>}
-              </div>;
-            })()}
+            {/* The "how to clear this queue" guide was removed (owner 2026-07-24: "looks really bad") —
+                each bucket section below already carries its own one-line instruction. */}
               {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later — every supplier bill is accounted for. Bills you move from the review screen show up here.'}</div>
               :BUCKETS.map(([bkey,bIcon,bLabel,bColor,bBg,bDesc])=>{
                 const list=enriched.filter(e=>e.bucket===bkey);
