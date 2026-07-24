@@ -20944,7 +20944,11 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return;
           const key=gi.item_idx;
           if(!_perItemDecos[key])_perItemDecos[key]=[];
-          safeDecos(it).forEach(d=>{
+          // Scope to THIS job's own decorations — a split-art sibling (two designs sharing one line,
+          // each its own job) must not show the other design's spec/mockup slot on this job.
+          const _dis=jobItemDecoIdxs(gi);
+          safeDecos(it).forEach((d,di)=>{
+            if(_dis&&!_dis.includes(di))return;
             if(d.kind==='art'){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
@@ -21600,7 +21604,10 @@ export default function App(){
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
                   const key=it.sku+'|'+(it.color||'');
                   if(!perItemDecos[key])perItemDecos[key]=[];
-                  safeDecos(it).forEach(d=>{
+                  // Scope to THIS job's own decorations so a split-art sibling's design doesn't appear here.
+                  const _dis=jobItemDecoIdxs(gi);
+                  safeDecos(it).forEach((d,di)=>{
+                    if(_dis&&!_dis.includes(di))return;
                     if(d.kind==='art'){
                       const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
                       const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
