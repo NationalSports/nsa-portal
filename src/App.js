@@ -27734,6 +27734,10 @@ export default function App(){
             // Visual-check popup (owner ask): full item names on BOTH sides so a human can
             // confirm by eye. Payload is a plain snapshot {label,sub,rows,note}.
             const _peekSet=(v)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_peek:v}:pp)}));
+            // Full SO / PO reference viewer (owner 2026-07-24: "a module popup that shows all items on
+            // the sales order, with a tab to go over to see all items on the PO … so you don't need to
+            // leave the page to see everything"). Read-only; opened from inside the reconcile matcher.
+            const _soPoSet=(v)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_soPo:v}:pp)}));
             const _peekFromCand=(cand)=>_peekSet({label:cand.label,sub:cand.sub||'',rows:cand.items.map(it=>({sku:it.sku,name:it.name||'',color:it.color||'',size:it.size||'',open:safeNum(it.qty),cost:safeNum(it.unit_cost),po_id:it.po_id||''}))});
             const _peekFromSO=(soId)=>{
               const cand=_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(soId));
@@ -27752,6 +27756,55 @@ export default function App(){
             };
             return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
               <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:stripe}}/>
+              {b._soPo&&(()=>{
+                const so=sos.find(s2=>String(s2.id)===String(b._soPo.soId));
+                if(!so)return null;
+                const _nrm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                const billPoN=_nrm(bill.po_number||bill._po_raw||'');
+                const soRows=[];
+                (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{Object.entries(po).forEach(([k,v])=>{
+                  if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;if(v<=0)return;
+                  const billed=safeNum((po.billed||{})[k]||0);
+                  soRows.push({sku:it.sku,name:it.name||'',color:it.color||'',size:k,ordered:v,billed,open:Math.max(0,v-billed),cost:safeNum(po.unit_cost),po_id:po.po_id||''});
+                })}));
+                const poRowsExact=soRows.filter(r=>billPoN&&_nrm(r.po_id)===billPoN);
+                const poRows=poRowsExact.length?poRowsExact:soRows;
+                const poLabel=(poRowsExact.length?(soRows.find(r=>_nrm(r.po_id)===billPoN)||{}).po_id:(bill.po_number))||'this PO';
+                const tab=b._soPo.tab==='po'?'po':'so';
+                const rows=tab==='po'?poRows:soRows;
+                const c2=cust.find(cc=>cc.id===so.customer_id);
+                const th=(h,r2)=><th key={h} style={{textAlign:r2?'right':'left',padding:'5px 9px',fontSize:9,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.4,background:'#f8fafc',position:'sticky',top:0}}>{h}</th>;
+                const tabBtn=(k,lab,n)=><button onClick={()=>_soPoSet({...b._soPo,tab:k})} style={{fontSize:12,fontWeight:800,padding:'7px 16px',borderRadius:8,cursor:'pointer',border:'1.5px solid '+(tab===k?NAVY:'#cbd5e1'),background:tab===k?NAVY:'#fff',color:tab===k?'#fff':'#334155'}}>{lab} <span style={{opacity:.7,fontWeight:600}}>({n})</span></button>;
+                return<div onClick={()=>_soPoSet(null)} style={{position:'fixed',inset:0,background:'rgba(15,23,42,.45)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:18}}>
+                  <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:12,maxWidth:960,width:'100%',maxHeight:'86vh',display:'flex',flexDirection:'column',boxShadow:'0 12px 48px rgba(0,0,0,.3)'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'16px 20px 10px'}}>
+                      <div style={{fontSize:15,fontWeight:800,color:NAVY}}>Everything on this order</div>
+                      <span style={{fontSize:11.5,color:'#64748b'}}>{so.id}{(c2?.name||so.customer_name)?' · '+(c2?.name||so.customer_name):''}</span>
+                      <button onClick={()=>_soPoSet(null)} style={{marginLeft:'auto',fontSize:12,padding:'5px 13px',borderRadius:6,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>✕ Close</button>
+                    </div>
+                    <div style={{display:'flex',gap:8,padding:'0 20px 12px',flexWrap:'wrap'}}>
+                      {tabBtn('so','Sales order — all items',soRows.length)}
+                      {tabBtn('po','On '+poLabel,poRows.length)}
+                    </div>
+                    <div style={{overflow:'auto',padding:'0 20px 18px'}}>
+                      <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                        <thead><tr>{th('SKU')}{th('Item')}{th('Color')}{th('Size')}{th('Ordered',1)}{th('Billed',1)}{th('Open',1)}{th('Cost',1)}</tr></thead>
+                        <tbody>{rows.map((r2,ri)=><tr key={ri} style={{borderBottom:'1px solid #f1f5f9',background:r2.open<=0?'#fafafa':'#fff'}}>
+                          <td style={{padding:'5px 9px',fontFamily:'monospace',fontWeight:700,whiteSpace:'nowrap'}}>{r2.sku}</td>
+                          <td style={{padding:'5px 9px',color:'#334155'}}>{r2.name||'—'}</td>
+                          <td style={{padding:'5px 9px',color:'#64748b',whiteSpace:'nowrap'}}>{r2.color||'—'}</td>
+                          <td style={{padding:'5px 9px',whiteSpace:'nowrap'}}>{r2.size||'—'}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right'}}>{r2.ordered}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',color:r2.billed>0?'#166534':'#94a3b8'}}>{r2.billed}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',fontWeight:700,color:r2.open>0?'#b45309':'#94a3b8'}}>{r2.open}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',whiteSpace:'nowrap'}}>${r2.cost.toFixed(2)}</td>
+                        </tr>)}
+                        {!rows.length&&<tr><td colSpan={8} style={{padding:'16px 9px',textAlign:'center',color:'#94a3b8'}}>No lines on this {tab==='po'?'PO':'order'}.</td></tr>}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>;
+              })()}
               {b._peek&&(()=>{const pk=b._peek;
                 const billRows=bill.items||[];
                 const billPrices=new Set(billRows.map(l=>Math.round(safeNum(l.unit_price)*100)).filter(v=>v>0));
@@ -28374,7 +28427,10 @@ export default function App(){
                   return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
                       <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Reconcile {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <span style={{display:'flex',gap:8}}>
+                      {w.target&&w.target.kind==='so'&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 10px',background:'#eef2ff',border:'1px solid #c7d2fe',color:'#3730a3',fontWeight:700}} title="See every line on this sales order and this PO — without leaving the page" onClick={()=>_soPoSet({soId:w.target.id,tab:'so'})}>📋 Full SO &amp; PO</button>}
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                      </span>
                     </div>
                     {!w.target&&<>
                       <input className="form-input" style={{width:'100%',fontSize:11,padding:'4px 8px',marginBottom:6}} placeholder="Search PO #, SO #, customer, SKU…" value={w.query||''}
