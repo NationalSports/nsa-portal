@@ -26022,6 +26022,43 @@ export default function App(){
       return{matched,errs,issue,reason};
     };
 
+    // ── Tie-stepper auto-advance (owner 2026-07-24: "still having to press Tie lines to open the
+    // next one every time") ─────────────────────────────────────────────────────────────────────
+    // The kanban 'tie' pile in the SAME order the stepper walks it. This MIRRORS the _bk bucketing
+    // in the review render (search "_kbDefs" / "es.indexOf('Use Match manually')") — keep the two in
+    // sync: PO-matched bills whose lines won't apply cleanly, then over-billed ones, in parsed order.
+    const _tiePile=()=>{
+      const lines=[],over=[];
+      (billImport.parsed||[]).forEach(b=>{
+        if(b.portalStatus&&b.portalStatus!=='success')return;
+        const t=_billTriage(b);
+        if(!t||!t.issue||!t.matched)return;
+        const es=(t.errs||[]).join(' ');
+        if(es.indexOf('duplicate doc')>-1)return;
+        if(es.indexOf('Use Match manually')>-1)lines.push(b);
+        else if(es.indexOf(' exceeds ')>-1)over.push(b);
+      });
+      return [...lines,...over];
+    };
+    // Open the two-column tap-tap matcher on a bill, pre-targeted to its matched SO and pre-mapped —
+    // the same seed as the 🧵 Tie lines button (openWizardPre), so the operator lands ready to click.
+    const _openBillTieWizard=sb=>{
+      const bl=sb&&sb.parsed;if(!bl)return;
+      const mp=bl.matchedPO||{};const soId=mp.so_id||(mp.so&&mp.so.id)||'';
+      const _so=soId&&sos.find(s2=>String(s2.id)===String(soId));
+      const pre=_so?_soCandidate(_so,true):null;
+      setBillImport(x=>({...x,expand:{...(x.expand||{}),[sb.id]:true},parsed:x.parsed.map(p=>p.id===sb.id?{...p,parsed:{...p.parsed,_wizard:{open:true,query:bl.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bl,pre):{}}}}:p)}));
+    };
+    // After a bill's lines are tied in the one-at-a-time stepper, jump straight into the next tie
+    // bill's matcher (excludeId = the one just tied — still in the pre-update pile snapshot). The
+    // index math lands on the same bill the stepper will show once the tied one drops out.
+    const _advanceTieStepper=excludeId=>{
+      if(!billStepMode)return;
+      const pile=_tiePile().filter(sb=>sb.id!==excludeId);
+      if(!pile.length)return;
+      _openBillTieWizard(pile[Math.min(billStepIdx,pile.length-1)]);
+    };
+
     // ── AI bill reconciliation ─────────────────────────────────────────────────
     // For bills that matched a PO but whose lines don't reconcile (vendor size/SKU
     // quirks the deterministic normalizer can't catch — "3XLT", placeholder SKUs),
@@ -28145,13 +28182,13 @@ export default function App(){
                           const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
                           const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk'&&t2.basis!=='po_name').map(t2=>t2.target_idx),...Object.values(xt)]);
                           return<div style={{marginTop:8,padding:'9px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
-                            <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
-                            <div style={{fontSize:10,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
+                            <div style={{fontSize:13,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
+                            <div style={{fontSize:12,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
                             {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
                               return<div key={i2} style={{padding:'7px 0',borderTop:'1px solid #fef3c7'}}>
                                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                                  <span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#0f172a'}}>{bl.sku}</span>
-                                  <span style={{fontSize:10,color:'#64748b'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
+                                  <span style={{fontFamily:'monospace',fontSize:13,fontWeight:800,color:'#0f172a'}}>{bl.sku}</span>
+                                  <span style={{fontSize:12,color:'#475569'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
                                   {linked&&<><span style={{fontSize:10,padding:'2px 9px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:800}}>✓ Linked → {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''}</span>
                                     <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 7px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c',fontWeight:700}}>✕ undo</button></>}
                                 </div>
@@ -28178,16 +28215,16 @@ export default function App(){
                                     return{it2,ti2,sc};
                                   }).filter(Boolean).sort((a2,z2)=>z2.sc-a2.sc);
                                   const mkCard=({it2,ti2,sc},best)=><button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
-                                    style={{textAlign:'left',minWidth:104,padding:'5px 9px',borderRadius:8,cursor:'pointer',position:'relative',border:'1.5px solid '+(best?'#16a34a':sc>=6?'#86efac':'#d1fae5'),background:best?'#f0fdf4':'#fff'}}>
-                                    {best&&<span style={{position:'absolute',top:-8,left:8,fontSize:7.5,fontWeight:900,letterSpacing:.5,background:'#16a34a',color:'#fff',padding:'1px 6px',borderRadius:6}}>BEST MATCH</span>}
-                                    <div style={{fontFamily:'monospace',fontSize:10,fontWeight:800,color:'#0f172a'}}>{it2.sku}</div>
-                                    <div style={{fontSize:9,color:'#64748b'}}>{[it2.color,it2.size].filter(Boolean).join(' · ')||' '}</div>
-                                    <div style={{fontSize:9,fontWeight:700,color:'#166534'}}>{safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)}</div>
+                                    style={{textAlign:'left',minWidth:126,padding:'8px 12px',borderRadius:8,cursor:'pointer',position:'relative',border:'1.5px solid '+(best?'#16a34a':sc>=6?'#86efac':'#d1fae5'),background:best?'#f0fdf4':'#fff'}}>
+                                    {best&&<span style={{position:'absolute',top:-9,left:8,fontSize:9,fontWeight:900,letterSpacing:.5,background:'#16a34a',color:'#fff',padding:'1px 7px',borderRadius:6}}>BEST MATCH</span>}
+                                    <div style={{fontFamily:'monospace',fontSize:13.5,fontWeight:800,color:'#0f172a'}}>{it2.sku}</div>
+                                    <div style={{fontSize:12,color:'#475569'}}>{[it2.color,it2.size].filter(Boolean).join(' · ')||' '}</div>
+                                    <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>{safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)}</div>
                                   </button>;
                                   const top=scored.slice(0,6);const rest=scored.slice(6);
                                   return<>
                                     <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{top.map((c,ci)=>mkCard(c,ci===0&&c.sc>=6))}</div>
-                                    {rest.length>0&&<details style={{marginTop:6}}><summary style={{fontSize:10,color:'#92400e',cursor:'pointer',fontWeight:800,display:'inline-block',padding:'3px 9px',border:'1px dashed #fbbf24',borderRadius:8}}>Show {rest.length} more item{rest.length===1?'':'s'} on this order…</summary>
+                                    {rest.length>0&&<details style={{marginTop:6}}><summary style={{fontSize:12,color:'#92400e',cursor:'pointer',fontWeight:800,display:'inline-block',padding:'4px 11px',border:'1px dashed #fbbf24',borderRadius:8}}>Show {rest.length} more item{rest.length===1?'':'s'} on this order…</summary>
                                       <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{rest.map(c=>mkCard(c,false))}</div></details>}</>;
                                 })()}
                               </div>;})}
@@ -28375,6 +28412,19 @@ export default function App(){
                                   const sameColor=tgt&&bl.color&&tgt.color&&_ns(bl.color)===_ns(tgt.color);
                                   const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
                                   const isAct=bli===act;
+                                  // Collapsed row for a settled tie (owner 2026-07-24: "once the left column is
+                                  // matched it should minimize so the left and right line up row-by-row"). The
+                                  // active line and any untied/skipped line stay full-size; a tied, non-active line
+                                  // shrinks to a one-liner that still shows what it pays for and any money warning,
+                                  // and stays clickable to re-open or untie.
+                                  if(tgt&&!isAct&&!m.skipped)return<div key={bli} onClick={()=>setW({...w,_pk:bli})} title="Click to adjust or re-tie this line" style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',borderRadius:7,cursor:'pointer',background:over?'#fef2f2':'#f0fdf4',border:'1px solid '+(over?'#fecaca':'#bbf7d0')}}>
+                                    <span style={{fontSize:12,color:'#16a34a',fontWeight:900}}>✓</span>
+                                    <span style={{fontFamily:'monospace',fontWeight:700,fontSize:13,color:'#0f172a'}}>{bl.sku||'(no sku)'}</span>
+                                    <span style={{fontSize:12,color:'#64748b'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}</span>
+                                    <span style={{fontSize:12,color:'#166534',fontWeight:700}}>→ {tgt.sku}</span>
+                                    {over?<span style={{fontSize:11,fontWeight:800,color:'#dc2626'}}>over {q}&gt;{openQty}</span>:costGap?<span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>bill ≠ order ${Math.abs(billExt-applyCost).toFixed(2)}</span>:null}
+                                    <button onClick={e=>{e.stopPropagation();setMap(bli,{})}} title="Untie" style={{marginLeft:'auto',fontSize:10,padding:'2px 9px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>✕ Untie</button>
+                                  </div>;
                                   return<div key={bli} onClick={()=>setW({...w,_pk:bli})} style={{padding:'11px 14px',borderRadius:8,cursor:'pointer',background:m.skipped?'#fffbeb':over?'#fef2f2':tgt?'#f7fdf9':'#fff',border:isAct?'2.5px solid #4f46e5':'1.5px solid '+(m.skipped?'#fcd34d':tgt?'#bbf7d0':'#e2e8f0'),boxShadow:isAct?'0 3px 12px rgba(79,70,229,.18)':'none'}}>
                                     <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}}>
                                       <span style={{fontFamily:'monospace',fontWeight:800,fontSize:15,color:'#0f172a'}}>{bl.sku||'(no sku)'}</span>
@@ -28462,6 +28512,7 @@ export default function App(){
                               const _ovr=Object.entries(_bk2).some(([ti2,al])=>al>safeNum((target.items[ti2]||{}).qty));
                               setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_overage_ok:_ovr||undefined,_wizard:{open:false}}}:p)}));
                               nf('Bill manually matched to '+target.label+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
+                              _advanceTieStepper(b.id);// jump into the next tie bill's matcher (owner: stop re-clicking "Tie lines")
                             }}>Confirm match</button>
                         </div>
                       </>;
@@ -28523,6 +28574,7 @@ export default function App(){
               ['tie','🧵','PO matched — tie the items',[..._bk.lines,..._bk.over],'#4f46e5','This bill’s PO IS in the system — the order is known. Connect each bill line to the order item it pays for; the order’s items are on the card right below.'],
               ['nopo','🔍','PO not in the system',_bk.no_order,'#7c3aed','No order carries this bill’s PO number. Don’t force it onto another order — find the right one, set it aside, or it’s billed outside the Portal.'],
               ['check','⚠','Check these',[..._bk.failed,..._bk.dup,..._bk.other],'#b45309','Failed pushes, re-opened duplicates, odd cases — each card says what happened.'],
+              ['ready','✅','Matched — ready to push',_bk.ready,'#16a34a','These reconcile cleanly. Push the whole pile with the button below, or open any bill to double-check what it will write.'],
               ['parked','🕒','Set aside',_parkedBills.map(sb=>[sb,-1]),'#d97706','Out of every push until you act. Synced across machines; pulls won’t re-add them.'],
             ];
             const _kbSum=list=>list.reduce((a,[b])=>a+(safeNum(b.parsed?.doc_total)||safeNum(b.parsed?.merchandise_total)),0);
@@ -28537,14 +28589,22 @@ export default function App(){
                   <div style={{fontSize:11.5,fontWeight:700,marginTop:2,color:on?'rgba(255,255,255,.85)':TXTL,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(_kbSum(list))}</div>
                 </button>;})}
             </div>);
-            if(_kbCur&&_kbActive!=='parked'){
+            if(_kbCur&&_kbActive==='ready'){
+              // Matched pile is now its own kanban box (owner 2026-07-24: "'matched' should be a
+              // kanban box, not showing up lower on the screen"). Reconciles cleanly → show the push
+              // panel + the cards as a plain list (no stepper — nothing to tie). This REPLACES the
+              // old always-on lower "✓ Matched" section.
+              _children.push(<div key="kb-hint" style={{fontSize:13.5,fontWeight:600,color:TXTL,margin:'0 0 12px',maxWidth:960,lineHeight:1.45}}>{_kbCur[5]}</div>);
+              if(_matchedHeader)_children.push(<React.Fragment key="matched-header">{_matchedHeader}</React.Fragment>);
+              _kbCur[3].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            }else if(_kbCur&&_kbActive!=='parked'){
               const _kbList=_kbCur[3],_kbHint=_kbCur[5];
               _children.push(<div key="kb-hint" style={{fontSize:13.5,fontWeight:600,color:TXTL,margin:'0 0 12px',maxWidth:960,lineHeight:1.45}}>{_kbHint}</div>);
               if(billStepMode){
                 const si2=Math.min(billStepIdx,_kbList.length-1);
                 const[sb2,sbi2]=_kbList[si2];
                 const bp2=sb2.parsed||{};
-                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))};
+                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2){if(_kbActive==='tie')_openBillTieWizard(t2[0]);else setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))}};
                 _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,flexWrap:'wrap'}}>
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.5,color:'#92400e',whiteSpace:'nowrap'}}>Bill {si2+1} of {_kbList.length}</span>
                   <span style={{flex:1,minWidth:230}}>
@@ -28864,8 +28924,8 @@ export default function App(){
           })()}
           </>;
         })()}</React.Fragment>);
-            if(_inReview)_children.push(<React.Fragment key="h-matched">{secHead({dot:GREEN,title:'✓ Matched',count:_bk.ready.length,note:'These reconcile cleanly — the red button pushes all of them',mt:true})}{_matchedHeader}</React.Fragment>);
-            if(_inReview)_bk.ready.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            // ✓ Matched now lives in the kanban strip above (the '✅ Matched — ready to push' tile);
+            // its push panel + cards render there when that tile is active, instead of a lower section.
             if(_bk.done.length){
               const open=!!billImport.showDone;
               _children.push(<button key="h-done" onClick={()=>setBillImport(x=>({...x,showDone:!x.showDone}))} style={{display:'block',width:'100%',textAlign:'left',marginTop:14,padding:'9px 14px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:6,cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',color:'#64748b'}}>
