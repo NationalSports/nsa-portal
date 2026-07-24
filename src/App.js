@@ -27551,7 +27551,7 @@ export default function App(){
               </div>
             </div>;
           })();
-            const renderBillCard=(b,bi)=>{
+            const renderBillCard=(b,bi,forceOpen)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
@@ -27562,8 +27562,12 @@ export default function App(){
             // Collapsed one-line row is the DEFAULT — the list stays scannable at 200+ bills.
             // Each row carries its one status phrase and its one next action; the full card
             // (items, wizard, write plan) renders only when the operator opens that bill.
-            const expanded=(billImport.expand||{})[b.id];
-            const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!(x.expand||{})[b.id]}}));
+            // forceOpen (the kanban stepper) keeps the ONE current bill open so "next" lands on a
+            // ready-to-work card, not a collapsed row — unless the operator explicitly collapsed
+            // THIS bill (expand[b.id]===false wins so ▴ Collapse still works in step mode).
+            const _exp=(billImport.expand||{});
+            const expanded=(b.id in _exp)?_exp[b.id]:!!forceOpen;
+            const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!expanded}}));
             if(!expanded){
               const soId=poMatch?.so_id||poMatch?.so?.id||'';
               const failedPush=b.portalStatus&&b.portalStatus!=='success';
@@ -28503,9 +28507,13 @@ export default function App(){
             const _kbFirstDef=_kbDefs.find(d=>d[3].length);
             const _kbCur=_kbDefs.find(d=>d[0]===billKanban&&d[3].length)||_kbFirstDef;
             const _kbActive=_kbCur?_kbCur[0]:null;
+            // Always draw ALL four tiles (empty ones dimmed at 0) so the board is a stable
+            // strip, not something that vanishes when a pile empties (owner "where are my
+            // kanbans?" — one lonely tile read as broken). The outer guard keeps the strip
+            // hidden only when there is genuinely nothing in review at all.
             if(_kbFirstDef)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
-              {_kbDefs.map(([k,ico,label,list,color])=>{if(!list.length)return null;const on=k===_kbActive;
-                return <button key={k} onClick={()=>{setBillKanban(k);setBillStepIdx(0)}} style={{flex:'1 1 190px',minWidth:175,textAlign:'left',padding:'13px 16px',borderRadius:8,cursor:'pointer',background:on?color:'#fff',border:'2px solid '+(on?color:LGRAY),boxShadow:on?'0 4px 14px rgba(0,0,0,.16)':'0 1px 4px rgba(0,0,0,.05)'}}>
+              {_kbDefs.map(([k,ico,label,list,color])=>{const on=k===_kbActive;const empty=!list.length;
+                return <button key={k} disabled={empty} onClick={()=>{if(empty)return;setBillKanban(k);setBillStepIdx(0)}} style={{flex:'1 1 190px',minWidth:175,textAlign:'left',padding:'13px 16px',borderRadius:8,cursor:empty?'default':'pointer',opacity:empty?0.45:1,background:on?color:'#fff',border:'2px solid '+(on?color:LGRAY),boxShadow:on?'0 4px 14px rgba(0,0,0,.16)':'0 1px 4px rgba(0,0,0,.05)'}}>
                   <div style={{fontFamily:FD,fontWeight:800,fontSize:27,lineHeight:1,color:on?'#fff':color}}>{ico} {list.length}</div>
                   <div style={{fontFamily:FD,fontWeight:700,fontSize:12.5,textTransform:'uppercase',letterSpacing:.5,marginTop:7,color:on?'#fff':NAVY}}>{label}</div>
                   <div style={{fontSize:11.5,fontWeight:700,marginTop:2,color:on?'rgba(255,255,255,.85)':TXTL,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(_kbSum(list))}</div>
@@ -28518,7 +28526,9 @@ export default function App(){
                 const si2=Math.min(billStepIdx,_kbList.length-1);
                 const[sb2,sbi2]=_kbList[si2];
                 const bp2=sb2.parsed||{};
-                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))};
+                // Move the cursor only — forceOpen on renderBillCard keeps the landed bill open,
+                // so "next" arrives on a ready-to-work card instead of a collapsed row.
+                const _stepGo=(ni)=>setBillStepIdx(Math.min(Math.max(ni,0),_kbList.length-1));
                 _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,flexWrap:'wrap'}}>
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.5,color:'#92400e',whiteSpace:'nowrap'}}>Bill {si2+1} of {_kbList.length}</span>
                   <span style={{flex:1,minWidth:230}}>
@@ -28533,7 +28543,7 @@ export default function App(){
                     <button onClick={()=>setBillStepMode(false)} title="Show this pile as a list instead" style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>☰ List</button>
                   </span>
                 </div>);
-                _children.push(renderBillCard(sb2,sbi2));
+                _children.push(renderBillCard(sb2,sbi2,true));
               }else{
                 _children.push(<div key="step-on" style={{margin:'0 0 10px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:12.5,padding:'8px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fffbeb',border:'1.5px solid #fcd34d',color:'#92400e'}}>▸ Work one at a time</button></div>);
                 _kbList.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
