@@ -2246,8 +2246,9 @@ export default function MobilePortal({cu,cust,sos,ests,invs:invsPortal,histInvs=
 
   const insertMention=(member)=>{
     const atIdx=composeTxt.lastIndexOf('@');
-    if(atIdx>=0){setComposeTxt(composeTxt.slice(0,atIdx)+'@'+member.name+' ')}
-    else{setComposeTxt(composeTxt+'@'+member.name+' ')}
+    const firstName=(member.name||'').split(' ')[0];
+    if(atIdx>=0){setComposeTxt(composeTxt.slice(0,atIdx)+'@'+firstName+' ')}
+    else{setComposeTxt(composeTxt+'@'+firstName+' ')}
     setComposeMentionQ(null);
   };
 
