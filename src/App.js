@@ -22208,6 +22208,25 @@ export default function App(){
       localStorage.setItem('nsa_bill_review_session',JSON.stringify(snap));
     }catch(e){/* localStorage quota — resume just won't be offered */}
   },[billImport.step,billImport.parsed]);
+  // Auto-restore an in-progress review when the Bills tab is open, so staff land back in their
+  // working list instead of a "Resume review" button (owner ask: the bills should stay loaded).
+  // Fires at most once per mount, and only after orders are loaded — resume re-matches every bill
+  // against them, so firing before they're in would flash false "no match". Same 3-day validity
+  // window as the manual Resume banner. rImport stashes its _resumeBillReview in the ref below so
+  // this top-level effect can call it (the reconcile helpers live inside that render function).
+  const _autoResumeRef=useRef(null);
+  const _autoResumedOnce=useRef(false);
+  useEffect(()=>{
+    if(_autoResumedOnce.current)return;
+    if(pg!=='import')return;
+    if(billView==='upload'||billView==='sportsinc')return;// only the Bills sub-tab shows the list
+    if(billImport.step==='review')return;// a fresh pull already loaded the list
+    if(!(Array.isArray(sos)&&sos.length))return;// orders must be in before we re-match
+    const rows=(reviewSnap&&Array.isArray(reviewSnap.bills))?reviewSnap.bills:[];
+    const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+    if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return;
+    if(typeof _autoResumeRef.current==='function'){_autoResumedOnce.current=true;_autoResumeRef.current()}
+  },[pg,billView,billImport.step,sos,reviewSnap]);
   // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
   // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
   // or the DB is down, the badge just stays hidden — it never blocks the screen.
@@ -24352,6 +24371,7 @@ export default function App(){
       setReviewSnap(null);
       nf(bills.length+' bill(s) restored to review — matches re-checked live','success');
     };
+    _autoResumeRef.current=_resumeBillReview;// let the top-level auto-resume effect fire this on tab open
 
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
@@ -27502,15 +27522,44 @@ export default function App(){
           </div>
         </div></div>}
         {_bv==='import'&&<>
-        {/* QB Connection Status Banner */}
-        <div style={{marginBottom:12,padding:'12px 16px',borderRadius:6,display:'flex',alignItems:'center',gap:12,
-          background:'#fff',border:'1px solid '+LGRAY,borderLeft:'4px solid '+(qbConfig.connected?GREEN:RED)}}>
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke={qbConfig.connected?GREEN:RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{qbConfig.connected?<path d="M20 6 9 17l-5-5"/>:<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/>}</svg>
-          <span style={{fontSize:13,color:TXT}}>
-            <strong style={{fontFamily:FD,letterSpacing:.3,color:NAVY}}>{qbConfig.connected?'QuickBooks connected.':'QuickBooks not connected.'}</strong>{' '}{qbConfig.connected?(qbConfig.companyName||''):'Bills save to the Portal but won’t post to QB.'}
-          </span>
-          {!qbConfig.connected&&<span style={{marginLeft:'auto'}}>{skBtn({bg:RED,fg:'#fff',fs:12,pad:'8px 16px',onClick:connectQB,children:'Connect QB'})}</span>}
+        {/* Top action bar — two buttons (owner ask: "Pull bills + the dates, and the QuickBooks
+            section, should just be 2 buttons at the top"). Pull runs both vendors; the date window
+            and per-vendor escape hatches tuck behind ⚙ Options. QB shows its state and connects in
+            one click. Nothing here changed the pull/connect logic — only the chrome. */}
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:billImport.pullOptsOpen?10:14}}>
+          <button onClick={()=>pullAllBills()} disabled={billImport.uploading||siQueueLoading}
+            title="One pull, both vendors: Sports Inc–routed EDI bills (adidas, SanMar, Agron, Richardson…) plus S&S orders straight from S&S. Everything billable lands in the list below, split into ✓ Matched (push in one click) and ⚠ Review (tie each bill to its order). Nothing is applied until you push. Scanned Sports Inc docs with no line detail land on the 📄 Upload & Match tab."
+            style={{display:'inline-flex',alignItems:'center',gap:8,background:RED,border:'1px solid '+RED,color:'#fff',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:14,padding:'11px 20px',borderRadius:6,cursor:(billImport.uploading||siQueueLoading)?'not-allowed':'pointer',opacity:(billImport.uploading||siQueueLoading)?0.6:1,whiteSpace:'nowrap'}}>
+            <span style={{fontSize:16}}>&#9889;</span>{(billImport.uploading||siQueueLoading)?'Pulling…':'Pull bills'}
+            {ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#fff',color:RED,fontSize:11,fontWeight:800,borderRadius:999,padding:'1px 8px'}}>{ssNewCount} new</span>}
+          </button>
+          <button onClick={()=>setBillImport(x=>({...x,pullOptsOpen:!x.pullOptsOpen}))} title="Set the invoiced-from/to window, or pull a single vendor"
+            style={{display:'inline-flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid '+MGRAY,color:TXTL,fontSize:12,fontWeight:700,padding:'10px 14px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
+            &#9881; {ssPullFrom?ssPullFrom+(ssPullTo?' → '+ssPullTo:' →'):'All dates'} {billImport.pullOptsOpen?'▲':'▾'}
+          </button>
+          {qbConfig.connected
+            ?<span title={'QuickBooks connected'+(qbConfig.companyName?' · '+qbConfig.companyName:'')+'. Matched bills can also post to QB.'} style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#E7F2EC',border:'1px solid #bfdfd0',color:'#166534',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'9px 15px',borderRadius:6,whiteSpace:'nowrap'}}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={GREEN} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                QuickBooks{qbConfig.companyName?' · '+qbConfig.companyName:''}</span>
+            :<button onClick={connectQB} title="Bills save to the Portal either way — connect QuickBooks to also post the matched pile to QB."
+                style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#fff',border:'1px solid '+RED,color:RED,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'10px 16px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
+                Connect QB</button>}
         </div>
+        {/* Pull options — the invoiced-from/to window + per-vendor pulls, hidden until asked for */}
+        {billImport.pullOptsOpen&&<div style={{marginBottom:14,padding:'11px 16px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+          <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
+          <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="One window for the whole pull: S&S bills invoiced in this range, and Sports Inc docs dated in it. Clear it to pull everything (S&S: last 3 months). The Sports Inc queue still syncs in full behind the scenes."/>
+          <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
+          <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
+          {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
+          <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'both vendors, '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'no date filter (S&S: last 3 months)'}</span>
+          <span style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,fontSize:10,color:'#94a3b8'}}>
+            <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
+            <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
+            <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
+          </span>
+        </div>}
         {/* Resume banner — a deploy auto-reload (or crash) mid-review lands back on the upload
             step with the session snapshot intact. Offer to restore it rather than making staff
             re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
@@ -27538,36 +27587,6 @@ export default function App(){
             {sk.map((s,si)=><div key={si} style={{fontSize:11,color:'#64748b'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#334155'}}>{s.doc||'—'}</span>{s.where?<span> → applied on {s.where}</span>:<span> → duplicate within the import</span>}</div>)}
           </div>}
         </div>;})()}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-          {/* ONE pull, both vendors. The button runs the S&S Orders pull + the Sports Inc queue
-              refresh/route back-to-back (see pullAllBills) — staff shouldn't have to know which
-              middleman a bill rides through. Per-vendor pulls remain as small escape hatches. */}
-          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
-            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:280}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail land on the 📄 Upload &amp; Match tab.</div>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="One window for the whole pull: S&S bills invoiced in this range, and Sports Inc docs dated in it. Clear it to pull everything (S&S: last 3 months). The Sports Inc queue still syncs in full behind the scenes."/>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
-                  <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
-                  {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'both vendors, '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'no date filter (S&S: last 3 months)'}</span>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
-                  <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
-                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
-                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
-                </div>
-              </div>
-              <button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:15,padding:'12px 22px'}} disabled={billImport.uploading||siQueueLoading}
-                onClick={()=>pullAllBills()}>
-                {(billImport.uploading||siQueueLoading)?'Pulling…':'⚡ Pull bills'}
-              </button>
-            </div>
-          </div>
-        </div>
 
         {/* Persistent vendor + date filters (owner ask) — always visible; they scope the review
             list, the Set aside group, and the history below. Pushing always takes the FULL
@@ -27626,7 +27645,7 @@ export default function App(){
               </div>
             </div>;
           })();
-            const renderBillCard=(b,bi)=>{
+            const renderBillCard=(b,bi,stepMode)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
@@ -27634,10 +27653,13 @@ export default function App(){
             const portalPushed=b.portalStatus==='success';
             const stripe=portalPushed?GREEN:b.reviewLater?GOLD:b.qbStatus==='error'?RED:tri&&tri.issue?RED:bucket==='ready'?GREEN:poMatch?NAVY:MGRAY;
             const hdrBg=portalPushed?'#F0F7F2':b.reviewLater?GOLD_BG:b.qbStatus==='error'?REDBG:tri&&tri.issue?REDBG:'#fff';
-            // Collapsed one-line row is the DEFAULT — the list stays scannable at 200+ bills.
-            // Each row carries its one status phrase and its one next action; the full card
-            // (items, wizard, write plan) renders only when the operator opens that bill.
-            const expanded=(billImport.expand||{})[b.id];
+            // Collapsed one-line row is the DEFAULT in list view — the list stays scannable at
+            // 200+ bills. Each row carries its one status phrase and its one next action; the full
+            // card renders only when the operator opens that bill. In "work one at a time" mode the
+            // current bill defaults OPEN so the next one pops up ready to tie (not collapsed behind
+            // an Open click) — an explicit ▴ Collapse still wins, so it stays a default, not a force.
+            const _expPref=(billImport.expand||{})[b.id];
+            const expanded=_expPref==null?!!stepMode:_expPref;
             const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!(x.expand||{})[b.id]}}));
             if(!expanded){
               const soId=poMatch?.so_id||poMatch?.so?.id||'';
@@ -27679,6 +27701,15 @@ export default function App(){
             const _reconNeeded=bill.kind!=='decoration'&&(bill.items||[]).length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&((tri&&tri.issue)||!_billApplyPlan(bill))));
             const _cardProps=_reconNeeded?proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3}):[];
             const _cardPi=Math.min(b._propIdx||0,Math.max(0,_cardProps.length-1));
+            // Bill & order detail (summary, edit fields, raw line table, totals) tucks behind one
+            // bar so the "best answer" proposal below is the hero the operator actually reads.
+            // Default collapsed when there's a real proposal to judge; open for clean matches —
+            // their line-match table IS the confirmation and there's no proposal to look at
+            // instead. Operator can toggle either way; the choice sticks per bill.
+            const _hasProposal=_reconNeeded&&!!_cardProps[_cardPi]&&!_cardProps[_cardPi].weakGuess;
+            const _detailPref=(billImport.showDetail||{})[b.id];
+            const detailOpen=_detailPref==null?!_hasProposal:_detailPref;
+            const toggleDetail=()=>setBillImport(x=>({...x,showDetail:{...(x.showDetail||{}),[b.id]:!detailOpen}}));
             const _acceptProposal=(pr)=>{
                       const target=pr.target;
                       // Merge the operator's click-links (chips on unresolved lines) into the ties,
@@ -27944,6 +27975,21 @@ export default function App(){
                     {plan.note&&<div style={{fontSize:10,color:'#0369a1',marginTop:3,opacity:0.85}}>{plan.note}</div>}
                   </div>;
                 })()}
+                {/* Bill & order details — one collapsible bar. The "best answer" proposal below
+                    is the hero; the raw summary, editable fields, line table and totals tuck in
+                    here so the operator judges the answer, not the source data. */}
+                <div onClick={toggleDetail} title={detailOpen?'Hide the bill & order detail':'Show the full bill — line items, totals, and the editable PO / vendor / tracking fields'}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'7px 14px',cursor:'pointer',background:'#f8fafc',borderTop:'1px solid #eef2f7',borderBottom:detailOpen?'1px solid #eef2f7':'none',userSelect:'none'}}>
+                  <span style={{fontSize:11.5,fontWeight:800,color:'#475569',letterSpacing:.2}}>{detailOpen?'▾':'▸'} Bill &amp; order details</span>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>{(bill.items||[]).length} line{(bill.items||[]).length===1?'':'s'}</span>
+                  {!detailOpen&&<span style={{fontSize:11,color:'#64748b',display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                    <span>Merch <b style={{color:'#334155'}}>{nsaMoney(bill.merchandise_total)}</b></span>
+                    {safeNum(bill.freight)>0&&<span>Freight <b style={{color:'#334155'}}>{nsaMoney(bill.freight)}</b></span>}
+                    <span>Total <b style={{color:NAVY}}>{nsaMoney(bill.doc_total||bill.merchandise_total)}</b></span>
+                  </span>}
+                  <span style={{marginLeft:'auto',fontSize:10,fontWeight:700,color:'#94a3b8'}}>{detailOpen?'Hide':'Edit / view lines'}</span>
+                </div>
+                {detailOpen&&<>
                 {/* Summary row */}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
                   {[['PO Number',bill.po_number||'—','#7c3aed'],['Vendor',bill.vendor||bill.supplier||'Unknown','#1e40af'],['Tracking',bill.tracking||'—','#475569'],
@@ -28006,7 +28052,7 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
-                        {showMatch&&<td style={{fontSize:10}}>{mp
+                        {showMatch&&<td style={{fontSize:12.5}}>{mp
                           ?<span style={{color:'#166534',fontWeight:600}} title={'This line will bill '+mp.allocated_qty+' × '+mp.sku+' '+mp.size+(mp.po_id?' on '+mp.po_id:'')}>
                             ✓ → {mp.sku} {mp.size}{via?<span style={{color:'#64748b',fontWeight:500}}> · {via}</span>:null}</span>
                           :hit
@@ -28048,6 +28094,7 @@ export default function App(){
                         onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i2)=>i2===bi?{...p,parsed:{...p.parsed,[key]:parseFloat(e.target.value)||0}}:p)}))}/>
                     </div>)}
                 </div>
+                </>}
                 {/* Warnings */}
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
@@ -28165,7 +28212,7 @@ export default function App(){
                                   </div>
                                   {it.name&&<div style={{fontSize:9.5,color:'#94a3b8',maxWidth:360}}>{it.name}</div>}
                                 </td>
-                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:9,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
+                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:11,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
                               </tr>;})}</tbody>
                           </table>
                         </div>
@@ -28643,7 +28690,7 @@ export default function App(){
                     <button onClick={()=>setBillStepMode(false)} title="Show this pile as a list instead" style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>☰ List</button>
                   </span>
                 </div>);
-                _children.push(renderBillCard(sb2,sbi2));
+                _children.push(renderBillCard(sb2,sbi2,true));
               }else{
                 _children.push(<div key="step-on" style={{margin:'0 0 10px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:12.5,padding:'8px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fffbeb',border:'1.5px solid #fcd34d',color:'#92400e'}}>▸ Work one at a time</button></div>);
                 _kbList.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
