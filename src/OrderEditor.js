@@ -3267,16 +3267,47 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       if(_nm===j.art_name||/^art tbd/i.test(_nm))return j;
       return{...j,art_name:_nm};
     };
+    // A released split-art item may have been snapshotted before the split share was persisted
+    // (older releases copied only units, dropping sizes/split_group), leaving gi.sizes empty. Falling
+    // back to safeSizes(it) then bills the WHOLE garment line to EACH design, so the two split jobs
+    // both inflate to the full line (SO-1131: Servite read 55 total, Friars 66, vs the real 17/39
+    // shares). Recover the share from the deco this item actually owns.
+    const _ownedSplitDeco=(gi,it)=>{
+      const dis=Array.isArray(gi.deco_idxs)&&gi.deco_idxs.length?gi.deco_idxs:(gi.deco_idx!=null?[gi.deco_idx]:null);
+      if(!dis||dis.length!==1)return null;
+      const d=safeDecos(it)[dis[0]];
+      return d&&d.kind==='art'&&d.split_group&&d.split_sizes&&Object.keys(d.split_sizes).length>0?{d,di:dis[0]}:null;
+    };
     const recalcedReleased=releasedJobs.map(j=>{
       // Garment identity refreshes in EVERY branch (incl. the keep-frozen unit paths) —
       // the frozen thing is the quantity commitment, not which product the line now is.
-      const _snapItems=(j.items||[]).map(_refreshGarmentIdentity);
+      let total=0,fulfilled=0,_healedSplit=false;
+      const _snapItems=(j.items||[]).map(_refreshGarmentIdentity).map(gi=>{
+        const it=safeItems(o)[gi.item_idx];if(!it)return gi;
+        const _hasSz=gi.sizes&&Object.keys(gi.sizes).length>0;
+        const _osd=_hasSz?null:_ownedSplitDeco(gi,it);
+        if(_osd)_healedSplit=true;
+        const giSz=_hasSz?gi.sizes:(_osd?_osd.d.split_sizes:null);
+        let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);
+        if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];
+        // Received-unit apportioning across split siblings: the lower-index design claims first, so a
+        // partially-received line never double-counts the same garments toward both designs (mirrors
+        // the auto-builder's sibBefore logic and allocateJobFulfillment).
+        const _sib=_osd?safeDecos(it).filter((dd,ddi)=>dd!==_osd.d&&dd.split_group===_osd.d.split_group&&dd.split_sizes&&ddi<_osd.di):[];
+        let u=0,f=0;
+        _szE.forEach(([sz,v])=>{total+=v;u+=v;if(gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);let avail=pQ+rQ;if(_osd){const claimedBefore=_sib.reduce((a,dd)=>a+safeNum((dd.split_sizes||{})[sz]),0);avail=Math.max(0,avail-claimedBefore)}f+=Math.min(v,avail)}});
+        fulfilled+=f;
+        // Only the healed split branch rewrites the item — stamp its true share (sizes/split_group)
+        // so the size grid, the split modal and allocateJobFulfillment all read the share, not the line.
+        return _osd?{...gi,units:u,fulfilled:f,sizes:{...giSz},split_group:_osd.d.split_group}:gi;
+      });
       const _idCh=_snapItems.some((gi,ix)=>gi!==(j.items||[])[ix]);
-      let total=0,fulfilled=0;
-      _snapItems.forEach(gi=>{const it=safeItems(o)[gi.item_idx];if(!it)return;const giSz=gi.sizes&&Object.keys(gi.sizes).length>0?gi.sizes:null;let _szE=Object.entries(giSz||safeSizes(it)).filter(([,v])=>safeNum(v)>0);if(_szE.length===0&&!giSz&&safeNum(it.est_qty)>0)_szE=[['QTY',safeNum(it.est_qty)]];_szE.forEach(([sz,v])=>{total+=v;if(gi.fulSizes!=null){fulfilled+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);fulfilled+=Math.min(v,pQ+rQ)}})});
       if(total===0)return _idCh?{...j,items:_snapItems}:j;// no real units anywhere — leave the (empty) snapshot as-is
       const frozenTotal=safeNum(j.total_units);
-      if(frozenTotal>0&&total<frozenTotal)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
+      // Fewer units than the frozen snapshot normally means a rep removed units after release — keep the
+      // committed count. EXCEPTION: when the drop is only because we corrected an inflated full-line split
+      // snapshot back down to its real share, the smaller number IS the correct commitment.
+      if(frozenTotal>0&&total<frozenTotal&&!_healedSplit)return _idCh?{...j,items:_snapItems}:j;// fewer units than snapshot — keep frozen
       const itemSt=fulfilled>=total&&total>0?'items_received':fulfilled>0?'partially_received':'need_to_order';
       return{...j,items:_snapItems,total_units:total,fulfilled_units:fulfilled,item_status:itemSt};
     }).map(_healReleasedArtName);
@@ -10722,7 +10753,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
-            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0}))
+            // Carry a split-art item's per-size share (sizes) + split_group into the frozen snapshot —
+            // without them recalcedReleased re-derives the total from the WHOLE garment line, inflating
+            // each split design back to the full quantity (SO-1131: Servite 55 / Friars 66 vs 17 / 39).
+            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled,sizes,split_group})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0,...(sizes&&Object.keys(sizes).length>0?{sizes:{...sizes}}:{}),...(split_group?{split_group}:{})}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)

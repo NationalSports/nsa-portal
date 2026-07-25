@@ -20,7 +20,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobHasUnresolvedArt, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
@@ -20669,7 +20669,13 @@ export default function App(){
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
                   const key=gi.item_idx;
                   if(!repPerItemDecos[key])repPerItemDecos[key]=[];
-                  safeDecos(it).forEach(d=>{
+                  // Scope to THIS job's own decorations (deco_idxs). On a split-art line two designs
+                  // share one garment (some pieces Friars, the rest Servite), each its own job — without
+                  // this filter every job's detail rendered BOTH designs' spec rows + mockup slots, so the
+                  // two jobs looked merged onto one. Legacy items with no deco_idxs keep the full line.
+                  const _dis=jobItemDecoIdxs(gi);
+                  safeDecos(it).forEach((d,di)=>{
+                    if(_dis&&!_dis.includes(di))return;
                     if(d.kind==='art'){const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';const cwObj2=d.color_way_id&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id):null;const cwObj2B=d.reversible&&d.color_way_id_b&&dAf?.color_ways?dAf.color_ways.find(c=>c.id===d.color_way_id_b):null;const dColors=cwObj2?cwObj2.inks.filter(c=>c&&c.trim()):(dAf?(dAf.ink_colors||dAf.thread_colors||''):'').split(/[,\n]/).map(c=>c.trim()).filter(Boolean);repPerItemDecos[key].push({kind:'art',position:d.position||'Front Center',type:dType,underbase:d.underbase||false,reversible:d.reversible||false,artFile:dAf,colors:dColors,size:dAf?.art_size||'',artName:dAf?.name||'',cwLabel:cwObj2?.garment_color||'',colorWayId:d.color_way_id||null,colorWayIdB:d.reversible?(d.color_way_id_b||null):null,cwLabelB:cwObj2B?.garment_color||''});}
                     else if(d.kind==='numbers')repPerItemDecos[key].push({kind:'numbers',position:d.position||'Back Center',method:(d.num_method||'heat_transfer').replace(/_/g,' '),numSize:d.num_size||'—',numFont:d.num_font||'block',twoColor:d.two_color||false,frontAndBack:d.front_and_back||false,numSizeBack:d.front_and_back?(d.num_size_back||d.num_size||'—'):null,printColor:d.print_color||'',reversible:d.reversible||false,printColorB:d.print_color_b||''});
                     else if(d.kind==='names')repPerItemDecos[key].push({kind:'names',position:d.position||'Back Center',frontAndBack:d.front_and_back||false,reversible:d.reversible||false});
@@ -20938,7 +20944,11 @@ export default function App(){
           const it=safeItems(so)[gi.item_idx];if(!it)return;
           const key=gi.item_idx;
           if(!_perItemDecos[key])_perItemDecos[key]=[];
-          safeDecos(it).forEach(d=>{
+          // Scope to THIS job's own decorations — a split-art sibling (two designs sharing one line,
+          // each its own job) must not show the other design's spec/mockup slot on this job.
+          const _dis=jobItemDecoIdxs(gi);
+          safeDecos(it).forEach((d,di)=>{
+            if(_dis&&!_dis.includes(di))return;
             if(d.kind==='art'){
               const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
               const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
@@ -21594,7 +21604,10 @@ export default function App(){
                   const it=safeItems(so)[gi.item_idx];if(!it)return;
                   const key=it.sku+'|'+(it.color||'');
                   if(!perItemDecos[key])perItemDecos[key]=[];
-                  safeDecos(it).forEach(d=>{
+                  // Scope to THIS job's own decorations so a split-art sibling's design doesn't appear here.
+                  const _dis=jobItemDecoIdxs(gi);
+                  safeDecos(it).forEach((d,di)=>{
+                    if(_dis&&!_dis.includes(di))return;
                     if(d.kind==='art'){
                       const dAf=d.art_file_id?safeArt(so).find(a=>a.id===d.art_file_id):null;
                       const dType=d.type||dAf?.deco_type||j.deco_type||'screen_print';
