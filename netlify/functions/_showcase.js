@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const PROMPT_VERSION = 'showcase-v4-three-quarter-hero';
+const PROMPT_VERSION = 'showcase-v5-subtle-hero-angle';
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -170,9 +170,9 @@ function buildAnalysisBrief(product, decorations) {
       background_exclusions: ['cream', 'beige', 'ivory', 'warm tint', 'colored cast', 'gradient', 'vignette'],
       subject: 'single garment or product only',
       full_product_visible: true,
-      composition: 'premium dynamic three-quarter product hero view',
+      composition: 'premium near-front hero view with a subtle three-quarter turn',
       presentation: 'product-only invisible support with natural on-body volume and drape',
-      camera_yaw_degrees: '15–30',
+      camera_yaw_degrees: '8–15',
       straight_on_catalog_view_allowed: false,
       flat_lay_allowed: false,
       frame_fill: 'largest practical scale with 5–8% breathing room and no cropping',
@@ -212,9 +212,10 @@ async function analyzeWithKimi({ product, decorations, images }) {
         'Return JSON only with keys: garment_invariants (array), protected_elements (array),',
         'decoration_bounds (array), edit_prompt (string), and qa_checklist (array).',
         'The required output is the garment or product alone as the sole centered hero object.',
-        'Composition is locked to a premium three-quarter product hero view: turn the product 15–30 degrees',
-        'to reveal front and side depth, use the largest practical uncropped scale, and avoid a flat straight-on',
-        'catalog cutout or flat lay. Create drama through dimensional neutral studio lighting—not the background.',
+        'Composition is locked to a premium near-front hero view with only a subtle 8–15 degree turn—about half',
+        'the rotation of a typical three-quarter view. Keep the front 85–92% visually dominant, reveal only a hint',
+        'of one side, and never exceed 15 degrees. Avoid both a flat straight-on catalog cutout and a pronounced',
+        'side view. Create drama through dimensional neutral studio lighting—not excessive rotation or background.',
         'For pants, shorts, and other bottoms, angle the waistband and stagger the legs naturally enough to reveal',
         'a side plane without twisting, crossing, shortening, or changing the product. Keep every edge visible.',
         'Shape the empty garment with believable on-body volume and drape using invisible support only: dimensional',
@@ -274,9 +275,11 @@ function buildEditPrompt(product, decorations, analysis) {
     'mannequin, dress form, hanger, prop, or scenery, remove it completely. Do not preserve or invent a wearer.',
     'The final image must contain no people, models, body parts, mannequins, dress forms, hangers, lifestyle',
     'props, secondary objects, scenery, text, or watermarks—only the complete hero garment or product.',
-    'COMPOSITION — REQUIRED: create a premium, dynamic three-quarter product hero view rather than a flat',
-    'straight-on catalog cutout or flat lay. Rotate the product approximately 15–30 degrees around its vertical',
-    'axis so the front remains dominant while one side plane, real depth, and dimensional construction are visible.',
+    'COMPOSITION — REQUIRED: create a premium near-front hero view with a subtle three-quarter suggestion rather',
+    'than a flat straight-on catalog cutout or pronounced side view. Rotate the product only approximately 8–15',
+    'degrees around its vertical axis—about half a typical three-quarter turn. The front must remain 85–92%',
+    'visually dominant, with only a hint of one side plane for depth. Never exceed 15 degrees of visible rotation.',
+    'Keep the decorated front panel facing the camera with minimal foreshortening so artwork remains prominent.',
     'Use a subtly elevated camera when it improves the silhouette. The product should feel sculptural, substantial,',
     'and aspirational—not limp, pasted-on, diagrammatic, or orthographic.',
     'PRESENTATION — REQUIRED: shape the garment with polished invisible support so it has believable on-body',

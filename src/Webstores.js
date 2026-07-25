@@ -5280,7 +5280,7 @@ const SHOWCASE_STATUS = {
   failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
   canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
 };
-const SHOWCASE_PROMPT_VERSION = 'showcase-v4-three-quarter-hero';
+const SHOWCASE_PROMPT_VERSION = 'showcase-v5-subtle-hero-angle';
 
 function ShowcaseStatusBadge({ asset }) {
   const key = asset?.status || 'missing';

@@ -84,8 +84,10 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('uniform neutral pure white (#FFFFFF)');
     expect(prompt).toContain('must read as #FFFFFF');
     expect(prompt).toContain('No cream, beige, ivory, tan');
-    expect(prompt).toContain('three-quarter product hero view');
-    expect(prompt).toContain('approximately 15–30 degrees');
+    expect(prompt).toContain('near-front hero view');
+    expect(prompt).toContain('approximately 8–15');
+    expect(prompt).toContain('front must remain 85–92%');
+    expect(prompt).toContain('Never exceed 15 degrees');
     expect(prompt).toContain('angle the waistband and stagger the legs subtly');
     expect(prompt).toContain('polished invisible support');
     expect(prompt).toContain('believable on-body');
@@ -93,7 +95,7 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v4-three-quarter-hero');
+    expect(PROMPT_VERSION).toBe('showcase-v5-subtle-hero-angle');
   });
 
   test('collects the existing decoration URL shapes without duplicates', () => {
@@ -137,7 +139,8 @@ describe('Showcase provider boundary', () => {
     expect(instructions).toContain('"people_allowed":false');
     expect(instructions).toContain('"mannequins_allowed":false');
     expect(instructions).toContain('"background_color_hex":"#FFFFFF"');
-    expect(instructions).toContain('"composition":"premium dynamic three-quarter product hero view"');
+    expect(instructions).toContain('"composition":"premium near-front hero view with a subtle three-quarter turn"');
+    expect(instructions).toContain('"camera_yaw_degrees":"8–15"');
     expect(instructions).toContain('"presentation":"product-only invisible support with natural on-body volume and drape"');
     expect(instructions).toContain('"straight_on_catalog_view_allowed":false');
     expect(instructions).toContain('pure white background');
