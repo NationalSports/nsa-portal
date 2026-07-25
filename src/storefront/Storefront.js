@@ -113,7 +113,7 @@ function StoreStyles() {
         .sf-showcase .sf-card:hover{transform:translateY(-6px);box-shadow:0 22px 48px rgba(22,34,63,.16)}
         .sf-showcase .sf-card .sf-img{transform:scale(1.001)}
         .sf-showcase .sf-card:hover .sf-img{transform:scale(1.025)}
-        .sf-showcase .sf-grid{gap:26px}
+        .sf-showcase .sf-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:26px}
         .sf-navitem:hover{color:${NEUTRAL.ink} !important}
         .sf-search:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
         .sf-input:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
@@ -121,6 +121,7 @@ function StoreStyles() {
         .sf-pdp-media{position:sticky;top:170px}
         .sf-search-toggle{display:none}
         @media (max-width:860px){
+          .sf-showcase .sf-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
           .sf-hero-grid{grid-template-columns:1fr !important}
           .sf-hero-collage{display:none !important}
           .sf-2col{grid-template-columns:1fr !important}

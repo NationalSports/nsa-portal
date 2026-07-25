@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const PROMPT_VERSION = 'showcase-v1';
+const PROMPT_VERSION = 'showcase-v2-product-only';
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -166,8 +166,14 @@ function buildAnalysisBrief(product, decorations) {
     output: {
       size: '1024x1024',
       background: 'consistent warm-neutral studio sweep',
+      subject: 'single garment or product only',
       full_product_visible: true,
       restrained_grounding_shadow: true,
+      people_allowed: false,
+      body_parts_allowed: false,
+      mannequins_allowed: false,
+      hangers_allowed: false,
+      props_allowed: false,
     },
   };
 }
@@ -196,6 +202,10 @@ async function analyzeWithKimi({ product, decorations, images }) {
         'The first image is the source product. Remaining images are exact locked artwork/brand references.',
         'Return JSON only with keys: garment_invariants (array), protected_elements (array),',
         'decoration_bounds (array), edit_prompt (string), and qa_checklist (array).',
+        'The required output is the garment or product alone as the sole centered hero object.',
+        'If the source contains a person, model, body part, mannequin, dress form, hanger, or prop, require its',
+        'complete removal. Never include or invent a wearer, display form, lifestyle scene, or secondary object',
+        'in edit_prompt. The qa_checklist must explicitly verify that none remain in the output.',
         'Never authorize changing the garment type, cut, color, material, seams, closures, manufacturer marks,',
         'or customer/team artwork. Artwork spelling, geometry, colors, and placement are locked.',
         `STRUCTURED_INPUT=${JSON.stringify(brief)}`,
@@ -214,7 +224,7 @@ async function analyzeWithKimi({ product, decorations, images }) {
       messages: [
         {
           role: 'system',
-          content: 'You are an apparel prepress QA specialist. Inspect visual facts; do not invent product details.',
+          content: 'You are an apparel prepress QA and product-only ecommerce specialist. Inspect visual facts; do not invent product details.',
         },
         { role: 'user', content },
       ],
@@ -237,6 +247,11 @@ function buildEditPrompt(product, decorations, analysis) {
   const modelPrompt = String(analysis?.edit_prompt || '').trim();
   return [
     'Create a premium, photorealistic ecommerce hero image by editing the FIRST supplied product image.',
+    'OUTPUT SUBJECT: the garment or product alone, centered as the sole hero object.',
+    'If the source includes a person, model, face, head, hair, skin, hand, arm, leg, foot, body, silhouette,',
+    'mannequin, dress form, hanger, prop, or scenery, remove it completely. Do not preserve or invent a wearer.',
+    'The final image must contain no people, models, body parts, mannequins, dress forms, hangers, lifestyle',
+    'props, secondary objects, scenery, text, or watermarks—only the complete hero garment or product.',
     'Truthfulness is mandatory: preserve the exact garment type, cut, silhouette, color, material, seams,',
     'panels, pockets, closures, hems, sleeves, hat shape, and all manufacturer branding.',
     'Other supplied images are locked artwork references. Reproduce them exactly—never redraw, restyle,',
@@ -245,7 +260,7 @@ function buildEditPrompt(product, decorations, analysis) {
     'Use a consistent warm-neutral studio background, clean hero composition, realistic restrained grounding',
     'shadow, natural fabric depth, and improved but believable lighting. Embroidery may have subtle raised thread',
     'direction and edge depth; screen print must remain flat and naturally integrated with the fabric.',
-    'Do not add models, props, text, seams, pockets, colors, patterns, logos, or decoration.',
+    'Do not add seams, pockets, colors, patterns, logos, or decoration.',
     `PRODUCT=${JSON.stringify(brief)}`,
     `LOCKED_INVARIANTS=${JSON.stringify(analysis?.garment_invariants || [])}`,
     `PROTECTED_ELEMENTS=${JSON.stringify(analysis?.protected_elements || [])}`,

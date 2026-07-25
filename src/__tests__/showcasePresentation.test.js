@@ -1,4 +1,5 @@
 const {
+  PROMPT_VERSION,
   normalizeMode,
   isPublicAddress,
   isAllowedImageHost,
@@ -70,6 +71,11 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('Adidas mark');
     expect(prompt).toContain('three-stripe sleeve mark');
     expect(prompt).toContain('left chest');
+    expect(prompt).toContain('garment or product alone');
+    expect(prompt).toContain('remove it completely');
+    expect(prompt).toContain('no people, models, body parts, mannequins');
+    expect(prompt).toContain('only the complete hero garment or product');
+    expect(PROMPT_VERSION).toBe('showcase-v2-product-only');
   });
 
   test('collects the existing decoration URL shapes without duplicates', () => {
@@ -106,6 +112,12 @@ describe('Showcase provider boundary', () => {
     expect(global.fetch.mock.calls[0][0]).toBe('https://api.moonshot.ai/v1/chat/completions');
     expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer server-kimi-secret');
     expect(global.fetch.mock.calls[0][1].body).not.toContain('server-kimi-secret');
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    const instructions = requestBody.messages[1].content[0].text;
+    expect(instructions).toContain('garment or product alone');
+    expect(instructions).toContain('complete removal');
+    expect(instructions).toContain('"people_allowed":false');
+    expect(instructions).toContain('"mannequins_allowed":false');
   });
 
   test('reuses the deployed AIUniBuilder secret as the Kimi credential', () => {
