@@ -74,6 +74,9 @@ function buildConceptPrompt(input) {
   const teamName = String(locked.teamName || '').trim().slice(0, 40);
   const frontSize = Number.isFinite(locked.frontNumberInches) ? locked.frontNumberInches : 4;
   const backSize = Number.isFinite(locked.backNumberInches) ? locked.backNumberInches : 8;
+  const frontPlacement = ['right', 'left', 'center'].includes(locked.frontNumberPlacement)
+    ? locked.frontNumberPlacement
+    : 'center';
   const program = String(context.program || "men's").slice(0, 20);
   const sport = String(context.sport || 'team sport').slice(0, 30);
 
@@ -97,7 +100,7 @@ function buildConceptPrompt(input) {
       : identity === 'both'
         ? '- The front must include the exact team name and a restrained logo placement. Do not repeat the team name on the back.'
         : '- The front must include the exact team name once. Do not put the team name on the back.',
-    `Use an athletic number approximately ${frontSize}" tall on the front and ${backSize}" tall on the back; the back number is vertically movable but centered horizontally.`,
+    `Use an athletic number approximately ${frontSize}" tall on the front at the ${frontPlacement} placement and ${backSize}" tall on the back; the back number is vertically movable but centered horizontally.`,
     locked.playerNamesEnabled
       ? '- Reserve a clean player-name position above the back number.'
       : '- Do not add a player name.',

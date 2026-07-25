@@ -186,10 +186,14 @@ function toClientSpec(garmentId, out, options = {}) {
 }
 
 // Cut/placement/lettering choices the wizard applies as config, not spec.
-function toStyling(out) {
+function toStyling(out, options = {}) {
   const s = {};
   if (NECK_STYLES.includes(out && out.neckStyle)) s.neckStyle = out.neckStyle;
-  if (FRONT_NUMBER.includes(out && out.frontNumber)) s.frontNumber = out.frontNumber;
+  const lockedFrontNumber = FRONT_NUMBER.includes(options.frontNumber)
+    ? options.frontNumber
+    : '';
+  if (lockedFrontNumber) s.frontNumber = lockedFrontNumber;
+  else if (FRONT_NUMBER.includes(out && out.frontNumber)) s.frontNumber = out.frontNumber;
   if (NAME_ARCH.includes(out && out.nameArch)) s.nameArch = out.nameArch;
   if (Number.isFinite(out && out.nameSpacing)) s.nameSpacing = Math.min(30, Math.max(0, out.nameSpacing));
   return s;
@@ -324,6 +328,7 @@ exports.handler = async (event) => {
     locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
     locked.frontIdentity ? `- Front identity is locked to ${String(locked.frontIdentity).slice(0, 12)}${locked.frontLogoPresent ? ' (front logo is uploaded)' : ''}.` : '',
     Number.isFinite(locked.frontNumberInches) ? `- Front number height is locked to ${locked.frontNumberInches} inches.` : '',
+    locked.frontNumberPlacement ? `- Front number placement is locked to ${String(locked.frontNumberPlacement).slice(0, 10)}.` : '',
     Number.isFinite(locked.backNumberInches) ? `- Back number height is locked to ${locked.backNumberInches} inches.` : '',
     `- Player names are ${locked.playerNamesEnabled ? 'enabled by the coach' : 'disabled; leave every player-name field empty'}.`,
     '- Do not replace or reinterpret any locked value. Concentrate on colors, patterns, fabric, and lettering treatment.',
@@ -387,7 +392,7 @@ exports.handler = async (event) => {
     const designs = raw.slice(0, count).map((d) => ({
       name: (typeof d.name === 'string' && d.name.trim()) ? d.name.trim().slice(0, 30) : 'Design',
       spec: toClientSpec(garmentId, d, { originalMode }),
-      styling: toStyling(d),
+      styling: toStyling(d, { frontNumber: locked.frontNumberPlacement }),
       rationale: (typeof d.rationale === 'string' ? d.rationale : '').slice(0, 200),
     }));
     // Back-compat: older callers (the advanced editor) read `spec` directly.
