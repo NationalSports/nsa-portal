@@ -3675,16 +3675,16 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>}
         </div>
         <div className="order-editor-metrics" style={{display:'flex',gap:6,flexWrap:'wrap'}}>
-          {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
+          {[{l:'REVENUE',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
-            ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIP',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
+            ...(totals.ship>0||(totals.actualShipCost+totals.inboundFreight)>0?[{l:'SHIPPING',v:(totals.actualShipCost+totals.inboundFreight)>0?(totals.actualShipCost+totals.inboundFreight):totals.ship,bg:'#f0f9ff',c:'#0369a1',s:(totals.actualShipCost+totals.inboundFreight)>0?'actual':undefined}]:[]),
             ...(totals.tax>0?[{l:'TAX',v:totals.tax,bg:'#fefce8',c:'#a16207',s:(totals.taxRate*100).toFixed(3)+'%'}]:[]),
             ...(o.omg_store_id&&o.tax_exempt?[{l:'TAX',v:0,bg:'#f0fdf4',c:'#166534',s:'OMG remits'}]:cust?.tax_exempt?[{l:'TAX',v:0,bg:'#fef2f2',c:'#dc2626',s:'EXEMPT'}]:[]),
             ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
-            {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
+            {l:'ORDER TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
             ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
-            <div className="order-editor-metric" key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
+            <div className={'order-editor-metric is-'+x.l.toLowerCase().replace(/\s+/g,'-')} key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
@@ -4204,7 +4204,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
       return<>
       {safeItems(o).length>0&&<div className="order-editor-items-toolbar" style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
-        <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
+        <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'} · {safeItems(o).reduce((sum,it)=>{const sized=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sum+(sized>0?sized:safeNum(it.est_qty))},0)} units</span>
         <div style={{flex:1}}/>
         <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
         {isSO&&safeItems(o).some(isItemShortPulled)&&<button className="btn btn-sm btn-secondary" style={{fontSize:11,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a'}} onClick={sortShortPullsFirst} title="Move short-pulled items to the top of the list">⚠ Short Pulls First</button>}
@@ -4278,26 +4278,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:10,padding:'2px 8px',borderRadius:6,background:'#ede9fe',color:'#6d28d9',fontWeight:700,cursor:'pointer',border:'1px solid #ddd6fe',whiteSpace:'nowrap'}} title={'On Deco PO '+(dp.po_id||'')+(dp.vendor?' · '+dp.vendor:'')+' — click to edit items / per-item costing'} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>▣ {dp.po_id}{dp.vendor?' · '+dp.vendor:''}</span>)}
               </div>
             </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap'}}>
-              <div style={{fontSize:13,fontWeight:700}}>Qty {qty}</div>
-              <div style={{fontSize:10,color:'#94a3b8'}}>@ ${safeNum(item.unit_sell).toFixed(2)}/ea</div>
-            </div>
-            <div style={{textAlign:'right',whiteSpace:'nowrap',minWidth:88}}>
-              <div style={{fontSize:10,color:'#94a3b8',fontWeight:700,textTransform:'uppercase',letterSpacing:0.5}}>Line Total</div>
-              <div style={{fontSize:16,fontWeight:800,color:'#166534'}}>${iR.toFixed(2)}</div>
+            <div className="order-editor-item__compact-summary">
+              <div><span>Sell / ea</span><strong>${safeNum(item.unit_sell).toFixed(2)}</strong></div>
+              <div><span>Qty</span><strong>{qty}</strong></div>
+              <div><span>Line total</span><strong>${iR.toLocaleString(undefined,{maximumFractionDigits:2})}</strong></div>
             </div>
           </div>
         </div>);
       }
       return(<div key={idx} id={'so-item-'+idx} className="card order-editor-item is-expanded" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
         <div className="order-editor-item__header" style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
-          <div style={{display:'flex',gap:12,alignItems:'center'}}>
+          <div className="order-editor-item__title-row" style={{display:'flex',gap:12,alignItems:'center'}}>
             <button title="Collapse item" onClick={()=>toggleItemCollapse(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1,alignSelf:'flex-start',marginTop:2}}>▾</button>
             <div style={{display:'flex',flexDirection:'column',gap:0,marginRight:-4}}>
               <button title="Move up" disabled={idx===0} onClick={()=>mvI(idx,-1)} style={{background:'none',border:'none',cursor:idx===0?'not-allowed':'pointer',color:idx===0?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortUp" size={14}/></button>
               <button title="Move down" disabled={idx===safeItems(o).length-1} onClick={()=>mvI(idx,1)} style={{background:'none',border:'none',cursor:idx===safeItems(o).length-1?'not-allowed':'pointer',color:idx===safeItems(o).length-1?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortDown" size={14}/></button>
             </div>
-            <div style={{flex:1}}>
+            <div className="order-editor-item__identity" style={{flex:1}}>
               {isSO&&_itemInvoicedQty>0&&<div style={{marginBottom:4}}>
                 <span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:_itemFullyInvoiced?'#dcfce7':'#fef3c7',color:_itemFullyInvoiced?'#166534':'#92400e',fontWeight:700,letterSpacing:0.3}}>
                   {_itemFullyInvoiced?'✓ Fully Invoiced':'Invoiced '+_itemInvoicedQty+' of '+qty}
@@ -4374,7 +4371,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             on an item that still has sizes (e.g. a PO was built from a size grid) would otherwise
             hide the grid and show "0 / Add Sizes", making the sizes look lost. */}
         {(()=>{const isQtyOnly=!!item.qty_only&&szQty===0;
-        return<div style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
+        return<div className="order-editor-item__size-finance-row" style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
           <div style={{display:'flex',gap:6,alignItems:'flex-start',flexWrap:'wrap'}}>
             <div style={{width:46,display:'flex',flexDirection:'column',gap:1}}>
               <span style={{fontSize:12,fontWeight:600,color:isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':isSyncedB2BItem(item)?'#059669':'#64748b'}}>{isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':isSyncedB2BItem(item)?b2bBrandTag(item):'Sizes:'}</span>
@@ -4455,7 +4452,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
           {/* Adidas B2B sync details moved to bottom of page */}
           {/* Financial summary — right side of sizes row */}
-          <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
+          <div className="order-editor-item__line-financial" style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:12}}>
             {isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0&&<span style={{fontSize:11,color:'#dc2626',fontWeight:700}}>Enter sizes ({item.est_qty} total)</span>}
             {isQtyOnly&&safeNum(item.est_qty)>0&&<span style={{fontSize:10,color:'#64748b',fontStyle:'italic'}}>Custom — no size breakdown</span>}
             {isSO&&!isQtyOnly&&(()=>{const p=products.find(pp=>pp.id===item.product_id||pp.sku===item.sku);
