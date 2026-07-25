@@ -29,8 +29,7 @@ describe('guided AI concept contract', () => {
     expect(prompt).toContain('exact physical template');
     expect(prompt).toContain('Show coordinated Side A and Side B');
     expect(prompt).toContain('NORTH GATE');
-    expect(prompt).toContain('approximately 4" tall on the front and 8" tall on the back');
-    expect(prompt).toContain('front at the center placement');
+    expect(prompt).toContain('approximately 4" tall on the front at the center placement and 8" tall on the back');
     expect(prompt).toContain('Do not add a player name');
     expect(prompt).toContain('#111111, #F97316');
     expect(prompt).toContain('Black and orange paint splatter');
