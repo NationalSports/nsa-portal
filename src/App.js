@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import * as Sentry from '@sentry/react';
 import './portal.css';
 import MobilePortal from './MobilePortal';
+import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
 import BotStatus from './BotStatus';
 import { isBotOwner, buildBotCartPayload, botRowUI, botCompleteNeedsConfirm, resolveShipToClient, resolveDecoShipToClient, botProgress } from './lib/botTasks';
@@ -7794,14 +7795,44 @@ export default function App(){
     };
 
     const ROLE_TABS=[
-      {id:'admin',label:'🏢 Admin Overview',icon:'home',roles:['admin','gm']},
-      {id:'sales',label:'💼 Sales Rep',icon:'dollar',roles:['admin','gm','rep']},
-      {id:'warehouse',label:'📦 Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
-      {id:'decorator',label:'🎨 Decorator',icon:'image',roles:['admin','gm','artist','art']},
-      {id:'production',label:'🏭 Production',icon:'grid',roles:['admin','gm','production']},
-      {id:'csr',label:'📞 CSR',icon:'mail',roles:['admin','gm','rep','csr']},
+      {id:'admin',label:'Admin overview',icon:'home',roles:['admin','gm']},
+      {id:'sales',label:'Sales rep',icon:'dollar',roles:['admin','gm','rep']},
+      {id:'warehouse',label:'Warehouse',icon:'warehouse',roles:['admin','gm','warehouse']},
+      {id:'decorator',label:'Decorator',icon:'image',roles:['admin','gm','artist','art']},
+      {id:'production',label:'Production',icon:'grid',roles:['admin','gm','production']},
+      {id:'csr',label:'CSR',icon:'mail',roles:['admin','gm','rep','csr']},
     ];
     const visibleTabs=ROLE_TABS.filter(r=>r.roles.includes(cu.role));
+    const _dashActionSource=(isAdmin?adminTodos:myTodos).filter(t=>!t.isNotification&&!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));
+    const _dashPriorityItems=[
+      ..._dashActionSource.map(t=>({...t,_priorityKind:'generated'})),
+      ...myAssignedTodos.map(t=>({
+        id:t.id,
+        msg:t.title,
+        detail:(t.description||'Assigned task')+(t.due_date?' · Due '+t.due_date:''),
+        action:'Open task',
+        priority:t.priority??2,
+        date:t.due_date||t.created_at,
+        _priorityKind:'assigned',
+        _assignedTask:t,
+      })),
+    ].sort((a,b)=>{
+      const pA=a.priority??2,pB=b.priority??2;
+      if(pA!==pB)return pA-pB;
+      const dA=new Date(a.date||0).getTime()||0,dB=new Date(b.date||0).getTime()||0;
+      return dA-dB;
+    });
+    const _openDashPriority=(t)=>{
+      if(t._priorityKind==='assigned'){setTodoDetailId(t._assignedTask?.id||t.id);return}
+      _todoClickedThrough(t);
+      if(t.type==='issue'){setPg('issues');if(t.issue?.id)setIssueFocus(t.issue.id);return}
+      if(t.inv){setViewInvoice(t.inv);setPg('invoices');return}
+      if(t.est){setEEst(t.est);setEEstC(t.estC||cust.find(c=>c.id===t.est.customer_id));setPg('estimates');return}
+      if(t.so){
+        if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}
+        setESO(t.so);setESOC(cust.find(c=>c.id===t.so.customer_id));setPg('orders');
+      }
+    };
 
     return(<>
     {/* ═══ ACTIVITY CENTER POPUP — expanded, sortable notifications + to-dos with built-in messaging ═══ */}
@@ -7910,12 +7941,29 @@ export default function App(){
         </div>
       </div>;
     })()}
+    <div className="connect-dashboard">
     {/* Role Selector — only show tabs relevant to the user's role */}
-    {visibleTabs.length>1&&<div style={{display:'flex',gap:4,marginBottom:14,flexWrap:'wrap',background:'#f8fafc',padding:6,borderRadius:8,border:'1px solid #e2e8f0'}}>
-      {visibleTabs.map(r=><button key={r.id} className={`btn btn-sm ${dashView===r.id?'btn-primary':'btn-secondary'}`}
-        style={{fontSize:11,padding:'5px 12px',background:dashView===r.id?'#1e293b':'',borderColor:dashView===r.id?'#1e293b':''}}
-        onClick={()=>setDashView(r.id)}>{r.label}</button>)}
+    {visibleTabs.length>1&&<div className="connect-dashboard__roles" aria-label="Dashboard view">
+      {visibleTabs.map(r=><button key={r.id} type="button" className={`connect-dashboard__role ${dashView===r.id?'is-active':''}`}
+        onClick={()=>setDashView(r.id)}><Icon name={r.icon} size={14}/>{r.label}</button>)}
     </div>}
+    <DashboardOverview
+      view={dashView}
+      user={cu}
+      customers={cust}
+      estimates={ests}
+      orders={sos}
+      invoices={invs}
+      historicalInvoices={histInvs}
+      jobs={sos.flatMap(so=>safeJobs(so).map(job=>({...job,_soId:so.id})))}
+      actionCount={_dashPriorityItems.length}
+      unreadCount={unreadMsgs.length}
+      priorityItems={_dashPriorityItems.slice(0,5)}
+      calcStatus={calcSOStatus}
+      calcMargin={calcOrderMargin}
+      onNavigate={setPg}
+      onOpenPriority={_openDashPriority}
+    />
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
@@ -8648,6 +8696,7 @@ export default function App(){
         </div>
       </div></div>})()}
 
+    </div>
     </>)};
 
 
