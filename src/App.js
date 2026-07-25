@@ -5323,6 +5323,9 @@ export default function App(){
   const[workspaceFilter,setWorkspaceFilter]=useState('all');
   const[workspaceSaving,setWorkspaceSaving]=useState(false);
   const[workspaceModal,setWorkspaceModal]=useState({open:false,id:null,item_kind:'note',title:'',body:'',label:'customer_intel',visibility:'personal',link_type:'none',link_id:'',remind_on:'',is_pinned:false});
+  const[workspaceCustomerSearch,setWorkspaceCustomerSearch]=useState('');
+  const[workspaceCustomerOpen,setWorkspaceCustomerOpen]=useState(false);
+  const[workspaceCustomerIndex,setWorkspaceCustomerIndex]=useState(0);
   // Notes may contain customer context, so they load independently from the
   // legacy dashboard snapshot and rely on workspace_items' staff-only RLS.
   React.useEffect(()=>{
@@ -7638,7 +7641,11 @@ export default function App(){
     const _openWorkspaceModal=(kind='note',item=null)=>{
       const linkType=item?.customer_id?'customer':item?.so_id?'so':item?.po_id?'po':'none';
       const linkId=item?.customer_id||item?.so_id||item?.po_id||'';
+      const linkedCustomer=linkType==='customer'?cust.find(c=>c.id===linkId):null;
       const tomorrow=(()=>{const d=new Date();d.setDate(d.getDate()+1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+      setWorkspaceCustomerSearch(linkedCustomer?.name||'');
+      setWorkspaceCustomerOpen(false);
+      setWorkspaceCustomerIndex(0);
       setWorkspaceModal({
         open:true,id:item?.id||null,item_kind:kind,title:item?.title||'',body:item?.body||'',
         label:item?.label||_workspaceLabels[kind][0][0],visibility:item?.visibility||'personal',
@@ -7736,6 +7743,24 @@ export default function App(){
       const notes=visible.filter(x=>x.item_kind==='note').sort((a,b)=>(Number(!!b.is_pinned)-Number(!!a.is_pinned))||(new Date(b.updated_at||b.created_at)-new Date(a.updated_at||a.created_at)));
       const reminders=visible.filter(x=>x.item_kind==='reminder').sort((a,b)=>String(a.remind_on||'9999').localeCompare(String(b.remind_on||'9999')));
       const dueNow=reminders.filter(x=>String(x.remind_on).slice(0,10)<=_todayStr).length;
+      const customerTokens=workspaceCustomerSearch.toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const customerResults=cust.filter(c=>{
+        if(c.id==='c_deleted'||c.is_active===false)return false;
+        const contacts=(c.contacts||[]).map(x=>(x.name||'')+' '+(x.email||'')).join(' ');
+        const hay=[c.name,c.alpha_tag,c.id,c.email,c.billing_email,c.shipping_city,c.shipping_state,...(c.search_tags||[]),contacts].filter(Boolean).join(' ').toLowerCase();
+        return customerTokens.every(token=>hay.includes(token));
+      }).sort((a,b)=>{
+        const q=workspaceCustomerSearch.toLowerCase().trim();
+        const ap=String(a.name||'').toLowerCase().startsWith(q)?0:1;
+        const bp=String(b.name||'').toLowerCase().startsWith(q)?0:1;
+        return ap-bp||String(a.name||'').localeCompare(String(b.name||''));
+      }).slice(0,8);
+      const _pickWorkspaceCustomer=(customer)=>{
+        setWorkspaceModal(m=>({...m,link_id:customer.id}));
+        setWorkspaceCustomerSearch(customer.name||customer.alpha_tag||customer.id);
+        setWorkspaceCustomerOpen(false);
+        setWorkspaceCustomerIndex(0);
+      };
       const row=(item)=>{
         const link=_workspaceLink(item);const date=item.item_kind==='reminder'?_workspaceDate(item.remind_on):null;const mine=item.created_by===cu.id;
         return<div className={`workspace-row ${date?'is-'+date.tone:''}`} key={item.id}>
@@ -7825,12 +7850,50 @@ export default function App(){
               <section className="workspace-modal__section">
                 <div className="workspace-modal__section-head"><strong>Link to a record</strong><span>Optional · adds useful context</span></div>
                 <div className="workspace-link-kinds" aria-label="Linked record type">
-                  {[['none','None'],['customer','Customer'],['so','Sales order'],['po','Purchase order']].map(([value,label])=><button type="button" key={value} className={workspaceModal.link_type===value?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,link_type:value,link_id:''}))}>{label}</button>)}
+                  {[['none','None'],['customer','Customer'],['so','Sales order'],['po','Purchase order']].map(([value,label])=><button type="button" key={value} className={workspaceModal.link_type===value?'is-active':''} onClick={()=>{setWorkspaceModal(m=>({...m,link_type:value,link_id:''}));setWorkspaceCustomerSearch('');setWorkspaceCustomerOpen(value==='customer');setWorkspaceCustomerIndex(0)}}>{label}</button>)}
                 </div>
-                {workspaceModal.link_type!=='none'&&<label className="workspace-field workspace-field--linked"><span>{workspaceModal.link_type==='customer'?'Customer':workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
+                {workspaceModal.link_type==='customer'&&<div className="workspace-field workspace-field--linked"><span>Customer</span>
+                  <div className="workspace-customer-combobox" onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget))setWorkspaceCustomerOpen(false)}}>
+                    <div className={`workspace-customer-search ${workspaceCustomerOpen?'is-open':''}`}>
+                      <Icon name="search" size={14}/>
+                      <input
+                        role="combobox"
+                        aria-autocomplete="list"
+                        aria-expanded={workspaceCustomerOpen}
+                        aria-controls="workspace-customer-results"
+                        aria-activedescendant={workspaceCustomerOpen&&customerResults[workspaceCustomerIndex]?`workspace-customer-${customerResults[workspaceCustomerIndex].id}`:undefined}
+                        placeholder="Search customer name, tag, or location…"
+                        value={workspaceCustomerSearch}
+                        onFocus={()=>setWorkspaceCustomerOpen(true)}
+                        onChange={e=>{setWorkspaceCustomerSearch(e.target.value);setWorkspaceModal(m=>({...m,link_id:''}));setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(0)}}
+                        onKeyDown={e=>{
+                          if(e.key==='ArrowDown'){e.preventDefault();setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(i=>Math.min(i+1,Math.max(customerResults.length-1,0)))}
+                          else if(e.key==='ArrowUp'){e.preventDefault();setWorkspaceCustomerOpen(true);setWorkspaceCustomerIndex(i=>Math.max(i-1,0))}
+                          else if(e.key==='Enter'&&workspaceCustomerOpen&&customerResults.length){e.preventDefault();_pickWorkspaceCustomer(customerResults[workspaceCustomerIndex]||customerResults[0])}
+                          else if(e.key==='Escape'){e.preventDefault();setWorkspaceCustomerOpen(false)}
+                        }}
+                      />
+                      {workspaceModal.link_id&&<button type="button" className="workspace-customer-search__clear" aria-label="Clear selected customer" onClick={()=>{setWorkspaceModal(m=>({...m,link_id:''}));setWorkspaceCustomerSearch('');setWorkspaceCustomerOpen(true)}}>×</button>}
+                    </div>
+                    {workspaceCustomerOpen&&<div className="workspace-customer-results" id="workspace-customer-results" role="listbox">
+                      {customerResults.map((customer,index)=><button
+                        type="button"
+                        role="option"
+                        aria-selected={workspaceModal.link_id===customer.id}
+                        id={`workspace-customer-${customer.id}`}
+                        key={customer.id}
+                        className={`${workspaceModal.link_id===customer.id?'is-selected':''} ${workspaceCustomerIndex===index?'is-highlighted':''}`}
+                        onMouseDown={e=>e.preventDefault()}
+                        onMouseEnter={()=>setWorkspaceCustomerIndex(index)}
+                        onClick={()=>_pickWorkspaceCustomer(customer)}
+                      ><span><strong>{customer.name||customer.id}</strong><small>{[customer.shipping_city,customer.shipping_state].filter(Boolean).join(', ')||'Customer account'}</small></span>{customer.alpha_tag&&<em>{customer.alpha_tag}</em>}</button>)}
+                      {!customerResults.length&&<div className="workspace-customer-results__empty">No customers match “{workspaceCustomerSearch}”</div>}
+                    </div>}
+                  </div>
+                </div>}
+                {(workspaceModal.link_type==='so'||workspaceModal.link_type==='po')&&<label className="workspace-field workspace-field--linked"><span>{workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
                   <select required value={workspaceModal.link_id} onChange={e=>setWorkspaceModal(m=>({...m,link_id:e.target.value}))}>
                     <option value="">Choose…</option>
-                    {workspaceModal.link_type==='customer'&&cust.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=><option key={c.id} value={c.id}>{c.name||c.id}</option>)}
                     {workspaceModal.link_type==='so'&&sos.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,500).map(so=><option key={so.id} value={so.id}>{so.id} · {cust.find(c=>c.id===so.customer_id)?.name||so.memo||'Sales order'}</option>)}
                     {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
                   </select>
