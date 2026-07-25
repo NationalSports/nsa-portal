@@ -109,6 +109,11 @@ function StoreStyles() {
         .sf-card .sf-img{transition:transform .35s ease}
         .sf-card:hover{transform:translateY(-4px);box-shadow:0 10px 30px rgba(25,40,83,.10);border-color:var(--sf-primary,#8C1D40) !important}
         .sf-card:hover .sf-img{transform:scale(1.05)}
+        .sf-showcase .sf-card{border-color:rgba(22,34,63,.08);box-shadow:0 14px 34px rgba(22,34,63,.10)}
+        .sf-showcase .sf-card:hover{transform:translateY(-6px);box-shadow:0 22px 48px rgba(22,34,63,.16)}
+        .sf-showcase .sf-card .sf-img{transform:scale(1.001)}
+        .sf-showcase .sf-card:hover .sf-img{transform:scale(1.025)}
+        .sf-showcase .sf-grid{gap:26px}
         .sf-navitem:hover{color:${NEUTRAL.ink} !important}
         .sf-search:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
         .sf-input:focus{outline:none;border-color:var(--sf-primary,#8C1D40) !important}
@@ -308,6 +313,56 @@ function closesLabel(close_at) {
   return { text: `Open until ${date}`, urgent: false };
 }
 
+async function loadShowcasePresentation(store) {
+  const fallback = { mode: 'standard', assets: {}, preview: false };
+  try {
+    const publicRequest = fetch(`/.netlify/functions/showcase-public?store_id=${encodeURIComponent(store.id)}`)
+      .then(async (res) => res.ok ? res.json() : fallback)
+      .catch(() => fallback);
+    const requested = new URLSearchParams(window.location.search).get('showcase_preview');
+    if (requested === 'standard' || requested === 'showcase') {
+      const { data: { session } } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (token) {
+        try {
+          const res = await fetch('/.netlify/functions/showcase-admin', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ action: 'preview', store_id: store.id, mode: requested }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            return { mode: data.mode === 'showcase' ? 'showcase' : 'standard', assets: data.assets || {}, preview: true };
+          }
+        } catch (_) { /* unauthorized/failed preview safely falls back to the published presentation */ }
+      }
+    }
+    const published = await publicRequest;
+    return { mode: published.mode === 'showcase' ? 'showcase' : 'standard', assets: published.assets || {}, preview: false };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function applyShowcaseImages(products, presentation) {
+  if (!presentation || presentation.mode !== 'showcase') return products || [];
+  const assets = presentation.assets || {};
+  return (products || []).map((product) => {
+    const showcaseUrl = assets[product.webstore_product_id];
+    if (!showcaseUrl) return product; // documented per-product Standard fallback
+    return {
+      ...product,
+      standard_image_front_url: product.image_front_url,
+      image_front_url: showcaseUrl,
+      showcase_image_url: showcaseUrl,
+      showcase_active: true,
+      // The approved image is a baked final composition. Suppress the live DOM
+      // decoration overlay so team art is not drawn a second time.
+      decorations: [],
+    };
+  });
+}
+
 export default function Storefront() {
   const [route, setRoute] = useState(parsePath());
   useEffect(() => {
@@ -361,12 +416,13 @@ export default function Storefront() {
     if (error) { if (isMissingTable(error)) setStatus('nomigration'); else { setStatus('error'); setErrMsg(error.message); } return; }
     const s = (stores || [])[0];
     if (!s || s.status === 'archived') { setStatus('notfound'); return; }
-    setStore(s);
-    const [prodRes, bundleRes] = await Promise.all([
+    const [prodRes, bundleRes, presentation] = await Promise.all([
       supabase.from('webstore_storefront_products').select('*').eq('store_id', s.id).order('sort_order'),
       supabase.from('webstore_bundle_items').select('*').order('sort_order'),
+      loadShowcasePresentation(s),
     ]);
-    const prods = prodRes.data || [];
+    const prods = applyShowcaseImages(prodRes.data || [], presentation);
+    setStore({ ...s, presentation_mode: presentation.mode, presentation_preview: presentation.preview });
     setProducts(prods);
     const bundleIds = new Set(prods.filter((p) => p.kind === 'bundle').map((p) => p.webstore_product_id));
     const bItems = (bundleRes.data || []).filter((b) => bundleIds.has(b.bundle_id));
@@ -439,7 +495,7 @@ export default function Storefront() {
   // Category clicks always land on the browse grid (sub-nav is persistent chrome).
   const onCat = (c) => { setCat(c); if (route.view !== 'home') navTo('/shop/' + store.slug); else document.getElementById('shop-grid')?.scrollIntoView({ behavior: 'smooth' }); };
   return (
-    <div className="sf-root" style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
+    <div className={`sf-root${store.presentation_mode === 'showcase' ? ' sf-showcase' : ''}`} style={{ '--sf-accent': theme.accent, '--sf-primary': theme.primary, '--sf-ink': theme.ink, fontFamily: BODY, color: theme.inkText, minHeight: '100vh', background: theme.cream, display: 'flex', flexDirection: 'column' }}>
       <StoreStyles />
       <div style={{ position: 'sticky', top: 0, zIndex: 30 }}>
         <TopStrip store={store} theme={theme} collapsed={scrolled} />
@@ -447,6 +503,7 @@ export default function Storefront() {
         <CategoryNav theme={theme} categories={categories} cat={cat} onCat={onCat} query={query} setQuery={setQuery} onSearch={() => { setCat('all'); if (route.view !== 'home') navTo('/shop/' + store.slug); }} />
       </div>
       {!isOpen && <PreviewBanner status={store.status} />}
+      {store.presentation_preview && <AppearancePreviewBanner mode={store.presentation_mode} />}
       {playerCtx && <PlayerBanner player={playerCtx} theme={theme} onClear={clearPlayer} />}
       <main style={{ flex: 1 }}>
         {route.view === 'home' && <Home store={store} theme={theme} products={shownProducts} bundleItems={bundleItems} compInfo={compInfo} compExtras={compExtras} cat={cat} query={query} />}
@@ -556,6 +613,12 @@ function SearchIcon({ color = '#888' }) {
 function PreviewBanner({ status }) {
   return <div style={{ background: '#fde68a', color: '#92400e', textAlign: 'center', fontSize: 13, fontWeight: 700, padding: '8px 16px', letterSpacing: 0.3 }}>
     PREVIEW · This store is {(status || 'draft').toUpperCase()} and not open to shoppers yet.
+  </div>;
+}
+
+function AppearancePreviewBanner({ mode }) {
+  return <div style={{ background: '#4f46e5', color: '#fff', textAlign: 'center', fontSize: 12, fontWeight: 800, padding: '8px 16px', letterSpacing: 0.8, textTransform: 'uppercase' }}>
+    Private appearance preview · {mode === 'showcase' ? 'Showcase' : 'Standard Catalog'} · Live shoppers are unchanged
   </div>;
 }
 
