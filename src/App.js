@@ -5319,6 +5319,26 @@ export default function App(){
     if(_todoIsFollowUp(t)){snoozeTodo(t,1,'⏰ Follow-up cleared for now — back tomorrow if still open');return}
     if(t.type==='art')snoozeTodoUntil(t,1,'🎨 Cleared for now — back tomorrow if it still needs review');};
   const[cu,setCu]=useState(()=>{try{const s=localStorage.getItem('nsa_user');return s?JSON.parse(s):null}catch{return null}});
+  const[workspaceItems,setWorkspaceItems]=useState([]);
+  const[workspaceFilter,setWorkspaceFilter]=useState('all');
+  const[workspaceSaving,setWorkspaceSaving]=useState(false);
+  const[workspaceModal,setWorkspaceModal]=useState({open:false,id:null,item_kind:'note',title:'',body:'',label:'customer_intel',visibility:'personal',link_type:'none',link_id:'',remind_on:'',is_pinned:false});
+  // Notes may contain customer context, so they load independently from the
+  // legacy dashboard snapshot and rely on workspace_items' staff-only RLS.
+  React.useEffect(()=>{
+    if(!cu?.id||!supabase){setWorkspaceItems([]);return}
+    let dead=false;
+    const load=async()=>{
+      const r=await supabase.from('workspace_items').select('*').neq('status','archived').order('created_at',{ascending:false});
+      if(!dead&&!r.error)setWorkspaceItems(r.data||[]);
+      else if(!dead&&r.error)console.error('[DB] workspace items:',r.error.message);
+    };
+    load();
+    const channel=supabase.channel('workspace-items-'+cu.id)
+      .on('postgres_changes',{event:'*',schema:'public',table:'workspace_items'},load)
+      .subscribe();
+    return()=>{dead=true;supabase.removeChannel(channel)};
+  },[cu?.id]);
   // Opening a message thread marks the whole conversation read — no "Mark All Read" needed.
   // Placed after cu/mThread/msgs are declared so the dependency array can reference them. Keyed on
   // the open thread + msgs so it also catches replies that arrive while the thread is open and
@@ -7600,6 +7620,211 @@ export default function App(){
       nf('Task completed!')
     };
     const _todoDelete=(id)=>{if(!window.confirm('Delete this task? This cannot be undone.'))return;setAssignedTodos(prev=>prev.filter(x=>x.id!==id));_dbSnap.current.assignedTodos=(_dbSnap.current.assignedTodos||[]).filter(x=>x.id!==id);if(supabase)_dbSavingGuard(()=>supabase.from('assigned_todos').delete().eq('id',id).then(r=>{if(r.error)console.error('[DB] todo delete:',r.error.message)}));nf('Task deleted')};
+    const _workspaceLabels={
+      note:[
+        ['customer_intel','Customer intel'],['pricing','Pricing'],['idea','Idea'],
+        ['vendor','Vendor'],['internal','Internal'],['risk','Risk']
+      ],
+      reminder:[
+        ['follow_up','Follow-up'],['call','Call'],['approval','Approval'],
+        ['payment','Payment'],['deadline','Deadline'],['pickup','Pickup'],['review','Review']
+      ]
+    };
+    const _workspaceLabelName=(value)=>{
+      const pair=[..._workspaceLabels.note,..._workspaceLabels.reminder].find(x=>x[0]===value);
+      return pair?pair[1]:(value||'General').replace(/_/g,' ');
+    };
+    const _openWorkspaceModal=(kind='note',item=null)=>{
+      const linkType=item?.customer_id?'customer':item?.so_id?'so':item?.po_id?'po':'none';
+      const linkId=item?.customer_id||item?.so_id||item?.po_id||'';
+      const tomorrow=(()=>{const d=new Date();d.setDate(d.getDate()+1);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+      setWorkspaceModal({
+        open:true,id:item?.id||null,item_kind:kind,title:item?.title||'',body:item?.body||'',
+        label:item?.label||_workspaceLabels[kind][0][0],visibility:item?.visibility||'personal',
+        link_type:linkType,link_id:linkId,remind_on:item?.remind_on||((kind==='reminder')?tomorrow:''),
+        is_pinned:!!item?.is_pinned
+      });
+    };
+    const _saveWorkspaceItem=async(ev)=>{
+      ev?.preventDefault();
+      const m=workspaceModal;
+      if(!m.title.trim()){nf('Add a title','error');return}
+      if(m.item_kind==='reminder'&&!m.remind_on){nf('Choose a reminder date','error');return}
+      const ts=new Date().toISOString();
+      const row={
+        item_kind:m.item_kind,title:m.title.trim(),body:m.body.trim()||null,label:m.label,
+        visibility:m.visibility,customer_id:m.link_type==='customer'?m.link_id:null,
+        so_id:m.link_type==='so'?m.link_id:null,po_id:m.link_type==='po'?m.link_id:null,
+        remind_on:m.item_kind==='reminder'?m.remind_on:null,is_pinned:m.item_kind==='note'&&!!m.is_pinned,
+        updated_at:ts
+      };
+      if(m.link_type!=='none'&&!m.link_id){nf('Choose what to attach this to','error');return}
+      const before=workspaceItems;
+      let optimistic;
+      if(m.id){
+        optimistic={...workspaceItems.find(x=>x.id===m.id),...row};
+        setWorkspaceItems(prev=>prev.map(x=>x.id===m.id?optimistic:x));
+      }else{
+        optimistic={...row,id:(globalThis.crypto?.randomUUID?.()||('workspace-'+Date.now())),created_by:cu.id,status:'open',created_at:ts,completed_at:null};
+        setWorkspaceItems(prev=>[optimistic,...prev]);
+      }
+      setWorkspaceSaving(true);
+      if(supabase){
+        const q=m.id
+          ?supabase.from('workspace_items').update(row).eq('id',m.id).select().single()
+          :supabase.from('workspace_items').insert({...optimistic}).select().single();
+        const r=await q;
+        if(r.error){
+          setWorkspaceItems(before);setWorkspaceSaving(false);
+          console.error('[DB] workspace save:',r.error.message);
+          nf(r.error.code==='42501'?'Sign in with your staff account to save private notes':('Could not save: '+r.error.message),'error');
+          return;
+        }
+        setWorkspaceItems(prev=>prev.map(x=>x.id===optimistic.id?r.data:x));
+      }
+      setWorkspaceSaving(false);
+      setWorkspaceModal(prev=>({...prev,open:false}));
+      nf(m.item_kind==='reminder'?'Reminder saved':'Note saved');
+    };
+    const _patchWorkspaceItem=async(item,patch,success)=>{
+      if(item.created_by!==cu.id){nf('Only the creator can change a shared item','error');return}
+      const before=workspaceItems;const upd={...patch,updated_at:new Date().toISOString()};
+      setWorkspaceItems(prev=>prev.map(x=>x.id===item.id?{...x,...upd}:x));
+      if(supabase){
+        const r=await supabase.from('workspace_items').update(upd).eq('id',item.id).select().single();
+        if(r.error){setWorkspaceItems(before);console.error('[DB] workspace update:',r.error.message);nf('Could not update this item','error');return}
+        setWorkspaceItems(prev=>prev.map(x=>x.id===item.id?r.data:x));
+      }
+      if(success)nf(success);
+    };
+    const _workspaceLink=(item)=>{
+      if(item.customer_id)return{kind:'Customer',text:cust.find(c=>c.id===item.customer_id)?.name||item.customer_id};
+      if(item.so_id){const so=sos.find(s=>s.id===item.so_id);const c=cust.find(x=>x.id===so?.customer_id);return{kind:'Sales order',text:item.so_id+(c?' · '+c.name:'')}}
+      if(item.po_id)return{kind:'PO',text:item.po_id};
+      return null;
+    };
+    const _openWorkspaceLink=(item)=>{
+      if(item.customer_id){const c=cust.find(x=>x.id===item.customer_id);if(c){setSelC(c);setPg('customers')}else nf('Customer not found','error');return}
+      if(item.so_id){const so=sos.find(x=>x.id===item.so_id);if(so){setESO(so);setESOC(cust.find(x=>x.id===so.customer_id));setPg('orders')}else nf(item.so_id+' not found','error');return}
+      if(item.po_id){
+        const inv=invPOs.find(x=>(x.po_number||x.id)===item.po_id);
+        if(inv){setInvPOSearch(item.po_id);setInvTab('pos');setPg('inventory');return}
+        const batch=submittedBatches.find(x=>(x.po_number||x.id)===item.po_id);
+        if(batch){setBatchScan(item.po_id);setPg('batch_pos');return}
+        const so=sos.find(s=>safeItems(s).some(it=>(it.po_lines||[]).some(p=>p.po_id===item.po_id)));
+        if(so){setESOOpenPO(item.po_id);setESO(so);setESOC(cust.find(x=>x.id===so.customer_id));setPg('orders');return}
+        setPOF(f=>({...f,search:item.po_id,status:'all',booking:false}));setPg('purchase_orders');
+      }
+    };
+    const _workspacePOs=(()=>{
+      const map=new Map();
+      invPOs.forEach(p=>{const id=p.po_number||p.id;if(id)map.set(id,{id,detail:p.vendor_name||p.vendor||'Inventory PO'})});
+      submittedBatches.forEach(p=>{const id=p.po_number||p.id;if(id)map.set(id,{id,detail:p.vendor_name||p.vendor||'Batch PO'})});
+      sos.forEach(so=>safeItems(so).forEach(it=>(it.po_lines||[]).forEach(p=>{if(p.po_id&&!map.has(p.po_id))map.set(p.po_id,{id:p.po_id,detail:so.id+' · '+(cust.find(c=>c.id===so.customer_id)?.name||'Sales order')})})));
+      return[...map.values()].sort((a,b)=>String(b.id).localeCompare(String(a.id),undefined,{numeric:true})).slice(0,500);
+    })();
+    const _workspaceDate=(value)=>{
+      if(!value)return{label:'No date',tone:'upcoming'};
+      const ds=String(value).slice(0,10);
+      if(ds<_todayStr)return{label:_fmtDueDate(ds),tone:'overdue'};
+      if(ds===_todayStr)return{label:'Today',tone:'today'};
+      return{label:_fmtDueDate(ds),tone:'upcoming'};
+    };
+    const _renderWorkspace=()=>{
+      const visible=workspaceItems.filter(x=>x.status==='open'&&(workspaceFilter==='all'||x.visibility===workspaceFilter));
+      const notes=visible.filter(x=>x.item_kind==='note').sort((a,b)=>(Number(!!b.is_pinned)-Number(!!a.is_pinned))||(new Date(b.updated_at||b.created_at)-new Date(a.updated_at||a.created_at)));
+      const reminders=visible.filter(x=>x.item_kind==='reminder').sort((a,b)=>String(a.remind_on||'9999').localeCompare(String(b.remind_on||'9999')));
+      const dueNow=reminders.filter(x=>String(x.remind_on).slice(0,10)<=_todayStr).length;
+      const row=(item)=>{
+        const link=_workspaceLink(item);const date=item.item_kind==='reminder'?_workspaceDate(item.remind_on):null;const mine=item.created_by===cu.id;
+        return<div className={`workspace-row ${date?'is-'+date.tone:''}`} key={item.id}>
+          <span className={`workspace-row__icon is-${item.item_kind}`}>{item.item_kind==='note'?'N':'R'}</span>
+          <div className="workspace-row__copy">
+            <div className="workspace-row__eyebrow">
+              <span className={`workspace-label is-${item.label}`}>{_workspaceLabelName(item.label)}</span>
+              {item.visibility==='team'&&<span className="workspace-shared">Team</span>}
+              {item.is_pinned&&<span className="workspace-pinned">Pinned</span>}
+            </div>
+            <strong>{item.title}</strong>
+            {item.body&&<p>{item.body}</p>}
+            {link&&<button className="workspace-link" onClick={()=>_openWorkspaceLink(item)}>{link.kind} · {link.text} <span>→</span></button>}
+          </div>
+          <div className="workspace-row__aside">
+            {date&&<span className={`workspace-date is-${date.tone}`}>{date.label}</span>}
+            <div className="workspace-row__actions">
+              {mine&&item.item_kind==='note'&&<button title={item.is_pinned?'Unpin':'Pin'} onClick={()=>_patchWorkspaceItem(item,{is_pinned:!item.is_pinned},item.is_pinned?'Note unpinned':'Note pinned')}>{item.is_pinned?'Unpin':'Pin'}</button>}
+              {mine&&item.item_kind==='note'&&<button title="Turn into a dated reminder" onClick={()=>_openWorkspaceModal('reminder',{...item,id:null,item_kind:'reminder',label:'follow_up',remind_on:''})}>Remind</button>}
+              {mine&&<button title="Edit" onClick={()=>_openWorkspaceModal(item.item_kind,item)}>Edit</button>}
+              {mine&&item.item_kind==='reminder'&&<button className="is-done" title="Mark complete" onClick={()=>_patchWorkspaceItem(item,{status:'completed',completed_at:new Date().toISOString()},'Reminder completed')}>Done</button>}
+              {mine&&<button className="is-archive" title="Archive for later" onClick={()=>_patchWorkspaceItem(item,{status:'archived'},item.item_kind==='note'?'Note archived':'Reminder archived')}>Archive</button>}
+            </div>
+          </div>
+        </div>
+      };
+      return<>
+        <section className="workspace-hub" aria-label="Notes and reminders">
+          <header className="workspace-hub__header">
+            <div><span className="dash-action-card__kicker">Your working memory</span><h2>Notes &amp; reminders</h2></div>
+            <div className="workspace-hub__stats">
+              <span><strong>{notes.length}</strong> notes</span>
+              <span className={dueNow?'has-due':''}><strong>{dueNow}</strong> due now</span>
+            </div>
+            <div className="workspace-hub__filters" aria-label="Workspace visibility filter">
+              {['all','personal','team'].map(f=><button key={f} className={workspaceFilter===f?'is-active':''} onClick={()=>setWorkspaceFilter(f)}>{f==='all'?'All':f==='personal'?'Personal':'Team'}</button>)}
+            </div>
+            <div className="workspace-hub__create">
+              <button onClick={()=>_openWorkspaceModal('note')}><Icon name="plus" size={12}/> Note</button>
+              <button className="is-reminder" onClick={()=>_openWorkspaceModal('reminder')}><Icon name="plus" size={12}/> Reminder</button>
+            </div>
+          </header>
+          <div className="workspace-hub__grid">
+            <article className="workspace-column">
+              <div className="workspace-column__header"><div><span className="workspace-column__mark is-note">N</span><h3>Notes</h3></div><span>{notes.length}</span></div>
+              <div className="workspace-column__list">{notes.length?notes.slice(0,8).map(row):<div className="workspace-empty"><span>N</span><strong>Capture the context</strong><p>Save customer intel, pricing details, and ideas where you can find them later.</p><button onClick={()=>_openWorkspaceModal('note')}>Create a note</button></div>}</div>
+            </article>
+            <article className="workspace-column">
+              <div className="workspace-column__header"><div><span className="workspace-column__mark is-reminder">R</span><h3>Reminders</h3></div><span>{reminders.length}</span></div>
+              <div className="workspace-column__list">{reminders.length?reminders.slice(0,8).map(row):<div className="workspace-empty"><span>R</span><strong>Nothing slipping through</strong><p>Add a date to a follow-up, approval, payment, pickup, or review.</p><button onClick={()=>_openWorkspaceModal('reminder')}>Set a reminder</button></div>}</div>
+            </article>
+          </div>
+        </section>
+        {workspaceModal.open&&<div className="modal-bg" onMouseDown={e=>{if(e.target===e.currentTarget)setWorkspaceModal(m=>({...m,open:false}))}}>
+          <form className="workspace-modal" onSubmit={_saveWorkspaceItem}>
+            <header>
+              <div><span className="dash-action-card__kicker">{workspaceModal.id?'Edit':'New'} workspace item</span><h2>{workspaceModal.item_kind==='note'?'Note':'Reminder'}</h2></div>
+              <button type="button" className="workspace-modal__close" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>×</button>
+            </header>
+            <div className="workspace-kind-switch">
+              {['note','reminder'].map(kind=><button type="button" key={kind} className={workspaceModal.item_kind===kind?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,item_kind:kind,label:_workspaceLabels[kind][0][0],remind_on:kind==='note'?'':(m.remind_on||_todayStr)}))}>{kind==='note'?'Note':'Reminder'}</button>)}
+            </div>
+            <label className="workspace-field"><span>Title</span><input autoFocus maxLength={180} value={workspaceModal.title} onChange={e=>setWorkspaceModal(m=>({...m,title:e.target.value}))} placeholder={workspaceModal.item_kind==='note'?'What should you remember?':'What needs to happen?'}/></label>
+            <label className="workspace-field"><span>Details <small>optional</small></span><textarea maxLength={5000} rows={4} value={workspaceModal.body} onChange={e=>setWorkspaceModal(m=>({...m,body:e.target.value}))} placeholder="Add the context you will need later…"/></label>
+            <div className="workspace-modal__split">
+              <label className="workspace-field"><span>Type</span><select value={workspaceModal.label} onChange={e=>setWorkspaceModal(m=>({...m,label:e.target.value}))}>{_workspaceLabels[workspaceModal.item_kind].map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label>
+              {workspaceModal.item_kind==='reminder'?<label className="workspace-field"><span>Remind on</span><input type="date" required value={workspaceModal.remind_on} onChange={e=>setWorkspaceModal(m=>({...m,remind_on:e.target.value}))}/></label>:
+              <label className="workspace-check"><input type="checkbox" checked={workspaceModal.is_pinned} onChange={e=>setWorkspaceModal(m=>({...m,is_pinned:e.target.checked}))}/><span><strong>Pin this note</strong><small>Keep it at the top</small></span></label>}
+            </div>
+            <div className="workspace-modal__split">
+              <label className="workspace-field"><span>Attach to <small>optional</small></span><select value={workspaceModal.link_type} onChange={e=>setWorkspaceModal(m=>({...m,link_type:e.target.value,link_id:''}))}><option value="none">Nothing</option><option value="customer">Customer</option><option value="so">Sales order</option><option value="po">Purchase order</option></select></label>
+              {workspaceModal.link_type!=='none'&&<label className="workspace-field"><span>{workspaceModal.link_type==='customer'?'Customer':workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
+                <select required value={workspaceModal.link_id} onChange={e=>setWorkspaceModal(m=>({...m,link_id:e.target.value}))}>
+                  <option value="">Choose…</option>
+                  {workspaceModal.link_type==='customer'&&cust.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=><option key={c.id} value={c.id}>{c.name||c.id}</option>)}
+                  {workspaceModal.link_type==='so'&&sos.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,500).map(so=><option key={so.id} value={so.id}>{so.id} · {cust.find(c=>c.id===so.customer_id)?.name||so.memo||'Sales order'}</option>)}
+                  {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
+                </select>
+              </label>}
+            </div>
+            <div className="workspace-visibility">
+              <span>Who can see this?</span>
+              <button type="button" className={workspaceModal.visibility==='personal'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'personal'}))}><strong>Personal</strong><small>Only you</small></button>
+              <button type="button" className={workspaceModal.visibility==='team'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'team'}))}><strong>Team</strong><small>All staff</small></button>
+            </div>
+            <footer><button type="button" className="btn btn-secondary" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>Cancel</button><button type="submit" className="btn btn-primary" disabled={workspaceSaving}>{workspaceSaving?'Saving…':workspaceModal.id?'Save changes':workspaceModal.item_kind==='note'?'Save note':'Set reminder'}</button></footer>
+          </form>
+        </div>}
+      </>;
+    };
     // Redo a bot task that failed/was blocked/needs an answer — sets bot_status back to
     // 'queued' so the worker's next poll picks it up fresh (same effect as replying to a
     // needs_input task, generalized to any non-terminal bot status). Logs an optional note
@@ -7964,6 +8189,7 @@ export default function App(){
       onNavigate={setPg}
       onOpenPriority={_openDashPriority}
     />
+    {dashView!=='admin'&&_renderWorkspace()}
 
     {/* ═══ ADMIN VIEW ═══ */}
     {dashView==='admin'&&<>
@@ -8059,6 +8285,7 @@ export default function App(){
         {visNotifs.length>recentNotifs.length&&<button className="dash-action-card__footer" onClick={()=>openActivityCenter('notifs')}>{visNotifs.length-recentNotifs.length} more notifications <span aria-hidden="true">→</span></button>}
       </article>
     </section>
+    {_renderWorkspace()}
     <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
