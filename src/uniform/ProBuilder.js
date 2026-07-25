@@ -1650,6 +1650,11 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         // A concept needs a visible sample number so the coach can judge the
         // requested type treatment before the roster supplies final numbers.
         playerNumber: current.playerNumber || '23',
+        // AI may style the sample number, but the guided builder owns its
+        // production placement. Soccer defaults to chest; basketball is center.
+        frontNumber: sport === 'basketball' ? 'center' : 'right',
+        frontNumberX: null,
+        frontNumberY: null,
         frontNumberInches: sizes.front,
         backNumberInches: sizes.back,
         sections: normSections(source.sections),
@@ -1837,7 +1842,10 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
     const st = d.styling || {};
     const approvedCut = ['agi1011', 'agi1012', 'ayson', 'flag228187', 'basketball4r3chb'].includes(config.neckStyle);
     if (!approvedCut && (st.neckStyle === 'vneck' || st.neckStyle === 'crew')) patch.neckStyle = st.neckStyle;
-    if (['right', 'left', 'center', 'none'].includes(st.frontNumber)) patch.frontNumber = st.frontNumber;
+    if (['right', 'left', 'center', 'none'].includes(st.frontNumber)
+      && (config.creationMode !== 'ai' || st.frontNumber === config.frontNumber)) {
+      patch.frontNumber = st.frontNumber;
+    }
     if (st.nameArch === 'arched' || st.nameArch === 'straight') patch.nameArch = st.nameArch;
     if (Number.isFinite(st.nameSpacing)) patch.nameSpacing = Math.min(30, Math.max(0, st.nameSpacing));
     if (['matte', 'mesh', 'heather', 'sublimated', 'gloss'].includes(spec.fabric)) patch.fabric = spec.fabric;
@@ -1927,6 +1935,7 @@ export default function ProBuilder({ onExit, onCreateOrder, existingArtwork = []
         frontIdentity: config.frontIdentity || 'none',
         frontLogoPresent: hasFrontLogo(config.logos || {}),
         playerNamesEnabled: !!config.includePlayerName,
+        frontNumberPlacement: config.frontNumber,
         frontNumberInches: Number.isFinite(config.frontNumberInches) ? config.frontNumberInches : sizes.front,
         backNumberInches: Number.isFinite(config.backNumberInches) ? config.backNumberInches : sizes.back,
       },

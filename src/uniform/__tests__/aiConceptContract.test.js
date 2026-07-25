@@ -19,6 +19,7 @@ describe('guided AI concept contract', () => {
           teamName: 'NORTH GATE',
           frontIdentity: 'wordmark',
           playerNamesEnabled: false,
+          frontNumberPlacement: 'center',
           frontNumberInches: 4,
           backNumberInches: 8,
         },
@@ -29,6 +30,7 @@ describe('guided AI concept contract', () => {
     expect(prompt).toContain('Show coordinated Side A and Side B');
     expect(prompt).toContain('NORTH GATE');
     expect(prompt).toContain('approximately 4" tall on the front and 8" tall on the back');
+    expect(prompt).toContain('front at the center placement');
     expect(prompt).toContain('Do not add a player name');
     expect(prompt).toContain('#111111, #F97316');
     expect(prompt).toContain('Black and orange paint splatter');
@@ -53,6 +55,13 @@ describe('guided AI concept contract', () => {
     expect(validJobId('252fd472-1f06-4db7-9c41-7f1182fd429a')).toBe('252fd472-1f06-4db7-9c41-7f1182fd429a');
     expect(validJobId('../another-job')).toBe('');
     expect(validJobId('concept-1')).toBe('');
+  });
+
+  test('the mapper cannot remove a guided front number placement', () => {
+    expect(designTest.toStyling(
+      { frontNumber: 'none', neckStyle: 'vneck' },
+      { frontNumber: 'center' },
+    )).toMatchObject({ frontNumber: 'center', neckStyle: 'vneck' });
   });
 
 });
