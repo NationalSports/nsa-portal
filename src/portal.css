@@ -1386,7 +1386,7 @@ tbody tr { cursor: pointer; }
 }
 .workspace-column__mark.is-reminder,
 .workspace-row__icon.is-reminder,
-.workspace-empty > span:last-of-type {
+.workspace-empty > span.is-reminder {
   background: var(--connect-red);
 }
 .workspace-column__list {

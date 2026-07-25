@@ -7780,11 +7780,11 @@ export default function App(){
           <div className="workspace-hub__grid">
             <article className="workspace-column">
               <div className="workspace-column__header"><div><span className="workspace-column__mark is-note">N</span><h3>Notes</h3></div><span>{notes.length}</span></div>
-              <div className="workspace-column__list">{notes.length?notes.slice(0,8).map(row):<div className="workspace-empty"><span>N</span><strong>Capture the context</strong><p>Save customer intel, pricing details, and ideas where you can find them later.</p><button onClick={()=>_openWorkspaceModal('note')}>Create a note</button></div>}</div>
+              <div className="workspace-column__list">{notes.length?notes.slice(0,8).map(row):<div className="workspace-empty"><span className="is-note">N</span><strong>Capture the context</strong><p>Save customer intel, pricing details, and ideas where you can find them later.</p><button onClick={()=>_openWorkspaceModal('note')}>Create a note</button></div>}</div>
             </article>
             <article className="workspace-column">
               <div className="workspace-column__header"><div><span className="workspace-column__mark is-reminder">R</span><h3>Reminders</h3></div><span>{reminders.length}</span></div>
-              <div className="workspace-column__list">{reminders.length?reminders.slice(0,8).map(row):<div className="workspace-empty"><span>R</span><strong>Nothing slipping through</strong><p>Add a date to a follow-up, approval, payment, pickup, or review.</p><button onClick={()=>_openWorkspaceModal('reminder')}>Set a reminder</button></div>}</div>
+              <div className="workspace-column__list">{reminders.length?reminders.slice(0,8).map(row):<div className="workspace-empty"><span className="is-reminder">R</span><strong>Nothing slipping through</strong><p>Add a date to a follow-up, approval, payment, pickup, or review.</p><button onClick={()=>_openWorkspaceModal('reminder')}>Set a reminder</button></div>}</div>
             </article>
           </div>
         </section>
