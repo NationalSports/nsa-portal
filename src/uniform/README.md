@@ -89,12 +89,26 @@ config ──specFromConfig()──▶ design spec ──┬─▶ Viewer3D.js  
 
 ### AI design
 
-`netlify/functions/uniform-ai-design.js` — a plain-English brief goes to Claude, which is
-**forced through a tool schema** (`propose_uniform_designs`) to return 2–3 structured design
-candidates (colors, neck style, number style, patterns, etc.). Candidates auto-apply to the
-editable spec — nothing is a locked image. Model is configurable via `UNIFORM_AI_MODEL`
-(default `claude-haiku-4-5`); degrades gracefully with a friendly message if
-`ANTHROPIC_API_KEY` isn't set.
+Guided AI is an explicit two-provider flow:
+
+1. `netlify/functions/uniform-ai-concept.js` sends the coach's brief and neutral front/back
+   proofs of the approved garment to OpenAI GPT Image. It returns three photorealistic,
+   garment-grounded visual concepts. They are approval direction only and are never exported
+   as production artwork.
+2. After the coach chooses a concept, `netlify/functions/uniform-ai-design.js` sends the
+   selected concept image and locked production rules to an AI mapper using Structured Output
+   (`propose_uniform_designs`). It tries Kimi first for cost and automatically falls back to
+   OpenAI. Its production-safe reconstruction applies as normal editable zones, colors, motifs
+   and lettering.
+
+The image stage uses the server-side Netlify variable `OPENAI_API_KEY` and defaults to
+`gpt-image-2` (override with `UNIFORM_IMAGE_MODEL`). The editable mapping stage uses
+`AIUniBuilder` and defaults to `kimi-k2.6` (override with `UNIFORM_AI_MODEL`). When Kimi
+is unavailable, mapping falls back to `OPENAI_API_KEY` with `gpt-5.6-luna` (override with
+`UNIFORM_MAPPING_MODEL`). Set `UNIFORM_AI_PROVIDER=openai` only when OpenAI should be tried
+before Kimi.
+
+Both stages degrade with an honest setup message when their server-side key is absent.
 
 ---
 

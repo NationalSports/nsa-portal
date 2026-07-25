@@ -1,10 +1,12 @@
 // Uniform Builder — AI design generator.
 //
 // Takes a coach's plain-English brief ("aggressive red and black with camo
-// sleeves") plus the garment they're on, and asks Claude to return structured
-// design candidates: a color + pattern for each zone, a fabric, cut, lettering
-// treatment, and number/name typography. Claude is forced through a tool schema
-// so the output is always JSON, never prose. The client re-validates via
+// sleeves") plus the garment they're on, and asks an AI mapper to return
+// structured design candidates: a color + pattern for each zone, a fabric, cut,
+// lettering treatment, and number/name typography. Kimi is the lower-cost first
+// choice; OpenAI is the automatic fallback when Kimi is unavailable. Both are
+// constrained by JSON Schema so the output is always JSON, never prose. The
+// client re-validates via
 // designSpec.normalizeSpec before rendering, so this function only has to
 // produce a best-effort shape.
 //
@@ -12,9 +14,8 @@
 // model is told to make them genuinely different); the advanced editor's older
 // single-design path still works — `spec` in the response is candidate #1.
 //
-// Degrades gracefully: with no ANTHROPIC_API_KEY it returns ok:false + a reason
-// so the builder can show a friendly message instead of breaking. Kept auth-free
-// so the standalone /uniform-builder demo works for logged-out coaches; spend is
+// Degrades gracefully when neither provider is configured. Kept auth-free so
+// the standalone /uniform-builder demo works for logged-out coaches; spend is
 // bounded by daily per-IP and global caps (app_counters).
 
 const crypto = require('crypto');
@@ -43,11 +44,13 @@ async function underAiBudget(event) {
   } catch (_e) { return true; }
 }
 
-const MODEL = process.env.UNIFORM_AI_MODEL || 'claude-haiku-4-5';
-const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
+const KIMI_MODEL = process.env.UNIFORM_AI_MODEL || 'kimi-k2.6';
+const OPENAI_MODEL = process.env.UNIFORM_MAPPING_MODEL || 'gpt-5.6-luna';
+const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
+const OPENAI_URL = 'https://api.openai.com/v1/chat/completions';
 
 // Vocabularies the model must stay inside. Kept in sync with src/uniform/*.
-const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'camo', 'digicamo', 'carbon', 'hex'];
+const PATTERNS = ['solid', 'stripes', 'boldstripe', 'pinstripe', 'chevron', 'fade', 'dots', 'splatter', 'camo', 'digicamo', 'carbon', 'hex'];
 const FABRICS = ['matte', 'mesh', 'heather', 'sublimated', 'gloss'];
 const FONTS = ['anton', 'bebas', 'saira', 'oswald', 'graduate', 'squada', 'rye', 'pirata', 'pacifico', 'baloo'];
 const NECK_STYLES = ['vneck', 'crew'];
@@ -74,14 +77,21 @@ const SYSTEM = [
   'Guidelines:',
   '- When asked for multiple designs, make them GENUINELY different takes on the brief — different color balance, different pattern strategy, different lettering — not three shades of the same idea. Give each a short evocative name ("Midnight Camo", "Home Classic").',
   '- Use real, legible team colors. Prefer strong contrast between the body and lettering so numbers read from the stands. If team colors are provided, build around them.',
+  '- Follow literal coach requests for motifs, colors, outlines, and lettering treatment. An explicitly requested color may be added even when it is not one of the saved team-color quick picks.',
   '- Colors are 6-digit hex (e.g. #1f2a44). Patterns other than "solid" also need a secondaryColor.',
+  '- "Paint splatter", "paint splash", and "splatter" MUST use the built-in "splatter" pattern. Never substitute a premium print library image for an explicitly requested built-in motif.',
+  '- When Design mode is original, create the look from the production-safe built-in vector motifs. Do not set printPattern or reuse a saved vendor design.',
   '- If a list of print patterns is provided, you may set a zone\'s printPattern to one of those exact names instead of a built-in pattern — these are the shop\'s premium sublimation prints; tintable ones recolor to the zone\'s colors (color/secondaryColor, plus accentColor/accentColor2 for 4-color prints). Use at most one print pattern per design, usually on the body.',
   '- Only reference zone ids that exist on the given garment. Not every zone needs a pattern; solid is fine.',
   '- Pick a fabric and number/name fonts that fit the vibe (block/anton & bebas for bold, graduate for collegiate, pirata for gothic, pacifico for script).',
+  '- When the coach requests diagonal, slanted, or italic numbers, set italic=true on both front and back number objects.',
+  '- If a selected visual concept image is supplied, translate its major color balance, motif placement, scale and lettering treatment into the closest PRODUCTION-SAFE version allowed by this schema. Do not invent unsupported raster artwork or claim pixel-perfect reproduction.',
+  '- Preserve the coach brief when it conflicts with incidental text or rendering mistakes in the concept image. The concept is visual direction; locked production rules and the written brief win.',
   '- neckStyle picks the cut; frontNumber places the chest number (right chest is the classic kit look; none drops it).',
   '- outline is the number\'s border; outline2 adds a second border ring outside the first (the pro "double border" look) — use it when the brief wants extra pop, otherwise "none".',
   '- nameArch "arched" curves the back name over the number (classic); "straight" is modern.',
   '- Numbers are short (1-2 digits); names are UPPERCASE last names when the brief implies a player look, otherwise leave name empty.',
+  '- For basketball_4r3chb, design BOTH reversible faces. zones is Side A and reverseZones is Side B. They must be coordinated but clearly different colorways with the same requested motif and lettering treatment.',
 ].join('\n');
 
 const zoneSchema = {
@@ -104,6 +114,7 @@ const textSchema = {
     fill: { type: 'string', description: '6-digit hex' },
     outline: { type: 'string', description: '6-digit hex, or "auto", or "none"' },
     outline2: { type: 'string', description: '6-digit hex for a second outer outline, or "none"' },
+    italic: { type: 'boolean', description: 'True for diagonal, slanted, or italic athletic lettering' },
   },
 };
 
@@ -117,7 +128,8 @@ const designSchema = {
     nameArch: { type: 'string', enum: NAME_ARCH },
     nameSpacing: { type: 'number', description: 'Back-name letter spacing as % of font size, 0-30' },
     teamName: { type: 'string' },
-    zones: { type: 'object', additionalProperties: zoneSchema, description: 'Map of zoneId -> {color, secondaryColor?, pattern?, printPattern?}' },
+    zones: { type: 'object', additionalProperties: zoneSchema, description: 'Map of zoneId -> Side A {color, secondaryColor?, pattern?, printPattern?}' },
+    reverseZones: { type: 'object', additionalProperties: zoneSchema, description: 'For reversible garments only: coordinated Side B zone map' },
     text: {
       type: 'object',
       properties: {
@@ -142,24 +154,32 @@ const TOOL = {
 
 // Map one tool-output design (which uses secondaryColor) into the client's zone
 // shape (which uses color2). Everything else the client re-validates.
-function toClientSpec(garmentId, out) {
+function cleanZones(garmentId, source, allowPrintPatterns = true) {
   const zones = {};
   const valid = GARMENT_ZONES[garmentId] || GARMENT_ZONES.crew_jersey;
-  const src = (out && out.zones) || {};
+  const src = source || {};
   for (const id of Object.keys(src)) {
     if (!valid.includes(id)) continue;
     const z = src[id] || {};
     zones[id] = {
       color: z.color, color2: z.secondaryColor || z.color2, pattern: z.pattern || 'solid',
-      ...(z.printPattern ? { printPattern: String(z.printPattern).slice(0, 60) } : {}),
+      ...(allowPrintPatterns && z.printPattern ? { printPattern: String(z.printPattern).slice(0, 60) } : {}),
       ...(z.accentColor ? { color3: z.accentColor } : {}),
       ...(z.accentColor2 ? { color4: z.accentColor2 } : {}),
     };
   }
+  return zones;
+}
+
+function toClientSpec(garmentId, out, options = {}) {
+  const allowPrintPatterns = options.originalMode !== true;
+  const zones = cleanZones(garmentId, out && out.zones, allowPrintPatterns);
+  const reverseZones = cleanZones(garmentId, out && out.reverseZones, allowPrintPatterns);
   return {
     garmentId,
     fabric: out && out.fabric,
     zones,
+    ...(Object.keys(reverseZones).length ? { reverseZones } : {}),
     text: (out && out.text) || undefined,
     meta: { teamName: (out && out.teamName) || '', notes: (out && out.rationale) || '' },
   };
@@ -175,13 +195,102 @@ function toStyling(out) {
   return s;
 }
 
+function parseConceptImage(value) {
+  const match = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/.exec(String(value || ''));
+  if (!match) return null;
+  const data = match[2].replace(/\s/g, '');
+  const bytes = Buffer.from(data, 'base64');
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) return null;
+  return { mediaType: match[1], data };
+}
+
+function parseJsonContent(value) {
+  const text = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  try {
+    return JSON.parse(text);
+  } catch (_error) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      try { return JSON.parse(text.slice(start, end + 1)); } catch (_nestedError) { return null; }
+    }
+    return null;
+  }
+}
+
+function providerOrder({ kimiKey, openAiKey, preference = process.env.UNIFORM_AI_PROVIDER }) {
+  const providers = [];
+  const preferOpenAI = String(preference || '').toLowerCase() === 'openai';
+  const addKimi = () => {
+    if (kimiKey) providers.push({ id: 'kimi', apiKey: kimiKey, url: KIMI_URL, model: KIMI_MODEL });
+  };
+  const addOpenAI = () => {
+    if (openAiKey) providers.push({ id: 'openai', apiKey: openAiKey, url: OPENAI_URL, model: OPENAI_MODEL });
+  };
+  if (preferOpenAI) {
+    addOpenAI();
+    addKimi();
+  } else {
+    addKimi();
+    addOpenAI();
+  }
+  return providers;
+}
+
+async function requestDesigns({ provider, messages }) {
+  const body = {
+    model: provider.model,
+    max_completion_tokens: 4096,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: TOOL.name,
+        description: TOOL.description,
+        schema: TOOL.input_schema,
+        strict: false,
+      },
+    },
+    messages,
+  };
+  if (provider.id === 'kimi') body.thinking = { type: 'disabled' };
+
+  const response = await fetch(provider.url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${provider.apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const detail = data && data.error && data.error.message;
+    const error = new Error(detail || `${provider.id} ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return parseJsonContent(
+    data && data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content,
+  );
+}
+
 exports.handler = async (event) => {
   const headers = corsHeaders();
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers, body: '' };
   if (event.httpMethod !== 'POST') return { statusCode: 405, headers, body: JSON.stringify({ error: 'POST only' }) };
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { statusCode: 200, headers, body: JSON.stringify({ ok: false, reason: 'missing_api_key', error: 'AI design is not configured yet (no API key).' }) };
+  const providers = providerOrder({
+    kimiKey: process.env.AIUniBuilder || process.env.MOONSHOT_API_KEY,
+    openAiKey: process.env.OPENAI_API_KEY,
+  });
+  if (!providers.length) {
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        ok: false,
+        reason: 'missing_api_key',
+        error: 'AI design is not configured yet. Add AIUniBuilder or OPENAI_API_KEY in Netlify.',
+      }),
+    };
+  }
 
   let body = {};
   try { body = JSON.parse(event.body || '{}'); } catch (_e) { /* ignore */ }
@@ -205,7 +314,12 @@ exports.handler = async (event) => {
         .slice(0, 40)
         .map((p) => `"${p.name.slice(0, 60)}"${p.tintable ? ` (tintable, ${p.tintMode || 'solid'} mode)` : ' (fixed colors)'}`)
     : [];
+  const originalMode = ctx.designMode === 'original';
   const locked = (ctx.lockedRules && typeof ctx.lockedRules === 'object') ? ctx.lockedRules : {};
+  const conceptImage = parseConceptImage(body.conceptImage);
+  const conceptDirection = body.conceptDirection && typeof body.conceptDirection === 'object'
+    ? JSON.stringify(body.conceptDirection).slice(0, 1800)
+    : String(body.conceptDirection || '').slice(0, 1000);
   const lockedLines = [
     locked.teamName ? `- Team name is locked to "${String(locked.teamName).slice(0, 40)}".` : '',
     locked.frontIdentity ? `- Front identity is locked to ${String(locked.frontIdentity).slice(0, 12)}${locked.frontLogoPresent ? ' (front logo is uploaded)' : ''}.` : '',
@@ -221,42 +335,86 @@ exports.handler = async (event) => {
     ctx.sport ? `Sport: ${String(ctx.sport).slice(0, 30)}` : '',
     ctx.program ? `Program: ${String(ctx.program).slice(0, 20)} (men's/women's/youth cut)` : '',
     teamColors.length ? `Team colors: ${teamColors.join(', ')}` : '',
-    prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
+    originalMode ? 'Design mode: original artwork. Do not use printPattern or any saved vendor pattern.' : '',
+    conceptImage ? 'A coach-selected visual concept is attached. Rebuild its visual direction with the editable production-safe schema; do not merely describe it.' : '',
+    conceptDirection ? `Coach-selected visual direction: ${conceptDirection}` : '',
+    !originalMode && prints.length ? `Available print patterns: ${prints.join(', ')}` : '',
     lockedLines.length ? `Locked production rules:\n${lockedLines.join('\n')}` : '',
     `Number of designs to propose: ${count}${count > 1 ? ' (make them genuinely different)' : ''}`,
     `Coach's brief: ${prompt}`,
   ].filter(Boolean).join('\n');
 
   try {
-    const resp = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 4096,
-        system: SYSTEM,
-        tools: [TOOL],
-        tool_choice: { type: 'tool', name: 'propose_uniform_designs' },
-        messages: [{ role: 'user', content: userMsg }],
-      }),
-    });
-    if (!resp.ok) {
-      const t = await resp.text().catch(() => '');
-      return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: `Anthropic ${resp.status}`, detail: t.slice(0, 300) }) };
+    const messages = [
+      { role: 'system', content: `${SYSTEM}\nReturn valid JSON matching the supplied schema.` },
+      {
+        role: 'user',
+        content: conceptImage ? [
+          {
+            type: 'image_url',
+            image_url: { url: `data:${conceptImage.mediaType};base64,${conceptImage.data}` },
+          },
+          { type: 'text', text: userMsg },
+        ] : userMsg,
+      },
+    ];
+    let parsed = null;
+    let selectedProvider = null;
+    const failures = [];
+    for (const provider of providers) {
+      try {
+        parsed = await requestDesigns({ provider, messages });
+        selectedProvider = provider;
+        if (parsed && Array.isArray(parsed.designs) && parsed.designs.length) break;
+        failures.push(`${provider.id}: empty design`);
+      } catch (error) {
+        failures.push(`${provider.id}: ${(error && error.message) || 'request failed'}`);
+        console.warn('uniform-ai-design provider failed', provider.id, error && error.status, error && error.message);
+      }
     }
-    const data = await resp.json();
-    const toolUse = (data.content || []).find((b) => b && b.type === 'tool_use' && b.name === 'propose_uniform_designs');
-    const raw = toolUse && toolUse.input && Array.isArray(toolUse.input.designs) ? toolUse.input.designs : [];
-    if (!raw.length) return { statusCode: 502, headers, body: JSON.stringify({ ok: false, error: 'AI did not return a design.' }) };
+    const raw = parsed && Array.isArray(parsed.designs) ? parsed.designs : [];
+    if (!raw.length) {
+      return {
+        statusCode: 502,
+        headers,
+        body: JSON.stringify({
+          ok: false,
+          error: 'The AI mapper is temporarily unavailable. Your concept and setup are still saved.',
+          providerFailures: failures.map((value) => value.split(':')[0]),
+        }),
+      };
+    }
     const designs = raw.slice(0, count).map((d) => ({
       name: (typeof d.name === 'string' && d.name.trim()) ? d.name.trim().slice(0, 30) : 'Design',
-      spec: toClientSpec(garmentId, d),
+      spec: toClientSpec(garmentId, d, { originalMode }),
       styling: toStyling(d),
       rationale: (typeof d.rationale === 'string' ? d.rationale : '').slice(0, 200),
     }));
     // Back-compat: older callers (the advanced editor) read `spec` directly.
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true, designs, spec: designs[0].spec, rationale: designs[0].rationale }) };
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({
+        ok: true,
+        designs,
+        spec: designs[0].spec,
+        rationale: designs[0].rationale,
+        provider: selectedProvider && selectedProvider.id,
+        model: selectedProvider && selectedProvider.model,
+      }),
+    };
   } catch (e) {
     return { statusCode: 500, headers, body: JSON.stringify({ ok: false, error: (e && e.message) || 'AI request failed.' }) };
   }
+};
+
+// Pure contract helpers for regression tests. They are not exposed by Netlify's
+// HTTP handler, but keep reversible/original-mode behavior directly testable.
+exports._test = {
+  cleanZones,
+  parseConceptImage,
+  parseJsonContent,
+  providerOrder,
+  toClientSpec,
+  toStyling,
 };

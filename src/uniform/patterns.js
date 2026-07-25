@@ -39,6 +39,7 @@ export function makePatternTile(pattern, a, b) {
     case 'pinstripe': return stripes(a, b, 20, 3);
     case 'chevron': return chevron(a, b);
     case 'dots': return dots(a, b);
+    case 'splatter': return splatter(a, b);
     case 'camo': return camo(a, b);
     case 'digicamo': return digicamo(a, b);
     case 'carbon': return carbon(a, b);
@@ -72,6 +73,41 @@ function dots(a, b) {
   x.fillStyle = b;
   for (const [cx, cy] of [[7, 7], [20, 20]]) {
     x.beginPath(); x.arc(cx, cy, 4, 0, Math.PI * 2); x.fill();
+  }
+  return c;
+}
+
+// A seamless, deterministic two-ink paint-splatter tile. The larger radial
+// bursts establish the design direction while the small droplets prevent the
+// repeated tile from reading like polka dots. Keeping it procedural makes both
+// inks fully editable and guarantees the web preview and production export use
+// the exact same artwork.
+function splatter(a, b) {
+  const s = 192; const c = newTile(s); const x = c.getContext('2d');
+  const rnd = mulberry32(71523);
+  x.fillStyle = a; x.fillRect(0, 0, s, s);
+  x.fillStyle = b;
+
+  const burst = (cx, cy, radius, spikes) => {
+    x.beginPath();
+    for (let i = 0; i < spikes * 2; i++) {
+      const angle = (Math.PI * i) / spikes;
+      const long = i % 2 === 0;
+      const r = radius * (long ? (0.78 + rnd() * 0.55) : (0.34 + rnd() * 0.38));
+      const px = cx + Math.cos(angle) * r;
+      const py = cy + Math.sin(angle) * r;
+      i === 0 ? x.moveTo(px, py) : x.lineTo(px, py);
+    }
+    x.closePath(); x.fill();
+  };
+
+  burst(48, 62, 39, 18);
+  burst(154, 145, 31, 15);
+  for (let i = 0; i < 32; i++) {
+    const r = 1.5 + rnd() * 7;
+    x.beginPath();
+    x.ellipse(rnd() * s, rnd() * s, r * (0.55 + rnd()), r, rnd() * Math.PI, 0, Math.PI * 2);
+    x.fill();
   }
   return c;
 }
