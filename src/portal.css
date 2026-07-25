@@ -2920,6 +2920,16 @@ tbody tr { cursor: pointer; }
   min-height: 0;
   padding: 7px 12px;
 }
+.main.order-mode-main > .topbar.order-mode-topbar .topbar-search .search-bar input {
+  height: 19px;
+  min-height: 0;
+  padding: 0 !important;
+  line-height: 19px;
+}
+.main.order-mode-main > .topbar.order-mode-topbar .topbar-search .search-bar svg {
+  width: 14px;
+  height: 14px;
+}
 .main.order-mode-main > .topbar.order-mode-topbar .order-mode-avatar {
   width: 30px;
   height: 30px;
