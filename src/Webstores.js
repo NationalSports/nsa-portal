@@ -5588,7 +5588,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const tabsButtons = (
     <>
       {PRIMARY_TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
-      <MenuButton label={MORE_TABS.find((t) => t.id === tab)?.label || 'More'} primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
+      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
     </>
   );
   // product_id -> stock (warehouse + Adidas) for the batch health check.
