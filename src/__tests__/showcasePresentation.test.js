@@ -75,7 +75,11 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('remove it completely');
     expect(prompt).toContain('no people, models, body parts, mannequins');
     expect(prompt).toContain('only the complete hero garment or product');
-    expect(PROMPT_VERSION).toBe('showcase-v2-product-only');
+    expect(prompt).toContain('uniform neutral pure white (#FFFFFF)');
+    expect(prompt).toContain('must read as #FFFFFF');
+    expect(prompt).toContain('No cream, beige, ivory, tan');
+    expect(prompt).not.toContain('consistent warm-neutral studio background');
+    expect(PROMPT_VERSION).toBe('showcase-v3-white-background');
   });
 
   test('collects the existing decoration URL shapes without duplicates', () => {
@@ -118,6 +122,8 @@ describe('Showcase provider boundary', () => {
     expect(instructions).toContain('complete removal');
     expect(instructions).toContain('"people_allowed":false');
     expect(instructions).toContain('"mannequins_allowed":false');
+    expect(instructions).toContain('"background_color_hex":"#FFFFFF"');
+    expect(instructions).toContain('pure white background');
   });
 
   test('reuses the deployed AIUniBuilder secret as the Kimi credential', () => {

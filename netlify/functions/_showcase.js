@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const PROMPT_VERSION = 'showcase-v2-product-only';
+const PROMPT_VERSION = 'showcase-v3-white-background';
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -165,7 +165,9 @@ function buildAnalysisBrief(product, decorations) {
     decorations: cleanDecorations(decorations),
     output: {
       size: '1024x1024',
-      background: 'consistent warm-neutral studio sweep',
+      background: 'uniform neutral pure white (#FFFFFF) seamless ecommerce backdrop',
+      background_color_hex: '#FFFFFF',
+      background_exclusions: ['cream', 'beige', 'ivory', 'warm tint', 'colored cast', 'gradient', 'vignette'],
       subject: 'single garment or product only',
       full_product_visible: true,
       restrained_grounding_shadow: true,
@@ -203,9 +205,11 @@ async function analyzeWithKimi({ product, decorations, images }) {
         'Return JSON only with keys: garment_invariants (array), protected_elements (array),',
         'decoration_bounds (array), edit_prompt (string), and qa_checklist (array).',
         'The required output is the garment or product alone as the sole centered hero object.',
+        'The background is locked to uniform neutral pure white (#FFFFFF). Never request cream, beige, ivory,',
+        'a warm-neutral tint, colored cast, gradient, vignette, or off-white background in edit_prompt.',
         'If the source contains a person, model, body part, mannequin, dress form, hanger, or prop, require its',
         'complete removal. Never include or invent a wearer, display form, lifestyle scene, or secondary object',
-        'in edit_prompt. The qa_checklist must explicitly verify that none remain in the output.',
+        'in edit_prompt. The qa_checklist must explicitly verify the pure white background and that none remain.',
         'Never authorize changing the garment type, cut, color, material, seams, closures, manufacturer marks,',
         'or customer/team artwork. Artwork spelling, geometry, colors, and placement are locked.',
         `STRUCTURED_INPUT=${JSON.stringify(brief)}`,
@@ -247,6 +251,9 @@ function buildEditPrompt(product, decorations, analysis) {
   const modelPrompt = String(analysis?.edit_prompt || '').trim();
   return [
     'Create a premium, photorealistic ecommerce hero image by editing the FIRST supplied product image.',
+    'BACKGROUND — REQUIRED: use a uniform neutral pure white (#FFFFFF) seamless ecommerce backdrop.',
+    'Pixels outside the product and its restrained neutral light-gray grounding shadow must read as #FFFFFF.',
+    'No cream, beige, ivory, tan, warm tint, warm-neutral cast, colored cast, gradient, vignette, or off-white.',
     'OUTPUT SUBJECT: the garment or product alone, centered as the sole hero object.',
     'If the source includes a person, model, face, head, hair, skin, hand, arm, leg, foot, body, silhouette,',
     'mannequin, dress form, hanger, prop, or scenery, remove it completely. Do not preserve or invent a wearer.',
@@ -257,8 +264,8 @@ function buildEditPrompt(product, decorations, analysis) {
     'Other supplied images are locked artwork references. Reproduce them exactly—never redraw, restyle,',
     'respell, simplify, or invent a logo. Keep each decoration inside the stated production bounds.',
     'Show the complete product with breathing room; do not crop any sleeve, hem, brim, logo, or detail.',
-    'Use a consistent warm-neutral studio background, clean hero composition, realistic restrained grounding',
-    'shadow, natural fabric depth, and improved but believable lighting. Embroidery may have subtle raised thread',
+    'Use soft neutral studio lighting, a clean hero composition, realistic restrained grounding shadow, natural',
+    'fabric depth, and improved but believable lighting. Embroidery may have subtle raised thread',
     'direction and edge depth; screen print must remain flat and naturally integrated with the fabric.',
     'Do not add seams, pockets, colors, patterns, logos, or decoration.',
     `PRODUCT=${JSON.stringify(brief)}`,
