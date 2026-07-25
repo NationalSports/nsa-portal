@@ -1151,7 +1151,7 @@ function attachBundleImages(items, bundleItems) {
 
 // Tabs a deep link may open the store on (matches StoreDetail's PRIMARY_TABS + MORE_TABS).
 // An unknown/absent ?tab= falls back to the default catalog tab.
-const DEEP_LINK_TABS = new Set(['catalog', 'orders', 'art', 'analytics', 'batches', 'inventory', 'roster', 'coupons']);
+const DEEP_LINK_TABS = new Set(['catalog', 'appearance', 'orders', 'art', 'analytics', 'batches', 'inventory', 'roster', 'coupons']);
 
 function Webstores({ cust = [], REPS = [], repCsr = [], sos = [], ests = [], cu, onCreateSO, onOpenSO }) {
   const [stores, setStores] = useState([]);
@@ -5271,6 +5271,245 @@ function LaunchStoreModal({ store, onClose, onLaunch }) {
   );
 }
 
+const SHOWCASE_STATUS = {
+  missing: { label: 'Missing', bg: '#f1f5f9', fg: '#64748b' },
+  queued: { label: 'Queued', bg: '#eff6ff', fg: '#1d4ed8' },
+  generating: { label: 'Generating', bg: '#eef2ff', fg: '#4338ca' },
+  review: { label: 'Needs review', bg: '#fff7ed', fg: '#c2410c' },
+  approved: { label: 'Approved', bg: '#ecfdf5', fg: '#047857' },
+  failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
+  canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
+};
+const SHOWCASE_PROMPT_VERSION = 'showcase-v6-athletic-forms';
+
+function ShowcaseStatusBadge({ asset }) {
+  const key = asset?.status || 'missing';
+  const status = SHOWCASE_STATUS[key] || SHOWCASE_STATUS.missing;
+  const rejected = key === 'review' && asset?.approval_status === 'rejected';
+  return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, borderRadius: 999, padding: '4px 9px', background: status.bg, color: status.fg, fontSize: 10.5, fontWeight: 800, letterSpacing: 0.4, textTransform: 'uppercase' }}>
+    {(key === 'queued' || key === 'generating') && <span aria-hidden>◌</span>}{rejected ? 'Rejected' : status.label}
+  </span>;
+}
+
+function ShowcaseAppearanceTab({ store, onFlash }) {
+  const [snapshot, setSnapshot] = useState(null);
+  const [draftMode, setDraftMode] = useState('standard');
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const call = useCallback(async (action, extra = {}) => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) throw new Error('Your session expired. Sign in again to manage Store Appearance.');
+    const res = await fetch('/.netlify/functions/showcase-admin', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, store_id: store.id, ...extra }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Showcase action failed (${res.status})`);
+    return data;
+  }, [store.id]);
+
+  const loadState = useCallback(async (quiet = false) => {
+    try {
+      const data = await call('state');
+      setSnapshot(data);
+      setDraftMode(data.store?.presentation_mode || 'standard');
+      if (!quiet) setError('');
+    } catch (e) {
+      if (!quiet) setError(e.message || String(e));
+    }
+  }, [call]);
+
+  useEffect(() => { loadState(); }, [loadState]);
+  const hasActiveJobs = (snapshot?.items || []).some(({ asset }) => asset?.status === 'queued' || asset?.status === 'generating');
+  useEffect(() => {
+    if (!hasActiveJobs) return undefined;
+    const timer = setInterval(() => loadState(true), 3500);
+    return () => clearInterval(timer);
+  }, [hasActiveJobs, loadState]);
+
+  const act = async (key, action, extra = {}) => {
+    setBusy(key); setError('');
+    try {
+      const data = await call(action, extra);
+      if (action === 'save_mode' || action === 'publish') {
+        setSnapshot((cur) => cur ? { ...cur, store: { ...cur.store, ...(data.store || {}) } } : cur);
+      }
+      await loadState(true);
+      return data;
+    } catch (e) {
+      setError(e.message || String(e));
+      return null;
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const chooseMode = async (mode) => {
+    const previous = draftMode;
+    setDraftMode(mode);
+    const data = await act('mode', 'save_mode', { mode });
+    if (!data) setDraftMode(previous);
+    else onFlash?.(`Draft presentation saved: ${mode === 'showcase' ? 'Showcase' : 'Standard Catalog'}`);
+  };
+
+  const preview = () => {
+    const url = `/shop/${store.slug}?showcase_preview=${encodeURIComponent(draftMode)}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  const publish = async () => {
+    const fallbackCount = draftMode === 'showcase'
+      ? (snapshot?.items || []).filter(({ asset }) => !asset?.approved_showcase_image_url).length
+      : 0;
+    const note = fallbackCount
+      ? ` ${fallbackCount} product${fallbackCount === 1 ? '' : 's'} will safely use the Standard image until approved.`
+      : '';
+    if (!window.confirm(`Publish ${draftMode === 'showcase' ? 'Showcase' : 'Standard Catalog'} to shoppers?${note}`)) return;
+    const data = await act('publish', 'publish', { mode: draftMode });
+    if (data) onFlash?.(`Published ${draftMode === 'showcase' ? 'Showcase' : 'Standard Catalog'}${data.fallback_count ? ` · ${data.fallback_count} Standard fallback${data.fallback_count === 1 ? '' : 's'}` : ''}`);
+  };
+
+  if (!snapshot && !error) return <div className="card"><div className="card-body" style={{ color: '#64748b' }}>Loading Store Appearance…</div></div>;
+  const publishedMode = snapshot?.store?.published_presentation_mode || store.published_presentation_mode || 'standard';
+  const items = snapshot?.items || [];
+  const counts = snapshot?.counts || {};
+  const unpublished = publishedMode !== draftMode;
+  const generateAllCount = items.filter((item) => {
+    const asset = item.asset || {};
+    const status = asset.status || 'missing';
+    if (item.kind === 'bundle' || !item.standard_image_url) return false;
+    if (status === 'queued' || status === 'generating') return false;
+    if (asset.id && asset.prompt_version !== SHOWCASE_PROMPT_VERSION) return true;
+    if (status === 'approved') return false;
+    return status !== 'review' || asset.approval_status === 'rejected';
+  }).length;
+
+  const generateAll = async () => {
+    if (!generateAllCount) return;
+    if (!window.confirm(`Generate ${generateAllCount} Showcase image${generateAllCount === 1 ? '' : 's'}? This queues background AI jobs and may incur usage charges.`)) return;
+    const data = await act('generate_all', 'generate_all');
+    if (!data) return;
+    const failed = Number(data.failed_count || 0);
+    onFlash?.(`Queued ${Number(data.queued_count || 0)} Showcase image${Number(data.queued_count || 0) === 1 ? '' : 's'}${failed ? ` · ${failed} failed to start` : ''}`);
+  };
+  const activeJobCount = items.filter(({ asset }) => asset?.status === 'queued' || asset?.status === 'generating').length;
+  const cancelAll = async () => {
+    if (!activeJobCount) return;
+    if (!window.confirm(`Cancel ${activeJobCount} active Showcase job${activeJobCount === 1 ? '' : 's'}? Queued jobs stop immediately; provider requests already in flight may still incur a charge.`)) return;
+    const data = await act('cancel_all', 'cancel_all');
+    if (data) onFlash?.(`Canceled ${Number(data.canceled_count || 0)} Showcase job${Number(data.canceled_count || 0) === 1 ? '' : 's'}`);
+  };
+
+  return (
+    <div>
+      <div className="card" style={{ marginBottom: 12, overflow: 'hidden' }}>
+        <div style={{ padding: '18px 20px', borderBottom: '1px solid #e2e8f0', background: 'linear-gradient(120deg,#f8fafc,#fff)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+            <div>
+              <div style={{ fontSize: 18, fontWeight: 800, color: '#0f172a' }}>Store Appearance</div>
+              <div style={{ marginTop: 4, maxWidth: 700, color: '#64748b', fontSize: 12.5, lineHeight: 1.55 }}>
+                Choose the draft presentation, preview it privately, then publish explicitly. Shoppers never see this control.
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: '#64748b' }}>Published:</span>
+              <span style={{ borderRadius: 999, padding: '5px 10px', background: publishedMode === 'showcase' ? '#ede9fe' : '#e2e8f0', color: publishedMode === 'showcase' ? '#6d28d9' : '#334155', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase' }}>
+                {publishedMode === 'showcase' ? 'Showcase' : 'Standard Catalog'}
+              </span>
+              {unpublished && <span style={{ borderRadius: 999, padding: '5px 10px', background: '#fff7ed', color: '#c2410c', fontSize: 10.5, fontWeight: 800, textTransform: 'uppercase' }}>Unpublished change</span>}
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: 12 }}>
+            {[
+              { id: 'standard', title: 'Standard Catalog', desc: 'The existing product-card store using current supplier and decorated mockup images.', icon: '▦' },
+              { id: 'showcase', title: 'Showcase', desc: 'A premium campaign presentation using only rep-approved, permanently stored enhanced images.', icon: '✦' },
+            ].map((option) => {
+              const selected = draftMode === option.id;
+              return <button key={option.id} type="button" disabled={busy === 'mode'} onClick={() => chooseMode(option.id)}
+                style={{ textAlign: 'left', border: `2px solid ${selected ? '#4f46e5' : '#e2e8f0'}`, background: selected ? '#f5f3ff' : '#fff', borderRadius: 12, padding: 16, cursor: busy === 'mode' ? 'wait' : 'pointer', color: '#0f172a' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ width: 30, height: 30, display: 'grid', placeItems: 'center', borderRadius: 8, background: selected ? '#4f46e5' : '#f1f5f9', color: selected ? '#fff' : '#64748b', fontSize: 16 }}>{option.icon}</span>
+                  <span style={{ fontWeight: 800, fontSize: 14 }}>{option.title}</span>
+                  <span style={{ marginLeft: 'auto', width: 17, height: 17, borderRadius: '50%', border: `2px solid ${selected ? '#4f46e5' : '#cbd5e1'}`, display: 'grid', placeItems: 'center' }}>{selected && <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#4f46e5' }} />}</span>
+                </div>
+                <div style={{ marginTop: 9, color: '#64748b', fontSize: 12, lineHeight: 1.5 }}>{option.desc}</div>
+              </button>;
+            })}
+          </div>
+          {error && <div role="alert" style={{ marginTop: 12, padding: '10px 12px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 12 }}>{error}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16, flexWrap: 'wrap' }}>
+            <button className="btn btn-secondary" type="button" onClick={preview}>Preview draft ↗</button>
+            <button className="btn btn-primary" type="button" disabled={!!busy} onClick={publish}>{busy === 'publish' ? 'Publishing…' : `Publish ${draftMode === 'showcase' ? 'Showcase' : 'Standard'}`}</button>
+          </div>
+        </div>
+      </div>
+
+      {draftMode === 'showcase' && <div className="card">
+        <div style={{ padding: '15px 18px', borderBottom: '1px solid #e2e8f0', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>Showcase readiness</div>
+            <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Every generated image requires human approval before shoppers can see it.</div>
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
+            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
+              {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
+            </button>
+            {activeJobCount > 0 && <button className="btn btn-sm btn-secondary" type="button" disabled={!!busy} onClick={cancelAll} title="Stop all queued jobs and cancel running jobs at their next safe checkpoint">
+              {busy === 'cancel_all' ? 'Canceling…' : `Cancel All (${activeJobCount})`}
+            </button>}
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {['approved', 'review', 'missing', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: 12 }}>
+          {items.length === 0 && <div style={{ padding: 22, textAlign: 'center', color: '#64748b', fontSize: 12.5 }}>Add products to the Catalog before generating Showcase images.</div>}
+          {items.map((item) => {
+            const asset = item.asset || {};
+            const working = asset.status === 'queued' || asset.status === 'generating';
+            const itemBusy = busy === item.webstore_product_id;
+            const canReview = asset.status === 'review' && !!asset.showcase_image_url;
+            const isBundle = item.kind === 'bundle';
+            return <div key={item.webstore_product_id} style={{ display: 'grid', gridTemplateColumns: '70px minmax(180px,1fr) minmax(200px,auto)', gap: 12, alignItems: 'center', padding: 10, borderBottom: '1px solid #f1f5f9' }}>
+              <div style={{ width: 64, height: 64, borderRadius: 9, overflow: 'hidden', background: '#f1f5f9', display: 'grid', placeItems: 'center', position: 'relative' }}>
+                {(asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url)
+                  ? <img src={asset.showcase_image_url || asset.approved_showcase_image_url || item.standard_image_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  : <span style={{ color: '#94a3b8', fontSize: 10 }}>No image</span>}
+                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <span style={{ position: 'absolute', left: 4, bottom: 4, borderRadius: 4, padding: '2px 4px', background: 'rgba(15,23,42,.8)', color: '#fff', fontSize: 7.5, fontWeight: 800 }}>SHOWCASE</span>}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: 'flex', gap: 7, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 750, fontSize: 12.5, color: '#0f172a', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{item.name}</span>
+                  <ShowcaseStatusBadge asset={asset} />
+                </div>
+                <div style={{ marginTop: 3, color: '#94a3b8', fontSize: 10.5 }}>{item.sku || 'No SKU'}{item.color ? ` · ${item.color}` : ''}{item.brand ? ` · ${item.brand}` : ''}</div>
+                {asset.error_details && <div title={asset.error_details} style={{ marginTop: 4, color: '#b91c1c', fontSize: 10.5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 560 }}>{asset.error_details}</div>}
+                {isBundle && <div style={{ marginTop: 4, color: '#64748b', fontSize: 10.5 }}>Package cards use approved component images; generate each component product.</div>}
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
+                {(asset.showcase_image_url || asset.approved_showcase_image_url) && <a className="btn btn-sm btn-secondary" href={asset.showcase_image_url || asset.approved_showcase_image_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>Preview</a>}
+                {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || itemBusy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
+                {!isBundle && working && <button className="btn btn-sm btn-secondary" disabled={itemBusy} title="Stop this AI job at its next safe checkpoint" onClick={() => act(item.webstore_product_id, 'cancel', { webstore_product_id: item.webstore_product_id })}>{itemBusy ? 'Canceling…' : 'Cancel'}</button>}
+                {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
+                {canReview && <button className="btn btn-sm btn-secondary" disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'reject', { webstore_product_id: item.webstore_product_id })}>Reject</button>}
+                {!isBundle && asset.status !== 'missing' && <button className="btn btn-sm btn-secondary" disabled={itemBusy || working} title="Keep the Standard product image live for this item" onClick={() => act(item.webstore_product_id, 'fallback', { webstore_product_id: item.webstore_product_id })}>Use Standard</button>}
+              </div>
+            </div>;
+          })}
+        </div>
+        <div style={{ padding: '11px 18px', borderTop: '1px solid #e2e8f0', background: '#f8fafc', color: '#64748b', fontSize: 10.5 }}>
+          Safety rule: missing, failed, rejected, queued, and unapproved products always render their existing Standard image. Approved assets are versioned in permanent storage and never depend on temporary provider URLs.
+        </div>
+      </div>}
+    </div>
+  );
+}
+
 function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = null, cu, custName, repName, standardCategories = [], onBack, onEdit, onOpenSO, onSetStatus, onAddSingle, onAddGrouped, onAddColors, onAddFits, onCopyItem, onAddMany, onApplyTemplate, onApplyTemplateColors, onPriceToMargin, onCreateBundle, onAddBundleItem, onRemoveBundleItem, onReorderBundleItems, onRemove, onRemoveGroup, onBulkRemove, onUpdateImage, onUpdateCost, onUpdateProductMeta, onBatch, onAvailabilityReport, onPlayerReport, onStockReport, onExportCsv, onReorder, onMove, onReorderColors, onRemoveColor, onUpdateItem, onBulkUpdate, onUpdateTransfer, onAddTransfers, onRemoveTransfer, onPullTransfers, onCreateCoupons, onUpdateCoupon, onRemoveCoupon, onAddRoster, onUpdateRoster, onRemoveRoster, onInviteRoster, onSaveOrderEdits, onRefundOrder, onApplyLogo, onApplyLogoBulk, onSetItemDecorations, onSaveArtVariant, onSaveRepWebLogo, placementMemory, onSavePlacementMemory, onSaveMocks, onAddStoreLogo, onAddStoreArtFolder, onSaveStoreArt, onAttachWebLogo, onFlash, portalUrl, onEmailDirector, onFlyer }) {
   const [portalCopied, setPortalCopied] = useState(false);
   const [showMock, setShowMock] = useState(false);
@@ -5337,6 +5576,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
     { id: 'analytics', label: 'Analytics' },
   ];
   const MORE_TABS = [
+    { id: 'appearance', label: 'Store Appearance' },
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
@@ -5348,7 +5588,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   const tabsButtons = (
     <>
       {PRIMARY_TABS.map((t) => <button key={t.id} className={`btn btn-sm ${tab === t.id ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setTab(t.id)}>{t.label}</button>)}
-      <MenuButton label={MORE_TABS.find((t) => t.id === tab)?.label || 'More'} primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
+      <MenuButton label="More" primary={MORE_TABS.some((t) => t.id === tab)} items={MORE_TABS.map((t) => ({ label: t.label, onClick: () => setTab(t.id) }))} />
     </>
   );
   // product_id -> stock (warehouse + Adidas) for the batch health check.
@@ -5477,6 +5717,7 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
       {loading && !detail ? <div style={{ padding: 30, color: '#64748b', fontSize: 13 }}>Loading store details…</div> : (
         <>
           {tab === 'catalog' && <CatalogTab tabsNode={tabsButtons} catalog={catalog} bundleItems={bundleItems} stockByWp={stockByWp} costByPid={detail?.costByPid || {}} invSrcByPid={detail?.invSrcByPid || {}} transfers={detail?.transfers || []} isTeam={(s.org_type || 'team') !== 'club'} library={(s.store_art || []).map((sa) => { const fresh = (detail?.libraryArt || []).find((la) => la.id === sa.id); return (fresh && Array.isArray(fresh.web_logos) && fresh.web_logos.length > (Array.isArray(sa.web_logos) ? sa.web_logos.length : 0)) ? { ...sa, web_logos: fresh.web_logos } : sa; })} storeColors={detail?.storeColors || []} teamHexes={[...new Set([...(detail?.storeColors || []).map((pc) => pc && pc.hex), s.primary_color, s.accent_color].filter(Boolean))]} storeFund={{ enabled: !!s.fundraise_enabled, pct: Number(s.fundraise_pct) || 0, flat: Number(s.fundraise_flat) || 0, round: !!s.fundraise_round }} onApplyLogo={onApplyLogo} onSaveLogo={onAddStoreLogo} onAddSingle={onAddSingle} onAddGrouped={onAddGrouped} onAddColors={onAddColors} onAddFits={onAddFits} onCopyItem={onCopyItem} onAddMany={onAddMany} onApplyTemplate={onApplyTemplate} onApplyTemplateColors={onApplyTemplateColors} onGoToArt={() => setTab('art')} standardCategories={standardCategories} onPriceToMargin={onPriceToMargin} onCreateBundle={onCreateBundle} onAddBundleItem={onAddBundleItem} onRemoveBundleItem={onRemoveBundleItem} onReorderBundleItems={onReorderBundleItems} onRemove={onRemove} onRemoveGroup={onRemoveGroup} onBulkRemove={onBulkRemove} onUpdateImage={onUpdateImage} onUpdateCost={onUpdateCost} onUpdateProductMeta={onUpdateProductMeta} onReorder={onReorder} onMove={onMove} onReorderColors={onReorderColors} onRemoveColor={onRemoveColor} onUpdateItem={onUpdateItem} onBulkUpdate={onBulkUpdate} />}
+          {tab === 'appearance' && <ShowcaseAppearanceTab store={s} onFlash={onFlash} />}
           {tab === 'art' && <ArtTab catalog={catalog} stockByWp={stockByWp} decorationMode={s.decoration_mode || 'in_house'} libraryArt={detail?.libraryArt || []} storeArt={s.store_art || []} onSaveStoreArt={onSaveStoreArt} onSaveLogo={onAddStoreLogo} onSaveArtFolder={onAddStoreArtFolder} onAttachWebLogo={onAttachWebLogo} onApplyLogo={onApplyLogo} onApplyLogoBulk={onApplyLogoBulk} onSetItemDecorations={onSetItemDecorations} onSaveArtVariant={onSaveArtVariant} onSaveRepWebLogo={onSaveRepWebLogo} placementMemory={placementMemory} onSavePlacementMemory={onSavePlacementMemory} canMock={qmGarments.length > 0 && (_qmArt.length > 0 || Object.keys(qmAppliedByGarment).length > 0)} onOpenMockBuilder={() => setShowMock(true)} />}
           {tab === 'orders' && <OrdersTab orders={orders} orderItems={orderItems} numbersEnabled={s.number_enabled} onBatch={onBatch} onAvailabilityReport={onAvailabilityReport} onPlayerReport={onPlayerReport} onStockReport={onStockReport} onExportCsv={onExportCsv} availSizes={availSizes} onSaveOrderEdits={onSaveOrderEdits} onRefundOrder={onRefundOrder} cu={cu} store={s} soBatch={soBatch} onOpenSO={onOpenSO} focusOrderId={focusOrderId} msgTagIds={[s.csr_id || s.rep_id].filter(Boolean)} />}
           {tab === 'batches' && <BatchesTab store={s} productStock={productStock} onOpenSO={onOpenSO} catalog={catalog} bundleItems={bundleItems} orders={orders} orderItems={orderItems} transfers={detail?.transfers || []} onPullTransfers={onPullTransfers} />}
