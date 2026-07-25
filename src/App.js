@@ -7606,6 +7606,7 @@ export default function App(){
     const _fmtTodoDate=(d)=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);if(days<1)return'Today';if(days===1)return'Yesterday';if(days<14)return days+'d ago';return(dt.getMonth()+1)+'/'+dt.getDate()+'/'+String(dt.getFullYear()).slice(-2)}catch{return''}};
     // Due-date helpers — due_date is a plain YYYY-MM-DD; compare against local today without timezone drift.
     const _todayStr=(()=>{const d=new Date();return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`})();
+    const _dateOffsetStr=(days)=>{const d=new Date();d.setDate(d.getDate()+days);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`};
     const _fmtDueDate=(d)=>{if(!d)return'';const ds=String(d).slice(0,10);if(ds===_todayStr)return'Today';try{const dt=new Date(ds+'T00:00:00');if(isNaN(dt))return ds;const days=Math.round((dt-new Date(_todayStr+'T00:00:00'))/864e5);if(days===1)return'Tomorrow';if(days===-1)return'Yesterday';if(days<0)return Math.abs(days)+'d overdue';return(dt.getMonth()+1)+'/'+dt.getDate()}catch{return ds}};
     const _todoDueColor=(d)=>{if(!d)return'#64748b';const ds=String(d).slice(0,10);if(ds<_todayStr)return'#dc2626';if(ds===_todayStr)return'#d97706';return'#2563eb'};
     const _todoComplete=(id,note)=>{
@@ -7788,39 +7789,64 @@ export default function App(){
             </article>
           </div>
         </section>
-        {workspaceModal.open&&<div className="modal-bg" onMouseDown={e=>{if(e.target===e.currentTarget)setWorkspaceModal(m=>({...m,open:false}))}}>
-          <form className="workspace-modal" onSubmit={_saveWorkspaceItem}>
+        {workspaceModal.open&&<div className="workspace-modal-bg" onMouseDown={e=>{if(e.target===e.currentTarget)setWorkspaceModal(m=>({...m,open:false}))}}>
+          <form className={`workspace-modal is-${workspaceModal.item_kind}`} onSubmit={_saveWorkspaceItem} role="dialog" aria-modal="true" aria-labelledby="workspace-modal-title">
             <header>
-              <div><span className="dash-action-card__kicker">{workspaceModal.id?'Edit':'New'} workspace item</span><h2>{workspaceModal.item_kind==='note'?'Note':'Reminder'}</h2></div>
-              <button type="button" className="workspace-modal__close" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>×</button>
+              <div className="workspace-modal__identity">
+                <span className={`workspace-modal__mark is-${workspaceModal.item_kind}`}>{workspaceModal.item_kind==='note'?'N':'R'}</span>
+                <div><span className="dash-action-card__kicker">{workspaceModal.id?'Edit':'New'} workspace item</span><h2 id="workspace-modal-title">{workspaceModal.item_kind==='note'?'Note':'Reminder'}</h2></div>
+              </div>
+              <div className="workspace-modal__header-actions">
+                <div className="workspace-kind-switch" aria-label="Item type">
+                  {['note','reminder'].map(kind=><button type="button" key={kind} className={workspaceModal.item_kind===kind?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,item_kind:kind,label:_workspaceLabels[kind][0][0],remind_on:kind==='note'?'':(m.remind_on||_todayStr)}))}>{kind==='note'?'Note':'Reminder'}</button>)}
+                </div>
+                <button type="button" className="workspace-modal__close" aria-label="Close" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>×</button>
+              </div>
             </header>
-            <div className="workspace-kind-switch">
-              {['note','reminder'].map(kind=><button type="button" key={kind} className={workspaceModal.item_kind===kind?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,item_kind:kind,label:_workspaceLabels[kind][0][0],remind_on:kind==='note'?'':(m.remind_on||_todayStr)}))}>{kind==='note'?'Note':'Reminder'}</button>)}
+            <div className="workspace-modal__body">
+              <label className="workspace-field workspace-field--title"><span>Title</span><input autoFocus maxLength={180} value={workspaceModal.title} onChange={e=>setWorkspaceModal(m=>({...m,title:e.target.value}))} placeholder={workspaceModal.item_kind==='note'?'What should you remember?':'What needs to happen?'}/></label>
+              <label className="workspace-field workspace-field--details"><span>Details <small>optional</small></span><textarea maxLength={5000} rows={2} value={workspaceModal.body} onChange={e=>setWorkspaceModal(m=>({...m,body:e.target.value}))} placeholder="Add useful context for later…"/></label>
+
+              <section className="workspace-modal__section">
+                <div className="workspace-modal__section-head"><strong>{workspaceModal.item_kind==='reminder'?'Schedule & label':'Label & priority'}</strong><span>{workspaceModal.item_kind==='reminder'?'Choose when this comes back':'Make it easy to find later'}</span></div>
+                {workspaceModal.item_kind==='reminder'&&<div className="workspace-schedule">
+                  <label className="workspace-field"><span>Remind on</span><input type="date" required value={workspaceModal.remind_on} onChange={e=>setWorkspaceModal(m=>({...m,remind_on:e.target.value}))}/></label>
+                  <div className="workspace-date-presets" aria-label="Quick reminder dates">
+                    {[[0,'Today'],[1,'Tomorrow'],[7,'Next week']].map(([days,label])=><button type="button" key={days} className={workspaceModal.remind_on===_dateOffsetStr(days)?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,remind_on:_dateOffsetStr(days)}))}>{label}</button>)}
+                  </div>
+                </div>}
+                <div className="workspace-chip-field">
+                  <span>Type</span>
+                  <div className="workspace-label-picker">{_workspaceLabels[workspaceModal.item_kind].map(([value,label])=><button type="button" key={value} className={workspaceModal.label===value?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,label:value}))}>{label}</button>)}</div>
+                </div>
+                {workspaceModal.item_kind==='note'&&<button type="button" className={`workspace-pin-toggle ${workspaceModal.is_pinned?'is-active':''}`} aria-pressed={workspaceModal.is_pinned} onClick={()=>setWorkspaceModal(m=>({...m,is_pinned:!m.is_pinned}))}><span className="workspace-pin-toggle__icon">⌃</span><span><strong>Pin to the top</strong><small>Keep this note easy to reach</small></span><span className="workspace-pin-toggle__state">{workspaceModal.is_pinned?'Pinned':'Off'}</span></button>}
+              </section>
+
+              <section className="workspace-modal__section">
+                <div className="workspace-modal__section-head"><strong>Link to a record</strong><span>Optional · adds useful context</span></div>
+                <div className="workspace-link-kinds" aria-label="Linked record type">
+                  {[['none','None'],['customer','Customer'],['so','Sales order'],['po','Purchase order']].map(([value,label])=><button type="button" key={value} className={workspaceModal.link_type===value?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,link_type:value,link_id:''}))}>{label}</button>)}
+                </div>
+                {workspaceModal.link_type!=='none'&&<label className="workspace-field workspace-field--linked"><span>{workspaceModal.link_type==='customer'?'Customer':workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
+                  <select required value={workspaceModal.link_id} onChange={e=>setWorkspaceModal(m=>({...m,link_id:e.target.value}))}>
+                    <option value="">Choose…</option>
+                    {workspaceModal.link_type==='customer'&&cust.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=><option key={c.id} value={c.id}>{c.name||c.id}</option>)}
+                    {workspaceModal.link_type==='so'&&sos.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,500).map(so=><option key={so.id} value={so.id}>{so.id} · {cust.find(c=>c.id===so.customer_id)?.name||so.memo||'Sales order'}</option>)}
+                    {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
+                  </select>
+                </label>}
+              </section>
             </div>
-            <label className="workspace-field"><span>Title</span><input autoFocus maxLength={180} value={workspaceModal.title} onChange={e=>setWorkspaceModal(m=>({...m,title:e.target.value}))} placeholder={workspaceModal.item_kind==='note'?'What should you remember?':'What needs to happen?'}/></label>
-            <label className="workspace-field"><span>Details <small>optional</small></span><textarea maxLength={5000} rows={4} value={workspaceModal.body} onChange={e=>setWorkspaceModal(m=>({...m,body:e.target.value}))} placeholder="Add the context you will need later…"/></label>
-            <div className="workspace-modal__split">
-              <label className="workspace-field"><span>Type</span><select value={workspaceModal.label} onChange={e=>setWorkspaceModal(m=>({...m,label:e.target.value}))}>{_workspaceLabels[workspaceModal.item_kind].map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label>
-              {workspaceModal.item_kind==='reminder'?<label className="workspace-field"><span>Remind on</span><input type="date" required value={workspaceModal.remind_on} onChange={e=>setWorkspaceModal(m=>({...m,remind_on:e.target.value}))}/></label>:
-              <label className="workspace-check"><input type="checkbox" checked={workspaceModal.is_pinned} onChange={e=>setWorkspaceModal(m=>({...m,is_pinned:e.target.checked}))}/><span><strong>Pin this note</strong><small>Keep it at the top</small></span></label>}
-            </div>
-            <div className="workspace-modal__split">
-              <label className="workspace-field"><span>Attach to <small>optional</small></span><select value={workspaceModal.link_type} onChange={e=>setWorkspaceModal(m=>({...m,link_type:e.target.value,link_id:''}))}><option value="none">Nothing</option><option value="customer">Customer</option><option value="so">Sales order</option><option value="po">Purchase order</option></select></label>
-              {workspaceModal.link_type!=='none'&&<label className="workspace-field"><span>{workspaceModal.link_type==='customer'?'Customer':workspaceModal.link_type==='so'?'Sales order':'Purchase order'}</span>
-                <select required value={workspaceModal.link_id} onChange={e=>setWorkspaceModal(m=>({...m,link_id:e.target.value}))}>
-                  <option value="">Choose…</option>
-                  {workspaceModal.link_type==='customer'&&cust.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||'')).map(c=><option key={c.id} value={c.id}>{c.name||c.id}</option>)}
-                  {workspaceModal.link_type==='so'&&sos.slice().sort((a,b)=>new Date(b.created_at||0)-new Date(a.created_at||0)).slice(0,500).map(so=><option key={so.id} value={so.id}>{so.id} · {cust.find(c=>c.id===so.customer_id)?.name||so.memo||'Sales order'}</option>)}
-                  {workspaceModal.link_type==='po'&&_workspacePOs.map(po=><option key={po.id} value={po.id}>{po.id} · {po.detail}</option>)}
-                </select>
-              </label>}
-            </div>
-            <div className="workspace-visibility">
-              <span>Who can see this?</span>
-              <button type="button" className={workspaceModal.visibility==='personal'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'personal'}))}><strong>Personal</strong><small>Only you</small></button>
-              <button type="button" className={workspaceModal.visibility==='team'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'team'}))}><strong>Team</strong><small>All staff</small></button>
-            </div>
-            <footer><button type="button" className="btn btn-secondary" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>Cancel</button><button type="submit" className="btn btn-primary" disabled={workspaceSaving}>{workspaceSaving?'Saving…':workspaceModal.id?'Save changes':workspaceModal.item_kind==='note'?'Save note':'Set reminder'}</button></footer>
+            <footer>
+              <div className="workspace-visibility">
+                <span>Visibility</span>
+                <div>
+                  <button type="button" className={workspaceModal.visibility==='personal'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'personal'}))}>Private</button>
+                  <button type="button" className={workspaceModal.visibility==='team'?'is-active':''} onClick={()=>setWorkspaceModal(m=>({...m,visibility:'team'}))}>Team</button>
+                </div>
+              </div>
+              <div className="workspace-modal__footer-actions"><button type="button" className="btn btn-secondary" onClick={()=>setWorkspaceModal(m=>({...m,open:false}))}>Cancel</button><button type="submit" className="btn btn-primary" disabled={workspaceSaving}>{workspaceSaving?'Saving…':workspaceModal.id?'Save changes':workspaceModal.item_kind==='note'?'Save note':'Set reminder'}</button></div>
+            </footer>
           </form>
         </div>}
       </>;
