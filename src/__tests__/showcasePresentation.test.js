@@ -4,6 +4,7 @@ const {
   isPublicAddress,
   isAllowedImageHost,
   cleanDecorations,
+  inferAthleticFormProfile,
   buildEditPrompt,
   artworkUrls,
   analyzeWithKimi,
@@ -95,7 +96,24 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('dramatic appeal must come from product angle');
     expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v5-subtle-hero-angle');
+    expect(PROMPT_VERSION).toBe('showcase-v6-athletic-forms');
+  });
+
+  test('uses athletic male and female invisible garment forms without visible models', () => {
+    expect(inferAthleticFormProfile({ name: "Men's Performance Hoodie" })).toBe('men');
+    expect(inferAthleticFormProfile({ name: "Women's Training Quarter-Zip" })).toBe('women');
+    expect(inferAthleticFormProfile({ name: 'Youth Team Jersey' })).toBe('youth');
+    expect(inferAthleticFormProfile({ name: 'Unisex Fleece Crew' })).toBe('unisex');
+    expect(inferAthleticFormProfile({ name: 'Performance Hoodie' })).toBe('men');
+
+    const mensPrompt = buildEditPrompt({ name: "Men's Performance Hoodie" }, [], {});
+    expect(mensPrompt).toContain('naturally strong and athletic');
+    expect(mensPrompt).toContain('never jacked, bulky, over-muscled');
+
+    const womensPrompt = buildEditPrompt({ name: "Women's Training Quarter-Zip" }, [], {});
+    expect(womensPrompt).toContain('clearly female');
+    expect(womensPrompt).toContain('fit and strong, never exaggerated');
+    expect(womensPrompt).toContain('no visible or residual wearer');
   });
 
   test('collects the existing decoration URL shapes without duplicates', () => {
@@ -142,6 +160,8 @@ describe('Showcase provider boundary', () => {
     expect(instructions).toContain('"composition":"premium near-front hero view with a subtle three-quarter turn"');
     expect(instructions).toContain('"camera_yaw_degrees":"8–15"');
     expect(instructions).toContain('"presentation":"product-only invisible support with natural on-body volume and drape"');
+    expect(instructions).toContain('"athletic_form_profile":"men"');
+    expect(instructions).toContain('Men’s items should read as naturally strong and athletic');
     expect(instructions).toContain('"straight_on_catalog_view_allowed":false');
     expect(instructions).toContain('pure white background');
   });

@@ -3,7 +3,7 @@ const net = require('net');
 
 const KIMI_URL = 'https://api.moonshot.ai/v1/chat/completions';
 const OPENAI_IMAGE_URL = 'https://api.openai.com/v1/images/edits';
-const PROMPT_VERSION = 'showcase-v5-subtle-hero-angle';
+const PROMPT_VERSION = 'showcase-v6-athletic-forms';
 const MAX_SOURCE_BYTES = 15 * 1024 * 1024;
 const DEFAULT_IMAGE_HOSTS = new Set([
   'static.momentecbrands.com',
@@ -153,7 +153,24 @@ function cleanDecorations(decorations) {
   }));
 }
 
+function inferAthleticFormProfile(product) {
+  const text = [
+    product?.name,
+    product?.display_name,
+    product?.description,
+    product?.category,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/\b(women|woman|women[’']?s|ladies|lady|female|juniors?)\b/.test(text)) return 'women';
+  if (/\b(youth|child|children|kids?|girls?|boys?)\b/.test(text)) return 'youth';
+  if (/\bunisex\b/.test(text)) return 'unisex';
+  if (/\b(men|man|men[’']?s|male)\b/.test(text)) return 'men';
+  // Most adult team-sports catalog styles omit "men's" from the product title.
+  // Women's, youth, and unisex cuts are ordinarily labeled explicitly.
+  return 'men';
+}
+
 function buildAnalysisBrief(product, decorations) {
+  const athleticFormProfile = inferAthleticFormProfile(product);
   return {
     sku: product.sku || '',
     name: product.name || product.display_name || '',
@@ -172,6 +189,14 @@ function buildAnalysisBrief(product, decorations) {
       full_product_visible: true,
       composition: 'premium near-front hero view with a subtle three-quarter turn',
       presentation: 'product-only invisible support with natural on-body volume and drape',
+      athletic_form_profile: athleticFormProfile,
+      athletic_form_guidance: athleticFormProfile === 'women'
+        ? 'clearly female athletic proportions; fit and strong, natural and non-exaggerated'
+        : athleticFormProfile === 'men'
+          ? 'strong athletic male proportions; fit and substantial, never jacked or bodybuilder-like'
+          : athleticFormProfile === 'youth'
+            ? 'age-appropriate neutral athletic proportions without adult muscular shaping'
+            : 'strong neutral athletic proportions appropriate to the garment cut',
       camera_yaw_degrees: '8–15',
       straight_on_catalog_view_allowed: false,
       flat_lay_allowed: false,
@@ -221,6 +246,13 @@ async function analyzeWithKimi({ product, decorations, images }) {
         'Shape the empty garment with believable on-body volume and drape using invisible support only: dimensional',
         'shoulders, chest, sleeves, waist, hips, and legs as appropriate, but absolutely no visible or residual person,',
         'skin, body part, body silhouette, mannequin, dress form, hanger, or support structure.',
+        'Use the structured athletic_form_profile to shape only the invisible volume beneath wearable garments.',
+        'Men’s items should read as naturally strong and athletic—with moderately broad shoulders and chest, a trim',
+        'waist, and solid athletic legs as applicable—but never jacked, bulky, over-muscled, or bodybuilder-like.',
+        'Women’s items should use a clearly female athletic form with natural shoulder, bust, waist, and hip proportions',
+        'appropriate to the garment cut: fit and strong, never exaggerated, sexualized, or curvy beyond the actual cut.',
+        'For unisex products, use a strong neutral athletic form. For youth products, keep shaping age-appropriate.',
+        'Never change the manufacturer’s cut, sizing proportions, garment panels, or silhouette to create this volume.',
         'The background is locked to uniform neutral pure white (#FFFFFF). Never request cream, beige, ivory,',
         'a warm-neutral tint, colored cast, gradient, vignette, or off-white background in edit_prompt.',
         'If the source contains a person, model, body part, mannequin, dress form, hanger, or prop, require its',
@@ -286,6 +318,14 @@ function buildEditPrompt(product, decorations, analysis) {
     'volume and natural worn drape, as though occupied, while remaining a product-only image. Tops must have',
     'dimensional shoulders, chest, torso, and sleeves rather than lying flat. Bottoms must have natural volume',
     'through the waist, seat, thighs, knees, and legs rather than hanging as a flat symmetrical diagram.',
+    'ATHLETIC FORM — REQUIRED: use PRODUCT.output.athletic_form_profile only to shape the invisible volume beneath',
+    'wearable garments. Men’s items must read as naturally strong and athletic: moderately broad shoulders and chest,',
+    'a trim waist, and solid athletic hips, thighs, and legs where applicable. Keep the build fit and substantial,',
+    'never jacked, bulky, over-muscled, superhero-like, or bodybuilder-like. Women’s items must use a clearly female',
+    'athletic form with natural shoulder, bust, waist, and hip proportions appropriate to the actual garment cut.',
+    'The women’s form should feel fit and strong, never exaggerated, sexualized, or artificially curvy. Unisex items',
+    'use a strong neutral athletic form; youth items stay age-appropriate without adult muscular shaping. Preserve',
+    'the exact manufacturer cut and sizing proportions—the athletic form adds believable volume, not a redesigned fit.',
     'There must be no visible or residual wearer, skin, body part, human outline, mannequin, dress form, hanger,',
     'support rod, clipping artifact, hollow neck artifact, or transparent body. Only the garment may be visible.',
     'For tops and outerwear, use natural dimensional volume with one side receding slightly. For pants, shorts,',
@@ -376,6 +416,7 @@ module.exports = {
   isAllowedImageHost,
   fetchRemoteImage,
   cleanDecorations,
+  inferAthleticFormProfile,
   buildAnalysisBrief,
   buildEditPrompt,
   analyzeWithKimi,
