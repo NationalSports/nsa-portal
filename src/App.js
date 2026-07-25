@@ -7973,7 +7973,93 @@ export default function App(){
           daily syncs flagged new, plus locally-parked bills. Click → Import & Review. */}
       {isA&&(()=>{const _parked=savedBills.filter(b=>b.reviewLater).length;const n=ssNewCount+siNewCount+_parked;return n>0&&<div className="stat-card" style={{cursor:'pointer',borderColor:'#0891b2'}} title={'S&S new: '+ssNewCount+' · Sports Inc new: '+siNewCount+' · parked for later: '+_parked} onClick={()=>{setBillView('import');setPg('import')}}><div className="stat-label">📥 Bills Inbox</div><div className="stat-value" style={{color:'#0e7490'}}>{n}</div></div>})()}
       <div className="stat-card" style={{cursor:'pointer',borderColor:ssConnected?'#22c55e':'#ef4444'}} onClick={()=>setPg('warehouse')}><div className="stat-label">ShipStation</div><div className="stat-value" style={{color:ssConnected?'#166534':'#dc2626',fontSize:16}}>{ssConnected?'Connected':'Offline'}</div></div></div>
-    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);return<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
+    {(()=>{const _fmtTD=d=>{if(!d)return'';try{const dt=new Date(d);if(isNaN(dt))return'';const days=Math.floor((Date.now()-dt)/864e5);return days<1?'Today':days===1?'Yesterday':days<14?days+'d ago':((dt.getMonth()+1)+'/'+dt.getDate())}catch{return''}};const _allActionTodos=adminTodos.filter(t=>!t.isNotification);const _undismissed=_allActionTodos.filter(t=>!dismissedTodos.includes(t.dismissKey)&&!_todoSnoozed(t.dismissKey));const _todoTypeMatch=t=>{if(todoFilter==='all')return true;if(todoFilter==='art')return t.type==='art'||t.type==='coach_followup'||t.type==='art_rejected'||t.type==='art_approved';if(todoFilter==='follow_up')return t.type==='follow_up'||t.type==='inv_followup';if(todoFilter==='order')return t.type==='order'||t.type==='deposit_needed'||t.type==='if_short';if(todoFilter==='deadline')return t.type==='deadline';if(todoFilter==='est')return t.type==='est_approved'||t.type==='est_update_request';if(todoFilter==='delivery')return t.type==='rep_delivery';if(todoFilter==='firm')return t.type==='firm';if(todoFilter==='issue')return t.type==='issue';return true};const actionTodos=_undismissed.filter(_todoTypeMatch);const notifs=adminTodos.filter(t=>t.isNotification);const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const recentNotifs=visNotifs.slice().sort((a,b)=>_notifTs(b)-_notifTs(a)).slice(0,6);const orderedAssigned=myAssignedTodos.slice().sort((a,b)=>(a.priority??2)-(b.priority??2)||(new Date(a.due_date||a.created_at||0)-new Date(b.due_date||b.created_at||0)));const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));const _hubTitle=s=>(s||'').replace(/^[^\w@]+/,'');const _openNotif=t=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}};return<>
+    <section className="dash-action-hub" aria-label="Action inbox">
+      <article className="dash-action-card dash-action-card--tasks">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Assigned work</span>
+            <h2>Tasks <span>{myAssignedTodos.length}</span></h2>
+          </div>
+          <button className="dash-action-card__primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}><Icon name="plus" size={13}/> New task</button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{orderedAssigned.filter(t=>(t.priority??2)<=1).length}</strong> high priority</span>
+          <span><strong>{orderedAssigned.filter(t=>t.assigned_to===cu.id).length}</strong> assigned to me</span>
+          <span><strong>{recentlyCompleted.length}</strong> recently completed</span>
+        </div>
+        <div className="dash-action-card__list dash-action-card__list--tasks">
+          {orderedAssigned.length===0?<div className="dash-action-card__empty"><Icon name="check" size={19}/><strong>No open assigned tasks</strong><span>Create a task when work needs a clear owner.</span></div>:
+          orderedAssigned.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));return<div className={`dash-action-row dash-action-row--task ${(t.priority??2)<=1?'is-high':''}`} key={t.id} role="button" tabIndex={0} onClick={()=>setTodoDetailId(t.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setTodoDetailId(t.id)}}}>
+            <span className="dash-action-row__marker"><Icon name={(t.priority??2)<=1?'alert':'check'} size={14}/></span>
+            <span className="dash-action-row__copy">
+              <strong>{t.title}</strong>
+              <small>{isAssignedToMe?'From '+(creator?.name||'Team'):(assignee?.name||'Unassigned')}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}</small>
+            </span>
+            <span className={`dash-action-row__priority ${(t.priority??2)<=1?'is-high':''}`}>{(t.priority??2)<=1?'High':'Normal'}</span>
+            <span className="dash-action-row__actions">
+              {t.so_id&&<button title={`Open ${t.so_id}`} aria-label={`Open ${t.so_id}`} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open</button>}
+              <button title="Mark task complete" aria-label="Mark task complete" className="is-complete" onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}><Icon name="check" size={13}/></button>
+              <button title="Delete task" aria-label="Delete task" className="is-delete" onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}><Icon name="x" size={13}/></button>
+            </span>
+          </div>})}
+          {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);return<div className="dash-action-row dash-action-row--completed" key={`complete-${t.id}`} role="button" tabIndex={0} onClick={()=>setTodoDetailId(t.id)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();setTodoDetailId(t.id)}}}>
+            <span className="dash-action-row__marker"><Icon name="check" size={14}/></span>
+            <span className="dash-action-row__copy"><strong>{t.title}</strong><small>Completed by {completedBy?.name||'Team'} · {_fmtTodoDate(t.completed_at)}</small></span>
+            <span className="dash-action-row__priority is-done">Done</span>
+            <span className="dash-action-row__actions"><button title="Acknowledge completed task" aria-label="Acknowledge completed task" className="is-complete" onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}><Icon name="check" size={13}/></button></span>
+          </div>})}
+        </div>
+      </article>
+
+      <article className="dash-action-card dash-action-card--messages">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Conversations</span>
+            <h2>Messages <span>{myUnread.length}</span></h2>
+          </div>
+          <button className="dash-action-card__link" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>Open inbox <span aria-hidden="true">→</span></button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{myUnread.length}</strong> unread</span>
+          <button onClick={()=>{setMF('mentions');setMEntityF('all');setPg('messages')}}><strong>{unreadMentions.length}</strong> @mentions</button>
+        </div>
+        <div className="dash-action-card__list">
+          {myUnread.length===0?<div className="dash-action-card__empty"><Icon name="mail" size={20}/><strong>Inbox is clear</strong><span>No unread conversations need a reply.</span><button onClick={()=>setPg('messages')}>Browse messages</button></div>:
+          myUnread.slice(0,5).map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);return<div className={`dash-action-row dash-action-row--message ${isTagged?'is-mentioned':''}`} key={m.id} role="button" tabIndex={0} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.currentTarget.click()}}}>
+            <span className="dash-action-row__avatar">{(m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'C'):author?.name||'T').charAt(0)}</span>
+            <span className="dash-action-row__copy"><strong>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name||'Team'} {isTagged&&<b>@you</b>}</strong><small>{m.text}</small></span>
+            <span className="dash-action-row__time">{m.ts}</span>
+          </div>})}
+        </div>
+        {myUnread.length>5&&<button className="dash-action-card__footer" onClick={()=>{setMF('unread');setMEntityF('all');setPg('messages')}}>{myUnread.length-5} more unread messages <span aria-hidden="true">→</span></button>}
+      </article>
+
+      <article className="dash-action-card dash-action-card--notifications">
+        <header className="dash-action-card__header">
+          <div>
+            <span className="dash-action-card__kicker">Recent activity</span>
+            <h2>Notifications <span>{visNotifs.length}</span></h2>
+          </div>
+          <button className="dash-action-card__link" onClick={()=>openActivityCenter('notifs')}>Review all <span aria-hidden="true">→</span></button>
+        </header>
+        <div className="dash-action-card__summary">
+          <span><strong>{visNotifs.filter(t=>t.type==='job_completed').length}</strong> jobs ready</span>
+          <span><strong>{visNotifs.filter(t=>t.type==='inv_paid').length}</strong> payments</span>
+        </div>
+        <div className="dash-action-card__list">
+          {recentNotifs.length===0?<div className="dash-action-card__empty"><Icon name="check" size={20}/><strong>You’re up to date</strong><span>New operational activity will appear here.</span></div>:
+          recentNotifs.map((t,i)=><div className="dash-action-row dash-action-row--notification" key={t.dismissKey||i} role="button" tabIndex={0} onClick={()=>_openNotif(t)} onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();_openNotif(t)}}}>
+            <span className="dash-action-row__pulse"/>
+            <span className="dash-action-row__copy"><strong>{_hubTitle(t.msg)}</strong><small>{t.detail}</small></span>
+            <span className="dash-action-row__time">{_fmtNotifDT(t.date)}</span>
+            <button title="Mark notification read" aria-label="Mark notification read" className="dash-action-row__dismiss" onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}><Icon name="check" size={13}/></button>
+          </div>)}
+        </div>
+        {visNotifs.length>recentNotifs.length&&<button className="dash-action-card__footer" onClick={()=>openActivityCenter('notifs')}>{visNotifs.length-recentNotifs.length} more notifications <span aria-hidden="true">→</span></button>}
+      </article>
+    </section>
+    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
       <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>📋 To-Do ({actionTodos.length})</h2>
         <div style={{display:'flex',gap:6,alignItems:'center'}}>
         <select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
@@ -8004,38 +8090,6 @@ export default function App(){
         </div></div>
       {_renderSalesBox(null)}
     </div>
-    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}}>
-      {(()=>{const visNotifs=notifs.filter(t=>!dismissedNotifs.includes(t.dismissKey));const notifGroups=_groupNotifs(visNotifs);return<div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>🔔 Notifications ({visNotifs.length})</h2><button title="Expand — sort, message & manage" className="btn btn-sm" style={{fontSize:11,padding:'3px 10px',background:'#f0fdf4',color:'#166534',border:'1px solid #bbf7d0',borderRadius:8,whiteSpace:'nowrap'}} onClick={()=>openActivityCenter('notifs')}>⤢ Expand</button></div>
-        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {visNotifs.length===0?<div className="empty" style={{padding:20}}>No new notifications</div>:
-          notifGroups.map(g=><div key={g.cat}>
-            {notifGroups.length>1&&<div style={{padding:'6px 14px',fontSize:10,fontWeight:700,color:'#64748b',background:'#f8fafc',borderBottom:'1px solid #e2e8f0',textTransform:'uppercase',letterSpacing:0.4}}>{g.label} <span style={{color:'#94a3b8',fontWeight:600}}>({g.items.length})</span></div>}
-            {g.items.map((t,i)=><div key={g.cat+i} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',display:'flex',alignItems:'center',gap:10,cursor:'pointer',background:'#f0fdf4'}} onClick={()=>{if(t.so){if(t.jobId){setESOTab('jobs');setESOScrollJob(null);setESOScrollJobRef({artId:t.jobArtId,key:t.jobKey,id:t.jobId})}setESO(t.so);setESOC(cust.find(cc=>cc.id===t.so.customer_id));setPg('orders')}}}>
-              <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,fontWeight:600}}>{t.msg}</div><div style={{fontSize:11,color:'#64748b'}}>{t.detail}</div></div>
-              {_fmtNotifDT(t.date)&&<span style={{fontSize:10,color:'#94a3b8',whiteSpace:'nowrap'}}>{_fmtNotifDT(t.date)}</span>}
-              <button title="Dismiss" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:14,color:'#16a34a',display:'flex',alignItems:'center'}} onClick={e=>{e.stopPropagation();dismissNotif(t.dismissKey)}}>✓</button>
-              <span style={{fontSize:10,padding:'2px 8px',borderRadius:8,background:'#dcfce7',color:'#166534',fontWeight:600,whiteSpace:'nowrap'}}>{t.action}</span>
-            </div>)}
-          </div>)}
-        </div>
-      </div>})()}
-      {/* Unread messages — moved beside Notifications (each half-width) */}
-      <div className="card"><div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}><h2>💬 Unread ({unreadMsgs.length}){unreadMentions.length>0&&<span style={{fontSize:12,color:'#d97706',fontWeight:600,marginLeft:8}}>({unreadMentions.length} mention{unreadMentions.length!==1?'s':''})</span>}</h2>
-        {isAdmin&&<select value={adminRepFilter} onChange={e=>setAdminRepFilter(e.target.value)} style={{fontSize:11,padding:'3px 8px',borderRadius:6,border:'1px solid #e2e8f0',background:'white',color:'#475569',cursor:'pointer'}}>
-          <option value="me">My Items</option><option value="all">All Reps</option>{REPS.filter(r=>r.id!==cu.id&&(isCommissionRep(r)||r.role==='gm')).map(r=><option key={r.id} value={r.id}>{r.name?.split(' ')[0]}</option>)}
-        </select>}</div>
-        <div className="card-body" style={{padding:0,maxHeight:400,overflow:'auto'}}>
-          {myUnread.length===0?<div className="empty" style={{padding:20}}>No unread messages</div>:
-          myUnread.map(m=>{const author=REPS.find(r=>r.id===m.author_id);const wctx=m.entity_type==='webstore_order'?wsoCtx[String(m.entity_id)]:null;const so=sos.find(s=>s.id===m.so_id);const c2=cust.find(cc=>cc.id===so?.customer_id);const isTagged=(m.tagged_members||[]).includes(cu?.id);
-            return<div key={m.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',cursor:'pointer',background:isTagged?'#fef3c7':'white'}} onClick={()=>{if(m.entity_type==='webstore_order'){const st=wctx&&wctx.omgStoreId&&omgStores.find(s=>s.id===wctx.omgStoreId);if(st){setOmgSel(st);setOmgFocusOrder(String(m.entity_id))}setPg('omg')}else if(so){setESO(so);setESOC(c2);setPg('orders')}else if(m.entity_type==='issue'&&m.entity_id){setPg('issues');setIssueFocus(m.entity_id)}}}>
-              <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:2}}>
-                <span style={{fontSize:12,fontWeight:700}}>{m.entity_type==='webstore_order'?(m.author||wctx?.buyer||'Customer'):author?.name?.split(' ')[0]}</span><span style={{fontSize:10,color:'#1e40af'}}>{wctx?('🛍️ #'+(wctx.orderNo||'order')+(wctx.storeName?' · '+wctx.storeName:'')):(so?.id||(m.entity_type==='issue'?'💬 Issue reply':''))}</span>
-                {isTagged&&<span style={{fontSize:9,fontWeight:700,padding:'1px 4px',borderRadius:6,background:'#fef3c7',color:'#92400e'}}>@you</span>}
-                <span style={{fontSize:10,color:'#94a3b8',marginLeft:'auto'}}>{m.ts}</span></div>
-              <div style={{fontSize:12,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{m.text}</div>
-            </div>})}
-        </div></div>
-    </div>
     </>})()}
     {renderCatReqCard()}
     {renderCatReqModal()}
@@ -8054,45 +8108,6 @@ export default function App(){
           </div>})}
         </div>
       </div>})()}
-    {/* Assigned Tasks for Admin */}
-    {(()=>{const recentlyCompleted=assignedTodos.filter(t=>t.status==='completed'&&t.created_by===cu.id&&t.completed_by&&t.completed_by!==cu.id&&t.completed_at&&Math.floor((new Date()-new Date(t.completed_at))/864e5)<=3&&!dismissedNotifs.includes('task-ack-'+t.id));return(myAssignedTodos.length>0||recentlyCompleted.length>0)&&<div className="card" style={{marginBottom:16}}>
-      <div className="card-header" style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <h2>📌 Assigned Tasks ({myAssignedTodos.length})</h2>
-        <button className="btn btn-sm btn-primary" onClick={()=>setTodoModal({open:true,title:'',description:'',assigned_to:'',so_id:'',customer_id:'',priority:2,due_date:''})}>+ New Task</button>
-      </div>
-      <div className="card-body" style={{padding:0,maxHeight:300,overflow:'auto'}}>
-        {myAssignedTodos.length===0?<div className="empty" style={{padding:20}}>No open tasks</div>:
-        myAssignedTodos.map(t=>{const assignee=REPS.find(r=>r.id===t.assigned_to);const creator=REPS.find(r=>r.id===t.created_by);const isAssignedToMe=t.assigned_to===cu.id;const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
-          return<div key={t.id} style={{padding:'10px 14px',borderBottom:'1px solid #f1f5f9',background:(botRowUI(t.bot_status)?.bg)||(isAssignedToMe?'#fef3c7':'white'),borderLeft:botRowUI(t.bot_status)?('4px solid '+botRowUI(t.bot_status).bar):undefined,cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:13,fontWeight:600}}>{t.title}{(()=>{const _b=botRowUI(t.bot_status);if(!_b)return null;const _p=botProgress(t);return<span style={{marginLeft:6,fontSize:10,fontWeight:700,padding:'1px 7px',borderRadius:999,background:_b.pillBg,color:_b.pillFg,whiteSpace:'nowrap'}}>{_p?`🤖 ${_p.step}/${_p.total} · ${_p.label}`:_b.label}</span>})()}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>{isAssignedToMe?'From: '+creator?.name:assignee?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{tSO?.memo?' · '+tSO.memo:''}{t.created_at?' · '+_fmtTodoDate(t.created_at):''}</div>
-              </div>
-              {t.so_id&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 8px',background:'#eff6ff',color:'#1e40af',border:'1px solid #bfdbfe',borderRadius:8,whiteSpace:'nowrap'}} onClick={ev=>{ev.stopPropagation();const so=sos.find(s=>s.id===t.so_id);if(so){setESO(so);setESOC(cust.find(c=>c.id===so.customer_id));setPg('orders')}else{nf(t.so_id+' not found','error')}}}>Open {t.so_id}</button>}
-              <span style={{fontSize:9,padding:'2px 8px',borderRadius:8,background:t.priority<=1?'#fef2f2':'#eff6ff',color:t.priority<=1?'#dc2626':'#2563eb',fontWeight:600}}>{t.priority<=1?'High':'Normal'}</span>
-              {t.comments?.length>0&&<span style={{fontSize:10,color:'#64748b'}}>{t.comments.length} comment{t.comments.length!==1?'s':''}</span>}
-              {(()=>{const _rc=t.description&&t.description.includes('__rep_change__:')?JSON.parse((t.description.match(/__rep_change__:(\{[^}]+\})/)||[''  ,'{}'  ])[1]):null;return _rc&&_rc.old_rep_id?<button title="Revert rep change" style={{fontSize:9,padding:'2px 8px',background:'#fef2f2',color:'#dc2626',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap',flexShrink:0}} onClick={ev=>{ev.stopPropagation();const tc=cust.find(x=>x.id===_rc.customer_id);if(tc){savC({...tc,primary_rep_id:_rc.old_rep_id});_todoComplete(t.id);nf('Rep reverted to '+(REPS.find(r=>r.id===_rc.old_rep_id)?.name||'previous'))}else{nf('Customer not found','error')}}}>↩ Revert</button>:null})()}
-              {t.assigned_to==='bot-claude'&&['failed','blocked','needs_input'].includes(t.bot_status)&&<button title="Retry — requeue for Claude" style={{background:'none',border:'1px solid #93c5fd',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#1e40af',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_botRequeue(t.id)}}>🔁</button>}
-              <button title="Approve — mark complete" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoComplete(t.id)}}>✓</button>
-              <button title="Delete" style={{background:'none',border:'1px solid #fecaca',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#dc2626',flexShrink:0}} onClick={ev=>{ev.stopPropagation();_todoDelete(t.id)}}>✕</button>
-            </div>
-          </div>})}
-      </div>
-      {recentlyCompleted.length>0&&<div style={{borderTop:'1px solid #e2e8f0'}}>
-        <div style={{padding:'8px 14px',fontSize:11,fontWeight:700,color:'#166534',background:'#f0fdf4'}}>Recently Completed ({recentlyCompleted.length})</div>
-        {recentlyCompleted.map(t=>{const completedBy=REPS.find(r=>r.id===t.completed_by);const daysAgo=Math.floor((new Date()-new Date(t.completed_at))/864e5);const tSO=t.so_id?sos.find(s=>s.id===t.so_id):null;const tCust=cust.find(c=>c.id===(tSO?.customer_id||t.customer_id));
-          return<div key={t.id} style={{padding:'8px 14px',borderBottom:'1px solid #f1f5f9',background:'#f0fdf4',cursor:'pointer'}} onClick={()=>setTodoDetailId(t.id)}>
-            <div style={{display:'flex',alignItems:'center',gap:8}}>
-              <div style={{flex:1}}>
-                <div style={{fontSize:12,color:'#166534'}}>✅ {t.title}</div>
-                <div style={{fontSize:11,color:'#64748b'}}>Completed by {completedBy?.name}{t.so_id?' · '+t.so_id:''}{tCust?' · '+tCust.name:''}{t.completion_note?' — '+t.completion_note:''}{daysAgo===0?' · Today':' · '+daysAgo+'d ago'}</div>
-              </div>
-              <button title="Acknowledge — clear from list" style={{background:'none',border:'1px solid #bbf7d0',borderRadius:6,cursor:'pointer',padding:'2px 6px',fontSize:12,color:'#16a34a',flexShrink:0}} onClick={ev=>{ev.stopPropagation();dismissNotif('task-ack-'+t.id)}}>✓</button>
-            </div>
-          </div>})}
-      </div>}
-    </div>})()}
     <div className="card" style={{marginBottom:16}}><div className="card-header"><h2>Quick Actions</h2></div><div className="card-body" style={{display:'flex',gap:8,flexWrap:'wrap'}}>
       <button className="btn btn-primary" onClick={()=>newE(null)}><Icon name="file" size={14}/> New Estimate</button>
       <button className="btn btn-secondary" onClick={()=>{setPg('customers');setCM({open:true,c:null})}}><Icon name="plus" size={14}/> New Customer</button>
