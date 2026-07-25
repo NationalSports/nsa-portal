@@ -2262,7 +2262,7 @@ tbody tr { cursor: pointer; }
 }
 .order-editor-fulfillment {
   display: grid !important;
-  grid-template-columns: minmax(170px, .8fr) minmax(240px, 1.5fr) auto;
+  grid-template-columns: minmax(220px, .9fr) minmax(240px, 1.35fr) auto;
   gap: 18px !important;
   align-items: end !important;
   padding: 12px 8px 15px !important;
@@ -2431,6 +2431,10 @@ tbody tr { cursor: pointer; }
   padding-left: 15px;
   border-color: #ccd4e0;
   background: #fff;
+}
+.order-editor-fulfillment > div:first-child > div {
+  flex-wrap: nowrap !important;
+  white-space: nowrap;
 }
 
 .order-editor-item {
@@ -3570,7 +3574,7 @@ tbody tr { cursor: pointer; }
 }
 .order-editor-fulfillment {
   display: grid !important;
-  grid-template-columns: minmax(170px, .8fr) minmax(240px, 1.5fr) auto;
+  grid-template-columns: minmax(220px, .9fr) minmax(240px, 1.35fr) auto;
   gap: 18px !important;
   align-items: end !important;
   margin-top: 0 !important;
@@ -3579,6 +3583,10 @@ tbody tr { cursor: pointer; }
   border-top: 1px solid #edf0f5 !important;
   border-radius: 0;
   background: #fff;
+}
+.order-editor-fulfillment > div:first-child > div {
+  flex-wrap: nowrap !important;
+  white-space: nowrap;
 }
 .order-editor-doc-actions {
   margin: 0 8px;
