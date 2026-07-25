@@ -5571,12 +5571,12 @@ function StoreDetail({ store: s, detail, loading, tab, setTab, focusOrderId = nu
   // live behind the header ⚙ Settings button (the rich editor), not a tab.
   const PRIMARY_TABS = [
     { id: 'catalog', label: `Catalog (${catalog.length})` },
-    { id: 'appearance', label: 'Store Appearance' },
     { id: 'orders', label: `Orders (${validOrders.length})` },
     { id: 'art', label: 'Art & Logos' },
     { id: 'analytics', label: 'Analytics' },
   ];
   const MORE_TABS = [
+    { id: 'appearance', label: 'Store Appearance' },
     { id: 'batches', label: soSummary.length ? `Batches (${soSummary.length})` : 'Batches' },
     { id: 'inventory', label: 'Inventory' },
     { id: 'roster', label: roster.length ? `Roster (${roster.length})` : 'Roster' },
