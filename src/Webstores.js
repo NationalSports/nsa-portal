@@ -5279,6 +5279,7 @@ const SHOWCASE_STATUS = {
   approved: { label: 'Approved', bg: '#ecfdf5', fg: '#047857' },
   failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
 };
+const SHOWCASE_PROMPT_VERSION = 'showcase-v4-three-quarter-hero';
 
 function ShowcaseStatusBadge({ asset }) {
   const key = asset?.status || 'missing';
@@ -5379,7 +5380,9 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
     const asset = item.asset || {};
     const status = asset.status || 'missing';
     if (item.kind === 'bundle' || !item.standard_image_url) return false;
-    if (status === 'queued' || status === 'generating' || status === 'approved') return false;
+    if (status === 'queued' || status === 'generating') return false;
+    if (asset.id && asset.prompt_version !== SHOWCASE_PROMPT_VERSION) return true;
+    if (status === 'approved') return false;
     return status !== 'review' || asset.approval_status === 'rejected';
   }).length;
 
@@ -5445,7 +5448,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
             <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Every generated image requires human approval before shoppers can see it.</div>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
-            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, or rejected Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'No missing, failed, or rejected images')}>
+            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
               {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
             </button>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>

@@ -84,8 +84,16 @@ describe('Showcase provider boundary', () => {
     expect(prompt).toContain('uniform neutral pure white (#FFFFFF)');
     expect(prompt).toContain('must read as #FFFFFF');
     expect(prompt).toContain('No cream, beige, ivory, tan');
+    expect(prompt).toContain('three-quarter product hero view');
+    expect(prompt).toContain('approximately 15–30 degrees');
+    expect(prompt).toContain('angle the waistband and stagger the legs subtly');
+    expect(prompt).toContain('polished invisible support');
+    expect(prompt).toContain('believable on-body');
+    expect(prompt).toContain('no visible or residual wearer');
+    expect(prompt).toContain('dramatic appeal must come from product angle');
+    expect(prompt).toContain('5–8% breathing room');
     expect(prompt).not.toContain('consistent warm-neutral studio background');
-    expect(PROMPT_VERSION).toBe('showcase-v3-white-background');
+    expect(PROMPT_VERSION).toBe('showcase-v4-three-quarter-hero');
   });
 
   test('collects the existing decoration URL shapes without duplicates', () => {
@@ -129,6 +137,9 @@ describe('Showcase provider boundary', () => {
     expect(instructions).toContain('"people_allowed":false');
     expect(instructions).toContain('"mannequins_allowed":false');
     expect(instructions).toContain('"background_color_hex":"#FFFFFF"');
+    expect(instructions).toContain('"composition":"premium dynamic three-quarter product hero view"');
+    expect(instructions).toContain('"presentation":"product-only invisible support with natural on-body volume and drape"');
+    expect(instructions).toContain('"straight_on_catalog_view_allowed":false');
     expect(instructions).toContain('pure white background');
   });
 
@@ -256,7 +267,7 @@ describe('Showcase public/staff response boundaries', () => {
     expect(snapshot.store.published_presentation_mode).toBe('standard');
   });
 
-  test('Generate All queues only missing, failed, and rejected non-bundle products with source images', () => {
+  test('Generate All queues missing, failed, rejected, and older-style products without duplicating active jobs', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
       getSiteUrl: () => '',
@@ -270,19 +281,23 @@ describe('Showcase public/staff response boundaries', () => {
       { webstore_product_id: 'rejected', standard_image_url: 'https://cdn/rejected.jpg' },
       { webstore_product_id: 'review', standard_image_url: 'https://cdn/review.jpg' },
       { webstore_product_id: 'approved', standard_image_url: 'https://cdn/approved.jpg' },
+      { webstore_product_id: 'stale-review', standard_image_url: 'https://cdn/stale-review.jpg' },
+      { webstore_product_id: 'stale-approved', standard_image_url: 'https://cdn/stale-approved.jpg' },
       { webstore_product_id: 'active', standard_image_url: 'https://cdn/active.jpg' },
       { webstore_product_id: 'bundle', kind: 'bundle', standard_image_url: 'https://cdn/bundle.jpg' },
       { webstore_product_id: 'no-source', standard_image_url: null },
     ];
     const assets = [
-      { webstore_product_id: 'failed', status: 'failed', approval_status: 'pending' },
-      { webstore_product_id: 'rejected', status: 'review', approval_status: 'rejected' },
-      { webstore_product_id: 'review', status: 'review', approval_status: 'pending' },
-      { webstore_product_id: 'approved', status: 'approved', approval_status: 'approved' },
-      { webstore_product_id: 'active', status: 'generating', approval_status: 'pending' },
+      { webstore_product_id: 'failed', status: 'failed', approval_status: 'pending', prompt_version: PROMPT_VERSION },
+      { webstore_product_id: 'rejected', status: 'review', approval_status: 'rejected', prompt_version: PROMPT_VERSION },
+      { webstore_product_id: 'review', status: 'review', approval_status: 'pending', prompt_version: PROMPT_VERSION },
+      { webstore_product_id: 'approved', status: 'approved', approval_status: 'approved', prompt_version: PROMPT_VERSION },
+      { webstore_product_id: 'stale-review', status: 'review', approval_status: 'pending', prompt_version: 'showcase-v3-white-background' },
+      { webstore_product_id: 'stale-approved', status: 'approved', approval_status: 'approved', prompt_version: 'showcase-v3-white-background' },
+      { webstore_product_id: 'active', status: 'generating', approval_status: 'pending', prompt_version: 'showcase-v3-white-background' },
     ];
     expect(generateAllProducts(catalog, assets).map((product) => product.webstore_product_id))
-      .toEqual(['missing', 'failed', 'rejected']);
+      .toEqual(['missing', 'failed', 'rejected', 'stale-review', 'stale-approved']);
   });
 
   test('the shopper asset map includes only explicitly approved images', () => {

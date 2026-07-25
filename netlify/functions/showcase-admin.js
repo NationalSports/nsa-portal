@@ -131,7 +131,9 @@ function buildStateSnapshot(store, catalog, assetRows) {
 function isGenerateAllEligible(product, asset) {
   if (!product || product.kind === 'bundle' || !product.standard_image_url) return false;
   const status = asset?.status || 'missing';
-  if (status === 'queued' || status === 'generating' || status === 'approved') return false;
+  if (status === 'queued' || status === 'generating') return false;
+  if (asset && asset.prompt_version !== PROMPT_VERSION) return true;
+  if (status === 'approved') return false;
   if (status === 'review' && asset?.approval_status !== 'rejected') return false;
   return true;
 }
