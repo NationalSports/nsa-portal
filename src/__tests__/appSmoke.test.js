@@ -56,7 +56,7 @@ test('Admin dashboard renders and sales-box report tabs work (By Rep / Top Custo
   // Exercise the Billings basis toggle (invoice-sourced aggregation on By Rep) and switch back.
   // Scope to a button: "Sales Orders" also appears as a sidebar nav link (an <a>).
   expect(() => fireEvent.click(screen.getByText('Billings', { selector: 'button' }))).not.toThrow();
-  expect(screen.getByText('Billed')).toBeTruthy(); // summary tile relabels to billing terms
+  expect(screen.getAllByText('Billed').length).toBeGreaterThan(0); // chart legend + summary use billing terms
   expect(() => fireEvent.click(screen.getByText('Sales Orders', { selector: 'button' }))).not.toThrow();
   window.localStorage.removeItem('nsa_user');
 });
