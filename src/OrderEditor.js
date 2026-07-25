@@ -3428,7 +3428,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const allFp=(fp.length>0?fp:_serverFp).filter(p=>!(isRichardsonItem(p)||isSSItem(p)||isSanMarItem(p)||isMomentecItem(p)));
   const statusFlow=['need_order','waiting_receive','needs_pull','items_received','in_production','ready_to_invoice','complete'];
 
-  return(<div>
+  return(<div className="order-editor-shell">
     {/* ── Mockup lightbox overlay ── */}
     {mockupLightbox&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.85)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}} onClick={()=>setMockupLightbox(null)}>
       <button style={{position:'absolute',top:16,right:20,background:'rgba(255,255,255,0.15)',border:'none',color:'white',fontSize:28,borderRadius:'50%',width:44,height:44,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center'}} onClick={()=>setMockupLightbox(null)}>×</button>
@@ -3534,7 +3534,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         }}/>;
     })()}
     {/* Sticky header — appears when scrolling */}
-    <div style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
+    <div className="order-editor-commandbar" style={{position:'sticky',top:52,zIndex:40,background:'white',borderBottom:'1px solid #e2e8f0',padding:'8px 16px',marginBottom:0,display:'flex',alignItems:'center',gap:12,boxShadow:'0 1px 3px rgba(0,0,0,0.05)',flexWrap:'wrap'}}>
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
       {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
       {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
@@ -3601,9 +3601,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>;
     })()}
     {/* HEADER */}
-    <div className="card" style={{marginBottom:16,marginTop:8}}><div style={{padding:'16px 20px'}}>
-      <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
-        <div style={{flex:1,minWidth:300}}>
+    <div className="card order-editor-overview" style={{marginBottom:16,marginTop:8}}><div className="order-editor-overview__body" style={{padding:'16px 20px'}}>
+      <div className="order-editor-overview__hero" style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
+        <div className="order-editor-identity" style={{flex:1,minWidth:300}}>
+          <div className="order-editor-kicker">{isE?'Estimate workspace':'Sales order workspace'}</div>
           <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:4,flexWrap:'wrap'}}><span style={{fontSize:22,fontWeight:800,color:'#1e40af'}}>{o.id}</span>
             {isE&&<span className={`badge ${o.status==='draft'||o.status==='open'?'badge-blue':o.status==='sent'?'badge-amber':o.status==='approved'?'badge-green':'badge-blue'}`}>{o.status}</span>}
             {isSO&&<span style={{padding:'3px 10px',borderRadius:12,fontSize:12,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
@@ -3673,7 +3674,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button className="btn btn-sm btn-secondary" style={{marginLeft:8,fontSize:10}} onClick={()=>onCheckShipStatus&&onCheckShipStatus(o.id)}>Refresh Status</button>
           </div>}
         </div>
-        <div style={{display:'flex',gap:6,flexWrap:'wrap'}}>
+        <div className="order-editor-metrics" style={{display:'flex',gap:6,flexWrap:'wrap'}}>
           {[{l:'REV',v:totals.rev,bg:'#f0fdf4',c:'#166534'},{l:'COST',v:totals.cost,bg:'#fef2f2',c:'#dc2626',s:_costCombined?'🔗 combined':undefined},{l:'MARGIN',v:totals.margin,bg:'#dbeafe',c:'#1e40af',s:`${totals.pct.toFixed(1)}%`},
             ...(totals.omgFee>0?[{l:'OMG FEE',v:totals.omgFee,bg:'#fff7ed',c:'#9a3412',s:'in cost'}]:[]),
             ...(totals.fundraiseRev>0?[{l:'FUNDRAISE',v:totals.fundraiseRev,bg:'#f0fdf4',c:'#166534',s:'revenue'}]:[]),
@@ -3683,7 +3684,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             ...(totals.priorShip>0?[{l:'PRIOR SHIP',v:totals.priorShip,bg:'#eff6ff',c:'#1e40af',s:'carried'}]:[]),
             {l:'TOTAL',v:(()=>{let t=o.promo_applied&&promoTotals?promoTotals.customerPays+safeNum(totals.priorShip):totals.grand;if(o.credit_applied)t=Math.max(0,t-safeNum(o.credit_amount));return t})(),bg:o.promo_applied||o.credit_applied?'#dcfce7':'#faf5ff',c:o.promo_applied||o.credit_applied?'#166534':'#7c3aed'},
             ...(o.credit_applied?[{l:'CREDIT',v:safeNum(o.credit_amount),bg:'#d1fae5',c:'#065f46',s:'deducted'}]:[])].map(x=>
-            <div key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
+            <div className="order-editor-metric" key={x.l} style={{textAlign:'center',padding:'8px 12px',background:x.bg,borderRadius:8,minWidth:72}}><div style={{fontSize:9,color:x.c,fontWeight:700}}>{x.l}</div><div style={{fontSize:17,fontWeight:800,color:x.c}}>${x.v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>{x.s&&<div style={{fontSize:9,color:'#94a3b8'}}>{x.s}</div>}</div>)}</div>
           {isSO&&(()=>{const actualShip=safeNum(o._shipping_cost||o._shipstation_cost||0)||(o._shipments||[]).reduce((a,s)=>a+safeNum(s.shipping_cost||0),0);const quotedShip=o.shipping_type==='pct'?totals.rev*(o.shipping_value||0)/100:safeNum(o.shipping_value||0);const overage=actualShip-quotedShip;
             return actualShip>0&&overage>0?<div style={{fontSize:10,padding:'4px 10px',background:'#fef2f2',border:'1px solid #fecaca',borderRadius:6,color:'#dc2626',fontWeight:600,marginTop:4}}>
               ⚠️ Shipping cost ${actualShip.toFixed(2)} exceeds quoted ${quotedShip.toFixed(2)} by <strong>${overage.toFixed(2)}</strong>
@@ -3698,7 +3699,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {!approved&&<button className="btn btn-sm" style={{fontSize:10,background:'#7c3aed',color:'white',border:'none',padding:'4px 10px',fontWeight:700}} onClick={()=>{setShowFirmApprove(true)}}>Review & Approve</button>}
       </div>})()}
       </div>
-      <div style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
+      <div className="order-editor-details-grid" style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
         <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
         {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
         {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
@@ -4027,11 +4028,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div></>})()}
         </div>
       </div>
-      {isE&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
+      {isE&&<div className="order-editor-doc-actions" style={{display:'flex',gap:6,marginTop:8,alignItems:'center',flexWrap:'wrap'}}>
         <button className="btn btn-secondary" onClick={()=>{setTopstarService('dst');setTopstarImgs([]);setTopstarNotes('');setShowPO('topstar')}} title="Plan a digitizing or vector file now — cost and the customer charge carry forward to the sales order">🧵 Plan Digitizing / Vector</button>
         {(o.deco_pos||[]).map(dp=>{const _amt=safeNum(dp.expected_cost||dp.unit_cost);const _planned=dp.status==='planned';return<span key={dp.id||dp.po_id} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})} title={(_planned?'Planned (not ordered yet) — ':'')+'open digitizing PO'} style={{cursor:'pointer',fontSize:11,padding:'3px 8px',borderRadius:6,background:_planned?'#fef9c3':'#ecfeff',border:'1px solid '+(_planned?'#fde047':'#a5f3fc'),color:_planned?'#854d0e':'#0e7490',fontWeight:700}}>{dp.po_id} · ${_amt.toFixed(2)} · {_planned?'Planned':(dp.status||'waiting')}</span>})}
       </div>}
-      {isSO&&<div style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
+      {isSO&&<div className="order-editor-doc-actions" style={{display:'flex',gap:6,marginTop:8,alignItems:'center'}}>
         <button className="btn btn-secondary" onClick={()=>setShowPO('select')}><Icon name="cart" size={14}/> Create PO</button>
         {(()=>{
           // Decide which invoicing actions to show. If any SO line still has un-invoiced qty,
@@ -4090,7 +4091,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {o.order_type==='booking'&&o.booking_confirmed&&<span style={{fontSize:12,color:'#059669',fontWeight:600,padding:'6px 8px',background:'#ecfdf5',borderRadius:6,border:'1px solid #86efac'}}>✓ Confirmed with Coach</span>}
       </div>}
       {/* SHIPPING */}
-      <div style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
+      <div className="order-editor-fulfillment" style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
         <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
           <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
           {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
@@ -4144,7 +4145,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(o.status!==autoSt&&o.status!=='complete'){setTimeout(()=>sv('status',autoSt),0)}
         const stLabels={need_order:'Need to Order',waiting_receive:'Waiting to Receive',needs_pull:'Needs Pull',items_received:'Items Received',in_production:'In Production',ready_to_invoice:'Ready to Invoice',complete:'Complete'};
         const displaySt=o.status==='complete'?'complete':autoSt;
-        return<div style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
+        return<div className="order-editor-status-flow" style={{display:'flex',gap:8,marginTop:12,borderTop:'1px solid #f1f5f9',paddingTop:12,alignItems:'center',flexWrap:'wrap'}}>
           <span style={{fontSize:11,color:'#64748b',fontWeight:600}}>Order Status:</span>
           {statusFlow.map((sf)=>{const sc=SC[sf]||{};const cur=sf===displaySt;
             return<span key={sf} style={{padding:'4px 12px',borderRadius:12,fontSize:11,fontWeight:cur?800:500,
@@ -4156,11 +4157,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
-        <div style={{marginTop:10}}>
+        <div className="order-editor-delivery" style={{marginTop:10}}>
           <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?</label>
           <div style={{marginTop:2,display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px'}}>✅ Not needed — all items ship direct to the customer</div>
         </div>
-      ):(<div style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+      ):(<div className="order-editor-delivery" style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
         <div>
           <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>* required — select one</span>}</label>
           <div style={{display:'flex',gap:3,flexWrap:'wrap',padding:!o.ship_preference?4:0,borderRadius:6,border:!o.ship_preference?'1px solid #fca5a5':'none',background:!o.ship_preference?'#fef2f2':'transparent'}}>
@@ -4182,10 +4183,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
         </div>}
       </div>))}
-      {isSO&&<div style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
+      {isSO&&<div className="order-editor-production-notes" style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
     </div></div>
     {/* TABS */}
-    <div className="tabs" style={{marginBottom:16}}>
+    <div className="tabs order-editor-tabs" style={{marginBottom:16}}>
       <button className={`tab ${tab==='items'?'active':''}`} onClick={()=>setTab('items')}>Line Items</button>
       <button className={`tab ${tab==='art'?'active':''}`} onClick={()=>setTab('art')}>Art Library ({af.length})</button>
       <button className={`tab ${tab==='messages'?'active':''}`} onClick={()=>setTab('messages')}>Messages {(()=>{const entityMsgs=(msgs||[]).filter(m=>(m.entity_id===o.id)||(m.so_id===o.id));const unread=entityMsgs.filter(m=>!(m.read_by||[]).includes(cu.id)).length;return unread>0?<span style={{background:'#dc2626',color:'white',borderRadius:10,padding:'1px 6px',fontSize:10,marginLeft:4}}>{unread}</span>:` (${entityMsgs.length})`})()}</button>
@@ -4202,7 +4203,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const _itemInvoicedMap=isSO?buildInvoicedQtyMap(o,_invsForSO):new Map();
       const _anyCollapsed=safeItems(o).some((_,i)=>collapsedItems[i]);
       return<>
-      {safeItems(o).length>0&&<div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
+      {safeItems(o).length>0&&<div className="order-editor-items-toolbar" style={{display:'flex',alignItems:'center',gap:8,marginBottom:10,flexWrap:'wrap'}}>
         <span style={{fontSize:11,fontWeight:700,color:'#94a3b8',textTransform:'uppercase',letterSpacing:0.5}}>{safeItems(o).length} item{safeItems(o).length===1?'':'s'}</span>
         <div style={{flex:1}}/>
         <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={sortByDeco} title="Group line items together by their decoration">↕️ Sort by Decoration</button>
@@ -4241,8 +4242,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       const removable=sizePool.filter(s=>(item.available_sizes||[]).includes(s));
       // COLLAPSED compact summary — sku · name · qty · per-each · line total, with a small decoration subheader.
       if(collapsedItems[idx]){
-        return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
-          <div style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
+        return(<div key={idx} id={'so-item-'+idx} className="card order-editor-item is-collapsed" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
+          <div className="order-editor-item__header" style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
             <div style={{flex:1,minWidth:0}}>
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
@@ -4288,8 +4289,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>);
       }
-      return(<div key={idx} id={'so-item-'+idx} className="card" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
-        <div style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
+      return(<div key={idx} id={'so-item-'+idx} className="card order-editor-item is-expanded" style={{marginBottom:12,transition:'box-shadow 0.3s'}}>
+        <div className="order-editor-item__header" style={{padding:'12px 18px',borderBottom:'1px solid #f1f5f9'}}>
           <div style={{display:'flex',gap:12,alignItems:'center'}}>
             <button title="Collapse item" onClick={()=>toggleItemCollapse(idx)} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1,alignSelf:'flex-start',marginTop:2}}>▾</button>
             <div style={{display:'flex',flexDirection:'column',gap:0,marginRight:-4}}>
@@ -4989,7 +4990,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
       </div>)})}
     {/* ADD PRODUCT */}
-    <div className="card"><div style={{padding:'14px 18px'}}>
+    <div className="card order-editor-add-card"><div className="order-editor-add-card__body" style={{padding:'14px 18px'}}>
       {!showAdd?<div style={{display:'flex',gap:6}}><button className="btn btn-primary" onClick={()=>setShowAdd(true)} disabled={!cust}><Icon name="plus" size={14}/> Add Product</button>
       <button className="btn btn-secondary" onClick={()=>setShowCustom(!showCustom)} disabled={!cust}><Icon name="plus" size={14}/> Custom Item</button>
       <button className="btn btn-secondary" style={{background:'#ecfeff',color:'#0e7490',borderColor:'#a5f3fc'}} onClick={()=>setShowCustSupp(!showCustSupp)} disabled={!cust} title="Add a garment the customer is providing — $0 sell price, decoration charges apply"><Icon name="plus" size={14}/> Customer Item</button>

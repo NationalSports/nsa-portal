@@ -2567,3 +2567,388 @@ tbody tr { cursor: pointer; }
 .size-cell.in-stock { background: #dcfce7; }
 .size-cell.low-stock { background: #fef9c3; }
 .size-cell.no-stock { background: #fee2e2; }
+
+/* ─── Order editor workspace ───────────────────────────────────────────────
+   Uses the dashboard's navy / steel-blue visual language while keeping the
+   existing order fields, actions, and calculations intact. */
+.order-editor-shell {
+  --oe-ink: #101d37;
+  --oe-blue: #365b94;
+  --oe-blue-dark: #203e73;
+  --oe-red: #b63e47;
+  --oe-line: #dce4ee;
+  --oe-soft: #f4f7fb;
+  --oe-muted: #6f7d91;
+  color: var(--oe-ink);
+}
+
+.order-editor-commandbar {
+  top: 60px !important;
+  z-index: 42 !important;
+  margin: 0 0 14px !important;
+  padding: 9px 12px !important;
+  background: rgba(255, 255, 255, 0.96) !important;
+  border: 1px solid rgba(190, 202, 218, 0.88) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(18, 36, 67, 0.09) !important;
+  backdrop-filter: blur(12px);
+}
+.order-editor-commandbar > span:first-of-type {
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 18px !important;
+  letter-spacing: .02em;
+  color: var(--oe-ink) !important;
+}
+.order-editor-commandbar .btn {
+  border-radius: 8px;
+}
+.order-editor-commandbar .btn-primary {
+  margin-left: auto;
+  background: var(--oe-blue);
+  border-color: var(--oe-blue);
+  box-shadow: 0 4px 10px rgba(54, 91, 148, .18);
+}
+
+.order-editor-overview {
+  position: relative;
+  overflow: visible;
+  margin-top: 0 !important;
+  border: 1px solid #d9e2ed;
+  border-top: 4px solid var(--oe-blue);
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(17, 31, 57, .07);
+}
+.order-editor-overview__body {
+  padding: 22px !important;
+}
+.order-editor-overview__hero {
+  display: grid !important;
+  grid-template-columns: minmax(300px, 1fr) minmax(520px, 1.35fr);
+  gap: 24px !important;
+  padding-bottom: 20px;
+  align-items: stretch !important;
+}
+.order-editor-overview__hero > :nth-child(n + 3) {
+  grid-column: 1 / -1;
+}
+.order-editor-identity {
+  min-width: 0 !important;
+  padding: 4px 8px 4px 2px;
+}
+.order-editor-kicker {
+  margin-bottom: 3px;
+  color: var(--oe-red);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .15em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.order-editor-identity > div:nth-child(2) > span:first-child {
+  color: var(--oe-ink) !important;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 30px !important;
+  letter-spacing: -.01em;
+  line-height: 1.05;
+}
+.order-editor-identity a,
+.order-editor-identity [style*="cursor: pointer"] {
+  text-underline-offset: 3px;
+}
+
+.order-editor-metrics {
+  display: grid !important;
+  grid-template-columns: repeat(3, minmax(118px, 1fr));
+  align-content: start;
+  gap: 8px !important;
+}
+.order-editor-metric {
+  min-width: 0 !important;
+  min-height: 72px;
+  padding: 11px 12px !important;
+  border: 1px solid rgba(186, 199, 215, .7);
+  border-radius: 10px !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .8);
+  text-align: left !important;
+}
+.order-editor-metric > div:first-child {
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 10px !important;
+  letter-spacing: .12em;
+}
+.order-editor-metric > div:nth-child(2) {
+  margin-top: 1px;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 21px !important;
+  letter-spacing: -.01em;
+}
+
+.order-editor-details-grid,
+.order-editor-fulfillment,
+.order-editor-status-flow,
+.order-editor-delivery,
+.order-editor-production-notes {
+  position: relative;
+  margin-top: 10px !important;
+  border: 1px solid #e0e7f0 !important;
+  border-radius: 12px;
+  background: var(--oe-soft);
+}
+.order-editor-details-grid {
+  gap: 10px !important;
+  padding: 28px 14px 14px;
+}
+.order-editor-fulfillment {
+  gap: 14px !important;
+  padding: 28px 14px 14px !important;
+}
+.order-editor-status-flow {
+  gap: 6px !important;
+  padding: 31px 14px 14px !important;
+}
+.order-editor-delivery {
+  padding: 13px 14px !important;
+}
+.order-editor-production-notes {
+  padding: 11px 14px 13px;
+}
+.order-editor-details-grid::before,
+.order-editor-fulfillment::before,
+.order-editor-status-flow::before {
+  position: absolute;
+  top: 8px;
+  left: 14px;
+  color: var(--oe-muted);
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .13em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.order-editor-details-grid::before { content: 'Order details'; }
+.order-editor-fulfillment::before { content: 'Billing & fulfillment'; }
+.order-editor-status-flow::before { content: 'Workflow progress'; }
+.order-editor-shell .form-label {
+  color: #637289;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .045em;
+  text-transform: uppercase;
+}
+.order-editor-shell .form-input,
+.order-editor-shell .form-select,
+.order-editor-shell .form-textarea {
+  min-height: 38px;
+  border-color: #ccd7e5;
+  border-radius: 8px;
+  color: var(--oe-ink);
+  box-shadow: 0 1px 1px rgba(18, 36, 67, .02);
+}
+.order-editor-shell .form-input:focus,
+.order-editor-shell .form-select:focus,
+.order-editor-shell .form-textarea:focus {
+  border-color: #6e8bb7;
+  box-shadow: 0 0 0 3px rgba(54, 91, 148, .12);
+}
+.order-editor-doc-actions {
+  gap: 8px !important;
+  padding: 10px 0 2px;
+}
+.order-editor-doc-actions .btn {
+  border-radius: 8px;
+  background: #fff;
+  border-color: #cad6e5;
+}
+.order-editor-status-flow > span:first-child {
+  display: none;
+}
+.order-editor-status-flow > span:not(:first-child) {
+  position: relative;
+  flex: 1 1 112px;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 9px !important;
+  border-radius: 8px !important;
+  text-align: center;
+  opacity: 1 !important;
+}
+.order-editor-status-flow > span:not(:first-child)[style*="font-weight: 800"] {
+  box-shadow: 0 3px 10px rgba(18, 36, 67, .08);
+}
+.order-editor-delivery .btn {
+  min-height: 32px;
+  border-radius: 8px;
+}
+
+.order-editor-tabs {
+  position: sticky;
+  top: 116px;
+  z-index: 39;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  margin-bottom: 14px !important;
+  padding: 6px;
+  background: rgba(242, 246, 251, .96);
+  border: 1px solid #d7e0eb;
+  border-radius: 12px;
+  box-shadow: 0 4px 16px rgba(17, 31, 57, .06);
+  scrollbar-width: thin;
+  backdrop-filter: blur(10px);
+}
+.order-editor-tabs .tab {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 8px;
+  color: #64738a;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: .025em;
+  white-space: nowrap;
+}
+.order-editor-tabs .tab:hover {
+  background: #e7edf5;
+  color: var(--oe-ink);
+}
+.order-editor-tabs .tab.active {
+  background: var(--oe-blue-dark) !important;
+  color: #fff !important;
+  box-shadow: 0 3px 8px rgba(32, 62, 115, .2);
+}
+
+.order-editor-items-toolbar {
+  min-height: 42px;
+  margin-bottom: 12px !important;
+  padding: 5px 7px 5px 12px;
+  background: #edf2f8;
+  border: 1px solid #d9e2ed;
+  border-radius: 10px;
+}
+.order-editor-items-toolbar .btn {
+  min-height: 30px;
+  border-radius: 7px;
+}
+.order-editor-item {
+  overflow: visible;
+  border: 1px solid #d8e1ec;
+  border-radius: 14px;
+  box-shadow: 0 5px 18px rgba(17, 31, 57, .055);
+}
+.order-editor-item:hover {
+  border-color: #bdcadb;
+  box-shadow: 0 8px 24px rgba(17, 31, 57, .08);
+}
+.order-editor-item__header {
+  background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
+  border-bottom-color: #dfe6ef !important;
+  border-radius: 13px 13px 0 0;
+}
+.order-editor-item.is-collapsed .order-editor-item__header {
+  border-radius: 13px;
+}
+.order-editor-item [style*="font-family: monospace"] {
+  border-radius: 6px !important;
+}
+.order-editor-add-card {
+  border: 1px dashed #9fb1c7;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f9fbfd 0%, #eef3f9 100%);
+  box-shadow: none;
+}
+.order-editor-add-card__body {
+  padding: 16px !important;
+}
+.order-editor-add-card .btn {
+  min-height: 38px;
+  border-radius: 9px;
+}
+.order-editor-shell .btn-primary {
+  background: var(--oe-blue);
+  border-color: var(--oe-blue);
+}
+.order-editor-shell .btn-primary:hover {
+  background: var(--oe-blue-dark);
+  border-color: var(--oe-blue-dark);
+}
+
+@media (max-width: 1120px) {
+  .order-editor-overview__hero {
+    grid-template-columns: 1fr !important;
+  }
+  .order-editor-metrics {
+    grid-template-columns: repeat(3, minmax(110px, 1fr));
+  }
+  .order-editor-tabs {
+    top: 118px;
+  }
+}
+
+@media (max-width: 760px) {
+  .order-editor-commandbar {
+    top: 52px !important;
+    border-radius: 0 !important;
+    margin-right: -16px !important;
+    margin-left: -16px !important;
+  }
+  .order-editor-commandbar > span[style*="flex: 1"] {
+    display: none;
+  }
+  .order-editor-overview__body {
+    padding: 16px !important;
+  }
+  .order-editor-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .order-editor-details-grid,
+  .order-editor-fulfillment {
+    align-items: stretch !important;
+  }
+  .order-editor-details-grid > div,
+  .order-editor-fulfillment > div {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 1 100% !important;
+  }
+  .order-editor-status-flow {
+    flex-wrap: nowrap !important;
+    justify-content: flex-start;
+    overflow-x: auto;
+  }
+  .order-editor-status-flow > span:not(:first-child) {
+    flex: 0 0 122px;
+  }
+  .order-editor-tabs {
+    top: 104px;
+    margin-right: -8px;
+    margin-left: -8px;
+    border-radius: 9px;
+  }
+  .order-editor-items-toolbar {
+    align-items: stretch !important;
+  }
+  .order-editor-items-toolbar > div[style*="flex: 1"] {
+    display: none;
+  }
+  .order-editor-item__header {
+    padding: 11px 12px !important;
+  }
+  .order-editor-item.is-collapsed .order-editor-item__header > div:last-child {
+    min-width: 70px !important;
+  }
+  .order-editor-add-card__body > div {
+    flex-wrap: wrap;
+  }
+  .order-editor-add-card .btn {
+    flex: 1 1 calc(50% - 6px);
+    justify-content: center;
+    margin-left: 0 !important;
+  }
+}
