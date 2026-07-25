@@ -2617,6 +2617,291 @@ tbody tr { cursor: pointer; }
   }
 }
 
+/* ─── Dedicated order application shell ───────────────────────────────────
+   The supplied reference is a full-width order tool, not a portal page.
+   Entering an estimate or SO now adopts that composition explicitly. */
+.order-mode-sidebar {
+  display: none !important;
+}
+.order-mode-main {
+  margin-left: 0 !important;
+  background: #f3f5f9;
+}
+.order-mode-topbar {
+  height: 86px;
+  padding: 0 20px;
+  border-bottom: 1px solid #e1e6ee;
+  background: #fff;
+}
+.order-mode-topbar .mobile-menu-btn {
+  display: none !important;
+}
+.order-mode-topbar h1 {
+  flex: 0 0 auto;
+  color: #142850;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 22px;
+  font-weight: 900;
+  letter-spacing: .01em;
+}
+.order-mode-topbar .topbar-search {
+  max-width: 790px !important;
+  margin-right: auto !important;
+  margin-left: 24px !important;
+}
+.order-mode-topbar .topbar-search .search-bar {
+  min-height: 52px;
+  border: 1px solid #d9e0ea;
+  border-radius: 9px;
+  background: #f8f9fc;
+}
+.order-mode-topbar .topbar-search input {
+  font-size: 15px;
+}
+.order-mode-topbar .topbar-tools > :not(.order-mode-avatar) {
+  display: none !important;
+}
+.order-mode-avatar {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #142850;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 800;
+}
+.order-mode-content {
+  max-width: none !important;
+  padding: 0 0 80px !important;
+  background: #f3f5f9;
+}
+.order-mode-content .order-editor-shell {
+  width: 100%;
+}
+.order-mode-content .order-editor-commandbar {
+  top: 86px !important;
+  min-height: 94px;
+  margin: 0 !important;
+  padding: 18px 22px !important;
+  gap: 18px !important;
+  border-bottom: 1px solid #e2e7ef !important;
+  background: #fff !important;
+}
+.order-editor-commandbar__id {
+  color: #142850 !important;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 24px !important;
+  font-weight: 900 !important;
+}
+.order-editor-commandbar__status {
+  order: 3;
+  padding: 8px 14px !important;
+  border: 1px solid #f0cf67;
+  border-radius: 999px !important;
+  background: #fff3cf !important;
+  color: #a7521e !important;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 12px !important;
+  font-weight: 900 !important;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.order-editor-commandbar__customer {
+  order: 4;
+  padding-left: 18px;
+  border-left: 1px solid #dfe4ec;
+  color: #142850 !important;
+  font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+  font-size: 22px !important;
+  font-weight: 900 !important;
+  text-decoration: none !important;
+  text-transform: uppercase;
+}
+.order-editor-commandbar__meta {
+  order: 5;
+  color: #8d96a7;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.order-editor-commandbar__memo {
+  order: 6;
+  flex: 0 1 auto !important;
+  padding: 7px 12px;
+  border: 1px solid #e5e9f0;
+  border-radius: 7px;
+  background: #f7f8fb;
+  color: #6f788b !important;
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+.order-editor-commandbar__actions {
+  order: 20;
+  min-width: 102px;
+  min-height: 44px !important;
+  margin-left: auto;
+  justify-content: center;
+  border-color: #cfd7e2 !important;
+  background: #fff !important;
+  color: #515c72 !important;
+}
+.order-mode-content .order-editor-commandbar > .btn-primary {
+  order: 21;
+  min-width: 112px;
+  min-height: 48px;
+  margin-left: 0;
+  background: #142850 !important;
+  border-color: #142850 !important;
+  font-size: 16px !important;
+}
+.order-mode-content .order-editor-commandbar > .btn:first-child {
+  order: 1;
+  min-height: 44px;
+  padding-right: 18px !important;
+  padding-left: 18px !important;
+  border-color: #cfd7e2;
+  background: #fff;
+}
+.order-editor-commandbar__id { order: 2; }
+
+.order-mode-content .order-editor-overview {
+  margin: 30px 20px 34px !important;
+  border-radius: 15px;
+}
+.order-mode-content .order-editor-overview__body {
+  min-height: 476px;
+  padding: 26px 410px 88px 26px !important;
+}
+.order-mode-content .order-editor-metrics {
+  bottom: 88px;
+  width: 390px;
+  padding: 24px 26px;
+}
+.order-mode-content .order-editor-details-grid {
+  grid-template-columns: minmax(250px, 1.3fr) minmax(180px, .9fr) minmax(180px, .9fr);
+  gap: 22px 20px !important;
+  padding: 2px 0 22px !important;
+}
+.order-mode-content .order-editor-details-grid > .btn-primary {
+  display: none !important;
+}
+.order-mode-content .order-editor-details-grid > div:empty {
+  display: none;
+}
+.order-mode-content .order-editor-doc-actions {
+  margin: 0;
+  padding: 18px 0 !important;
+}
+.order-mode-content .order-editor-fulfillment {
+  grid-template-columns: minmax(280px, .9fr) minmax(300px, 1.2fr) auto;
+  gap: 22px !important;
+  padding: 20px 0 !important;
+}
+.order-mode-content .order-editor-delivery,
+.order-mode-content .order-editor-production-notes {
+  margin-right: 0 !important;
+  margin-left: 0 !important;
+}
+.order-mode-content .order-editor-status-flow {
+  height: 88px;
+  padding: 25px 26px !important;
+}
+.order-mode-content .order-editor-status-flow::after {
+  top: 43px;
+}
+.order-mode-content .order-editor-tabs,
+.order-mode-content .order-editor-items-toolbar,
+.order-mode-content .order-editor-item,
+.order-mode-content .order-editor-add-card {
+  margin-right: 20px !important;
+  margin-left: 20px !important;
+}
+.order-mode-content .order-editor-tabs {
+  gap: 32px;
+}
+.order-mode-content .order-editor-items-toolbar {
+  min-height: 64px;
+}
+.order-mode-content .order-editor-item {
+  border-radius: 14px;
+}
+.order-mode-content .order-editor-item__header {
+  min-height: 104px;
+  padding: 22px 26px !important;
+}
+.order-mode-content .order-editor-item__size-finance-row {
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 440px);
+}
+.order-mode-content .order-editor-item__size-finance-row > div:first-child {
+  padding: 26px;
+}
+.order-mode-content .order-editor-item__line-financial {
+  padding: 26px;
+}
+.order-mode-content .order-editor-item__compact-summary {
+  grid-template-columns: 132px 88px 154px;
+}
+
+@media (max-width: 1180px) {
+  .order-mode-content .order-editor-overview__body {
+    min-height: 0;
+    padding: 20px 20px 0 !important;
+  }
+  .order-mode-content .order-editor-metrics {
+    position: static;
+    width: auto;
+  }
+  .order-mode-content .order-editor-status-flow {
+    position: relative;
+    height: auto;
+    margin: 12px -20px 0 !important;
+  }
+  .order-mode-content .order-editor-details-grid,
+  .order-mode-content .order-editor-fulfillment {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .order-mode-topbar {
+    height: 64px;
+    padding: 0 12px;
+  }
+  .order-mode-topbar h1 {
+    display: none;
+  }
+  .order-mode-topbar .topbar-search {
+    margin-left: 0 !important;
+  }
+  .order-mode-content .order-editor-commandbar {
+    top: 64px !important;
+    min-height: 72px;
+    margin: 0 !important;
+    padding: 10px 12px !important;
+  }
+  .order-editor-commandbar__customer,
+  .order-editor-commandbar__meta,
+  .order-editor-commandbar__memo {
+    display: none;
+  }
+  .order-mode-content .order-editor-overview {
+    margin: 16px 12px 24px !important;
+  }
+  .order-mode-content .order-editor-details-grid,
+  .order-mode-content .order-editor-fulfillment {
+    grid-template-columns: 1fr;
+  }
+  .order-mode-content .order-editor-tabs,
+  .order-mode-content .order-editor-items-toolbar,
+  .order-mode-content .order-editor-item,
+  .order-mode-content .order-editor-add-card {
+    margin-right: 12px !important;
+    margin-left: 12px !important;
+  }
+}
+
 @media (max-width: 680px) {
   .dash-overview__hero {
     min-height: 390px;

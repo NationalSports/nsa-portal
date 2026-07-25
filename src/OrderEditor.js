@@ -3538,11 +3538,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       <button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onBack()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="back" size={12}/> Back</button>
       {returnToPage&&onReturnToJob&&<button className="btn btn-sm" onClick={()=>{if(dirty&&!window.confirm('You have unsaved changes. Leave without saving?'))return;onReturnToJob()}} style={{fontSize:10,padding:'4px 10px',background:'#7c3aed',color:'white',border:'none',fontWeight:700}}>← Return to {returnToPage.page==='production'?'Production Board':'Decoration'}</button>}
       {isE&&onNewEstimate&&<button className="btn btn-sm btn-secondary" onClick={()=>{if(dirty&&!window.confirm('Unsaved changes. Continue?'))return;onNewEstimate()}} style={{fontSize:10,padding:'4px 10px'}}><Icon name="plus" size={12}/> New Est</button>}
-      <span style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
-      {isSO&&<span style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
-      {cust&&<span style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
-      <span style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
+      <span className="order-editor-commandbar__id" style={{fontWeight:800,color:'#1e40af',fontSize:14}}>{o.id}</span>
+      {isSO&&<span className="order-editor-commandbar__status" style={{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:SC[o.status]?.bg||'#f1f5f9',color:SC[o.status]?.c||'#475569'}}>{o.status?.replace(/_/g,' ')}</span>}
+      {cust&&<span className="order-editor-commandbar__customer" style={{fontSize:12,fontWeight:600,color:'#1e40af',cursor:'pointer',textDecoration:'underline',textDecorationStyle:'dotted',textUnderlineOffset:2}} onClick={()=>{if(onNavCustomer&&cust)onNavCustomer(cust)}} title={'View '+cust.name}>{cust.name}</span>}
+      {cust&&<span className="order-editor-commandbar__meta">{cust.alpha_tag}{cust.adidas_ua_tier?' · Tier '+cust.adidas_ua_tier:''}{o.default_markup?' '+o.default_markup+'×':''}</span>}
+      <span className="order-editor-commandbar__memo" style={{fontSize:11,color:'#94a3b8',flex:1}}>{o.memo||''}</span>
       {dirty&&<span style={{fontSize:10,color:'#d97706',fontWeight:600}}>● Unsaved</span>}
+      <button ref={actionsRef} className="btn btn-sm btn-secondary order-editor-commandbar__actions" onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
       <button className="btn btn-sm btn-primary" onClick={()=>{
         if(!cust){nf('Select a customer first','error');return}
         if(!o.memo?.trim()){nf('Memo is required','error');return}
@@ -3750,7 +3752,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
         {/* Actions dropdown */}
         <div style={{position:'relative'}}>
-          <button ref={actionsRef} className="btn btn-sm btn-secondary" style={{fontSize:11,padding:'6px 12px'}} onClick={()=>setShowActionsDD(!showActionsDD)}>Actions <span style={{fontSize:9}}>▾</span></button>
           {showActionsDD&&(()=>{const r=actionsRef.current?.getBoundingClientRect();
             // Build the printable/downloadable doc options. Shared by Print and Download.
             const _makeDocOpts=()=>{
