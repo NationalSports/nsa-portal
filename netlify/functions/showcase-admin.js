@@ -111,7 +111,7 @@ function buildStateSnapshot(store, catalog, assetRows) {
       },
     };
   });
-  const counts = { approved: 0, review: 0, missing: 0, generating: 0, failed: 0, queued: 0 };
+  const counts = { approved: 0, review: 0, missing: 0, generating: 0, failed: 0, canceled: 0, queued: 0 };
   items.forEach(({ asset }) => {
     const key = asset.approval_status === 'rejected' && asset.status === 'review' ? 'review' : asset.status;
     if (counts[key] == null) counts[key] = 0;
@@ -197,6 +197,28 @@ async function updateAsset(admin, storeId, wpId, fields) {
     .maybeSingle();
   if (error) throw new Error(error.message);
   return data;
+}
+
+async function clearNotificationBatchIfInactive(admin, storeId) {
+  const { data: active, error: activeError } = await admin
+    .from('webstore_showcase_assets')
+    .select('id')
+    .eq('store_id', storeId)
+    .in('status', ['queued', 'generating'])
+    .limit(1);
+  if (activeError) throw new Error(activeError.message);
+  if (active?.length) return false;
+  const { error } = await admin
+    .from('webstores')
+    .update({
+      showcase_review_notification_status: 'idle',
+      showcase_review_notification_error: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', storeId)
+    .eq('showcase_review_notification_status', 'pending');
+  if (error) throw new Error(error.message);
+  return true;
 }
 
 exports.handler = async (event) => {
@@ -314,6 +336,24 @@ exports.handler = async (event) => {
       return reply(202, { ok: true, queued_count: queuedCount, failed_count: failedCount });
     }
 
+    if (action === 'cancel_all') {
+      const cancelRequestId = crypto.randomUUID();
+      const { data: canceled, error } = await admin
+        .from('webstore_showcase_assets')
+        .update({
+          status: 'canceled',
+          generation_request_id: cancelRequestId,
+          error_details: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('store_id', storeId)
+        .in('status', ['queued', 'generating'])
+        .select('id');
+      if (error) throw new Error(error.message);
+      await clearNotificationBatchIfInactive(admin, storeId);
+      return reply(200, { ok: true, canceled_count: canceled?.length || 0 });
+    }
+
     const wpId = String(body.webstore_product_id || '');
     if (!UUID_RE.test(wpId)) return reply(400, { error: 'Valid webstore_product_id required' });
 
@@ -354,6 +394,26 @@ exports.handler = async (event) => {
         return reply(502, { error: 'Unable to start Showcase background worker' });
       }
       return reply(202, { ok: true, asset: publicAsset(queued) });
+    }
+
+    if (action === 'cancel') {
+      const { data: active, error: activeError } = await admin
+        .from('webstore_showcase_assets')
+        .select('*')
+        .eq('store_id', storeId)
+        .eq('webstore_product_id', wpId)
+        .maybeSingle();
+      if (activeError) throw new Error(activeError.message);
+      if (!active || !['queued', 'generating'].includes(active.status)) {
+        return reply(409, { error: 'This Showcase image is not currently running' });
+      }
+      const current = await updateAsset(admin, storeId, wpId, {
+        status: 'canceled',
+        generation_request_id: crypto.randomUUID(),
+        error_details: null,
+      });
+      await clearNotificationBatchIfInactive(admin, storeId);
+      return reply(200, { ok: true, asset: publicAsset(current) });
     }
 
     if (action === 'approve') {
@@ -427,3 +487,4 @@ module.exports.isGenerateAllEligible = isGenerateAllEligible;
 module.exports.generateAllProducts = generateAllProducts;
 module.exports.state = state;
 module.exports.getWorkerBaseUrl = getWorkerBaseUrl;
+module.exports.clearNotificationBatchIfInactive = clearNotificationBatchIfInactive;

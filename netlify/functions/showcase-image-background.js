@@ -75,6 +75,18 @@ async function conditionalUpdate(admin, assetId, requestId, fields) {
   return !!data;
 }
 
+async function isJobCurrent(admin, assetId, requestId) {
+  const { data, error } = await admin
+    .from('webstore_showcase_assets')
+    .select('id')
+    .eq('id', assetId)
+    .eq('generation_request_id', requestId)
+    .eq('status', 'generating')
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return !!data;
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 200, headers: corsHeaders(), body: '' };
   if (event.httpMethod !== 'POST') return reply(405, { error: 'Method not allowed' });
@@ -108,18 +120,31 @@ exports.handler = async (event) => {
     if (!sourceUrl) throw new Error('A Standard source image is required before generation');
     const referenceUrls = artworkUrls(job.wp.decorations, job.store.store_art);
     const images = await Promise.all([sourceUrl, ...referenceUrls].map((url) => fetchRemoteImage(url)));
+    if (!(await isJobCurrent(admin, assetId, requestId))) {
+      return reply(202, { ok: true, canceled: true });
+    }
 
     const kimi = await analyzeWithKimi({
       product: job.product,
       decorations: job.wp.decorations,
       images,
     });
+    // Kimi analysis is inexpensive; this checkpoint prevents the much larger
+    // image-generation charge when cancellation arrives during analysis.
+    if (!(await isJobCurrent(admin, assetId, requestId))) {
+      return reply(202, { ok: true, canceled: true });
+    }
     const generated = await generateWithOpenAI({
       product: job.product,
       decorations: job.wp.decorations,
       images,
       analysis: kimi.analysis,
     });
+    // A provider request already in flight cannot be recalled, but a canceled
+    // job must never upload or replace an approved Showcase asset.
+    if (!(await isJobCurrent(admin, assetId, requestId))) {
+      return reply(202, { ok: true, canceled: true });
+    }
 
     const objectPath = [
       job.asset.store_id,
@@ -192,3 +217,4 @@ exports.handler = async (event) => {
 
 module.exports.loadJob = loadJob;
 module.exports.conditionalUpdate = conditionalUpdate;
+module.exports.isJobCurrent = isJobCurrent;

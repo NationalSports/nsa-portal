@@ -283,6 +283,7 @@ describe('Showcase public/staff response boundaries', () => {
       { webstore_product_id: 'approved', standard_image_url: 'https://cdn/approved.jpg' },
       { webstore_product_id: 'stale-review', standard_image_url: 'https://cdn/stale-review.jpg' },
       { webstore_product_id: 'stale-approved', standard_image_url: 'https://cdn/stale-approved.jpg' },
+      { webstore_product_id: 'canceled', standard_image_url: 'https://cdn/canceled.jpg' },
       { webstore_product_id: 'active', standard_image_url: 'https://cdn/active.jpg' },
       { webstore_product_id: 'bundle', kind: 'bundle', standard_image_url: 'https://cdn/bundle.jpg' },
       { webstore_product_id: 'no-source', standard_image_url: null },
@@ -294,10 +295,34 @@ describe('Showcase public/staff response boundaries', () => {
       { webstore_product_id: 'approved', status: 'approved', approval_status: 'approved', prompt_version: PROMPT_VERSION },
       { webstore_product_id: 'stale-review', status: 'review', approval_status: 'pending', prompt_version: 'showcase-v3-white-background' },
       { webstore_product_id: 'stale-approved', status: 'approved', approval_status: 'approved', prompt_version: 'showcase-v3-white-background' },
+      { webstore_product_id: 'canceled', status: 'canceled', approval_status: 'pending', prompt_version: PROMPT_VERSION },
       { webstore_product_id: 'active', status: 'generating', approval_status: 'pending', prompt_version: 'showcase-v3-white-background' },
     ];
     expect(generateAllProducts(catalog, assets).map((product) => product.webstore_product_id))
-      .toEqual(['missing', 'failed', 'rejected', 'stale-review', 'stale-approved']);
+      .toEqual(['missing', 'failed', 'rejected', 'stale-review', 'stale-approved', 'canceled']);
+  });
+
+  test('background cancellation checkpoint requires the same request to remain generating', async () => {
+    jest.doMock('../../netlify/functions/_shared', () => ({
+      corsHeaders: () => ({}),
+      getSupabaseAdmin: jest.fn(),
+      safeEqualStr: jest.fn(),
+      getTrustedSiteBaseUrl: jest.fn(),
+    }));
+    const { isJobCurrent } = require('../../netlify/functions/showcase-image-background');
+    const filters = [];
+    const chain = {
+      select() { return chain; },
+      eq(column, value) { filters.push([column, value]); return chain; },
+      maybeSingle: jest.fn(async () => ({ data: { id: 'asset-1' }, error: null })),
+    };
+    const admin = { from: jest.fn(() => chain) };
+    await expect(isJobCurrent(admin, 'asset-1', 'request-1')).resolves.toBe(true);
+    expect(filters).toEqual([
+      ['id', 'asset-1'],
+      ['generation_request_id', 'request-1'],
+      ['status', 'generating'],
+    ]);
   });
 
   test('the shopper asset map includes only explicitly approved images', () => {

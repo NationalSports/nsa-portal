@@ -5278,6 +5278,7 @@ const SHOWCASE_STATUS = {
   review: { label: 'Needs review', bg: '#fff7ed', fg: '#c2410c' },
   approved: { label: 'Approved', bg: '#ecfdf5', fg: '#047857' },
   failed: { label: 'Failed', bg: '#fef2f2', fg: '#b91c1c' },
+  canceled: { label: 'Canceled', bg: '#f8fafc', fg: '#475569' },
 };
 const SHOWCASE_PROMPT_VERSION = 'showcase-v4-three-quarter-hero';
 
@@ -5394,6 +5395,13 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
     const failed = Number(data.failed_count || 0);
     onFlash?.(`Queued ${Number(data.queued_count || 0)} Showcase image${Number(data.queued_count || 0) === 1 ? '' : 's'}${failed ? ` · ${failed} failed to start` : ''}`);
   };
+  const activeJobCount = items.filter(({ asset }) => asset?.status === 'queued' || asset?.status === 'generating').length;
+  const cancelAll = async () => {
+    if (!activeJobCount) return;
+    if (!window.confirm(`Cancel ${activeJobCount} active Showcase job${activeJobCount === 1 ? '' : 's'}? Queued jobs stop immediately; provider requests already in flight may still incur a charge.`)) return;
+    const data = await act('cancel_all', 'cancel_all');
+    if (data) onFlash?.(`Canceled ${Number(data.canceled_count || 0)} Showcase job${Number(data.canceled_count || 0) === 1 ? '' : 's'}`);
+  };
 
   return (
     <div>
@@ -5451,8 +5459,11 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
             <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, rejected, or older-style Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'All Showcase images use the current style')}>
               {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
             </button>
+            {activeJobCount > 0 && <button className="btn btn-sm btn-secondary" type="button" disabled={!!busy} onClick={cancelAll} title="Stop all queued jobs and cancel running jobs at their next safe checkpoint">
+              {busy === 'cancel_all' ? 'Canceling…' : `Cancel All (${activeJobCount})`}
+            </button>}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {['approved', 'review', 'missing', 'generating', 'failed'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
+              {['approved', 'review', 'missing', 'generating', 'failed', 'canceled'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
             </div>
           </div>
         </div>
@@ -5483,6 +5494,7 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
               <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
                 {(asset.showcase_image_url || asset.approved_showcase_image_url) && <a className="btn btn-sm btn-secondary" href={asset.showcase_image_url || asset.approved_showcase_image_url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>Preview</a>}
                 {!isBundle && <button className="btn btn-sm btn-secondary" disabled={working || itemBusy || !item.standard_image_url} onClick={() => act(item.webstore_product_id, 'generate', { webstore_product_id: item.webstore_product_id })}>{working ? (asset.status === 'queued' ? 'Queued…' : 'Generating…') : (asset.showcase_image_url || asset.approved_showcase_image_url) ? 'Regenerate' : 'Generate'}</button>}
+                {!isBundle && working && <button className="btn btn-sm btn-secondary" disabled={itemBusy} title="Stop this AI job at its next safe checkpoint" onClick={() => act(item.webstore_product_id, 'cancel', { webstore_product_id: item.webstore_product_id })}>{itemBusy ? 'Canceling…' : 'Cancel'}</button>}
                 {canReview && <button className="btn btn-sm" style={{ background: '#047857', color: '#fff' }} disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'approve', { webstore_product_id: item.webstore_product_id })}>Approve</button>}
                 {canReview && <button className="btn btn-sm btn-secondary" disabled={itemBusy} onClick={() => act(item.webstore_product_id, 'reject', { webstore_product_id: item.webstore_product_id })}>Reject</button>}
                 {!isBundle && asset.status !== 'missing' && <button className="btn btn-sm btn-secondary" disabled={itemBusy || working} title="Keep the Standard product image live for this item" onClick={() => act(item.webstore_product_id, 'fallback', { webstore_product_id: item.webstore_product_id })}>Use Standard</button>}
