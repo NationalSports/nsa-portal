@@ -1,6 +1,7 @@
 const crypto = require('crypto');
-const { corsHeaders, verifyUser } = require('./_shared');
+const { corsHeaders, verifyUser, getTrustedSiteBaseUrl } = require('./_shared');
 const { PROMPT_VERSION, normalizeMode } = require('./_showcase');
+const { markShowcaseBatchPending } = require('./_showcaseEmail');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -11,39 +12,7 @@ const reply = (statusCode, body) => ({
 });
 
 function getWorkerBaseUrl(event, env = process.env) {
-  const requestHost = String(event.headers?.host || event.headers?.Host || '')
-    .split(',')[0]
-    .trim()
-    .toLowerCase();
-  const siteName = String(env.SITE_NAME || '').trim().toLowerCase();
-  let primaryUrl = null;
-  try {
-    if (env.URL) primaryUrl = new URL(env.URL);
-  } catch (_) {
-    primaryUrl = null;
-  }
-
-  let target;
-  try {
-    target = requestHost ? new URL(`https://${requestHost}`) : primaryUrl;
-  } catch (_) {
-    return '';
-  }
-  if (!target) return '';
-
-  const hostname = target.hostname.toLowerCase();
-  const primaryHost = primaryUrl?.hostname?.toLowerCase() || '';
-  const isPrimary = !!primaryHost && hostname === primaryHost;
-  const isNetlifySite = !!siteName && (
-    hostname === `${siteName}.netlify.app`
-    || hostname.endsWith(`--${siteName}.netlify.app`)
-  );
-  const isLocalDev = env.NETLIFY_DEV === 'true'
-    && ['localhost', '127.0.0.1', '::1'].includes(hostname);
-  if (!isPrimary && !isNetlifySite && !isLocalDev) return '';
-
-  const protocol = isLocalDev ? 'http:' : 'https:';
-  return `${protocol}//${target.host}`;
+  return getTrustedSiteBaseUrl(event, env);
 }
 
 function publicAsset(row) {
@@ -291,6 +260,10 @@ exports.handler = async (event) => {
         .select('*')
         .single();
       if (error) throw new Error(error.message);
+      // Publish the notification batch only after the queued asset is visible.
+      // This prevents a finishing worker from observing a pending batch with no
+      // active asset and emailing the rep before this request actually runs.
+      await markShowcaseBatchPending(admin, storeId, requestId);
 
       // DEPLOY_PRIME_URL is available while Netlify builds a preview, but not
       // inside the deployed Functions runtime. Use the validated request host so

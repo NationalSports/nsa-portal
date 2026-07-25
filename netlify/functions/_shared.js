@@ -37,6 +37,46 @@ function getSiteUrl(event) {
   return host ? `https://${host}` : '';
 }
 
+// Resolve the current production/preview Netlify origin without trusting an
+// arbitrary Host header. Runtime Functions do not receive DEPLOY_PRIME_URL, so
+// preview-safe internal calls and notification links must use the validated
+// request host rather than falling back blindly to the production URL.
+function getTrustedSiteBaseUrl(event, env = process.env) {
+  const requestHost = String(event?.headers?.host || event?.headers?.Host || '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase();
+  const siteName = String(env.SITE_NAME || '').trim().toLowerCase();
+  let primaryUrl = null;
+  try {
+    if (env.URL) primaryUrl = new URL(env.URL);
+  } catch (_) {
+    primaryUrl = null;
+  }
+
+  let target;
+  try {
+    target = requestHost ? new URL(`https://${requestHost}`) : primaryUrl;
+  } catch (_) {
+    return '';
+  }
+  if (!target) return '';
+
+  const hostname = target.hostname.toLowerCase();
+  const primaryHost = primaryUrl?.hostname?.toLowerCase() || '';
+  const isPrimary = !!primaryHost && hostname === primaryHost;
+  const isNetlifySite = !!siteName && (
+    hostname === `${siteName}.netlify.app`
+    || hostname.endsWith(`--${siteName}.netlify.app`)
+  );
+  const isLocalDev = env.NETLIFY_DEV === 'true'
+    && ['localhost', '127.0.0.1', '::1'].includes(hostname);
+  if (!isPrimary && !isNetlifySite && !isLocalDev) return '';
+
+  const protocol = isLocalDev ? 'http:' : 'https:';
+  return `${protocol}//${target.host}`;
+}
+
 // ── Token-verification cache ────────────────────────────────────────────────
 // Verifying a caller costs a GoTrue network round-trip (admin.auth.getUser) plus a
 // team_members query — PER function invocation. Portal pollers (e.g. the email-open
@@ -356,4 +396,4 @@ async function syncOrderItems(sb, orderId, lineItems, contentKeys) {
   return { matched, inserted: toInsert.length, removed: stale.length };
 }
 
-module.exports = { corsHeaders, getSupabaseAdmin, safeEqualStr, getSiteUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };
+module.exports = { corsHeaders, getSupabaseAdmin, safeEqualStr, getSiteUrl, getTrustedSiteBaseUrl, verifyAdmin, verifyUser, verifyUserOrInternal, reconcileInvoiceFromIntent, syncOrderItems, skuFromProductName, skuFromCatalogName, pickCols, resolveCustomerFamily, rosterTeamCustomerId };

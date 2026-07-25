@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { corsHeaders, getSupabaseAdmin, safeEqualStr } = require('./_shared');
+const { corsHeaders, getSupabaseAdmin, safeEqualStr, getTrustedSiteBaseUrl } = require('./_shared');
 const {
   PROMPT_VERSION,
   fetchRemoteImage,
@@ -7,6 +7,7 @@ const {
   generateWithOpenAI,
   artworkUrls,
 } = require('./_showcase');
+const { notifyShowcaseReady } = require('./_showcaseEmail');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -161,6 +162,11 @@ exports.handler = async (event) => {
       generated_at: new Date().toISOString(),
     });
     if (!saved) return reply(202, { ok: true, stale: true });
+    try {
+      await notifyShowcaseReady(admin, job.asset.store_id, getTrustedSiteBaseUrl(event));
+    } catch (emailError) {
+      console.error('[showcase-image-background] review email failed', emailError);
+    }
     return reply(200, { ok: true, status: 'review' });
   } catch (e) {
     console.error('[showcase-image-background]', assetId, e);
@@ -172,6 +178,13 @@ exports.handler = async (event) => {
       });
     } catch (updateError) {
       console.error('[showcase-image-background] failed to record error', updateError);
+    }
+    try {
+      if (job?.asset?.store_id) {
+        await notifyShowcaseReady(admin, job.asset.store_id, getTrustedSiteBaseUrl(event));
+      }
+    } catch (emailError) {
+      console.error('[showcase-image-background] review email failed after generation error', emailError);
     }
     return reply(500, { error: 'Showcase image generation failed' });
   }

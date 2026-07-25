@@ -10,6 +10,12 @@ const {
   generateWithOpenAI,
   getKimiConfig,
 } = require('../../netlify/functions/_showcase');
+const {
+  summarizeAssets,
+  buildShowcaseReviewEmail,
+  markShowcaseBatchPending,
+  notifyShowcaseReady,
+} = require('../../netlify/functions/_showcaseEmail');
 
 describe('Showcase provider boundary', () => {
   const originalEnv = process.env;
@@ -163,6 +169,7 @@ describe('Showcase public/staff response boundaries', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
       getSiteUrl: () => '',
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
       verifyUser: jest.fn(),
     }));
     const { publicAsset } = require('../../netlify/functions/showcase-admin');
@@ -182,6 +189,7 @@ describe('Showcase public/staff response boundaries', () => {
   test('background worker uses the current validated deploy instead of the production URL', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
       verifyUser: jest.fn(),
     }));
     const { getWorkerBaseUrl } = require('../../netlify/functions/showcase-admin');
@@ -200,6 +208,7 @@ describe('Showcase public/staff response boundaries', () => {
   test('background worker rejects untrusted request hosts', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
       verifyUser: jest.fn(),
     }));
     const { getWorkerBaseUrl } = require('../../netlify/functions/showcase-admin');
@@ -215,6 +224,7 @@ describe('Showcase public/staff response boundaries', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
       getSiteUrl: () => '',
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
       verifyUser: jest.fn(),
     }));
     const { buildStateSnapshot } = require('../../netlify/functions/showcase-admin');
@@ -265,10 +275,143 @@ describe('Showcase public/staff response boundaries', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({ 'Content-Type': 'application/json' }),
       getSiteUrl: () => '',
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
       verifyUser: jest.fn(async () => ({ ok: false, status: 401, error: 'Missing bearer token' })),
     }));
     const { handler } = require('../../netlify/functions/showcase-admin');
     const result = await handler({ httpMethod: 'POST', headers: {}, body: '{}' });
     expect(result.statusCode).toBe(401);
+  });
+});
+
+describe('Showcase completion email', () => {
+  const originalEnv = process.env;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv, BREVO_API_KEY: 'server-brevo-secret' };
+    global.fetch = jest.fn();
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    global.fetch = originalFetch;
+  });
+
+  function makeAdmin(route) {
+    const calls = [];
+    return {
+      calls,
+      from(table) {
+        const op = { table, kind: 'select', patch: null, filters: [] };
+        const chain = {
+          select() { return chain; },
+          update(patch) { op.kind = 'update'; op.patch = patch; return chain; },
+          eq(col, value) { op.filters.push(['eq', col, value]); return chain; },
+          in(col, value) { op.filters.push(['in', col, value]); return chain; },
+          limit(value) { op.filters.push(['limit', value]); calls.push(op); return Promise.resolve(route(op)); },
+          maybeSingle() { calls.push(op); return Promise.resolve(route(op)); },
+          then(resolve, reject) { calls.push(op); return Promise.resolve(route(op)).then(resolve, reject); },
+        };
+        return chain;
+      },
+    };
+  }
+
+  test('builds a review summary and escapes store/rep content', () => {
+    const summary = summarizeAssets([
+      { status: 'review', approval_status: 'pending' },
+      { status: 'review', approval_status: 'rejected' },
+      { status: 'approved', approval_status: 'approved' },
+      { status: 'failed', approval_status: 'pending' },
+    ]);
+    expect(summary).toEqual({ total: 4, review: 2, approved: 1, failed: 1 });
+    const email = buildShowcaseReviewEmail({
+      store: { name: '<Mountain House>' },
+      rep: { name: 'Steve & Team' },
+      summary,
+      reviewUrl: 'https://preview.example/?pg=webstores',
+    });
+    expect(email.subject).toContain('finished with 1 issue');
+    expect(email.html).toContain('Hi Steve &amp; Team');
+    expect(email.html).toContain('&lt;Mountain House&gt;');
+    expect(email.html).toContain('Review Showcase images');
+    expect(email.html).not.toContain('server-brevo-secret');
+  });
+
+  test('marks each generation request as a pending store-level email batch', async () => {
+    const admin = makeAdmin(() => ({ data: null, error: null }));
+    await markShowcaseBatchPending(admin, 'store-1', 'batch-1');
+    const update = admin.calls.find((call) => call.table === 'webstores' && call.kind === 'update');
+    expect(update.patch).toEqual(expect.objectContaining({
+      showcase_generation_batch_id: 'batch-1',
+      showcase_review_notification_status: 'pending',
+      showcase_review_notified_at: null,
+      showcase_review_notified_to: null,
+    }));
+  });
+
+  test('the final worker claims once and emails the assigned rep with a direct review link', async () => {
+    let storeRead = 0;
+    const admin = makeAdmin((op) => {
+      if (op.table === 'webstore_showcase_assets' && op.filters.some((f) => f[0] === 'in')) {
+        return { data: [], error: null };
+      }
+      if (op.table === 'webstores' && op.kind === 'select') {
+        storeRead++;
+        return storeRead === 1 ? {
+          data: {
+            id: 'store-1',
+            name: 'Mountain House HS Football 2026',
+            slug: 'mhfb2026',
+            rep_id: 'rep-1',
+            showcase_generation_batch_id: 'batch-1',
+            showcase_review_notification_status: 'pending',
+          },
+          error: null,
+        } : { data: null, error: null };
+      }
+      if (op.table === 'webstores' && op.kind === 'update'
+        && op.patch.showcase_review_notification_status === 'sending') {
+        return { data: { id: 'store-1' }, error: null };
+      }
+      if (op.table === 'team_members') {
+        return { data: { id: 'rep-1', name: 'Steve Peterson', email: 'steve@nationalsportsapparel.com', is_active: true }, error: null };
+      }
+      if (op.table === 'webstore_showcase_assets') {
+        return { data: [{ status: 'review', approval_status: 'pending' }], error: null };
+      }
+      return { data: null, error: null };
+    });
+    global.fetch.mockResolvedValue({ ok: true, status: 201, text: async () => '' });
+
+    const result = await notifyShowcaseReady(admin, 'store-1', 'https://deploy-preview-1821--nsa-portal.netlify.app');
+
+    expect(result).toEqual(expect.objectContaining({ sent: true, to: 'steve@nationalsportsapparel.com' }));
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const request = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(request.to).toEqual([{ email: 'steve@nationalsportsapparel.com', name: 'Steve Peterson' }]);
+    expect(request.subject).toContain('Showcase images ready for review');
+    expect(request.htmlContent).toContain('store=store-1&amp;tab=appearance');
+    expect(global.fetch.mock.calls[0][1].body).not.toContain('server-brevo-secret');
+    expect(admin.calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        table: 'webstores',
+        kind: 'update',
+        patch: expect.objectContaining({ showcase_review_notification_status: 'sent' }),
+      }),
+    ]));
+  });
+
+  test('does not claim or email while another product is still generating', async () => {
+    const admin = makeAdmin((op) => (
+      op.table === 'webstore_showcase_assets'
+        ? { data: [{ id: 'active-asset' }], error: null }
+        : { data: null, error: null }
+    ));
+    const result = await notifyShowcaseReady(admin, 'store-1', 'https://preview.example');
+    expect(result).toEqual({ sent: false, reason: 'active-jobs' });
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(admin.calls.filter((call) => call.table === 'webstores')).toHaveLength(0);
   });
 });
