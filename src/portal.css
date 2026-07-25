@@ -2608,6 +2608,15 @@ tbody tr { cursor: pointer; }
   }
 }
 
+@media (min-width: 1181px) {
+  .order-editor-fulfillment {
+    grid-template-columns: minmax(260px, 1fr) minmax(220px, 1fr) auto;
+  }
+  .order-editor-fulfillment > div:first-child > div > div:first-child {
+    flex-wrap: nowrap !important;
+  }
+}
+
 @media (max-width: 680px) {
   .dash-overview__hero {
     min-height: 390px;
@@ -3711,5 +3720,14 @@ tbody tr { cursor: pointer; }
   }
   .order-editor-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 1181px) {
+  .order-editor-fulfillment {
+    grid-template-columns: minmax(260px, 1fr) minmax(220px, 1fr) auto;
+  }
+  .order-editor-fulfillment > div:first-child > div > div:first-child {
+    flex-wrap: nowrap !important;
   }
 }
