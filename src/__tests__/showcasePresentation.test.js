@@ -161,6 +161,38 @@ describe('Showcase public/staff response boundaries', () => {
     expect(safe).not.toHaveProperty('generation_request_id');
   });
 
+  test('background worker uses the current validated deploy instead of the production URL', () => {
+    jest.doMock('../../netlify/functions/_shared', () => ({
+      corsHeaders: () => ({}),
+      verifyUser: jest.fn(),
+    }));
+    const { getWorkerBaseUrl } = require('../../netlify/functions/showcase-admin');
+    const env = {
+      URL: 'https://connect.nationalsportsapparel.com',
+      SITE_NAME: 'nsa-portal',
+    };
+    expect(getWorkerBaseUrl({
+      headers: { host: 'deploy-preview-1821--nsa-portal.netlify.app' },
+    }, env)).toBe('https://deploy-preview-1821--nsa-portal.netlify.app');
+    expect(getWorkerBaseUrl({
+      headers: { host: 'connect.nationalsportsapparel.com' },
+    }, env)).toBe('https://connect.nationalsportsapparel.com');
+  });
+
+  test('background worker rejects untrusted request hosts', () => {
+    jest.doMock('../../netlify/functions/_shared', () => ({
+      corsHeaders: () => ({}),
+      verifyUser: jest.fn(),
+    }));
+    const { getWorkerBaseUrl } = require('../../netlify/functions/showcase-admin');
+    const env = {
+      URL: 'https://connect.nationalsportsapparel.com',
+      SITE_NAME: 'nsa-portal',
+    };
+    expect(getWorkerBaseUrl({ headers: { host: 'attacker.example' } }, env)).toBe('');
+    expect(getWorkerBaseUrl({ headers: { host: 'nsa-portal.netlify.app.attacker.example' } }, env)).toBe('');
+  });
+
   test('readiness synthesizes Missing rows and keeps unapproved products on Standard fallback', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
