@@ -128,6 +128,54 @@ function buildStateSnapshot(store, catalog, assetRows) {
   };
 }
 
+function isGenerateAllEligible(product, asset) {
+  if (!product || product.kind === 'bundle' || !product.standard_image_url) return false;
+  const status = asset?.status || 'missing';
+  if (status === 'queued' || status === 'generating' || status === 'approved') return false;
+  if (status === 'review' && asset?.approval_status !== 'rejected') return false;
+  return true;
+}
+
+function generateAllProducts(catalog, assetRows) {
+  const byWp = Object.fromEntries((assetRows || []).map((asset) => [asset.webstore_product_id, asset]));
+  return (catalog || []).filter((product) => isGenerateAllEligible(product, byWp[product.webstore_product_id]));
+}
+
+async function queueProduct(admin, storeId, product, requestId, now) {
+  const { data, error } = await admin
+    .from('webstore_showcase_assets')
+    .upsert({
+      store_id: storeId,
+      webstore_product_id: product.webstore_product_id,
+      product_id: product.product_id,
+      standard_image_url: product.standard_image_url,
+      status: 'queued',
+      approval_status: 'pending',
+      fallback_to_standard: true,
+      generation_request_id: requestId,
+      prompt_version: PROMPT_VERSION,
+      showcase_image_url: null,
+      provider: null,
+      provider_model: null,
+      analysis_provider: null,
+      analysis_model: null,
+      provider_job_id: null,
+      prompt: null,
+      analysis: {},
+      qa_result: {},
+      error_details: null,
+      reviewed_by: null,
+      reviewed_at: null,
+      generation_started_at: null,
+      generated_at: null,
+      updated_at: now,
+    }, { onConflict: 'store_id,webstore_product_id' })
+    .select('*')
+    .single();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
 async function state(admin, store) {
   const [catalog, assetsResult] = await Promise.all([
     getCatalog(admin, store.id),
@@ -217,6 +265,53 @@ exports.handler = async (event) => {
       return reply(200, { ok: true, store: data, fallback_count: fallbackCount });
     }
 
+    if (action === 'generate_all') {
+      const [catalog, assetsResult] = await Promise.all([
+        getCatalog(admin, storeId),
+        admin.from('webstore_showcase_assets').select('*').eq('store_id', storeId),
+      ]);
+      if (assetsResult.error) throw new Error(assetsResult.error.message);
+      const products = generateAllProducts(catalog, assetsResult.data || []);
+      if (!products.length) {
+        return reply(200, { ok: true, queued_count: 0, failed_count: 0 });
+      }
+
+      const baseUrl = getWorkerBaseUrl(event);
+      if (!baseUrl) return reply(500, { error: 'Unable to start Showcase background worker' });
+
+      const requestId = crypto.randomUUID();
+      const now = new Date().toISOString();
+      // Queue the entire batch before starting any worker. A fast worker can
+      // therefore never email the rep while later products are still being added.
+      const queuedAssets = await Promise.all(
+        products.map((product) => queueProduct(admin, storeId, product, requestId, now)),
+      );
+      await markShowcaseBatchPending(admin, storeId, requestId);
+
+      const internalSecret = process.env.INTERNAL_FUNCTION_SECRET || process.env.SUPABASE_SERVICE_ROLE_KEY;
+      const triggerResults = await Promise.all(queuedAssets.map(async (queued) => {
+        try {
+          const trigger = await fetch(`${baseUrl}/.netlify/functions/showcase-image-background`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-internal-secret': internalSecret },
+            body: JSON.stringify({ asset_id: queued.id, generation_request_id: requestId }),
+          });
+          if (!trigger.ok && trigger.status !== 202) throw new Error(`worker returned HTTP ${trigger.status}`);
+          return true;
+        } catch (e) {
+          await updateAsset(admin, storeId, queued.webstore_product_id, {
+            status: 'failed',
+            error_details: `Unable to start background worker: ${e.message}`,
+          });
+          return false;
+        }
+      }));
+      const queuedCount = triggerResults.filter(Boolean).length;
+      const failedCount = triggerResults.length - queuedCount;
+      if (!queuedCount) return reply(502, { error: 'Unable to start Showcase background workers', queued_count: 0, failed_count: failedCount });
+      return reply(202, { ok: true, queued_count: queuedCount, failed_count: failedCount });
+    }
+
     const wpId = String(body.webstore_product_id || '');
     if (!UUID_RE.test(wpId)) return reply(400, { error: 'Valid webstore_product_id required' });
 
@@ -228,38 +323,7 @@ exports.handler = async (event) => {
       if (!product.standard_image_url) return reply(400, { error: 'A Standard source image is required before generation' });
 
       const requestId = crypto.randomUUID();
-      const now = new Date().toISOString();
-      const { data: queued, error } = await admin
-        .from('webstore_showcase_assets')
-        .upsert({
-          store_id: storeId,
-          webstore_product_id: wpId,
-          product_id: product.product_id,
-          standard_image_url: product.standard_image_url,
-          status: 'queued',
-          approval_status: 'pending',
-          fallback_to_standard: true,
-          generation_request_id: requestId,
-          prompt_version: PROMPT_VERSION,
-          showcase_image_url: null,
-          provider: null,
-          provider_model: null,
-          analysis_provider: null,
-          analysis_model: null,
-          provider_job_id: null,
-          prompt: null,
-          analysis: {},
-          qa_result: {},
-          error_details: null,
-          reviewed_by: null,
-          reviewed_at: null,
-          generation_started_at: null,
-          generated_at: null,
-          updated_at: now,
-        }, { onConflict: 'store_id,webstore_product_id' })
-        .select('*')
-        .single();
-      if (error) throw new Error(error.message);
+      const queued = await queueProduct(admin, storeId, product, requestId, new Date().toISOString());
       // Publish the notification batch only after the queued asset is visible.
       // This prevents a finishing worker from observing a pending batch with no
       // active asset and emailing the rep before this request actually runs.
@@ -357,5 +421,7 @@ exports.handler = async (event) => {
 module.exports.publicAsset = publicAsset;
 module.exports.getCatalog = getCatalog;
 module.exports.buildStateSnapshot = buildStateSnapshot;
+module.exports.isGenerateAllEligible = isGenerateAllEligible;
+module.exports.generateAllProducts = generateAllProducts;
 module.exports.state = state;
 module.exports.getWorkerBaseUrl = getWorkerBaseUrl;

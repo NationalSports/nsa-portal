@@ -5375,6 +5375,22 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
   const items = snapshot?.items || [];
   const counts = snapshot?.counts || {};
   const unpublished = publishedMode !== draftMode;
+  const generateAllCount = items.filter((item) => {
+    const asset = item.asset || {};
+    const status = asset.status || 'missing';
+    if (item.kind === 'bundle' || !item.standard_image_url) return false;
+    if (status === 'queued' || status === 'generating' || status === 'approved') return false;
+    return status !== 'review' || asset.approval_status === 'rejected';
+  }).length;
+
+  const generateAll = async () => {
+    if (!generateAllCount) return;
+    if (!window.confirm(`Generate ${generateAllCount} Showcase image${generateAllCount === 1 ? '' : 's'}? This queues background AI jobs and may incur usage charges.`)) return;
+    const data = await act('generate_all', 'generate_all');
+    if (!data) return;
+    const failed = Number(data.failed_count || 0);
+    onFlash?.(`Queued ${Number(data.queued_count || 0)} Showcase image${Number(data.queued_count || 0) === 1 ? '' : 's'}${failed ? ` · ${failed} failed to start` : ''}`);
+  };
 
   return (
     <div>
@@ -5428,8 +5444,13 @@ function ShowcaseAppearanceTab({ store, onFlash }) {
             <div style={{ fontWeight: 800, fontSize: 15 }}>Showcase readiness</div>
             <div style={{ color: '#64748b', fontSize: 11.5, marginTop: 3 }}>Generation runs in the background, and the assigned rep is emailed when all active jobs finish. Every generated image requires human approval before shoppers can see it.</div>
           </div>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {['approved', 'review', 'missing', 'generating', 'failed'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end' }}>
+            <button className="btn btn-sm btn-primary" type="button" disabled={!!busy || generateAllCount === 0} onClick={generateAll} title={generateAllCount ? `Queue ${generateAllCount} missing, failed, or rejected Showcase image${generateAllCount === 1 ? '' : 's'}` : (hasActiveJobs ? 'All eligible images are already queued' : 'No missing, failed, or rejected images')}>
+              {busy === 'generate_all' ? 'Queueing All…' : generateAllCount ? `Generate All (${generateAllCount})` : hasActiveJobs ? 'All Queued' : 'Generate All'}
+            </button>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {['approved', 'review', 'missing', 'generating', 'failed'].map((key) => <span key={key} style={{ fontSize: 10.5, fontWeight: 700, color: SHOWCASE_STATUS[key].fg, background: SHOWCASE_STATUS[key].bg, padding: '4px 8px', borderRadius: 999 }}>{SHOWCASE_STATUS[key].label}: {Number(counts[key] || 0) + (key === 'generating' ? Number(counts.queued || 0) : 0)}</span>)}
+            </div>
           </div>
         </div>
         <div style={{ padding: 12 }}>

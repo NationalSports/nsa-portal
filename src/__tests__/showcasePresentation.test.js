@@ -256,6 +256,35 @@ describe('Showcase public/staff response boundaries', () => {
     expect(snapshot.store.published_presentation_mode).toBe('standard');
   });
 
+  test('Generate All queues only missing, failed, and rejected non-bundle products with source images', () => {
+    jest.doMock('../../netlify/functions/_shared', () => ({
+      corsHeaders: () => ({}),
+      getSiteUrl: () => '',
+      getTrustedSiteBaseUrl: jest.requireActual('../../netlify/functions/_shared').getTrustedSiteBaseUrl,
+      verifyUser: jest.fn(),
+    }));
+    const { generateAllProducts } = require('../../netlify/functions/showcase-admin');
+    const catalog = [
+      { webstore_product_id: 'missing', standard_image_url: 'https://cdn/missing.jpg' },
+      { webstore_product_id: 'failed', standard_image_url: 'https://cdn/failed.jpg' },
+      { webstore_product_id: 'rejected', standard_image_url: 'https://cdn/rejected.jpg' },
+      { webstore_product_id: 'review', standard_image_url: 'https://cdn/review.jpg' },
+      { webstore_product_id: 'approved', standard_image_url: 'https://cdn/approved.jpg' },
+      { webstore_product_id: 'active', standard_image_url: 'https://cdn/active.jpg' },
+      { webstore_product_id: 'bundle', kind: 'bundle', standard_image_url: 'https://cdn/bundle.jpg' },
+      { webstore_product_id: 'no-source', standard_image_url: null },
+    ];
+    const assets = [
+      { webstore_product_id: 'failed', status: 'failed', approval_status: 'pending' },
+      { webstore_product_id: 'rejected', status: 'review', approval_status: 'rejected' },
+      { webstore_product_id: 'review', status: 'review', approval_status: 'pending' },
+      { webstore_product_id: 'approved', status: 'approved', approval_status: 'approved' },
+      { webstore_product_id: 'active', status: 'generating', approval_status: 'pending' },
+    ];
+    expect(generateAllProducts(catalog, assets).map((product) => product.webstore_product_id))
+      .toEqual(['missing', 'failed', 'rejected']);
+  });
+
   test('the shopper asset map includes only explicitly approved images', () => {
     jest.doMock('../../netlify/functions/_shared', () => ({
       corsHeaders: () => ({}),
