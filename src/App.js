@@ -360,7 +360,7 @@ import { shipStationCall, testShipStationConnection, convertSOToShipStation, pus
 import { mapSportsLinkDocToBill, siPoOrigin, rankSiPoCandidates, parseSiPoString, applySiDocumentDiscount, siExpectedUpcharge, earlyPayFreightWaiver, poCoreTagMatch, looksNetsuiteDocRef } from './sportsLink';
 import { isPrePortalNetsuitePo, NETSUITE_OLD_PO_CORES } from './netsuiteOldPos';
 import { mapSsOrderToBill, resolveSsBillLines, collectSsLineSkus } from './ssOrders';
-import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible } from './billResolve';
+import { proposeResolutions, highConfidenceAutoAccept, autoPushSafety, skuNumBase, skuZeroBase, pdfCrossCheckConflict, detailLinesReconcile, looksPrePortalGlued, poParts, proposeCreditReversal, creditAutoApplySafe, vendorsCompatible, numberMatchTagOk, descStyleToken } from './billResolve';
 import { createQBSyncEngine } from './qbSyncEngine';
 import { fetchVendorSizeInventory, vendorInvSource } from './vendorInventory';
 import { isBoxCode, plateFromCounter, boxUnits, sumBoxContents, makeBoxRow, mergeSourceRefs, buildBoxLabel, BOX_STATUS_META } from './boxTracking';
@@ -22273,6 +22273,25 @@ export default function App(){
       localStorage.setItem('nsa_bill_review_session',JSON.stringify(snap));
     }catch(e){/* localStorage quota — resume just won't be offered */}
   },[billImport.step,billImport.parsed]);
+  // Auto-restore an in-progress review when the Bills tab is open, so staff land back in their
+  // working list instead of a "Resume review" button (owner ask: the bills should stay loaded).
+  // Fires at most once per mount, and only after orders are loaded — resume re-matches every bill
+  // against them, so firing before they're in would flash false "no match". Same 3-day validity
+  // window as the manual Resume banner. rImport stashes its _resumeBillReview in the ref below so
+  // this top-level effect can call it (the reconcile helpers live inside that render function).
+  const _autoResumeRef=useRef(null);
+  const _autoResumedOnce=useRef(false);
+  useEffect(()=>{
+    if(_autoResumedOnce.current)return;
+    if(pg!=='import')return;
+    if(billView==='upload'||billView==='sportsinc')return;// only the Bills sub-tab shows the list
+    if(billImport.step==='review')return;// a fresh pull already loaded the list
+    if(!(Array.isArray(sos)&&sos.length))return;// orders must be in before we re-match
+    const rows=(reviewSnap&&Array.isArray(reviewSnap.bills))?reviewSnap.bills:[];
+    const pend=rows.filter(b=>b&&!b.portalStatus&&!b.reviewLater);
+    if(!pend.length||!reviewSnap.ts||Date.now()-reviewSnap.ts>3*24*3600*1000)return;
+    if(typeof _autoResumeRef.current==='function'){_autoResumedOnce.current=true;_autoResumeRef.current()}
+  },[pg,billView,billImport.step,sos,reviewSnap]);
   // Load the S&S "new since last pull" count when the Import & Review view opens. Fully
   // self-contained + silent on error: if ss_documents doesn't exist yet (migration not run)
   // or the DB is down, the badge just stays hidden — it never blocks the screen.
@@ -24417,6 +24436,7 @@ export default function App(){
       setReviewSnap(null);
       nf(bills.length+' bill(s) restored to review — matches re-checked live','success');
     };
+    _autoResumeRef.current=_resumeBillReview;// let the top-level auto-resume effect fire this on tab open
 
     // Manual "Pull now": fetch active documents since the cutover and upsert them into the
     // shared queue (omitting status/resolved/matched so any human decisions are preserved).
@@ -24848,7 +24868,12 @@ export default function App(){
         // same SO are one candidate, but the same po_id text on two different SOs (hand-typed —
         // nothing prevents it) is ambiguous and must fall through rather than pick one arbitrarily.
         const owners=[...new Set(hits.map(h=>h.kind+'|'+(h.kind==='so_po'?h.m.so_id:(h.m.id||h.m.po_number||''))+'|'+h.canon))];
-        if(owners.length===1&&hits.length){
+        // Tag guard (owner 2026-07-24, the "PO 3132 TUH → PO 3132 STOV" wrong-school class): the
+        // core tier recovers a MANGLED or dropped alpha tag, but a fully DIFFERENT tag on the same
+        // number is a different customer's job that merely shares the number — refuse it. The bill
+        // then falls through to the proposal/AI path, which finds the RIGHT order (same tag, number
+        // one off — e.g. PO 3131 TUH) by line fingerprint instead of force-matching the wrong one.
+        if(owners.length===1&&hits.length&&numberMatchTagOk(poParts(bill.po_number).tag,poParts(hits[0].canon).tag)){
           const h=hits[0];
           updated.matchedPO=h.m;updated.matchedPOSource=h.kind;
           updated._po_raw=bill.po_number;updated.po_number=h.canon;updated._core_match=true;
@@ -25001,7 +25026,16 @@ export default function App(){
       const indexed=items.map((it,ti)=>({...it,_idx:ti}));
       // The SKU must exist on the target at all — otherwise it's a genuine no-match. Custom/special
       // items keep a placeholder SKU with the real style number in the name, so match either.
-      const sameSku=indexed.filter(it=>_billSkuMatchesItem(sku,it));
+      // Vendors that bill with their OWN per-size catalog number (SanMar "1596681") carry the mfr
+      // style WE order ("NL6210") only in the line DESCRIPTION. Bridge it: a style token from the
+      // description that EXACTLY equals a target item's SKU is a real hit — the same signal the
+      // proposal engine's style tier already uses, so the two matchers stop disagreeing (a bill the
+      // wizard could tie but auto-push called "no match"). Size/color narrowing below still applies,
+      // so this can't land on the wrong size. (Owner 2026-07-24: SanMar "1596681 · NL6210. NL Unisex
+      // CVC Tee" wasn't auto-matching its NL6210 order line.)
+      const _dStyle=descStyleToken(bl.desc||'');
+      const _skuNorm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+      const sameSku=indexed.filter(it=>_billSkuMatchesItem(sku,it)||(_dStyle&&_skuNorm(it.sku)===_dStyle));
       if(sameSku.length===0)return null;
       // Prefer an exact SKU+size hit. Fall back to SKU-only when the bill line has no size OR the
       // parsed size doesn't line up with any target row. One-size goods (OSFA hats, bags) often get
@@ -25343,7 +25377,20 @@ export default function App(){
                 _bill_details:[...(po._bill_details||[]),{doc:bill.doc_number,date:bill.doc_date,sizes:sizesAdded,tracking:bill.tracking,cost:Math.round(addedCost*100)/100}]};
             })};
           });
-          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:updatedItems,updated_at:new Date().toLocaleString()};
+          // Cost-only "add to PO" lines (owner 2026-07-24, option B): a SKU the bill charged that's on
+          // no order line → append it to the SO as a NEW cost line. unit_sell 0 (no customer charge),
+          // billed = ordered (no overage), flagged _added_from_bill for audit and downstream.
+          const addedItems=soMaps.filter(mp=>mp.add_to_po).map(mp=>{
+            const q=safeNum(mp.allocated_qty);const sz=mp.size||'OSFA';const uc=safeNum(mp.bill_unit||mp.unit_cost||0);
+            return{product_id:null,sku:mp.sku||'',name:mp.name||mp.sku||'Added from bill',brand:'',color:mp.color||'',
+              nsa_cost:uc,retail_price:0,unit_sell:0,available_sizes:[sz],sizes:{[sz]:q},
+              decorations:[],is_custom:false,pick_lines:[],_added_from_bill:true,
+              po_lines:[{po_id:mp.po_id||'',unit_cost:uc,[sz]:q,billed:{[sz]:q},
+                tracking_numbers:bill.tracking?[bill.tracking]:[],
+                _bill_cost:safeNum(mp.bill_cost||0),_added_from_bill:true,
+                _bill_details:[{doc:bill.doc_number,date:bill.doc_date,sizes:{[sz]:q},tracking:bill.tracking,cost:safeNum(mp.bill_cost||0)}]}]};
+          });
+          const updatedSO={...s,_inbound_freight:Math.round((safeNum(s._inbound_freight||0)+(freightBySO[s.id]||0))*100)/100,items:[...updatedItems,...addedItems],updated_at:new Date().toLocaleString()};
           _billApplySave(bill,updatedSO);
           return updatedSO;
         }));
@@ -26092,6 +26139,43 @@ export default function App(){
       const reason=!matched?(p?.po_number?'No PO match for '+p.po_number:'No PO match — needs a PO number')
         :(errs.length?errs.join(' · '):'');
       return{matched,errs,issue,reason};
+    };
+
+    // ── Tie-stepper auto-advance (owner 2026-07-24: "still having to press Tie lines to open the
+    // next one every time") ─────────────────────────────────────────────────────────────────────
+    // The kanban 'tie' pile in the SAME order the stepper walks it. This MIRRORS the _bk bucketing
+    // in the review render (search "_kbDefs" / "es.indexOf('Use Match manually')") — keep the two in
+    // sync: PO-matched bills whose lines won't apply cleanly, then over-billed ones, in parsed order.
+    const _tiePile=()=>{
+      const lines=[],over=[];
+      (billImport.parsed||[]).forEach(b=>{
+        if(b.portalStatus&&b.portalStatus!=='success')return;
+        const t=_billTriage(b);
+        if(!t||!t.issue||!t.matched)return;
+        const es=(t.errs||[]).join(' ');
+        if(es.indexOf('duplicate doc')>-1)return;
+        if(es.indexOf('Use Match manually')>-1)lines.push(b);
+        else if(es.indexOf(' exceeds ')>-1)over.push(b);
+      });
+      return [...lines,...over];
+    };
+    // Open the two-column tap-tap matcher on a bill, pre-targeted to its matched SO and pre-mapped —
+    // the same seed as the 🧵 Tie lines button (openWizardPre), so the operator lands ready to click.
+    const _openBillTieWizard=sb=>{
+      const bl=sb&&sb.parsed;if(!bl)return;
+      const mp=bl.matchedPO||{};const soId=mp.so_id||(mp.so&&mp.so.id)||'';
+      const _so=soId&&sos.find(s2=>String(s2.id)===String(soId));
+      const pre=_so?_soCandidate(_so,true):null;
+      setBillImport(x=>({...x,expand:{...(x.expand||{}),[sb.id]:true},parsed:x.parsed.map(p=>p.id===sb.id?{...p,parsed:{...p.parsed,_wizard:{open:true,query:bl.po_number||'',target:pre||null,mappings:pre?_autoMapBillToTarget(bl,pre):{}}}}:p)}));
+    };
+    // After a bill's lines are tied in the one-at-a-time stepper, jump straight into the next tie
+    // bill's matcher (excludeId = the one just tied — still in the pre-update pile snapshot). The
+    // index math lands on the same bill the stepper will show once the tied one drops out.
+    const _advanceTieStepper=excludeId=>{
+      if(!billStepMode)return;
+      const pile=_tiePile().filter(sb=>sb.id!==excludeId);
+      if(!pile.length)return;
+      _openBillTieWizard(pile[Math.min(billStepIdx,pile.length-1)]);
     };
 
     // ── AI bill reconciliation ─────────────────────────────────────────────────
@@ -27525,15 +27609,44 @@ export default function App(){
           </div>
         </div></div>}
         {_bv==='import'&&<>
-        {/* QB Connection Status Banner */}
-        <div style={{marginBottom:12,padding:'12px 16px',borderRadius:6,display:'flex',alignItems:'center',gap:12,
-          background:'#fff',border:'1px solid '+LGRAY,borderLeft:'4px solid '+(qbConfig.connected?GREEN:RED)}}>
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke={qbConfig.connected?GREEN:RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{qbConfig.connected?<path d="M20 6 9 17l-5-5"/>:<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/>}</svg>
-          <span style={{fontSize:13,color:TXT}}>
-            <strong style={{fontFamily:FD,letterSpacing:.3,color:NAVY}}>{qbConfig.connected?'QuickBooks connected.':'QuickBooks not connected.'}</strong>{' '}{qbConfig.connected?(qbConfig.companyName||''):'Bills save to the Portal but won’t post to QB.'}
-          </span>
-          {!qbConfig.connected&&<span style={{marginLeft:'auto'}}>{skBtn({bg:RED,fg:'#fff',fs:12,pad:'8px 16px',onClick:connectQB,children:'Connect QB'})}</span>}
+        {/* Top action bar — two buttons (owner ask: "Pull bills + the dates, and the QuickBooks
+            section, should just be 2 buttons at the top"). Pull runs both vendors; the date window
+            and per-vendor escape hatches tuck behind ⚙ Options. QB shows its state and connects in
+            one click. Nothing here changed the pull/connect logic — only the chrome. */}
+        <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:billImport.pullOptsOpen?10:14}}>
+          <button onClick={()=>pullAllBills()} disabled={billImport.uploading||siQueueLoading}
+            title="One pull, both vendors: Sports Inc–routed EDI bills (adidas, SanMar, Agron, Richardson…) plus S&S orders straight from S&S. Everything billable lands in the list below, split into ✓ Matched (push in one click) and ⚠ Review (tie each bill to its order). Nothing is applied until you push. Scanned Sports Inc docs with no line detail land on the 📄 Upload & Match tab."
+            style={{display:'inline-flex',alignItems:'center',gap:8,background:RED,border:'1px solid '+RED,color:'#fff',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:14,padding:'11px 20px',borderRadius:6,cursor:(billImport.uploading||siQueueLoading)?'not-allowed':'pointer',opacity:(billImport.uploading||siQueueLoading)?0.6:1,whiteSpace:'nowrap'}}>
+            <span style={{fontSize:16}}>&#9889;</span>{(billImport.uploading||siQueueLoading)?'Pulling…':'Pull bills'}
+            {ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#fff',color:RED,fontSize:11,fontWeight:800,borderRadius:999,padding:'1px 8px'}}>{ssNewCount} new</span>}
+          </button>
+          <button onClick={()=>setBillImport(x=>({...x,pullOptsOpen:!x.pullOptsOpen}))} title="Set the invoiced-from/to window, or pull a single vendor"
+            style={{display:'inline-flex',alignItems:'center',gap:6,background:'#fff',border:'1px solid '+MGRAY,color:TXTL,fontSize:12,fontWeight:700,padding:'10px 14px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
+            &#9881; {ssPullFrom?ssPullFrom+(ssPullTo?' → '+ssPullTo:' →'):'All dates'} {billImport.pullOptsOpen?'▲':'▾'}
+          </button>
+          {qbConfig.connected
+            ?<span title={'QuickBooks connected'+(qbConfig.companyName?' · '+qbConfig.companyName:'')+'. Matched bills can also post to QB.'} style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#E7F2EC',border:'1px solid #bfdfd0',color:'#166534',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'9px 15px',borderRadius:6,whiteSpace:'nowrap'}}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={GREEN} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+                QuickBooks{qbConfig.companyName?' · '+qbConfig.companyName:''}</span>
+            :<button onClick={connectQB} title="Bills save to the Portal either way — connect QuickBooks to also post the matched pile to QB."
+                style={{display:'inline-flex',alignItems:'center',gap:7,marginLeft:'auto',background:'#fff',border:'1px solid '+RED,color:RED,fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.4,fontSize:12,padding:'10px 16px',borderRadius:6,cursor:'pointer',whiteSpace:'nowrap'}}>
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke={RED} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
+                Connect QB</button>}
         </div>
+        {/* Pull options — the invoiced-from/to window + per-vendor pulls, hidden until asked for */}
+        {billImport.pullOptsOpen&&<div style={{marginBottom:14,padding:'11px 16px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:8,display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}}>
+          <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
+          <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="One window for the whole pull: S&S bills invoiced in this range, and Sports Inc docs dated in it. Clear it to pull everything (S&S: last 3 months). The Sports Inc queue still syncs in full behind the scenes."/>
+          <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
+          <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
+          {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
+          <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'both vendors, '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'no date filter (S&S: last 3 months)'}</span>
+          <span style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10,fontSize:10,color:'#94a3b8'}}>
+            <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
+            <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
+            <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
+          </span>
+        </div>}
         {/* Resume banner — a deploy auto-reload (or crash) mid-review lands back on the upload
             step with the session snapshot intact. Offer to restore it rather than making staff
             re-pull and re-orient. Hidden once resumed/discarded or when everything was pushed. */}
@@ -27561,36 +27674,6 @@ export default function App(){
             {sk.map((s,si)=><div key={si} style={{fontSize:11,color:'#64748b'}}><span style={{fontFamily:'monospace',fontWeight:700,color:'#334155'}}>{s.doc||'—'}</span>{s.where?<span> → applied on {s.where}</span>:<span> → duplicate within the import</span>}</div>)}
           </div>}
         </div>;})()}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}}>
-          {/* ONE pull, both vendors. The button runs the S&S Orders pull + the Sports Inc queue
-              refresh/route back-to-back (see pullAllBills) — staff shouldn't have to know which
-              middleman a bill rides through. Per-vendor pulls remain as small escape hatches. */}
-          <div className="card" style={{gridColumn:'1 / -1',border:'1px solid '+LGRAY,borderLeft:'4px solid '+NAVY,background:'#fff',borderRadius:6}}>
-            <div className="card-body" style={{display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}}>
-              <div style={{flex:1,minWidth:280}}>
-                <div style={{fontSize:16,fontWeight:800,color:NAVY,fontFamily:FD,textTransform:'uppercase',letterSpacing:.3,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}><span style={{fontSize:18}}>&#9889;</span> Pull bills — Sports Inc + S&amp;S{ssNewCount>0&&<span title="New S&S orders the daily sync found since your last pull" style={{background:'#dc2626',color:'#fff',fontSize:11,fontWeight:800,borderRadius:999,padding:'2px 9px'}}>{ssNewCount} new</span>}</div>
-                <div style={{fontSize:12,color:'#475569',marginTop:4}}>One pull, everything billable: Sports Inc&ndash;routed EDI bills (adidas, SanMar, Agron, Richardson&hellip;) plus S&amp;S orders straight from S&amp;S. It all lands in one list below, split into <b style={{color:'#166534'}}>&#10003; Matched</b> (push in one click) and <b style={{color:'#b45309'}}>&#9888; Review</b> (tie each bill to its order here). Nothing is applied until you push. Scanned Sports Inc docs with no line detail land on the 📄 Upload &amp; Match tab.</div>
-                <div style={{display:'flex',alignItems:'center',gap:8,marginTop:8,flexWrap:'wrap'}}>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>Invoiced from</label>
-                  <input type="date" value={ssPullFrom} onChange={e=>setSsPullFrom(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="One window for the whole pull: S&S bills invoiced in this range, and Sports Inc docs dated in it. Clear it to pull everything (S&S: last 3 months). The Sports Inc queue still syncs in full behind the scenes."/>
-                  <label style={{fontSize:11,fontWeight:700,color:'#155e75'}}>to</label>
-                  <input type="date" value={ssPullTo} onChange={e=>setSsPullTo(e.target.value)} style={{fontSize:11,padding:'3px 6px',borderRadius:6,border:'1px solid #a5cdd6'}} title="Leave blank for up to now"/>
-                  {ssPullTo&&<button onClick={()=>setSsPullTo('')} style={{fontSize:10,padding:'2px 7px',borderRadius:6,cursor:'pointer',border:'1px solid #a5cdd6',background:'#fff',color:'#155e75',fontWeight:600}}>clear</button>}
-                  <span style={{fontSize:10,color:'#64748b'}}>{ssPullFrom?'both vendors, '+ssPullFrom+(ssPullTo?' to '+ssPullTo:' onward'):'no date filter (S&S: last 3 months)'}</span>
-                </div>
-                <div style={{display:'flex',alignItems:'center',gap:10,marginTop:8,fontSize:10,color:'#94a3b8'}}>
-                  <span style={{fontWeight:700,textTransform:'uppercase',letterSpacing:.5}}>One vendor only:</span>
-                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>pullFromSportsInc()} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>Sports Inc</button>
-                  <button disabled={billImport.uploading||siQueueLoading} onClick={()=>{const f=ssPullFrom||'',t=ssPullTo||'';pullFromSS((!f&&!t)?{}:{startDate:f||undefined,endDate:t||(f?new Date().toISOString().slice(0,10):undefined)});}} style={{background:'none',border:'none',padding:0,cursor:'pointer',color:'#64748b',fontSize:10,fontWeight:700,textDecoration:'underline'}}>S&amp;S</button>
-                </div>
-              </div>
-              <button className="btn btn-primary" style={{background:RED,borderColor:RED,whiteSpace:'nowrap',fontFamily:FD,fontWeight:800,textTransform:'uppercase',letterSpacing:.6,fontSize:15,padding:'12px 22px'}} disabled={billImport.uploading||siQueueLoading}
-                onClick={()=>pullAllBills()}>
-                {(billImport.uploading||siQueueLoading)?'Pulling…':'⚡ Pull bills'}
-              </button>
-            </div>
-          </div>
-        </div>
 
         {/* Persistent vendor + date filters (owner ask) — always visible; they scope the review
             list, the Set aside group, and the history below. Pushing always takes the FULL
@@ -27649,7 +27732,7 @@ export default function App(){
               </div>
             </div>;
           })();
-            const renderBillCard=(b,bi)=>{
+            const renderBillCard=(b,bi,stepMode)=>{
             const bill=b.parsed;
             const poMatch=bill.matchedPO;const poSrc=bill.matchedPOSource;
             const tri=_billTriage(b);// live: {matched,errs,issue,reason} or null when pushed/parked
@@ -27657,10 +27740,13 @@ export default function App(){
             const portalPushed=b.portalStatus==='success';
             const stripe=portalPushed?GREEN:b.reviewLater?GOLD:b.qbStatus==='error'?RED:tri&&tri.issue?RED:bucket==='ready'?GREEN:poMatch?NAVY:MGRAY;
             const hdrBg=portalPushed?'#F0F7F2':b.reviewLater?GOLD_BG:b.qbStatus==='error'?REDBG:tri&&tri.issue?REDBG:'#fff';
-            // Collapsed one-line row is the DEFAULT — the list stays scannable at 200+ bills.
-            // Each row carries its one status phrase and its one next action; the full card
-            // (items, wizard, write plan) renders only when the operator opens that bill.
-            const expanded=(billImport.expand||{})[b.id];
+            // Collapsed one-line row is the DEFAULT in list view — the list stays scannable at
+            // 200+ bills. Each row carries its one status phrase and its one next action; the full
+            // card renders only when the operator opens that bill. In "work one at a time" mode the
+            // current bill defaults OPEN so the next one pops up ready to tie (not collapsed behind
+            // an Open click) — an explicit ▴ Collapse still wins, so it stays a default, not a force.
+            const _expPref=(billImport.expand||{})[b.id];
+            const expanded=_expPref==null?!!stepMode:_expPref;
             const toggleExpand=()=>setBillImport(x=>({...x,expand:{...(x.expand||{}),[b.id]:!(x.expand||{})[b.id]}}));
             if(!expanded){
               const soId=poMatch?.so_id||poMatch?.so?.id||'';
@@ -27702,6 +27788,15 @@ export default function App(){
             const _reconNeeded=bill.kind!=='decoration'&&(bill.items||[]).length>0&&(!poMatch||(poSrc==='so_po'&&!(bill._lineMappings||[]).length&&((tri&&tri.issue)||!_billApplyPlan(bill))));
             const _cardProps=_reconNeeded?proposeResolutions(bill,_buildMatchCandidates(),{canonSize:_canonBillSize,maxProposals:3}):[];
             const _cardPi=Math.min(b._propIdx||0,Math.max(0,_cardProps.length-1));
+            // Bill & order detail (summary, edit fields, raw line table, totals) tucks behind one
+            // bar so the "best answer" proposal below is the hero the operator actually reads.
+            // Default collapsed when there's a real proposal to judge; open for clean matches —
+            // their line-match table IS the confirmation and there's no proposal to look at
+            // instead. Operator can toggle either way; the choice sticks per bill.
+            const _hasProposal=_reconNeeded&&!!_cardProps[_cardPi]&&!_cardProps[_cardPi].weakGuess;
+            const _detailPref=(billImport.showDetail||{})[b.id];
+            const detailOpen=_detailPref==null?!_hasProposal:_detailPref;
+            const toggleDetail=()=>setBillImport(x=>({...x,showDetail:{...(x.showDetail||{}),[b.id]:!detailOpen}}));
             const _acceptProposal=(pr)=>{
                       const target=pr.target;
                       // Merge the operator's click-links (chips on unresolved lines) into the ties,
@@ -27717,6 +27812,10 @@ export default function App(){
             // Visual-check popup (owner ask): full item names on BOTH sides so a human can
             // confirm by eye. Payload is a plain snapshot {label,sub,rows,note}.
             const _peekSet=(v)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_peek:v}:pp)}));
+            // Full SO / PO reference viewer (owner 2026-07-24: "a module popup that shows all items on
+            // the sales order, with a tab to go over to see all items on the PO … so you don't need to
+            // leave the page to see everything"). Read-only; opened from inside the reconcile matcher.
+            const _soPoSet=(v)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_soPo:v}:pp)}));
             const _peekFromCand=(cand)=>_peekSet({label:cand.label,sub:cand.sub||'',rows:cand.items.map(it=>({sku:it.sku,name:it.name||'',color:it.color||'',size:it.size||'',open:safeNum(it.qty),cost:safeNum(it.unit_cost),po_id:it.po_id||''}))});
             const _peekFromSO=(soId)=>{
               const cand=_buildMatchCandidates().find(c=>c.kind==='so'&&String(c.id)===String(soId));
@@ -27735,6 +27834,55 @@ export default function App(){
             };
             return<div key={bi} style={{position:'relative',marginBottom:14,background:'#fff',border:'1px solid '+LGRAY,borderRadius:6,boxShadow:'0 2px 12px rgba(0,0,0,.06)',overflow:'hidden',opacity:b.reviewLater?0.85:1}}>
               <span style={{position:'absolute',left:0,top:0,bottom:0,width:4,background:stripe}}/>
+              {b._soPo&&(()=>{
+                const so=sos.find(s2=>String(s2.id)===String(b._soPo.soId));
+                if(!so)return null;
+                const _nrm=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                const billPoN=_nrm(bill.po_number||bill._po_raw||'');
+                const soRows=[];
+                (so.items||[]).forEach(it=>(it.po_lines||[]).forEach(po=>{Object.entries(po).forEach(([k,v])=>{
+                  if(typeof v!=='number'||k==='unit_cost'||k==='qty'||k.startsWith('_'))return;if(v<=0)return;
+                  const billed=safeNum((po.billed||{})[k]||0);
+                  soRows.push({sku:it.sku,name:it.name||'',color:it.color||'',size:k,ordered:v,billed,open:Math.max(0,v-billed),cost:safeNum(po.unit_cost),po_id:po.po_id||''});
+                })}));
+                const poRowsExact=soRows.filter(r=>billPoN&&_nrm(r.po_id)===billPoN);
+                const poRows=poRowsExact.length?poRowsExact:soRows;
+                const poLabel=(poRowsExact.length?(soRows.find(r=>_nrm(r.po_id)===billPoN)||{}).po_id:(bill.po_number))||'this PO';
+                const tab=b._soPo.tab==='po'?'po':'so';
+                const rows=tab==='po'?poRows:soRows;
+                const c2=cust.find(cc=>cc.id===so.customer_id);
+                const th=(h,r2)=><th key={h} style={{textAlign:r2?'right':'left',padding:'5px 9px',fontSize:9,color:'#94a3b8',textTransform:'uppercase',letterSpacing:.4,background:'#f8fafc',position:'sticky',top:0}}>{h}</th>;
+                const tabBtn=(k,lab,n)=><button onClick={()=>_soPoSet({...b._soPo,tab:k})} style={{fontSize:12,fontWeight:800,padding:'7px 16px',borderRadius:8,cursor:'pointer',border:'1.5px solid '+(tab===k?NAVY:'#cbd5e1'),background:tab===k?NAVY:'#fff',color:tab===k?'#fff':'#334155'}}>{lab} <span style={{opacity:.7,fontWeight:600}}>({n})</span></button>;
+                return<div onClick={()=>_soPoSet(null)} style={{position:'fixed',inset:0,background:'rgba(15,23,42,.45)',zIndex:9000,display:'flex',alignItems:'center',justifyContent:'center',padding:18}}>
+                  <div onClick={e=>e.stopPropagation()} style={{background:'#fff',borderRadius:12,maxWidth:960,width:'100%',maxHeight:'86vh',display:'flex',flexDirection:'column',boxShadow:'0 12px 48px rgba(0,0,0,.3)'}}>
+                    <div style={{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',padding:'16px 20px 10px'}}>
+                      <div style={{fontSize:15,fontWeight:800,color:NAVY}}>Everything on this order</div>
+                      <span style={{fontSize:11.5,color:'#64748b'}}>{so.id}{(c2?.name||so.customer_name)?' · '+(c2?.name||so.customer_name):''}</span>
+                      <button onClick={()=>_soPoSet(null)} style={{marginLeft:'auto',fontSize:12,padding:'5px 13px',borderRadius:6,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>✕ Close</button>
+                    </div>
+                    <div style={{display:'flex',gap:8,padding:'0 20px 12px',flexWrap:'wrap'}}>
+                      {tabBtn('so','Sales order — all items',soRows.length)}
+                      {tabBtn('po','On '+poLabel,poRows.length)}
+                    </div>
+                    <div style={{overflow:'auto',padding:'0 20px 18px'}}>
+                      <table style={{width:'100%',fontSize:12,borderCollapse:'collapse'}}>
+                        <thead><tr>{th('SKU')}{th('Item')}{th('Color')}{th('Size')}{th('Ordered',1)}{th('Billed',1)}{th('Open',1)}{th('Cost',1)}</tr></thead>
+                        <tbody>{rows.map((r2,ri)=><tr key={ri} style={{borderBottom:'1px solid #f1f5f9',background:r2.open<=0?'#fafafa':'#fff'}}>
+                          <td style={{padding:'5px 9px',fontFamily:'monospace',fontWeight:700,whiteSpace:'nowrap'}}>{r2.sku}</td>
+                          <td style={{padding:'5px 9px',color:'#334155'}}>{r2.name||'—'}</td>
+                          <td style={{padding:'5px 9px',color:'#64748b',whiteSpace:'nowrap'}}>{r2.color||'—'}</td>
+                          <td style={{padding:'5px 9px',whiteSpace:'nowrap'}}>{r2.size||'—'}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right'}}>{r2.ordered}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',color:r2.billed>0?'#166534':'#94a3b8'}}>{r2.billed}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',fontWeight:700,color:r2.open>0?'#b45309':'#94a3b8'}}>{r2.open}</td>
+                          <td style={{padding:'5px 9px',textAlign:'right',whiteSpace:'nowrap'}}>${r2.cost.toFixed(2)}</td>
+                        </tr>)}
+                        {!rows.length&&<tr><td colSpan={8} style={{padding:'16px 9px',textAlign:'center',color:'#94a3b8'}}>No lines on this {tab==='po'?'PO':'order'}.</td></tr>}</tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>;
+              })()}
               {b._peek&&(()=>{const pk=b._peek;
                 const billRows=bill.items||[];
                 const billPrices=new Set(billRows.map(l=>Math.round(safeNum(l.unit_price)*100)).filter(v=>v>0));
@@ -27967,6 +28115,21 @@ export default function App(){
                     {plan.note&&<div style={{fontSize:10,color:'#0369a1',marginTop:3,opacity:0.85}}>{plan.note}</div>}
                   </div>;
                 })()}
+                {/* Bill & order details — one collapsible bar. The "best answer" proposal below
+                    is the hero; the raw summary, editable fields, line table and totals tuck in
+                    here so the operator judges the answer, not the source data. */}
+                <div onClick={toggleDetail} title={detailOpen?'Hide the bill & order detail':'Show the full bill — line items, totals, and the editable PO / vendor / tracking fields'}
+                  style={{display:'flex',alignItems:'center',gap:10,padding:'7px 14px',cursor:'pointer',background:'#f8fafc',borderTop:'1px solid #eef2f7',borderBottom:detailOpen?'1px solid #eef2f7':'none',userSelect:'none'}}>
+                  <span style={{fontSize:11.5,fontWeight:800,color:'#475569',letterSpacing:.2}}>{detailOpen?'▾':'▸'} Bill &amp; order details</span>
+                  <span style={{fontSize:11,color:'#94a3b8'}}>{(bill.items||[]).length} line{(bill.items||[]).length===1?'':'s'}</span>
+                  {!detailOpen&&<span style={{fontSize:11,color:'#64748b',display:'flex',gap:12,flexWrap:'wrap',alignItems:'center'}}>
+                    <span>Merch <b style={{color:'#334155'}}>{nsaMoney(bill.merchandise_total)}</b></span>
+                    {safeNum(bill.freight)>0&&<span>Freight <b style={{color:'#334155'}}>{nsaMoney(bill.freight)}</b></span>}
+                    <span>Total <b style={{color:NAVY}}>{nsaMoney(bill.doc_total||bill.merchandise_total)}</b></span>
+                  </span>}
+                  <span style={{marginLeft:'auto',fontSize:10,fontWeight:700,color:'#94a3b8'}}>{detailOpen?'Hide':'Edit / view lines'}</span>
+                </div>
+                {detailOpen&&<>
                 {/* Summary row */}
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:0,borderBottom:'1px solid #f1f5f9'}}>
                   {[['PO Number',bill.po_number||'—','#7c3aed'],['Vendor',bill.vendor||bill.supplier||'Unknown','#1e40af'],['Tracking',bill.tracking||'—','#475569'],
@@ -28029,7 +28192,7 @@ export default function App(){
                         <td style={{textAlign:'right',fontWeight:700}}>{it.qty}</td>
                         <td style={{textAlign:'right'}}>${it.unit_price.toFixed(2)}</td>
                         <td style={{textAlign:'right',fontWeight:600}}>${it.extension.toFixed(2)}</td>
-                        {showMatch&&<td style={{fontSize:10}}>{mp
+                        {showMatch&&<td style={{fontSize:12.5}}>{mp
                           ?<span style={{color:'#166534',fontWeight:600}} title={'This line will bill '+mp.allocated_qty+' × '+mp.sku+' '+mp.size+(mp.po_id?' on '+mp.po_id:'')}>
                             ✓ → {mp.sku} {mp.size}{via?<span style={{color:'#64748b',fontWeight:500}}> · {via}</span>:null}</span>
                           :hit
@@ -28071,6 +28234,7 @@ export default function App(){
                         onChange={e=>setBillImport(x=>({...x,parsed:x.parsed.map((p,i2)=>i2===bi?{...p,parsed:{...p.parsed,[key]:parseFloat(e.target.value)||0}}:p)}))}/>
                     </div>)}
                 </div>
+                </>}
                 {/* Warnings */}
                 {bill.warnings.length>0&&<div style={{padding:'6px 14px',background:'#fef3c7'}}>
                   {bill.warnings.map((w,wi)=><div key={wi} style={{fontSize:10,color:'#92400e'}}>&#9888; {w}</div>)}
@@ -28188,7 +28352,7 @@ export default function App(){
                                   </div>
                                   {it.name&&<div style={{fontSize:9.5,color:'#94a3b8',maxWidth:360}}>{it.name}</div>}
                                 </td>
-                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:9,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
+                                <td style={{padding:'5px 10px',textAlign:'right',fontSize:11,fontWeight:700,color:t.overage?'#c2410c':'#94a3b8',whiteSpace:'nowrap'}}>{t.overage?'+'+t.overage+' OVER':t.basis.replace(/_/g,' ')}</td>
                               </tr>;})}</tbody>
                           </table>
                         </div>
@@ -28217,13 +28381,20 @@ export default function App(){
                           const setXt=(nx)=>setBillImport(x=>({...x,parsed:x.parsed.map(pp=>pp.id===b.id?{...pp,_extraTies:nx}:pp)}));
                           const takenTi=new Set([...prop.ties.filter(t2=>t2.basis!=='bulk'&&t2.basis!=='po_name').map(t2=>t2.target_idx),...Object.values(xt)]);
                           return<div style={{marginTop:8,padding:'9px 12px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8}}>
-                            <div style={{fontSize:11,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
-                            <div style={{fontSize:10,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
+                            <div style={{fontSize:13,fontWeight:800,color:'#92400e',marginBottom:2}}>⚠ {prop.unresolved.length} line{prop.unresolved.length===1?'':'s'} still need{prop.unresolved.length===1?'s':''} a match</div>
+                            <div style={{fontSize:12,color:'#a16207',marginBottom:4}}>The PO says this is the right order — click the item each line pays for. Best guesses first.</div>
                             {prop.unresolved.map(i2=>{const bl=bill.items[i2]||{};const linked=xt[i2]!=null;const li2=linked?prop.target.items[xt[i2]]:null;
+                              // Show OUR style (learned alias → S&S style → the style token in the desc) as the
+                              // headline SKU, not the vendor's internal catalog number (owner 2026-07-24: "it still
+                              // reads the S&S / SanMar internal 1207621 … can that show our SKU?"). Vendor # kept small.
+                              const _skN=s=>(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+                              const _ourSku=bl._alias_sku||bl._ss_style||descStyleToken(bl.desc||'')||'';
+                              const _showOur=_ourSku&&_skN(_ourSku)!==_skN(bl.sku);
                               return<div key={i2} style={{padding:'7px 0',borderTop:'1px solid #fef3c7'}}>
                                 <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                                  <span style={{fontFamily:'monospace',fontSize:11,fontWeight:800,color:'#0f172a'}}>{bl.sku}</span>
-                                  <span style={{fontSize:10,color:'#64748b'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
+                                  <span style={{fontFamily:'monospace',fontSize:13,fontWeight:800,color:'#0f172a'}}>{_showOur?_ourSku:bl.sku}</span>
+                                  {_showOur&&<span style={{fontSize:10,color:'#94a3b8',fontFamily:'monospace'}} title="The vendor's own catalog number as printed on the bill">bill&nbsp;{bl.sku}</span>}
+                                  <span style={{fontSize:12,color:'#475569'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}{(bl.color||bl.size)?' · ':''}{safeNum(bl.qty)} @ ${safeNum(bl.unit_price).toFixed(2)} = <b style={{color:'#334155'}}>${(safeNum(bl.qty)*safeNum(bl.unit_price)).toFixed(2)}</b></span>
                                   {linked&&<><span style={{fontSize:10,padding:'2px 9px',borderRadius:10,background:'#dcfce7',color:'#166534',fontWeight:800}}>✓ Linked → {li2?li2.sku+' '+[li2.color,li2.size].filter(Boolean).join(' '):''}</span>
                                     <button onClick={()=>{const nx={...xt};delete nx[i2];setXt(nx)}} style={{fontSize:9,padding:'1px 7px',borderRadius:8,cursor:'pointer',border:'1px solid #fca5a5',background:'#fff',color:'#b91c1c',fontWeight:700}}>✕ undo</button></>}
                                 </div>
@@ -28250,16 +28421,16 @@ export default function App(){
                                     return{it2,ti2,sc};
                                   }).filter(Boolean).sort((a2,z2)=>z2.sc-a2.sc);
                                   const mkCard=({it2,ti2,sc},best)=><button key={ti2} onClick={()=>setXt({...xt,[i2]:ti2})} title={'Link this bill line to '+(it2.name||it2.sku)}
-                                    style={{textAlign:'left',minWidth:104,padding:'5px 9px',borderRadius:8,cursor:'pointer',position:'relative',border:'1.5px solid '+(best?'#16a34a':sc>=6?'#86efac':'#d1fae5'),background:best?'#f0fdf4':'#fff'}}>
-                                    {best&&<span style={{position:'absolute',top:-8,left:8,fontSize:7.5,fontWeight:900,letterSpacing:.5,background:'#16a34a',color:'#fff',padding:'1px 6px',borderRadius:6}}>BEST MATCH</span>}
-                                    <div style={{fontFamily:'monospace',fontSize:10,fontWeight:800,color:'#0f172a'}}>{it2.sku}</div>
-                                    <div style={{fontSize:9,color:'#64748b'}}>{[it2.color,it2.size].filter(Boolean).join(' · ')||' '}</div>
-                                    <div style={{fontSize:9,fontWeight:700,color:'#166534'}}>{safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)}</div>
+                                    style={{textAlign:'left',minWidth:126,padding:'8px 12px',borderRadius:8,cursor:'pointer',position:'relative',border:'1.5px solid '+(best?'#16a34a':sc>=6?'#86efac':'#d1fae5'),background:best?'#f0fdf4':'#fff'}}>
+                                    {best&&<span style={{position:'absolute',top:-9,left:8,fontSize:9,fontWeight:900,letterSpacing:.5,background:'#16a34a',color:'#fff',padding:'1px 7px',borderRadius:6}}>BEST MATCH</span>}
+                                    <div style={{fontFamily:'monospace',fontSize:13.5,fontWeight:800,color:'#0f172a'}}>{it2.sku}</div>
+                                    <div style={{fontSize:12,color:'#475569'}}>{[it2.color,it2.size].filter(Boolean).join(' · ')||' '}</div>
+                                    <div style={{fontSize:12,fontWeight:700,color:'#166534'}}>{safeNum(it2.qty)} open @ ${safeNum(it2.unit_cost).toFixed(2)}</div>
                                   </button>;
                                   const top=scored.slice(0,6);const rest=scored.slice(6);
                                   return<>
                                     <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{top.map((c,ci)=>mkCard(c,ci===0&&c.sc>=6))}</div>
-                                    {rest.length>0&&<details style={{marginTop:6}}><summary style={{fontSize:10,color:'#92400e',cursor:'pointer',fontWeight:800,display:'inline-block',padding:'3px 9px',border:'1px dashed #fbbf24',borderRadius:8}}>Show {rest.length} more item{rest.length===1?'':'s'} on this order…</summary>
+                                    {rest.length>0&&<details style={{marginTop:6}}><summary style={{fontSize:12,color:'#92400e',cursor:'pointer',fontWeight:800,display:'inline-block',padding:'4px 11px',border:'1px dashed #fbbf24',borderRadius:8}}>Show {rest.length} more item{rest.length===1?'':'s'} on this order…</summary>
                                       <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:10,alignItems:'stretch'}}>{rest.map(c=>mkCard(c,false))}</div></details>}</>;
                                 })()}
                               </div>;})}
@@ -28341,7 +28512,10 @@ export default function App(){
                   return<div style={{padding:'12px 14px',background:'#eef2ff',borderTop:'1px solid #c7d2fe'}}>
                     <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
                       <div style={{fontSize:12,fontWeight:700,color:'#3730a3'}}>Reconcile {w.target?<>· <span style={{color:'#1e40af'}}>{w.target.label}</span> <button className="btn btn-sm btn-secondary" style={{fontSize:9,padding:'2px 6px',marginLeft:6}} onClick={()=>setW({...w,target:null,mappings:{}})}>change</button></>:'— pick a target'}</div>
+                      <span style={{display:'flex',gap:8}}>
+                      {w.target&&w.target.kind==='so'&&<button className="btn btn-sm" style={{fontSize:10,padding:'2px 10px',background:'#eef2ff',border:'1px solid #c7d2fe',color:'#3730a3',fontWeight:700}} title="See every line on this sales order and this PO — without leaving the page" onClick={()=>_soPoSet({soId:w.target.id,tab:'so'})}>📋 Full SO &amp; PO</button>}
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'2px 8px'}} onClick={()=>setW({open:false})}>Cancel</button>
+                      </span>
                     </div>
                     {!w.target&&<>
                       <input className="form-input" style={{width:'100%',fontSize:11,padding:'4px 8px',marginBottom:6}} placeholder="Search PO #, SO #, customer, SKU…" value={w.query||''}
@@ -28406,9 +28580,10 @@ export default function App(){
                       // $0 lines (service memos) bill nothing — they never count as "still to tie"
                       // and are auto-treated as skipped unless the operator ties one on purpose.
                       const _zeroLn=(bl)=>safeNum(bl.unit_price)<=0&&safeNum(bl.extension)<=0;
-                      let matched=0,skipped=0,zeroAuto=0,untied=0;
+                      let matched=0,skipped=0,zeroAuto=0,untied=0,addedToPo=0;
                       bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};
                         if(mm.skipped){skipped++;return}
+                        if(mm.add_to_po){addedToPo++;return}// owner: no item to match → add it to the PO as a cost line
                         if(mm.target_idx!=null){matched++;return}
                         if(_zeroLn(bl)){zeroAuto++;return}
                         untied++;});
@@ -28419,7 +28594,7 @@ export default function App(){
                       bill.items.forEach((bl,i)=>{const mm=mappings[i]||{};if(mm.skipped||mm.target_idx==null)return;const tt=target.items[mm.target_idx];const q=safeNum(mm.allocated_qty);billSum+=safeNum(bl.extension)||safeNum(bl.unit_price)*q;applySum+=q*safeNum(tt&&tt.unit_cost);});
                       const reconciles=Math.abs(applySum-billSum)<=0.02;
                       return<>
-                        <div style={{fontSize:13,color:'#334155',marginBottom:10,fontWeight:600,lineHeight:1.5}}>Click a bill line on the <b>left</b>, then click the order item it pays for on the <b>right</b>. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{zeroAuto?<> · <span style={{color:'#64748b'}}>{zeroAuto} × $0 — nothing to apply</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null} · <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
+                        <div style={{fontSize:13,color:'#334155',marginBottom:10,fontWeight:600,lineHeight:1.5}}>Click a bill line on the <b>left</b>, then click the order item it pays for on the <b>right</b>. <b style={{color:'#166534'}}>{matched} tied</b>{skipped?<> · <span style={{color:'#92400e'}}>{skipped} skipped</span></>:null}{zeroAuto?<> · <span style={{color:'#64748b'}}>{zeroAuto} × $0 — nothing to apply</span></>:null}{addedToPo?<> · <span style={{color:'#1e40af'}}>{addedToPo} added to PO</span></>:null}{untied?<> · <span style={{color:'#dc2626'}}>{untied} still to tie</span></>:null} · <b style={{color:'#b45309'}}>verify anything that isn’t an exact SKU</b>.</div>
                         {/* TAP-TAP TIE VIEW (owner redesign 2026-07-23: "very easily and clearly — and
                             not in tiny text — see the items on the PO... dummy proof"). Two panels:
                             bill lines LEFT, the order's items ALWAYS VISIBLE on the RIGHT. Click a
@@ -28429,7 +28604,7 @@ export default function App(){
                             active bill line; w._pkq searches the right panel. All money logic
                             (mappings shape, reconcile, confirm) unchanged. */}
                         {(()=>{
-                          const _untiedIdx=(maps,except)=>bill.items.findIndex((b2,i)=>{if(i===except)return false;const mm=maps[i]||{};return !mm.skipped&&mm.target_idx==null&&!_zeroLn(b2)});
+                          const _untiedIdx=(maps,except)=>bill.items.findIndex((b2,i)=>{if(i===except)return false;const mm=maps[i]||{};return !mm.skipped&&!mm.add_to_po&&mm.target_idx==null&&!_zeroLn(b2)});
                           const act=(w._pk!=null&&bill.items[w._pk])?w._pk:_untiedIdx(mappings,-1);
                           const actBl=act>=0?bill.items[act]:null;
                           const _tie=(ti)=>{if(act<0)return;const bl=bill.items[act];const nm={...mappings,[act]:{target_idx:ti,allocated_qty:safeNum(bl.qty),ambiguous:false}};const nx=_untiedIdx(nm,-1);setW({...w,mappings:nm,_pk:nx>=0?nx:null,_pkq:''})};
@@ -28459,6 +28634,19 @@ export default function App(){
                                   const sameColor=tgt&&bl.color&&tgt.color&&_ns(bl.color)===_ns(tgt.color);
                                   const basis=!tgt?null:exact?{t:'Exact SKU',c:'#166534',bg:'#dcfce7'}:augZero?{t:'Style # (00)',c:'#166534',bg:'#dcfce7'}:(sameSize&&sameColor)?{t:'Color + size',c:'#1d4ed8',bg:'#dbeafe'}:sameSize?{t:'Size only — verify',c:'#b45309',bg:'#fef3c7'}:{t:'Check — differs',c:'#b45309',bg:'#fef3c7'};
                                   const isAct=bli===act;
+                                  // Collapsed row for a settled tie (owner 2026-07-24: "once the left column is
+                                  // matched it should minimize so the left and right line up row-by-row"). The
+                                  // active line and any untied/skipped line stay full-size; a tied, non-active line
+                                  // shrinks to a one-liner that still shows what it pays for and any money warning,
+                                  // and stays clickable to re-open or untie.
+                                  if(tgt&&!isAct&&!m.skipped)return<div key={bli} onClick={()=>setW({...w,_pk:bli})} title="Click to adjust or re-tie this line" style={{display:'flex',alignItems:'center',gap:8,padding:'6px 12px',borderRadius:7,cursor:'pointer',background:over?'#fef2f2':'#f0fdf4',border:'1px solid '+(over?'#fecaca':'#bbf7d0')}}>
+                                    <span style={{fontSize:12,color:'#16a34a',fontWeight:900}}>✓</span>
+                                    <span style={{fontFamily:'monospace',fontWeight:700,fontSize:13,color:'#0f172a'}}>{bl.sku||'(no sku)'}</span>
+                                    <span style={{fontSize:12,color:'#64748b'}}>{[bl.color,bl.size].filter(Boolean).join(' · ')}</span>
+                                    <span style={{fontSize:12,color:'#166534',fontWeight:700}}>→ {tgt.sku}</span>
+                                    {over?<span style={{fontSize:11,fontWeight:800,color:'#dc2626'}}>over {q}&gt;{openQty}</span>:costGap?<span style={{fontSize:11,fontWeight:700,color:'#b45309'}}>bill ≠ order ${Math.abs(billExt-applyCost).toFixed(2)}</span>:null}
+                                    <button onClick={e=>{e.stopPropagation();setMap(bli,{})}} title="Untie" style={{marginLeft:'auto',fontSize:10,padding:'2px 9px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>✕ Untie</button>
+                                  </div>;
                                   return<div key={bli} onClick={()=>setW({...w,_pk:bli})} style={{padding:'11px 14px',borderRadius:8,cursor:'pointer',background:m.skipped?'#fffbeb':over?'#fef2f2':tgt?'#f7fdf9':'#fff',border:isAct?'2.5px solid #4f46e5':'1.5px solid '+(m.skipped?'#fcd34d':tgt?'#bbf7d0':'#e2e8f0'),boxShadow:isAct?'0 3px 12px rgba(79,70,229,.18)':'none'}}>
                                     <div style={{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}}>
                                       <span style={{fontFamily:'monospace',fontWeight:800,fontSize:15,color:'#0f172a'}}>{bl.sku||'(no sku)'}</span>
@@ -28468,6 +28656,7 @@ export default function App(){
                                     {bl.desc?<div style={{color:'#64748b',fontSize:12,marginTop:3,lineHeight:1.4}}>{bl.desc}</div>:null}
                                     <div style={{marginTop:7,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                                       {m.skipped?<><span style={{fontSize:12,fontWeight:800,color:'#92400e'}}>Skipped — this line won’t bill</span><button onClick={e=>{e.stopPropagation();setMap(bli,{})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700}}>Undo</button></>
+                                      :m.add_to_po?<><span style={{fontSize:12.5,fontWeight:800,color:'#1e40af'}}>➕ Add to the PO as a cost line — {bl.qty} @ ${safeNum(bl.unit_price).toFixed(2)} <span style={{fontWeight:600,color:'#64748b'}}>(no customer charge)</span></span><button onClick={e=>{e.stopPropagation();setMap(bli,{})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #cbd5e1',background:'#fff',color:'#334155',fontWeight:700,marginLeft:'auto'}}>Undo</button></>
                                       :tgt?<>
                                         <span style={{fontSize:12.5,color:'#166534',fontWeight:700}}>→ pays for <b style={{fontFamily:'monospace'}}>{tgt.sku}</b> {[tgt.color,tgt.size].filter(Boolean).join(' ')}</span>
                                         {basis&&<span style={{fontSize:11,fontWeight:800,color:basis.c,background:basis.bg,borderRadius:5,padding:'2px 8px',whiteSpace:'nowrap'}}>{basis.t}</span>}
@@ -28479,7 +28668,8 @@ export default function App(){
                                       :_zeroLn(bl)?<span style={{fontSize:12,color:'#94a3b8',fontWeight:700}}>$0 line — nothing to apply</span>
                                       :<>
                                         <span style={{fontSize:12.5,fontWeight:800,color:isAct?'#4f46e5':'#dc2626'}}>{isAct?'▸ now pick its item on the right':'not tied yet — click to work this line'}</span>
-                                        <button onClick={e=>{e.stopPropagation();setMap(bli,{skipped:true})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #fbbf24',background:'#fffbeb',color:'#92400e',fontWeight:700,marginLeft:'auto'}}>Skip</button>
+                                        {target.kind==='so'&&<button onClick={e=>{e.stopPropagation();setMap(bli,{add_to_po:true,allocated_qty:safeNum(bl.qty)})}} title="This bill line isn't on the order — add it to the PO as a cost-only line (captures the vendor cost; the customer isn't charged)" style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #93c5fd',background:'#eff6ff',color:'#1e40af',fontWeight:700,marginLeft:'auto'}}>➕ Add to PO</button>}
+                                        <button onClick={e=>{e.stopPropagation();setMap(bli,{skipped:true})}} style={{fontSize:11,padding:'3px 10px',borderRadius:5,cursor:'pointer',border:'1px solid #fbbf24',background:'#fffbeb',color:'#92400e',fontWeight:700}}>Skip</button>
                                       </>}
                                     </div>
                                   </div>;})}
@@ -28532,10 +28722,19 @@ export default function App(){
                               else if(target.kind==='so'){matchedPO={so_id:target.id,po_id:target.raw.po_number||target.id,so:target.raw};matchedPOSource='so_po'}
                               // Persist per-line mappings on the bill so the apply path can target the
                               // exact SO item / po_line (rather than matching by PO-number string).
+                              const _addPoId=(target.items||[]).map(it=>it.po_id).find(Boolean)||bill.po_number||'';
                               const lineMappings=Object.entries(w.mappings||{}).map(([bi2,m])=>{
+                                const bl=bill.items[parseInt(bi2)]||{};
+                                // Cost-only "add to PO" line (owner 2026-07-24 chose option B): no order item to
+                                // tie to → the apply path creates a NEW cost line on the SO's PO from the bill
+                                // (unit_sell 0 = no customer charge; billed = ordered = no overage).
+                                if(m.add_to_po&&target.kind==='so'){
+                                  const q=safeNum(m.allocated_qty||bl.qty||0);
+                                  const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*q;
+                                  return{bill_idx:parseInt(bi2),add_to_po:true,target_kind:target.kind,target_id:target.id,sku:bl.sku||'',name:bl.desc||bl.sku||'',size:bl.size||'',color:bl.color||'',so_id:target.id,po_id:_addPoId,allocated_qty:q,unit_cost:safeNum(bl.unit_price||0),bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
+                                }
                                 if(m.skipped||m.target_idx==null)return null;
                                 const it=target.items[m.target_idx];
-                                const bl=bill.items[parseInt(bi2)]||{};
                                 const billCost=safeNum(bl.extension||0)||safeNum(bl.unit_price||0)*(m.allocated_qty||0);
                                 return{bill_idx:parseInt(bi2),target_kind:target.kind,target_id:target.id,sku:it.sku,size:it.size,color:it.color||'',so_id:it.so_id||'',item_id:it.item_id||'',po_id:it.po_id||'',allocated_qty:m.allocated_qty||0,unit_cost:it.unit_cost||0,bill_unit:safeNum(bl.unit_price||0),bill_cost:Math.round(billCost*100)/100};
                               }).filter(Boolean);
@@ -28545,8 +28744,9 @@ export default function App(){
                               const _bk2={};Object.values(w.mappings||{}).forEach(m2=>{if(m2.skipped||m2.target_idx==null)return;_bk2[m2.target_idx]=(_bk2[m2.target_idx]||0)+safeNum(m2.allocated_qty)});
                               const _ovr=Object.entries(_bk2).some(([ti2,al])=>al>safeNum((target.items[ti2]||{}).qty));
                               setBillImport(x=>({...x,parsed:x.parsed.map((p,i)=>i===bi?{...p,parsed:{...p.parsed,matchedPO,matchedPOSource,_lineMappings:lineMappings,_core_match:false,_overage_ok:_ovr||undefined,_wizard:{open:false}}}:p)}));
-                              nf('Bill manually matched to '+target.label+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
-                            }}>Confirm match</button>
+                              nf((addedToPo>0?('Added '+addedToPo+' line'+(addedToPo===1?'':'s')+' to the PO'+(matched>0?', tied '+matched:'')+' — '+target.label):('Bill manually matched to '+target.label))+(_ovr?' — overage approved; pushing will raise the order to what was billed':''));
+                              _advanceTieStepper(b.id);// jump into the next tie bill's matcher (owner: stop re-clicking "Tie lines")
+                            }}>{addedToPo>0?(matched>0?'Confirm — tie '+matched+' · add '+addedToPo:'Add '+addedToPo+' to PO'):'Confirm match'}</button>
                         </div>
                       </>;
                     })()}
@@ -28607,13 +28807,19 @@ export default function App(){
               ['tie','🧵','PO matched — tie the items',[..._bk.lines,..._bk.over],'#4f46e5','This bill’s PO IS in the system — the order is known. Connect each bill line to the order item it pays for; the order’s items are on the card right below.'],
               ['nopo','🔍','PO not in the system',_bk.no_order,'#7c3aed','No order carries this bill’s PO number. Don’t force it onto another order — find the right one, set it aside, or it’s billed outside the Portal.'],
               ['check','⚠','Check these',[..._bk.failed,..._bk.dup,..._bk.other],'#b45309','Failed pushes, re-opened duplicates, odd cases — each card says what happened.'],
+              ['ready','✅','Matched — ready to push',_bk.ready,'#16a34a','These reconcile cleanly. Push the whole pile with the button below, or open any bill to double-check what it will write.'],
               ['parked','🕒','Set aside',_parkedBills.map(sb=>[sb,-1]),'#d97706','Out of every push until you act. Synced across machines; pulls won’t re-add them.'],
             ];
             const _kbSum=list=>list.reduce((a,[b])=>a+(safeNum(b.parsed?.doc_total)||safeNum(b.parsed?.merchandise_total)),0);
-            const _kbFirstDef=_kbDefs.find(d=>d[3].length);
+            const _kbAny=_kbDefs.find(d=>d[3].length);// any non-empty pile → the kanban tile strip shows
+            // Set Aside never auto-opens its workspace (owner 2026-07-24: pre-pull, when parked bills are
+            // the only pile, the heavy Set-aside section shouldn't dominate the screen — the kanban tile
+            // is enough; click it to work them). So the default active pile SKIPS 'parked'; it opens only
+            // when the operator clicks its tile.
+            const _kbFirstDef=_kbDefs.find(d=>d[0]!=='parked'&&d[3].length);
             const _kbCur=_kbDefs.find(d=>d[0]===billKanban&&d[3].length)||_kbFirstDef;
             const _kbActive=_kbCur?_kbCur[0]:null;
-            if(_kbFirstDef)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
+            if(_kbAny)_children.push(<div key="kanban" style={{display:'flex',gap:10,marginBottom:12,flexWrap:'wrap'}}>
               {_kbDefs.map(([k,ico,label,list,color])=>{if(!list.length)return null;const on=k===_kbActive;
                 return <button key={k} onClick={()=>{setBillKanban(k);setBillStepIdx(0)}} style={{flex:'1 1 190px',minWidth:175,textAlign:'left',padding:'13px 16px',borderRadius:8,cursor:'pointer',background:on?color:'#fff',border:'2px solid '+(on?color:LGRAY),boxShadow:on?'0 4px 14px rgba(0,0,0,.16)':'0 1px 4px rgba(0,0,0,.05)'}}>
                   <div style={{fontFamily:FD,fontWeight:800,fontSize:27,lineHeight:1,color:on?'#fff':color}}>{ico} {list.length}</div>
@@ -28621,14 +28827,22 @@ export default function App(){
                   <div style={{fontSize:11.5,fontWeight:700,marginTop:2,color:on?'rgba(255,255,255,.85)':TXTL,fontVariantNumeric:'tabular-nums'}}>{nsaMoney(_kbSum(list))}</div>
                 </button>;})}
             </div>);
-            if(_kbCur&&_kbActive!=='parked'){
+            if(_kbCur&&_kbActive==='ready'){
+              // Matched pile is now its own kanban box (owner 2026-07-24: "'matched' should be a
+              // kanban box, not showing up lower on the screen"). Reconciles cleanly → show the push
+              // panel + the cards as a plain list (no stepper — nothing to tie). This REPLACES the
+              // old always-on lower "✓ Matched" section.
+              _children.push(<div key="kb-hint" style={{fontSize:13.5,fontWeight:600,color:TXTL,margin:'0 0 12px',maxWidth:960,lineHeight:1.45}}>{_kbCur[5]}</div>);
+              if(_matchedHeader)_children.push(<React.Fragment key="matched-header">{_matchedHeader}</React.Fragment>);
+              _kbCur[3].forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            }else if(_kbCur&&_kbActive!=='parked'){
               const _kbList=_kbCur[3],_kbHint=_kbCur[5];
               _children.push(<div key="kb-hint" style={{fontSize:13.5,fontWeight:600,color:TXTL,margin:'0 0 12px',maxWidth:960,lineHeight:1.45}}>{_kbHint}</div>);
               if(billStepMode){
                 const si2=Math.min(billStepIdx,_kbList.length-1);
                 const[sb2,sbi2]=_kbList[si2];
                 const bp2=sb2.parsed||{};
-                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2)setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))};
+                const _stepGo=(ni)=>{const c=Math.min(Math.max(ni,0),_kbList.length-1);setBillStepIdx(c);const t2=_kbList[c];if(t2){if(_kbActive==='tie')_openBillTieWizard(t2[0]);else setBillImport(x=>({...x,expand:{...(x.expand||{}),[t2[0].id]:true}}))}};
                 _children.push(<div key="step-nav" style={{display:'flex',alignItems:'center',gap:14,padding:'14px 18px',marginBottom:10,background:'#fffbeb',border:'1px solid #fcd34d',borderRadius:8,flexWrap:'wrap'}}>
                   <span style={{fontFamily:FD,fontWeight:800,fontSize:14,textTransform:'uppercase',letterSpacing:.5,color:'#92400e',whiteSpace:'nowrap'}}>Bill {si2+1} of {_kbList.length}</span>
                   <span style={{flex:1,minWidth:230}}>
@@ -28643,7 +28857,7 @@ export default function App(){
                     <button onClick={()=>setBillStepMode(false)} title="Show this pile as a list instead" style={{fontSize:13,padding:'9px 14px',borderRadius:6,cursor:'pointer',fontWeight:700,background:'#fff',border:'1px solid '+MGRAY,color:TXTL}}>☰ List</button>
                   </span>
                 </div>);
-                _children.push(renderBillCard(sb2,sbi2));
+                _children.push(renderBillCard(sb2,sbi2,true));
               }else{
                 _children.push(<div key="step-on" style={{margin:'0 0 10px'}}><button onClick={()=>{setBillStepIdx(0);setBillStepMode(true)}} style={{fontSize:12.5,padding:'8px 16px',borderRadius:6,cursor:'pointer',fontWeight:800,background:'#fffbeb',border:'1.5px solid #fcd34d',color:'#92400e'}}>▸ Work one at a time</button></div>);
                 _kbList.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
@@ -28730,28 +28944,8 @@ export default function App(){
               <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke={RED} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01"/></svg>
               <div style={{fontSize:14,color:'#7a2429'}}><span style={{fontFamily:FD,fontWeight:800,fontSize:17,color:NAVY,letterSpacing:.3}}>Over-billed ({overBills.length})</span> <strong style={{color:RED,fontFamily:FD,fontSize:16}}>{nsaMoney(overValue)}</strong> — the bill exceeds what the order says was ordered. Correct the order to match, or accept the overage.</div>
             </div>}
-            {/* Step-by-step: how to clear the queue. Collapsible (remembered via laterCollapse['__guide']). */}
-            {rows.length>0&&(()=>{
-              const guideOpen=!laterCollapse['__guide'];
-              const steps=[
-                ['✅','Ready to push','Apply it to the order’s Billed tracking with 🚀 Push to Portal — or ✓ Resolve if you already handled it in QuickBooks.'],
-                ['⚠️','Over-billed','🧵 Reconcile in Review is the easy road now: the Best answer shows the ties and the money check, and accepting the flagged overage lets push correct the order automatically. Or handle it here: ✏️ Correct order from bill, or ⚠️ Accept overage & push with a note.'],
-                ['🧩','Won’t apply cleanly','🧵 Fix match — reopen it in Review with the wizard so you can map each line to the right order item.'],
-                ['🔍','No PO match','🧵 Fix match or ✨ Find PO with AI to attach it to the right order, then push.'],
-                ['♻️','Duplicate','These clear themselves — a bill whose doc # is already applied auto-resolves to history. Anything still here was re-opened on purpose; push it with the override if it’s a true re-bill.'],
-              ];
-              return <div style={{marginBottom:16,border:'1px solid '+LGRAY,borderRadius:6,background:'#fff',boxShadow:'0 2px 12px rgba(0,0,0,.05)',overflow:'hidden'}}>
-                <div onClick={()=>setLaterCollapse(x=>({...x,__guide:!x.__guide}))} style={{display:'flex',alignItems:'center',gap:10,cursor:'pointer',padding:'10px 16px',background:NAVY,backgroundImage:HASH}}>
-                  <span style={{fontSize:11,color:'rgba(255,255,255,.7)'}}>{guideOpen?'▼':'▶'}</span>
-                  <span style={{fontFamily:FD,fontWeight:800,fontSize:15,letterSpacing:.5,textTransform:'uppercase',color:'#fff'}}>📋 How to clear this queue</span>
-                  <span style={{fontSize:11,color:'rgba(255,255,255,.6)'}}>{guideOpen?'work the buckets top to bottom':'show the steps'}</span>
-                </div>
-                {guideOpen&&<ol style={{margin:0,padding:'10px 16px 12px 34px'}}>
-                  {steps.map(([ic,t,d],i)=><li key={i} style={{fontSize:12.5,color:TXTL,marginBottom:6,lineHeight:1.55}}>
-                    <b style={{color:NAVY,fontFamily:FD,letterSpacing:.3}}>{ic} {t}.</b> {d}</li>)}
-                </ol>}
-              </div>;
-            })()}
+            {/* The "how to clear this queue" guide was removed (owner 2026-07-24: "looks really bad") —
+                each bucket section below already carries its own one-line instruction. */}
               {rows.length===0?<div style={{padding:'28px 12px',textAlign:'center',color:'#94a3b8',fontSize:13}}>{parked.length?'No parked bills match these filters.':'Nothing parked for later — every supplier bill is accounted for. Bills you move from the review screen show up here.'}</div>
               :BUCKETS.map(([bkey,bIcon,bLabel,bColor,bBg,bDesc])=>{
                 const list=enriched.filter(e=>e.bucket===bkey);
@@ -28948,8 +29142,8 @@ export default function App(){
           })()}
           </>;
         })()}</React.Fragment>);
-            if(_inReview)_children.push(<React.Fragment key="h-matched">{secHead({dot:GREEN,title:'✓ Matched',count:_bk.ready.length,note:'These reconcile cleanly — the red button pushes all of them',mt:true})}{_matchedHeader}</React.Fragment>);
-            if(_inReview)_bk.ready.forEach(([b,bi])=>_children.push(renderBillCard(b,bi)));
+            // ✓ Matched now lives in the kanban strip above (the '✅ Matched — ready to push' tile);
+            // its push panel + cards render there when that tile is active, instead of a lower section.
             if(_bk.done.length){
               const open=!!billImport.showDone;
               _children.push(<button key="h-done" onClick={()=>setBillImport(x=>({...x,showDone:!x.showDone}))} style={{display:'block',width:'100%',textAlign:'left',marginTop:14,padding:'9px 14px',background:'#f8fafc',border:'1px solid '+LGRAY,borderRadius:6,cursor:'pointer',fontFamily:FD,fontWeight:700,fontSize:12,letterSpacing:.5,textTransform:'uppercase',color:'#64748b'}}>

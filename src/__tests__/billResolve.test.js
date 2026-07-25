@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, skuZeroBase } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -197,6 +197,49 @@ describe('poParts / editDistance / looksPrePortalGlued', () => {
     expect(looksPrePortalGlued('PO 3131 TUH')).toBe(false);   // portal format
     expect(looksPrePortalGlued('PO6591NSA')).toBe(false);     // has PO prefix — other rule owns it
     expect(looksPrePortalGlued('5866407')).toBe(false);       // bare vendor number — unknown, not "outside"
+  });
+});
+
+// ── numberMatchTagOk — the parse-time tag guard on the numeric-core match tier ──────
+// This is what stops "PO 3132 TUH" from being force-matched onto "PO 3132 STOV" (a
+// different customer's ball-cart order that merely shares the number 3132).
+describe('numberMatchTagOk — number-only PO match tag guard', () => {
+  test('BLOCKS a fully different tag on the same core (the 3132 TUH → 3132 STOV wrong-school class)', () => {
+    expect(numberMatchTagOk('TUH', 'STOV')).toBe(false);
+    expect(numberMatchTagOk('FPUTN', 'OLuSOCG')).toBe(false); // batch-collision class, different school
+  });
+  test('ALLOWS a single-character mangled tag (the class this tier exists to recover)', () => {
+    expect(numberMatchTagOk('SJMBASE', 'SJMBASB')).toBe(true); // one char off
+    expect(numberMatchTagOk('OVHF', 'OVHE')).toBe(true);
+  });
+  test('ALLOWS a dropped tag on either side — the number is then the only signal', () => {
+    expect(numberMatchTagOk('', 'STOV')).toBe(true);
+    expect(numberMatchTagOk('TUH', '')).toBe(true);
+  });
+  test('ALLOWS an exact tag and a glued RE/REP/BB suffix (prefix relationship, ≥3)', () => {
+    expect(numberMatchTagOk('tuh', 'TUH')).toBe(true);         // case/punctuation-insensitive
+    expect(numberMatchTagOk('OLuSOCGRE', 'OLuSOCG')).toBe(true); // rep glued "RE"
+    expect(numberMatchTagOk('OLuSOC', 'OLuSOCG')).toBe(true);    // one side a prefix of the other
+  });
+  test('does not let a 2-char coincidence through the prefix rule', () => {
+    expect(numberMatchTagOk('BB', 'BBCVB')).toBe(false); // shorter side <3 chars, and edit distance >1
+  });
+});
+
+// ── descStyleToken — the mfr style pulled from a bill line's description ─────────────
+// The apply-path matcher (_matchLineToItems in App.js) uses this to bridge SanMar's own
+// catalog number ("1596681") to our order line's SKU ("NL6210"), which appears only in the
+// description "NL6210. NL Unisex CVC Tee". This test locks the token this fix depends on.
+describe('descStyleToken — leading mfr style from a description', () => {
+  test('pulls the SanMar/Next Level style that the auto-push matcher needs', () => {
+    expect(descStyleToken('NL6210. NL Unisex CVC Tee')).toBe('NL6210');
+    expect(descStyleToken('DM130. DT Perfect Tri Tee')).toBe('DM130');
+    expect(descStyleToken('64800L. GLDN Softstyle Wms Piq')).toBe('64800L');
+  });
+  test('stays empty on a leading word with no digit — never a false SKU bridge', () => {
+    expect(descStyleToken('Youth Garment-Dyed Heavyweight T-Shirt')).toBe('');
+    expect(descStyleToken('Mens Polo')).toBe('');
+    expect(descStyleToken('')).toBe('');
   });
 });
 

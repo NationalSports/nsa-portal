@@ -202,6 +202,29 @@ export const editDistance = (a, b) => {
   return prev[b.length];
 };
 
+// ── Number-only PO match: tag guard (owner 2026-07-24) ────────────────────────
+// The parse-time "match on the numeric core alone" tier (App.js rematchBill) recovers a bill
+// whose alpha TAG was mangled or dropped ("PO 3152 SJMBASE" ↔ order "PO 3152 SJMBASB") — the
+// number is OURS and round-trips. But two FULLY DIFFERENT tags on the same core mean a
+// different customer's job that merely shares the number: the exact "3132 TUH → 3132 STOV"
+// wrong-school class (a bill for Trinity's tees force-matched onto Stockdale's Mikasa ball
+// carts). This is the parse-time twin of proposeResolutions' tagMismatch gate. Returns true
+// only when the number-only match is still trustworthy:
+//   · either side has no tag (dropped)          → allow — the number is the only signal, use it
+//   · tags equal                                → allow
+//   · one tag is a prefix of the other (≥3)     → allow — reps glue RE/REP/BB suffixes on
+//   · single-character mangle (editDistance ≤1) → allow — the tag-typo class this tier exists for
+//   · otherwise (TUH vs STOV)                   → BLOCK — different customer; fall through to
+//                                                  the proposal/AI path (which finds the right
+//                                                  order — same tag, number one off — by fingerprint)
+export const numberMatchTagOk = (billTag, candTag) => {
+  const a = _ns(billTag), b = _ns(candTag);
+  if (!a || !b) return true;
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a))) return true;
+  return editDistance(a, b) <= 1;
+};
+
 // Old-system detector for the prefix-less class the no-space rule misses:
 // "8379SAVFBJH" = 4-digit core glued straight to an alpha tag, no "PO" anywhere,
 // and (caller-supplied) the core exists in no live portal PO. Pure string test here;
