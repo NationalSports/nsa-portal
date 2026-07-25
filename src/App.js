@@ -23435,9 +23435,15 @@ export default function App(){
       let itemSectionStart=-1,itemSectionEnd=-1;
       for(let li=0;li<lines.length;li++){
         const line=lines[li];
-        // PO Number
+        // PO Number — broadened label detection (owner 2026-07-24: bills that print our PO under a
+        // label other than "PO NUMBER" came through with no PO). The original "PO NUMBER:" match runs
+        // first (unchanged, so nothing regresses); the fallback also catches "Customer/Your PO",
+        // "PO #", "P.O. No", and a bare "PO 3132 STOV". \bP\.?O\.? keeps PO a standalone token (never
+        // TEMPO/EXPO/PORTLAND/SHIPPO) and the value must START WITH A DIGIT — our POs are number-first
+        // — so "PO BOX 123" and address lines can't leak in. First in-document match wins, as before.
         if(!bill.po_number){
-          const m=line.match(/PO\s*NUMBER\s*[:\s]+(.+)/i);
+          const m=line.match(/PO\s*NUMBER\s*[:\s]+(.+)/i)
+            ||line.match(/(?:(?:CUSTOMER|CUST\.?|YOUR|CLIENT)\s*\bP\.?\s?O\.?|\bP\.?\s?O\.?\s*(?:NUM(?:BER)?|NO\.?|#)?)\s*[:#]?\s*(\d[A-Za-z0-9 .\/-]{1,30})/i);
           if(m){const val=m[1].trim();if(val.length>1)bill.po_number=val}
         }
         // Tracking number
