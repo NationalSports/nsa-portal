@@ -880,6 +880,11 @@
     white-space: nowrap;
   }
 
+  .main.order-mode-main .order-editor-item__deco-art-size,
+  .main.order-mode-main .order-editor-item__deco-status {
+    display: none !important;
+  }
+
   .main.order-mode-main .order-editor-item__deco-pricing {
     min-width: 230px;
     margin-left: auto !important;
