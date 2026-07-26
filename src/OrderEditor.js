@@ -4244,9 +4244,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <span className="order-editor-item__swatch" style={{background:_swatchHex(item.color)||'#eef1f6'}}/>
             <div className="order-editor-item__collapsed-identity" style={{flex:1,minWidth:0}}>
               <div className="order-editor-item__metadata" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
-                <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
-                {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
+                <span className="order-editor-item__sku" style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
+                <span className="order-editor-item__name" style={{fontWeight:700,fontSize:14}}>{item.name}</span>
+                {item.color&&<span className="badge badge-gray order-editor-item__color" style={{fontSize:11}}>{item.color}</span>}
               </div>
               <div className="order-editor-item__compact-tags">
                 {Object.entries(safeSizes(item)).filter(([,v])=>safeNum(v)>0).map(([sz,v])=><span key={sz}>{sz} · {v}</span>)}
@@ -4302,23 +4302,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {_itemFullyInvoiced?'✓ Fully Invoiced':'Invoiced '+_itemInvoicedQty+' of '+qty}
                 </span>
               </div>}
-              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
-                  :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
-                {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
-                  :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
+              <div className="order-editor-item__identity-main" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+                {item.is_custom?<input className="form-input order-editor-item__sku" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
+                  :<span className="order-editor-item__sku" style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
+                {item.is_custom||editingItemName===idx?<input className="form-input order-editor-item__name" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
+                  :<span className="order-editor-item__name" style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
                 {item._colors&&!isAU(item.brand)?(()=>{const opts=[...new Set([item.color,...item._colors].filter(Boolean))];return<select className="form-select" style={{fontSize:12,width:150}} value={item.color||opts[0]} onChange={e=>{const _pSku=item.sku||'',_pCol=item.color||'';uI(idx,'color',e.target.value);_rekeyLineMocks(idx,_pSku,_pCol)}}>{opts.map(c=><option key={c}>{c}</option>)}</select>})()
                   :item.is_custom?<input className="form-input" value={item.color||''} onChange={e=>uI(idx,'color',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontSize:12,width:100}} placeholder="Color"/>
                   :(()=>{const liveSrc=item._ss_live?'ss':item._sm_live?'sm':item._mt_live?'mt':item._rs_live?'rs':(isSSItem(item)?'ss':isSanMarItem(item)?'sm':isMomentecItem(item)?'mt':isRichardsonItem(item)?'rs':null);
-                    return liveSrc?<button onClick={()=>setColorPickerModal(m=>m&&m.itemIdx===idx?null:{itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
-                      :<span className="badge badge-gray">{item.color}</span>;
+                    return liveSrc?<button onClick={()=>setColorPickerModal(m=>m&&m.itemIdx===idx?null:{itemIdx:idx,sku:item.sku,source:liveSrc})} className="badge badge-gray order-editor-item__color" style={{cursor:'pointer',border:'1px dashed #94a3b8',display:'inline-flex',alignItems:'center',gap:4}} title="Click to change color">{item.color||'(set color)'} ▾</button>
+                      :<span className="badge badge-gray order-editor-item__color">{item.color}</span>;
                   })()}
                 {item.customer_supplied&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ecfeff',color:'#0e7490',fontWeight:700,border:'1px solid #a5f3fc'}}>🎁 Customer-Supplied</span>}
                 {item.is_free_promo&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fdf2f8',color:'#be185d',fontWeight:700,border:'1px solid #fbcfe8'}}>🎁 FREE PROMO</span>}
                 {item.is_custom&&!item.customer_supplied&&!item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#fef3c7',color:'#92400e',fontWeight:600}}>Custom</span>}
-                {item.vendor_source&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'🟦 via SanMar':item.vendor_source==='ss'?'🟪 via S&S':item.vendor_source==='momentec'?'🟧 via Momentec':'via vendor'}</span>}
+                {item.vendor_source&&<span className="order-editor-item__vendor" style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#dbeafe',color:'#1e40af',fontWeight:700}}>{item.vendor_source==='sanmar'?'SanMar':item.vendor_source==='ss'?'S&S':item.vendor_source==='momentec'?'Momentec':'Vendor'}</span>}
                 {(o.deco_pos||[]).filter(dp=>(dp.item_idxs||[]).includes(idx)).map(dp=><span key={dp.id||dp.po_id} style={{fontSize:9,padding:'2px 6px',borderRadius:4,background:'#ede9fe',color:'#7c3aed',fontWeight:700,cursor:'pointer'}} title={dp.vendor+' — '+dp.deco_type?.replace(/_/g,' ')} onClick={()=>setPoFullPage({decoPo:dp,soId:o.id,soItems:safeItems(o)})}>{dp.po_id} · {dp.vendor}</span>)}
-                {isAU(item.brand)&&<span className="badge badge-blue">Tier {cust?.adidas_ua_tier}</span>}
+                {isAU(item.brand)&&<span className="badge badge-blue order-editor-item__tier">Tier {cust?.adidas_ua_tier}</span>}
                 {(item.is_footwear||(item.available_sizes||[]).join(',')==='OSFA')&&<span style={{fontSize:9,padding:'2px 6px',borderRadius:10,fontWeight:700,background:item.is_footwear?'#dcfce7':'#fef3c7',color:item.is_footwear?'#166534':'#92400e'}}>{item.is_footwear?'👟 Footwear':'🧢 OSFA'}</span>}
                 {o.promo_applied&&!item.is_footwear&&<label style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',background:item.is_promo?'#fef3c7':'#f1f5f9',color:item.is_promo?'#92400e':'#94a3b8',border:item.is_promo?'1px solid #fde68a':'1px solid #e2e8f0'}}><input type="checkbox" checked={item.is_promo||false} onChange={e=>{const checked=e.target.checked;if(checked){uI(idx,'_pre_promo_sell',item.unit_sell);if(item._sizeSells){uI(idx,'_pre_promo_sizeSells',item._sizeSells);uI(idx,'_sizeSells',undefined)}uI(idx,'unit_sell',safeNum(item.retail_price)||safeNum(item.nsa_cost)*2);uI(idx,'is_promo',true)}else{uI(idx,'unit_sell',item._pre_promo_sell!=null?item._pre_promo_sell:item.unit_sell);if(item._pre_promo_sizeSells){uI(idx,'_sizeSells',item._pre_promo_sizeSells);uI(idx,'_pre_promo_sizeSells',undefined)}uI(idx,'_pre_promo_sell',undefined);uI(idx,'is_promo',false)}}} style={{width:12,height:12}}/> Promo{item.is_promo&&item.retail_price?' ($'+item.retail_price+')':''}</label>}
                 {o.promo_applied&&!item.is_promo&&safeNum(item._promo_partial_qty)>0&&<span title={'Promo covers '+item._promo_partial_qty+' of '+qty+' units at retail. Sell prices on this line are blended across all '+qty+' units.'} style={{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,background:'#fef3c7',color:'#92400e',border:'1px solid #fde68a',cursor:'help'}}>🎁 {item._promo_partial_qty}/{qty} at retail (blended)</span>}</div>
@@ -4442,6 +4442,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 if(!sc||Math.abs(sc-item.nsa_cost)<0.01)return<div style={{fontSize:8,minHeight:11}}>{'\u00A0'}</div>;
                 return<div style={{fontSize:8,fontWeight:700,minHeight:11,color:'#b45309'}}>{'$'+sc.toFixed(2)}</div>;
               })()}
+              {isSO&&(()=>{const committed=poCommitted(item.po_lines,sz);if(committed<=0)return<div className="order-editor-item__size-po is-empty" aria-hidden="true">&nbsp;</div>;
+                const received=safePOs(item).reduce((sum,po)=>sum+safeNum((po.received||{})[sz]),0);
+                const billed=safePOs(item).reduce((sum,po)=>sum+safeNum((po.billed||{})[sz]),0);
+                const state=received>=committed?'is-received':billed>0?'is-transit':'is-ordered';
+                return<div className={'order-editor-item__size-po '+state} title={committed+' on purchase order'}>{committed}</div>})()}
               </div>)}
             </div>
             <div className="order-editor-item__qty-summary" style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
