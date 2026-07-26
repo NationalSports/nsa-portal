@@ -1,0 +1,163 @@
+/* Loaded after portal.css so the supplied Order Editor composition is the
+   authoritative desktop layout rather than one of the legacy compatibility
+   layers retained in the shared portal stylesheet. */
+@media (min-width: 1181px) {
+  .main.order-mode-main .order-mode-content .order-editor-overview__body {
+    min-height: 438px;
+    height: 438px;
+    padding: 0 350px 76px 0 !important;
+    overflow: hidden;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-metrics {
+    top: 0;
+    right: 0;
+    bottom: 76px;
+    width: 350px;
+    height: auto;
+    max-height: none;
+    padding: 20px 18px;
+    overflow: hidden;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-details-grid {
+    position: absolute;
+    top: 0;
+    right: 350px;
+    left: 0;
+    display: grid !important;
+    grid-template-columns: minmax(220px, 1.35fr) minmax(150px, .86fr) minmax(170px, .9fr);
+    grid-template-rows: auto auto;
+    gap: 18px !important;
+    align-items: end !important;
+    margin: 0 !important;
+    padding: 22px 22px 0 !important;
+    background: transparent;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-details-grid > div {
+    width: auto !important;
+    min-width: 0 !important;
+  }
+
+  .main.order-mode-main .order-editor-field--memo { grid-column: 1; grid-row: 1; }
+  .main.order-mode-main .order-editor-field--po { grid-column: 2; grid-row: 1; }
+  .main.order-mode-main .order-editor-field--order-type { grid-column: 3; grid-row: 1; }
+  .main.order-mode-main .order-editor-field--expected { grid-column: 3; grid-row: 2; }
+  .main.order-mode-main .order-editor-field--ship-date { grid-column: 2; grid-row: 2; }
+  .main.order-mode-main .order-editor-field--alert-days { display: none; }
+
+  .main.order-mode-main .order-mode-content .order-editor-fulfillment {
+    position: absolute;
+    top: 121px;
+    right: 370px;
+    left: 22px;
+    width: auto !important;
+    display: grid !important;
+    grid-template-columns: minmax(220px, 1.35fr) minmax(150px, .86fr) minmax(170px, .9fr);
+    gap: 18px !important;
+    align-items: end !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent;
+  }
+
+  .main.order-mode-main .order-editor-field--ship-to { grid-column: 1; grid-row: 1; }
+  .main.order-mode-main .order-editor-field--shipping { grid-column: 2; grid-row: 1; }
+  .main.order-mode-main .order-editor-field--ship-to button,
+  .main.order-mode-main .order-editor-field--tax { display: none; }
+
+  .main.order-mode-main .order-mode-content .order-editor-doc-actions {
+    position: absolute;
+    top: 239px;
+    left: 22px;
+    display: flex;
+    align-items: center;
+    min-height: 46px;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-delivery {
+    position: absolute;
+    top: 226px;
+    right: 370px;
+    left: auto;
+    width: 270px !important;
+    display: flex;
+    align-items: end;
+    gap: 8px;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0;
+    background: transparent;
+  }
+
+  .main.order-mode-main .order-editor-delivery > div:first-child {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .main.order-mode-main .order-editor-delivery .form-select {
+    min-height: 44px;
+    font-weight: 650;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-production-notes {
+    position: absolute;
+    top: 239px;
+    right: auto;
+    left: 315px;
+    z-index: 7;
+    width: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: transparent;
+  }
+
+  .main.order-mode-main .order-editor-production-notes > summary {
+    min-height: 40px;
+    display: inline-flex;
+    align-items: center;
+    padding: 7px 12px;
+    border: 1px solid #d1d7e0;
+    border-radius: 7px;
+    background: #fff;
+    color: #5a6075;
+    font-size: 12px;
+    font-weight: 650;
+    cursor: pointer;
+    list-style: none;
+  }
+
+  .main.order-mode-main .order-editor-production-notes > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .main.order-mode-main .order-editor-production-notes[open] > div {
+    position: absolute;
+    top: 46px;
+    left: 0;
+    width: 360px;
+    padding: 12px;
+    border: 1px solid #dce2ea;
+    border-radius: 9px;
+    background: #fff;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, .16);
+  }
+}
+
+@media (max-width: 1180px) {
+  .main.order-mode-main .order-editor-production-notes > summary {
+    cursor: pointer;
+    color: #5a6075;
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .main.order-mode-main .order-editor-production-notes > div {
+    padding-top: 8px;
+  }
+}

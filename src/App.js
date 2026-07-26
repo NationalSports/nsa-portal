@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import * as Sentry from '@sentry/react';
 import './portal.css';
+import './orderEditorReference.css';
 import MobilePortal from './MobilePortal';
 import DashboardOverview from './DashboardOverview';
 import BarcodeScanner from './BarcodeScanner';
