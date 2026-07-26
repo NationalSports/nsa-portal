@@ -3702,23 +3702,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>})()}
       </div>
       <div className="order-editor-details-grid" style={{display:'flex',gap:8,marginTop:12,alignItems:'end',flexWrap:'wrap'}}>
-        <div style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
-        {isSO&&<div style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
+        <div className="order-editor-field--memo" style={{flex:1,minWidth:180}}><label className="form-label">Memo</label><input className="form-input" ref={memoInputRef} key={o.id+'-memo'} defaultValue={o.memo||''} onBlur={e=>sv('memo',e.target.value)} style={{fontSize:14}}/></div>
+        {isSO&&<div className="order-editor-field--po" style={{width:140}}><label className="form-label">School PO #</label><input className="form-input" ref={poInputRef} key={o.id+'-po'} defaultValue={o.po_number||''} onBlur={e=>sv('po_number',e.target.value)} placeholder="e.g. PO-12345" style={{fontSize:13,fontFamily:'monospace',fontWeight:600}}/></div>}
         {isE&&<div style={{width:70}}><label className="form-label">Markup</label><input className="form-input" key={o.id+'-markup'} type="number" step="0.05" defaultValue={o.default_markup} onBlur={e=>{const m=parseFloat(e.target.value)||1.65;sv('default_markup',m);sv('items',safeItems(oRef.current).map(it=>{if(isAU(it.brand))return it;const u={...it,unit_sell:rQ(it.nsa_cost*m)};if(it._sizeCosts&&Object.keys(it._sizeCosts).length){const ss={};Object.entries(it._sizeCosts).forEach(([sz,c])=>{ss[sz]=rQ(safeNum(c)*m)});u._sizeSells=ss}return u}))}}/></div>}
-        {isSO&&<div style={{width:120}}>
+        {isSO&&<div className="order-editor-field--order-type" style={{width:120}}>
           <label className="form-label">Order Type</label>
           <select className="form-select" value={o.order_type||'at_once'} onChange={e=>{sv('order_type',e.target.value);if(e.target.value==='at_once'){sv('expected_ship_date',null);sv('booking_confirmed',false);sv('booking_alert_days',100)}}}>
             <option value="at_once">At-Once</option><option value="booking">Booking</option></select>
         </div>}
-        {isSO&&<div style={{width:140}}>
+        {isSO&&<div className="order-editor-field--expected" style={{width:140}}>
           <label className="form-label">Expected</label>
           <input className="form-input" type="date" value={o.expected_date||''} onChange={e=>sv('expected_date',e.target.value)}/>
         </div>}
-        {isSO&&o.order_type==='booking'&&<div style={{width:140}}>
+        {isSO&&o.order_type==='booking'&&<div className="order-editor-field--ship-date" style={{width:140}}>
           <label className="form-label">Ship Date</label>
           <input className="form-input" type="date" value={o.expected_ship_date||''} onChange={e=>sv('expected_ship_date',e.target.value)}/>
         </div>}
-        {isSO&&o.order_type==='booking'&&<div style={{width:80}}>
+        {isSO&&o.order_type==='booking'&&<div className="order-editor-field--alert-days" style={{width:80}}>
           <label className="form-label">Alert Days</label>
           <input className="form-input" key={o.id+'-alert'} type="number" min="60" max="180" defaultValue={o.booking_alert_days||100} onBlur={e=>sv('booking_alert_days',parseInt(e.target.value)||100)}/>
           <div style={{fontSize:9,color:'#94a3b8',marginTop:2}}>before ship</div>
@@ -4093,20 +4093,20 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
       </div>}
       {/* SHIPPING */}
       <div className="order-editor-fulfillment" style={{display:'flex',gap:12,marginTop:12,alignItems:'end',flexWrap:'wrap',borderTop:'1px solid #f1f5f9',paddingTop:12}}>
-        <div><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
+        <div className="order-editor-field--shipping"><label className="form-label">Shipping</label><div style={{display:'flex',gap:4,alignItems:'center'}}>
           <Bg options={[{value:'pct',label:'% of Total'},{value:'flat',label:'Flat $'}]} value={o.shipping_type||'pct'} onChange={v=>sv('shipping_type',v)}/>
           {o.shipping_type==='pct'?<span style={{display:'inline-flex',alignItems:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'2px 6px',background:'white'}}><input value={o.shipping_value||0} onChange={e=>sv('shipping_value',parseFloat(e.target.value)||0)} style={{width:40,border:'none',outline:'none',fontSize:15,fontWeight:800,textAlign:'center',background:'transparent'}}/><span style={{fontWeight:700}}>%</span></span>
           :<$In value={o.shipping_value||0} onChange={v=>sv('shipping_value',v)} w={60}/>}
           <span style={{fontSize:12,color:'#64748b'}}>= ${totals.ship.toFixed(2)}</span>
         </div></div>
-        <div style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
+        <div className="order-editor-field--ship-to" style={{flex:1,minWidth:180}}><label className="form-label">Ship To</label>
           <div style={{display:'flex',gap:4,alignItems:'center'}}>
             <select className="form-select" style={{flex:1}} value={o.ship_to_id||'default'} onChange={e=>{if(e.target.value==='new')setShowCustEdit(true);else sv('ship_to_id',e.target.value)}}>
               {addrs.map(a=><option key={a.id} value={a.id}>{a.label}</option>)}<option value="new">+ New Address</option></select>
             {(()=>{const sel=addrs.find(a=>a.id===o.ship_to_id)||addrs[0];return sel&&sel.addr?<button type="button" className="btn btn-sm btn-secondary" title="Copy address" style={{flexShrink:0,padding:'6px 10px',fontSize:13}} onClick={()=>{navigator.clipboard.writeText(sel.addr).then(()=>nf('📋 Address copied'),()=>nf('Could not copy address','error'))}}>📋</button>:null})()}
           </div>
         </div>
-        <div style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
+        <div className="order-editor-field--tax" style={{fontSize:12,color:'#64748b'}}>Tax: <strong>${totals.tax.toFixed(2)}</strong></div>
         {/* Promo Active Badge (toggle moved to Actions dropdown) */}
         {o.promo_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#fef3c7',color:'#92400e'}}>💰 PROMO ACTIVE</span>}
         {o.credit_applied&&<span style={{padding:'3px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:'#d1fae5',color:'#065f46'}}>🏷️ CREDIT ${safeNum(o.credit_amount).toFixed(2)}</span>}
@@ -4158,22 +4158,17 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           {o.status==='complete'&&autoSt!=='complete'&&<button className="btn btn-sm btn-secondary" style={{fontSize:9,marginLeft:4}} onClick={()=>sv('status',autoSt)}>↩️ Reset to Auto</button>}
         </div>})()}
       {isSO&&(allShipDirect?(
-        <div className="order-editor-delivery" style={{marginTop:10}}>
-          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?</label>
-          <div style={{marginTop:2,display:'inline-flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,color:'#166534',background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:6,padding:'6px 10px'}}>✅ Not needed — all items ship direct to the customer</div>
+        <div className="order-editor-delivery">
+          <label className="form-label">Fulfillment</label>
+          <select className="form-select" value="direct" disabled><option value="direct">📦 Ships direct to customer</option></select>
         </div>
-      ):(<div className="order-editor-delivery" style={{display:'flex',gap:12,marginTop:10,alignItems:'flex-end',flexWrap:'wrap'}}>
+      ):(<div className="order-editor-delivery">
         <div>
-          <label className="form-label" style={{fontSize:11}}>How is this order getting to the customer?{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>* required — select one</span>}</label>
-          <div style={{display:'flex',gap:3,flexWrap:'wrap',padding:!o.ship_preference?4:0,borderRadius:6,border:!o.ship_preference?'1px solid #fca5a5':'none',background:!o.ship_preference?'#fef2f2':'transparent'}}>
-            {[{v:'ship_as_ready',l:'Ship as Ready',icon:'📦',desc:'Each IF/job ships as completed'},{v:'wait_complete',l:'Wait to Ship Complete',icon:'⏳',desc:'Wait for entire order to complete'},{v:'rep_delivery',l:'Rep Delivery',icon:'🚗',desc:'Rep delivers when jobs complete'},{v:'warehouse_delivery',l:'Deliver',icon:'🚚',desc:'Warehouse delivers when jobs complete'},{v:'deliver_on_date',l:'Deliver on Date',icon:'🗓️',desc:'Warehouse delivers on a specific date — appears on Delivery tab when due'},{v:'ship_on_date',l:'Ship on Date',icon:'📅',desc:'Hold until specific date'}].map(sp=>{
-              // No silent default — the rep must explicitly pick how the order reaches the customer
-              // (accounts 100+ mi away are pre-filled to "Ship as Ready" by the effect above).
-              const cur=o.ship_preference===sp.v;
-              return<button key={sp.v} className={`btn btn-sm ${cur?'btn-primary':'btn-secondary'}`}
-                style={{fontSize:10,padding:'3px 8px',whiteSpace:'nowrap'}} title={sp.desc}
-                onClick={()=>sv('ship_preference',sp.v)}>{sp.icon} {sp.l}</button>})}
-          </div>
+          <label className="form-label">Fulfillment{!o.ship_preference&&<span style={{color:'#dc2626',fontWeight:800,marginLeft:6}}>*</span>}</label>
+          <select className="form-select" value={o.ship_preference||''} onChange={e=>sv('ship_preference',e.target.value)} style={!o.ship_preference?{borderColor:'#fca5a5',background:'#fef2f2'}:undefined}>
+            <option value="" disabled>Select fulfillment...</option>
+            {[{v:'ship_as_ready',l:'📦 Ship as Ready'},{v:'wait_complete',l:'⏳ Wait to Ship Complete'},{v:'rep_delivery',l:'🚗 Rep Delivery'},{v:'warehouse_delivery',l:'🚚 Deliver'},{v:'deliver_on_date',l:'🗓️ Deliver on Date'},{v:'ship_on_date',l:'📅 Ship on Date'}].map(sp=><option key={sp.v} value={sp.v}>{sp.l}</option>)}
+          </select>
         </div>
         {o.ship_preference==='ship_on_date'&&<div>
           <label className="form-label" style={{fontSize:11}}>Ship Date</label>
@@ -4184,7 +4179,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           <input type="date" className="form-input" style={{fontSize:11,padding:'4px 8px'}} value={o.deliver_on_date||''} onChange={e=>sv('deliver_on_date',e.target.value)}/>
         </div>}
       </div>))}
-      {isSO&&<div className="order-editor-production-notes" style={{marginTop:8}}><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div>}
+      {isSO&&<details className="order-editor-production-notes"><summary>📝 Production notes{o.production_notes?' •':''}</summary><div><label className="form-label">Production Notes</label><input className="form-input" value={o.production_notes||''} onChange={e=>sv('production_notes',e.target.value)} placeholder="Internal notes..."/></div></details>}
     </div></div>
     {/* TABS */}
     <div className="tabs order-editor-tabs" style={{marginBottom:16}}>
