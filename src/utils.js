@@ -129,6 +129,30 @@ export const sendBrevoEmail=async({to,cc,bcc,subject,htmlContent,textContent,sen
   catch(e){return{ok:false,error:e.message}}
 };
 
+export const createGmailDraft=async(supabase,{inboxMessageId,subject,text,html,attachments})=>{
+  try{
+    if(!supabase)return{ok:false,error:'Supabase is not configured'};
+    const{data:{session}}=await supabase.auth.getSession();
+    if(!session?.access_token)return{ok:false,error:'Your session expired. Sign in again.'};
+    const response=await fetch('/.netlify/functions/gmail-ai-action',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token},body:JSON.stringify({action:'create_draft',inbox_message_id:inboxMessageId,subject,text,html,attachments:attachments||[]})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)return{ok:false,error:data.error||('HTTP '+response.status)};
+    return{ok:true,...data};
+  }catch(error){return{ok:false,error:error.message}}
+};
+
+export const queueEmailCart=async(supabase,{inboxMessageId})=>{
+  try{
+    if(!supabase)return{ok:false,error:'Supabase is not configured'};
+    const{data:{session}}=await supabase.auth.getSession();
+    if(!session?.access_token)return{ok:false,error:'Your session expired. Sign in again.'};
+    const response=await fetch('/.netlify/functions/gmail-ai-action',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+session.access_token},body:JSON.stringify({action:'queue_cart',inbox_message_id:inboxMessageId})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)return{ok:false,error:data.error||('HTTP '+response.status)};
+    return{ok:true,...data};
+  }catch(error){return{ok:false,error:error.message}}
+};
+
 // Coach-portal writes go through this serverless endpoint instead of the browser
 // Supabase client: the public portal runs as the anon role, which RLS only lets
 // read sales_orders / so_jobs / so_art_files / estimates. The function uses the
@@ -860,6 +884,12 @@ export const buildPdfAttachment=async(opts,filename)=>{
   return _serverPdf(docHtml,fname,_repeatHeaderPdfOpts(opts));
 };
 
+export const buildHtmlPdfAttachment=async(docHtml,filename)=>{
+  const safe=String(filename||'document').replace(/[^a-z0-9._-]+/gi,'_');
+  const fname=safe.replace(/\.html?$/i,'')+'.pdf';
+  return _serverPdf(docHtml,fname);
+};
+
 export const openDocPDF=async(opts,filename)=>{
   const logoUrl=await _inlineLogoUrl(_absLogoUrl(opts.companyInfo));
   const docHtml=buildDocHtml({...opts,css:opts.css||_PRINT_CSS,companyInfo:{...(opts.companyInfo||{}),logoUrl}});
@@ -1069,4 +1099,3 @@ export async function enrichAiLinesWithVendors(lines,onProgress){
   }));
   return out;
 }
-

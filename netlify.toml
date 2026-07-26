@@ -271,3 +271,6 @@
 # See netlify/functions/teamshop-auto-po.js.
 [functions."teamshop-auto-po"]
   schedule = "25 * * * *"
+[functions."gmail-ai-sync"]
+  schedule = "*/5 * * * *"
+  timeout = 26

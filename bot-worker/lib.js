@@ -116,6 +116,20 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
   const convo = (conversation || [])
     .map((c) => `- ${c.user_id === botMemberId ? 'Claude' : 'Human'}: ${c.text}`)
     .join('\n') || '(no prior messages)';
+  const poInstruction = p.po_number
+    ? `Enter the exact Customer PO # "${p.po_number}" on the cart.`
+    : `No Customer PO # was provided. Leave that field blank and do not invent one.`;
+  const poSteps = p.po_number
+    ? `Update the "Customer PO #" field to "${p.po_number}":
+a. Click the field to focus it.
+b. Press Ctrl+A, then type "${p.po_number}" to replace any pre-filled value.
+c. Press Tab (or click elsewhere) to commit it.
+d. Re-read the field and confirm it shows exactly "${p.po_number}".
+Set \`po_entered: true\` only after confirming the exact value.`
+    : `No PO exists for this request. Clear any pre-filled value from the "Customer PO #" field, leave it blank, and do not invent a number. Set \`po_entered: false\`; this is expected and is not an issue.`;
+  const poVerify = p.po_number
+    ? `"Customer PO #" shows exactly "${p.po_number}".`
+    : `"Customer PO #" is blank; no PO was invented.`;
   return tpl
     .replaceAll('{{CONVERSATION}}', convo)
     .replaceAll('{{VENDOR_NAME}}', p.vendor_name || target)
@@ -123,7 +137,9 @@ export function buildPrompt(task, p = {}, conversation = [], opts = {}) {
     .replaceAll('{{VENDOR_URL}}', creds.url || '(unknown — find it)')
     .replaceAll('{{VENDOR_USER}}', creds.user || '(missing)')
     .replaceAll('{{VENDOR_PASS}}', creds.pass || '(missing)')
-    .replaceAll('{{PO_NUMBER}}', p.po_number || '(see task notes)')
+    .replaceAll('{{PO_INSTRUCTION}}', poInstruction)
+    .replaceAll('{{PO_STEPS}}', poSteps)
+    .replaceAll('{{PO_VERIFY}}', poVerify)
     .replaceAll('{{LINES}}', lines)
     .replaceAll('{{TASK_NOTES}}', notes)
     .replaceAll('{{DELIVERY}}', delivery)

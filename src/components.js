@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeStr, safeJobs } from './safeHelpers';
 import { pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, SZ_ORD, SC, ART_FILE_SC } from './constants';
 // html2pdf is loaded on demand (see buildPdfAttachment below) to keep it out of the eager bundle.
-import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt } from './utils';
+import { sendBrevoEmail, _brevoKey, _smsUiEnabled, sendBrevoSms, cloudUpload, buildBrandedEmailHtml, _cloudinaryPdfThumb, _isImgUrl, _urlExt, createGmailDraft, buildHtmlPdfAttachment } from './utils';
 
 // allowVector: when true the gallery also accepts vector (.ai/.eps/.svg) and .pdf
 // artwork — used by the Topstar digitizing/Vector PO flow where production-ready
@@ -188,7 +188,7 @@ function FollowUpAutoPanel({value,onChange,defaultMessage}){
 
 // SEND ESTIMATE MODAL
 
-function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo}){
+function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachmentHtml,repUser,defaultFollowUpDays,companyInfo,supabase}){
   const[body,setBody]=useState('');const[attachments,setAttachments]=useState([]);
   const[checkedEmails,setCheckedEmails]=useState({});const[customEmails,setCustomEmails]=useState([]);const[addingEmail,setAddingEmail]=useState('');
   const[sending,setSending]=useState(false);const[dragOver,setDragOver]=useState(false);
@@ -226,6 +226,13 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
     setSmsEnabled(_smsUiEnabled&&!!primaryContact?.phone);setFollowUpDays(0);
     setFollowUp(seedFollowUp(est2));
     setAttachments([]);setSending(false);sendingRef.current=false}}prevOpenRef.current=isOpen},[isOpen]);
+  React.useEffect(()=>{let cancelled=false;
+    if(!isOpen||!supabase||!estimate?.source_inbox_message_id)return()=>{cancelled=true};
+    supabase.from('ai_inbox_messages').select('draft_body_text').eq('id',estimate.source_inbox_message_id).maybeSingle()
+      .then(({data})=>{if(!cancelled&&data?.draft_body_text)setBody(data.draft_body_text)})
+      .catch(()=>{});
+    return()=>{cancelled=true}
+  },[isOpen,supabase,estimate?.source_inbox_message_id]);
   const handleFiles=(files)=>{const newFiles=Array.from(files).map(f=>({name:f.name,size:(f.size/1024).toFixed(0)+' KB',file:f}));setAttachments(a=>[...a,...newFiles])};
   const doSend=async()=>{
     if(sendingRef.current)return;// prevent double send
@@ -290,6 +297,26 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       window.open(mailTo,'_blank');
       onSend({followUpDays,followUp:followUp.auto?followUp:null,toEmails:emails.join(', ')});onClose();
     }};
+  const doGmailDraft=async()=>{
+    if(sendingRef.current)return;
+    if(!estimate?.source_inbox_message_id){alert('This estimate is not linked to an AI Inbox email.');return}
+    sendingRef.current=true;setSending(true);
+    try{
+      const subject=`National Sports ${label} - ${estimate?.id}${estimate?.memo?' - "'+estimate.memo+'"':''}`;
+      const htmlBody=buildBrandedEmailHtml(body.replace(/\n/g,'<br/>'),companyInfo);
+      const draftAttachments=[];
+      if(buildAttachmentHtml){
+        const pdfName=(estimate?.id||'document')+(customer?.name?' - '+customer.name:'')+'.pdf';
+        draftAttachments.push(await buildHtmlPdfAttachment(buildAttachmentHtml(),pdfName));
+      }
+      for(const att of attachments){if(att.file){const content=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result.split(',')[1]);reader.onerror=reject;reader.readAsDataURL(att.file)});draftAttachments.push({name:att.name,content,mime_type:att.file.type||'application/octet-stream'})}}
+      const result=await createGmailDraft(supabase,{inboxMessageId:estimate.source_inbox_message_id,subject,text:body,html:htmlBody,attachments:draftAttachments});
+      if(!result.ok){alert('Gmail draft failed: '+(result.error||'Unknown error'));return}
+      if(_notify)_notify('Gmail reply draft created in sales@nationalsportsapparel.com');
+      onClose();
+    }catch(error){alert('Gmail draft failed: '+error.message)}
+    finally{sendingRef.current=false;setSending(false)}
+  };
   if(!isOpen)return null;
   return(<div className="modal-overlay" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:650}}>
     <div className="modal-header"><h2>Send {label}</h2><button className="modal-close" onClick={onClose}>x</button></div>
@@ -356,7 +383,7 @@ function SendModal({isOpen,onClose,estimate,customer,onSend,docType,buildAttachm
       )}
       <div style={{padding:8,background:'#dbeafe',borderRadius:6,fontSize:11,color:'#1e40af'}}>📎 {label} PDF will be auto-attached | 🔗 Portal link included in message{!_brevoKey&&' | ⚠️ No Brevo API key — will open email client instead'}</div>
     </div>
-    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button><button className="btn btn-primary" disabled={sending} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
+    <div className="modal-footer"><button className="btn btn-secondary" onClick={onClose}>Cancel</button>{estimate?.source_inbox_message_id&&<button className="btn btn-secondary" disabled={sending} onClick={doGmailDraft}><Icon name="mail" size={14}/> {sending?'Creating…':'Create Gmail Draft'}</button>}<button className="btn btn-primary" disabled={sending} onClick={doSend}><Icon name="send" size={14}/> {sending?'Sending...':'Send '+label}</button></div>
   </div></div>);
 }
 
