@@ -2629,8 +2629,8 @@ tbody tr { cursor: pointer; }
 .main.order-mode-main .order-mode-content .order-editor-metrics {
   top: 0;
   bottom: auto;
-  height: 310px;
-  max-height: 310px;
+  height: 266px;
+  max-height: 266px;
   overflow: hidden;
 }
 .main.order-mode-main .order-mode-content .order-editor-fulfillment,
