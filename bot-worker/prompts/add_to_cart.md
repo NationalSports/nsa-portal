@@ -15,8 +15,8 @@ you output the final JSON block described at the end.
 - Login user: {{VENDOR_USER}}
 - Login pass: {{VENDOR_PASS}}
 
-# Task: add every line to the cart, then complete the cart — PO, address, sizes
-PO number to enter on the cart: **{{PO_NUMBER}}**
+# Task: prepare every line in the cart for human review — address, sizes, and PO when supplied
+{{PO_INSTRUCTION}}
 
 Line items (add each at the listed sizes/quantities):
 {{LINES}}
@@ -81,15 +81,7 @@ activate carts, don't guess cart URLs. The cart shows each product as a row
 with an editable size grid.
 
 ## Step 4 — Enter the PO number
-Update the "Customer PO #" field to "{{PO_NUMBER}}":
-a. Click the "Customer PO #" field to focus it.
-b. Press Ctrl+A (select all), then type "{{PO_NUMBER}}" to REPLACE whatever is
-   there — the field often pre-fills with an account name like "FPU Soccer";
-   clear it completely.
-c. Press Tab (or click elsewhere) to commit the value.
-d. Re-read the field to confirm it shows exactly "{{PO_NUMBER}}". If it still
-   shows the old value, click again, triple-click to select all, and retype.
-Set `po_entered: true` only after you've confirmed the correct value is showing.
+{{PO_STEPS}}
 
 ## Step 5 — Set the delivery location (address)
 {{DELIVERY}}
@@ -158,7 +150,7 @@ proceed once every cell survives the reload.
 
 ## Step 7 — Verify and report
 Take a screenshot of the final cart. Then verify ALL of:
-1. "Customer PO #" shows exactly "{{PO_NUMBER}}".
+1. {{PO_VERIFY}}
 2. The Delivery Location is correct per Step 5.
 3. Every non-skipped line has its quantities under the right size headers.
 
@@ -219,9 +211,7 @@ ambiguity) before the order can be finalized. Use **needs_review** when the
 cart is fully built and just needs human review/submit.
 
 Before outputting "needs_review", verify both of the following:
-1. The "Customer PO #" field shows exactly "{{PO_NUMBER}}" (not an account name
-   or previous value). If it doesn't, set `po_entered: false` and note it in
-   `issues`.
+1. {{PO_VERIFY}}
 2. At least one line item has a non-zero quantity in the cart. If ALL lines
    show 0, use "blocked" (nothing orderable) or "needs_input" (everything
    skipped under the 14-day rule) instead.
