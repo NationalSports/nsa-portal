@@ -4243,7 +4243,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
             <span className="order-editor-item__swatch" style={{background:item.color||'#eef1f6'}}/>
             <div className="order-editor-item__collapsed-identity" style={{flex:1,minWidth:0}}>
-              <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+              <div className="order-editor-item__metadata" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
                 <span style={{fontWeight:700,fontSize:14}}>{item.name}</span>
                 {item.color&&<span className="badge badge-gray" style={{fontSize:11}}>{item.color}</span>}
@@ -4391,8 +4391,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             hide the grid and show "0 / Add Sizes", making the sizes look lost. */}
         {(()=>{const isQtyOnly=!!item.qty_only&&szQty===0;
         return<div className="order-editor-item__size-finance-row" style={{padding:'10px 18px',display:'flex',alignItems:'center',borderBottom:'1px solid #f1f5f9',...(isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?{border:'2px solid #dc2626',borderRadius:8,background:'#fef2f2'}:{})}}>
-          <div style={{display:'flex',gap:6,alignItems:'flex-start',flexWrap:'wrap'}}>
-            <div style={{width:46,display:'flex',flexDirection:'column',gap:1}}>
+          <div className="order-editor-item__size-workspace" style={{display:'flex',gap:6,alignItems:'flex-start',flexWrap:'wrap'}}>
+            <div className="order-editor-item__size-label" style={{width:46,display:'flex',flexDirection:'column',gap:1}}>
               <span style={{fontSize:12,fontWeight:600,color:isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'#dc2626':isSyncedB2BItem(item)?'#059669':'#64748b'}}>{isSO&&!isQtyOnly&&szQty===0&&safeNum(item.est_qty)>0?'⚠️ Sizes:':isQtyOnly?'Qty:':isSyncedB2BItem(item)?b2bBrandTag(item):'Sizes:'}</span>
               {isSyncedB2BItem(item)&&!isQtyOnly&&<span style={{fontSize:9,fontWeight:700,color:'#059669'}}>b2b ↓</span>}
             </div>
@@ -4424,7 +4424,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             {/* Size cells laid out as a grid, max 11 per row, so a full 7–12 + halves run fits
                 one line and longer runs double up into a second row that lines up under the first
                 (an 11-wide row starting at 5 breaks after 10). */}
-            <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
+            <div className="order-editor-item__size-grid" style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:10,alignItems:'start'}}>
             {szs.map(sz=><div key={sz} style={{textAlign:'center',width:48}}><div style={{fontSize:10,fontWeight:700,color:'#475569'}}>{sz}</div>
               <input value={sizingDraft[idx+'_'+sz]??(item.sizes[sz]||'')} onChange={e=>{const k=idx+'_'+sz;const v=e.target.value;setSizingDraft(d=>({...d,[k]:v}))}} onBlur={()=>{const k=idx+'_'+sz;if(!(k in sizingDraft))return;const v=sizingDraft[k];React.startTransition(()=>{uSz(idx,sz,v);setSizingDraft(d=>{const n={...d};delete n[k];return n})})}} placeholder="0"
                 style={{width:42,textAlign:'center',border:'1px solid #d1d5db',borderRadius:4,padding:'5px 2px',fontSize:15,fontWeight:700,color:((idx+'_'+sz) in sizingDraft?(parseInt(sizingDraft[idx+'_'+sz])||0):(item.sizes[sz]||0))>0?'#0f172a':'#cbd5e1'}}/>
@@ -4444,13 +4444,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               })()}
               </div>)}
             </div>
-            <div style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
+            <div className="order-editor-item__qty-summary" style={{textAlign:'center',marginLeft:4,padding:'0 10px',borderLeft:'2px solid #e2e8f0'}}><div style={{fontSize:10,fontWeight:700,color:'#1e40af'}}>QTY</div>
               <div style={{fontSize:20,fontWeight:800,color:'#1e40af'}}>{qty}</div>
             </div>
             </>}
             {(()=>{const vi=vendorInv[item.sku];const isSM=isSanMarItem(item);const isSS=isSSItem(item);const isMT=isMomentecItem(item);const isRS=isRichardsonItem(item);
-              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
-            {!isQtyOnly&&<div style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
+              if(isSS||isSM||isMT||isRS){const lbl=isRS?'RS':isMT?'MT':isSM?'SM':'S&S';const clr=isRS?'#dc2626':isMT?'#d97706':isSM?'#0891b2':'#7c3aed';const bdr=isRS?'#fca5a5':isMT?'#fbbf24':isSM?'#67e8f9':'#c4b5fd';const name=isRS?'Richardson':isMT?'Momentec':isSM?'SanMar':'S&S';return<button className="order-editor-item__vendor-refresh" title={vi?.error?'Error: '+vi.error+' — click to retry':'Refresh '+name+' inventory'} onClick={()=>{delete vendorInvCache.current[item.sku];delete vendorInvFetching.current[item.sku];setVendorInv(prev=>{const n={...prev};delete n[item.sku];return n});fetchVendorInventory(item.sku,item.vendor_id,item)}} style={{background:'none',border:'1px solid '+bdr,borderRadius:4,cursor:'pointer',color:vi?.error?'#dc2626':clr,padding:'2px 6px',fontSize:9,fontWeight:700,marginLeft:4,whiteSpace:'nowrap'}}>{vi?.loading?'...':vi?.error?'⚠ '+lbl:'↻ '+lbl}</button>}return null})()}
+            {!isQtyOnly&&<div className="order-editor-item__size-tools" style={{position:'relative',marginLeft:4}}><button className="btn btn-sm btn-secondary" onClick={e=>{if(showSzPicker&&showSzPicker.idx===idx){setShowSzPicker(null)}else{const r=e.currentTarget.getBoundingClientRect();setShowSzPicker({idx,top:r.bottom+4,left:r.left})}}} style={{fontSize:10}}>+ Size</button>
               {showSzPicker&&showSzPicker.idx===idx&&<><div style={{position:'fixed',top:0,left:0,right:0,bottom:0,zIndex:39}} onClick={()=>setShowSzPicker(null)}/><div style={{position:'fixed',top:showSzPicker.top,left:showSzPicker.left,background:'white',border:'1px solid #e2e8f0',borderRadius:6,boxShadow:'0 4px 12px rgba(0,0,0,0.1)',zIndex:40,padding:6,display:'flex',gap:3,flexWrap:'wrap',width:260,maxHeight:'70vh',overflowY:'auto'}}>
                 <div style={{width:'100%',display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}}>
                   <span style={{fontSize:9,fontWeight:700,color:'#64748b'}}>Click multiple, then Done</span>
@@ -4535,7 +4535,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 {pk.ship_dest==='ship_customer'?'📦 → Customer':'🚚 → '+(pk.deco_vendor||'Deco')}</span>}
             </div>})}
         </div>}
-        {isSO&&(item.po_lines||[]).length>0&&<div className="order-editor-item__flow-row" style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
+        {isSO&&(item.po_lines||[]).length>0&&<div className="order-editor-item__flow-row order-editor-item__po-row" style={{padding:'4px 18px',borderBottom:'1px solid #f1f5f9'}}>
           {safePOs(item).map((po,pi)=>{
             const rcvd=po.received||{};const cncl=po.cancelled||{};const blld=po.billed||{};const isDS=!!po.drop_ship;
             const szKeysAll=Object.keys(po).filter(k=>!k.startsWith('_')&&!_PO_SZ_META.has(k)&&typeof po[k]==='number');
@@ -4553,14 +4553,14 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             // Batch PO link — surfaces which batch PO this line was ordered on (e.g. "NSA 4507") right on the SO row.
             // batch_po_number round-trips via the sizes blob; memo ("Batch NSA 4507 — SanMar") is the fallback for older lines.
             const _batchNo=po.batch_po_number||(()=>{const m=String(po.memo||'').match(/^Batch\s+(.+?)\s+[—–-]\s+/);return m?m[1]:''})();
-            return<div key={pi} style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
+            return<div key={pi} className="order-editor-item__po-allocation" style={{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}}>
               <span style={{fontSize:10,fontWeight:700,width:46,color:st==='received'||st==='shipped'?'#166534':st==='in_transit'?'#1e40af':st==='partial'?'#b45309':'#92400e',cursor:'pointer',textDecoration:'underline'}} onClick={()=>{
                 // Find all items on this PO
                 const poId=po.po_id;const lines=[];
                 safeItems(o).forEach((it2,i2)=>{safePOs(it2).forEach((po2,pi2)=>{if(po2.po_id===poId)lines.push({lineIdx:i2,poIdx:pi2})})});
                 setEditPO({lineIdx:idx,poIdx:pi,po,allLines:lines.length>0?lines:[{lineIdx:idx,poIdx:pi}]});
               }} title="Click to edit">{po.po_id||'PO'}:</span>
-              <div style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
+              <div className="order-editor-item__po-size-grid" style={{display:'grid',gridTemplateColumns:'repeat(11,48px)',columnGap:6,rowGap:6,alignItems:'center'}}>
               {poSzKeys.map(sz=>{const v=po[sz]||0;const r=isDS?(blld[sz]||0):(rcvd[sz]||0);const cn=cncl[sz]||0;if(!v)return<div key={sz} style={{width:48,textAlign:'center',fontSize:10,color:'#d1d5db'}}>—</div>;
                 const szSt=cn>=v?'cancelled':r>=(v-cn)?(isDS?'shipped':'received'):r>0?'partial':(!isDS&&(blld[sz]||0)>0)?'in_transit':'waiting';
                 return<div key={sz} style={{width:48,textAlign:'center',fontSize:12,fontWeight:700,padding:'2px 0',borderRadius:3,
@@ -4621,8 +4621,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const decoCardStyle={padding:'10px 12px',marginBottom:4,borderRadius:6,background:di%2===0?'#fafbfc':'#f8f9fb',borderLeft:'3px solid '+(deco.kind==='art'?'#3b82f6':deco.kind==='numbers'?'#22c55e':deco.kind==='names'?'#f59e0b':deco.kind==='outside_deco'?'#7c3aed':deco.kind==='twill'?'#0d9488':'#94a3b8')};
             if(deco.kind==='art'){const artF=af.find(f=>f.id===deco.art_file_id);const artIcon=artF?(artF.deco_type==='screen_print'?'🎨':artF.deco_type==='embroidery'?'🧵':'🔥'):'';
               const _itemMock=(artF?.item_mockups||{})[item.sku+'|'+(item.color||'')];const _itemMockUrl=_itemMock&&_itemMock.length>0?(typeof _itemMock[0]==='string'?_itemMock[0]:(_itemMock[0]?.url||'')):'';const _thumb=_itemMockUrl||(artF?pickCwAsset(artF,{kind:'web_logo',colorWayId:deco.color_way_id}):'')||deco.web_url||'';
-              return(<div key={di} style={decoCardStyle}>
-                <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+              return(<div key={di} className="order-editor-item__deco-card order-editor-item__deco-card--art" style={decoCardStyle}>
+                <div className="order-editor-item__deco-main" style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
                   {(!deco.art_file_id||deco.art_file_id==='__tbd')&&<div style={{width:36,height:36,borderRadius:6,background:'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,flexShrink:0}}>🎨</div>}
                   {artF&&deco.art_file_id!=='__tbd'&&<div style={{position:'relative'}}><div style={{width:36,height:36,borderRadius:6,background:_thumb?'white':artF.deco_type==='screen_print'?'#dbeafe':artF.deco_type==='embroidery'?'#ede9fe':'#fef3c7',display:'flex',alignItems:'center',justifyContent:'center',fontSize:18,flexShrink:0,cursor:'pointer',border:_thumb?'1px solid #e2e8f0':'2px solid transparent',overflow:'hidden'}} onClick={e=>{const el=e.currentTarget.nextSibling;if(el)el.style.display=el.style.display==='none'?'block':'none'}} title="Click to expand">{_thumb?<img src={_thumb} alt="" style={{width:'100%',height:'100%',objectFit:'contain'}}/>:artIcon}</div>
                   <div style={{display:'none',position:'absolute',top:40,left:0,width:260,background:'white',border:'1px solid #e2e8f0',borderRadius:8,boxShadow:'0 8px 24px rgba(0,0,0,0.12)',zIndex:50,padding:12}}>
@@ -4690,7 +4690,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                     {artF.art_size&&<span style={{fontSize:11,color:'#94a3b8'}}>{artF.art_size}</span>}</>}
                   {/* Per-design status badge on the design's own row; Underbase is a garment-level toggle in the item bar */}
                   {artF&&!(artF.name&&artF.name.startsWith('ART TBD'))&&(()=>{const st=artF.status==='uploaded'?'needs_approval':artF.status;return (st&&st!=='waiting_for_art')?<span style={{fontSize:10,padding:'2px 6px',borderRadius:4,background:st==='approved'?'#dcfce7':'#fef3c7',color:st==='approved'?'#166534':'#92400e',fontWeight:600}}>{st==='approved'?'Approved':st==='needs_approval'?'Needs Approval':st.replace(/_/g,' ')}</span>:null})()}
-                  <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
+                  <div className="order-editor-item__deco-pricing" style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}}>
                     <span style={{fontSize:11}}>Cost: <strong style={{color:'#dc2626'}}>${decoUnitCost.toFixed(2)}</strong>{costArtQty[deco.art_file_id]>0&&<span title={"Combined run of "+costArtQty[deco.art_file_id]+" units across manually-linked jobs that share this screen — cost only; the sale price is unaffected."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#166534'}}>🔗</span>}{_outsideEst&&<span title={"Cost from "+_outsideEst+"'s price list (outside decoration). A Deco PO / actual bill supersedes this estimate."} style={{marginLeft:4,fontSize:9,fontWeight:700,color:'#7c3aed'}}>🎨 {_outsideEst}</span>}</span>
                     <span style={{fontSize:11}}>Sell: <$In value={promoDecoSell} onChange={v=>uD(idx,di,'sell_override',item.is_promo&&o.promo_applied?rQ(v/1.25):v)} w={50}/></span>
                     {item.is_promo&&o.promo_applied&&<span style={{fontSize:9,color:'#92400e',fontWeight:600}}>+25%</span>}

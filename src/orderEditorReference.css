@@ -161,3 +161,237 @@
     padding-top: 8px;
   }
 }
+
+/* Reference line-item composition. The editor keeps every existing control and
+   calculation, but the order-entry workflow is presented as one compact card. */
+@media (min-width: 1181px) {
+  .main.order-mode-main .order-mode-content .order-editor-item.is-expanded {
+    border-radius: 10px;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-item__header {
+    min-height: 82px;
+    padding: 13px 16px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__metadata {
+    column-gap: 8px !important;
+    row-gap: 4px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__metadata > [style*="font-weight: 700"][style*="font-size: 15"] {
+    color: #242a3a;
+    font-size: 16px !important;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-item__size-finance-row {
+    display: block !important;
+    min-height: 154px;
+    padding: 18px 22px !important;
+  }
+
+  .main.order-mode-main .order-mode-content .order-editor-item__size-workspace {
+    width: 100% !important;
+    max-width: none !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    gap: 12px !important;
+    padding: 0 !important;
+  }
+
+  .main.order-mode-main .order-editor-item__size-label {
+    width: auto !important;
+    min-width: 42px;
+    padding-top: 20px;
+  }
+
+  .main.order-mode-main .order-editor-item__size-label > span:first-child {
+    color: #5a6075 !important;
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+
+  .main.order-mode-main .order-editor-item__size-grid {
+    width: auto !important;
+    display: flex !important;
+    align-items: flex-start !important;
+    flex-wrap: wrap;
+    gap: 8px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__size-grid > div {
+    width: 52px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__size-grid input {
+    width: 48px !important;
+    min-height: 40px;
+    border: 1px solid #cfd6e2 !important;
+    border-radius: 6px !important;
+    background: #fff;
+    color: #192853 !important;
+    font-size: 16px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__size-grid input:not(:placeholder-shown) {
+    border: 2px solid #192853 !important;
+    background: #f4f7ff;
+  }
+
+  .main.order-mode-main .order-editor-item__qty-summary {
+    min-width: 68px;
+    margin: 19px 0 0 5px !important;
+    padding: 0 12px !important;
+    border-left: 1px solid #dce2ea !important;
+  }
+
+  .main.order-mode-main .order-editor-item__qty-summary > div:first-child {
+    color: #5a6075 !important;
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    font-size: 9px !important;
+    letter-spacing: 1px;
+  }
+
+  .main.order-mode-main .order-editor-item__qty-summary > div:last-child {
+    color: #192853 !important;
+    font-size: 22px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__vendor-refresh,
+  .main.order-mode-main .order-editor-item__size-tools {
+    margin-top: 25px !important;
+    margin-left: 0 !important;
+  }
+
+  .main.order-mode-main .order-editor-item__size-tools .btn {
+    min-height: 31px;
+    padding: 5px 10px !important;
+    border: 1px dashed #c6cedb;
+    background: #fff;
+    color: #5a6075;
+  }
+
+  .main.order-mode-main .order-editor-item__pricing-panel {
+    top: 82px;
+    bottom: 58px;
+    width: 330px;
+    padding: 16px 16px;
+  }
+
+  .main.order-mode-main .order-editor-item__pricing-head {
+    margin-bottom: 3px;
+  }
+
+  .main.order-mode-main .order-editor-item__pricing-row {
+    min-height: 49px;
+  }
+
+  .main.order-mode-main .order-editor-item__pricing-allin {
+    padding: 12px 0;
+  }
+
+  .main.order-mode-main .order-editor-item__pricing-total {
+    margin-top: auto;
+    padding: 12px 14px;
+  }
+
+  .main.order-mode-main .order-editor-item__flow-row.order-editor-item__po-row {
+    min-height: 48px;
+    padding: 8px 22px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__po-allocation {
+    width: 100%;
+    min-height: 30px;
+    margin: 0 !important;
+    gap: 8px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__po-allocation > span:first-child {
+    width: auto !important;
+    min-width: 88px;
+    color: #192853 !important;
+    font-family: 'Barlow Condensed', 'Arial Narrow', sans-serif;
+    font-size: 12px !important;
+    letter-spacing: .5px;
+  }
+
+  .main.order-mode-main .order-editor-item__po-size-grid {
+    width: auto !important;
+    display: flex !important;
+    gap: 8px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__po-size-grid > div {
+    width: 52px !important;
+    min-height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .main.order-mode-main .order-editor-item__po-size-grid + span {
+    margin-left: auto !important;
+  }
+
+  .main.order-mode-main .order-editor-item__decorations {
+    padding: 12px 18px 0 !important;
+  }
+
+  .main.order-mode-main .order-editor-item__decorations::before {
+    margin-bottom: 7px;
+  }
+
+  .main.order-mode-main .order-editor-item__decorations > .order-editor-item__deco-card {
+    min-height: 62px;
+    margin-bottom: 0 !important;
+    padding: 9px 10px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main {
+    min-height: 42px;
+    flex-wrap: nowrap !important;
+    gap: 7px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main > .form-select {
+    min-height: 36px;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main > .form-select:first-of-type {
+    width: 190px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main > .form-select:nth-of-type(2) {
+    width: 105px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main > .form-select:nth-of-type(3) {
+    width: 150px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-pricing {
+    min-width: 222px;
+    flex-wrap: nowrap !important;
+    justify-content: flex-end;
+    white-space: nowrap;
+  }
+
+  .main.order-mode-main .order-editor-item__actions {
+    width: calc(100% + 370px);
+    min-height: 58px;
+    margin: 10px -348px 0 -18px !important;
+    padding: 10px 16px;
+    flex-wrap: nowrap !important;
+  }
+
+  .main.order-mode-main .order-editor-item__actions .btn {
+    min-height: 30px;
+    padding: 5px 8px !important;
+    font-size: 11px !important;
+    white-space: nowrap;
+  }
+}
