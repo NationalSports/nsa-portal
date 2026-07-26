@@ -2617,6 +2617,51 @@ tbody tr { cursor: pointer; }
   }
 }
 
+/* Portal-shell correction: the order editor remains part of the portal.
+   Keep navigation present and let only the compact financial ledger occupy
+   the navy column; fulfillment fields continue full-width below it. */
+.sidebar.order-mode-sidebar {
+  display: flex !important;
+}
+.main.order-mode-main {
+  margin-left: 220px !important;
+}
+.main.order-mode-main .order-mode-content .order-editor-metrics {
+  top: 0;
+  bottom: auto;
+  height: 310px;
+  max-height: 310px;
+  overflow: hidden;
+}
+.main.order-mode-main .order-mode-content .order-editor-fulfillment,
+.main.order-mode-main .order-mode-content .order-editor-delivery,
+.main.order-mode-main .order-mode-content .order-editor-production-notes {
+  width: calc(100% + 330px);
+  max-width: none;
+}
+
+@media (max-width: 1180px) {
+  .main.order-mode-main .order-mode-content .order-editor-metrics {
+    height: auto;
+    max-height: none;
+    overflow: visible;
+  }
+  .main.order-mode-main .order-mode-content .order-editor-fulfillment,
+  .main.order-mode-main .order-mode-content .order-editor-delivery,
+  .main.order-mode-main .order-mode-content .order-editor-production-notes {
+    width: auto;
+  }
+}
+
+@media (max-width: 768px) {
+  .main.order-mode-main {
+    margin-left: 0 !important;
+  }
+  .main.order-mode-main > .topbar.order-mode-topbar .mobile-menu-btn {
+    display: block !important;
+  }
+}
+
 /* Exact application frame from the supplied Order Editor package.
    Keep this last: the legacy editor has several compatibility layers above. */
 .order-mode-main {
