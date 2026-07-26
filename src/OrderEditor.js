@@ -4241,7 +4241,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         return(<div key={idx} id={'so-item-'+idx} className="card order-editor-item is-collapsed" style={{marginBottom:8,transition:'box-shadow 0.3s'}}>
           <div className="order-editor-item__header" style={{padding:'10px 18px',display:'flex',alignItems:'center',gap:12,cursor:'pointer'}} onClick={()=>toggleItemCollapse(idx)}>
             <button title="Expand item" onClick={e=>{e.stopPropagation();toggleItemCollapse(idx)}} style={{background:'none',border:'none',cursor:'pointer',color:'#94a3b8',padding:0,fontSize:12,lineHeight:1}}>▸</button>
-            <span className="order-editor-item__swatch" style={{background:item.color||'#eef1f6'}}/>
+            <span className="order-editor-item__swatch" style={{background:_swatchHex(item.color)||'#eef1f6'}}/>
             <div className="order-editor-item__collapsed-identity" style={{flex:1,minWidth:0}}>
               <div className="order-editor-item__metadata" style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 <span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'2px 8px',borderRadius:4,fontSize:13}}>{item.sku}</span>
@@ -4295,7 +4295,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               <button title="Move up" disabled={idx===0} onClick={()=>mvI(idx,-1)} style={{background:'none',border:'none',cursor:idx===0?'not-allowed':'pointer',color:idx===0?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortUp" size={14}/></button>
               <button title="Move down" disabled={idx===safeItems(o).length-1} onClick={()=>mvI(idx,1)} style={{background:'none',border:'none',cursor:idx===safeItems(o).length-1?'not-allowed':'pointer',color:idx===safeItems(o).length-1?'#cbd5e1':'#94a3b8',padding:0,lineHeight:0}}><Icon name="sortDown" size={14}/></button>
             </div>
-            <span className="order-editor-item__swatch" style={{background:item.color||'#eef1f6'}}/>
+            <span className="order-editor-item__swatch" style={{background:_swatchHex(item.color)||'#eef1f6'}}/>
             <div className="order-editor-item__identity" style={{flex:1}}>
               {isSO&&_itemInvoicedQty>0&&<div style={{marginBottom:4}}>
                 <span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:_itemFullyInvoiced?'#dcfce7':'#fef3c7',color:_itemFullyInvoiced?'#166534':'#92400e',fontWeight:700,letterSpacing:0.3}}>

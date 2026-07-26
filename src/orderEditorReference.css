@@ -354,7 +354,7 @@
   .main.order-mode-main .order-editor-item__deco-main {
     min-height: 42px;
     flex-wrap: nowrap !important;
-    gap: 7px !important;
+    gap: 6px !important;
   }
 
   .main.order-mode-main .order-editor-item__deco-main > .form-select {
@@ -362,19 +362,25 @@
   }
 
   .main.order-mode-main .order-editor-item__deco-main > .form-select:first-of-type {
-    width: 190px !important;
+    width: 180px !important;
   }
 
   .main.order-mode-main .order-editor-item__deco-main > .form-select:nth-of-type(2) {
-    width: 105px !important;
+    width: 96px !important;
   }
 
   .main.order-mode-main .order-editor-item__deco-main > .form-select:nth-of-type(3) {
-    width: 150px !important;
+    width: 134px !important;
+  }
+
+  .main.order-mode-main .order-editor-item__deco-main > span {
+    white-space: nowrap;
   }
 
   .main.order-mode-main .order-editor-item__deco-pricing {
-    min-width: 222px;
+    min-width: 216px;
+    padding-left: 9px;
+    border-left: 1px solid #dce2ea;
     flex-wrap: nowrap !important;
     justify-content: flex-end;
     white-space: nowrap;
