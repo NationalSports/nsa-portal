@@ -2631,6 +2631,7 @@ tbody tr { cursor: pointer; }
   bottom: auto;
   height: 266px;
   max-height: 266px;
+  flex-wrap: nowrap !important;
   overflow: hidden;
 }
 .main.order-mode-main .order-mode-content .order-editor-fulfillment,
