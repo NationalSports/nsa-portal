@@ -720,7 +720,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   const[retagMockupModal,setRetagMockupModal]=useState(null);// {artIdx} — opens admin retag tool for legacy general mockups on an art
   const[expandedArt,setExpandedArt]=useState({});// Track expanded art groups by id (default collapsed)
   const[collapsedNames,setCollapsedNames]=useState({});// Track collapsed Names decos by `idx-di`
-  const[collapsedItems,setCollapsedItems]=useState({});// Track collapsed line items by idx — shows compact sku/qty/total summary
+  const[collapsedItems,setCollapsedItems]=useState(()=>{const initial={};safeItems(order).forEach((_,i)=>{if(i>0)initial[i]=true});return initial});// Match the supplied editor composition: first line open, remaining lines compact.
   // In-progress size-cell edits, keyed `idx+'_'+sz`. Lets the user type intermediate values
   // (e.g. clear "8" then type "13") without the per-keystroke "Cannot reduce below X" guard firing.
   // Validation runs in uSz on blur instead — see input at the size grid below.
