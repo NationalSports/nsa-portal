@@ -1,0 +1,35 @@
+{
+ "_comment": "Acknowledged column-parity gaps: columns the client writes that the live DB does not have. Mirrors supabase/migration-baseline.json. A gap listed here does NOT fail CI (it is known and tracked); anything NOT listed does. Empty this list as the migrations land.",
+ "gaps": [
+  {
+   "list": "_decoCols",
+   "table": "estimate_item_decorations",
+   "column": "split_runs",
+   "note": "migration 20260727200000 pending \u2014 split-run pricing cannot persist until applied"
+  },
+  {
+   "list": "_decoCols",
+   "table": "so_item_decorations",
+   "column": "split_runs",
+   "note": "migration 20260727200000 pending \u2014 split-run pricing cannot persist until applied"
+  },
+  {
+   "list": "_jobCols",
+   "table": "so_jobs",
+   "column": "priced_separately",
+   "note": "migration 20260727200000 pending"
+  },
+  {
+   "list": "_jobCols",
+   "table": "so_jobs",
+   "column": "price_override",
+   "note": "migration 20260727200000 pending"
+  },
+  {
+   "list": "_jobCols",
+   "table": "so_jobs",
+   "column": "split_group",
+   "note": "migration 20260727200000 pending"
+  }
+ ]
+}

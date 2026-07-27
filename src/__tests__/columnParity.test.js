@@ -27,11 +27,16 @@ const completeSchema = () => ({
   messages: [...cols('_msgCols')],
 });
 
+// schema === null runs the script in its default mode (the committed snapshot).
 const run = (schema) => {
-  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'parity-')), 'schema.json');
-  fs.writeFileSync(f, JSON.stringify(schema));
+  const args = [SCRIPT];
+  if (schema) {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'parity-')), 'schema.json');
+    fs.writeFileSync(f, JSON.stringify(schema));
+    args.push('--schema', f);
+  }
   try {
-    execFileSync('node', [SCRIPT, '--schema', f], { encoding: 'utf8', stdio: 'pipe' });
+    execFileSync('node', args, { encoding: 'utf8', stdio: 'pipe' });
     return { code: 0, out: '' };
   } catch (e) {
     return { code: e.status, out: (e.stdout || '') + (e.stderr || '') };
@@ -39,17 +44,37 @@ const run = (schema) => {
 };
 
 describe('column-parity guard', () => {
+  // The check that matters: the real write lists against the real committed schema snapshot.
+  // Runs in the normal test job, so it fires on EVERY pull request — no database credentials,
+  // no workflow path filter. This is what would have caught sample_art and split_runs at review
+  // time. A new gap fails here until it is either migrated or acknowledged in the baseline.
+  test('the committed schema covers every column the client writes', () => {
+    const r = run(null);
+    expect(r.out).toBe('');
+    expect(r.code).toBe(0);
+  });
+
   test('passes when every written column exists', () => {
     expect(run(completeSchema()).code).toBe(0);
   });
 
-  test('fails and names the column when one is missing (the split_runs case)', () => {
+  test('fails and names the column when a NEW one goes missing', () => {
+    const s = completeSchema();
+    s.so_item_decorations = s.so_item_decorations.filter((c) => c !== 'color_way_id');
+    const r = run(s);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('color_way_id');
+    expect(r.out).toContain('so_item_decorations');
+  });
+
+  // split_runs is a real, tracked gap (migration 20260727200000 pending). It must report as a
+  // notice rather than fail, or the guard would block every PR until an unrelated manual step
+  // happens — the same trap that made the drift job useless. Anything NOT baselined still fails.
+  test('an acknowledged gap reports but does not fail', () => {
     const s = completeSchema();
     s.so_item_decorations = s.so_item_decorations.filter((c) => c !== 'split_runs');
     const r = run(s);
-    expect(r.code).toBe(1);
-    expect(r.out).toContain('split_runs');
-    expect(r.out).toContain('so_item_decorations');
+    expect(r.code).toBe(0);
   });
 
   test('fails when a column exists on one table of a pair but not the other (the sample_art case)', () => {
