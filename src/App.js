@@ -854,17 +854,15 @@ const _prodJobArtFiles=(j,so)=>{const ids=new Set();
 // mockups (legacy single-design art). Reused art arrives with the source order's generic
 // mocks still attached (a different garment/color from a prior SO), so once per-item
 // mocks exist the generic bucket is stale here — same rule as skusMissingMockups.
-// When even the generic bucket is empty (reused library art whose only visual is the
-// digitizer's sew-out proof in prod_files), fall back to artProofFallback — the floor
-// surfaces this feeds (Production Job Sheet, Work Order, production job modal) are where
-// press operators look for the artwork, and a blank/silhouette there hits exactly the
-// reused-art jobs that most need a reference. artProofFallback respects proof_dismissed.
+// Deliberately NO sew-out-proof fallback here, unlike the approval surfaces: the
+// digitizer's sew-out is often a recolor, and a press operator color-matching from it is
+// worse than a blank. Jobs are required to carry a real mockup before they hit the floor
+// (the approval panel's "Send to artist for a mockup" path exists for exactly this), so
+// floor docs render the mock image or nothing.
 const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
   const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
-  if(hasPerItem)return[];
-  const gen=(a?.mockup_files||a?.files||[]).filter(f=>f);
-  return gen.length>0?gen:artProofFallback(a);
-});
+  return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
+}).filter(f=>f);
 // A re-uploaded proof lands under a fresh URL but keeps its original filename, so a
 // decoration slot ends up showing the same image twice. Collapse by filename (the
 // first/primary copy wins); files with no resolvable name are left as-is. Callers scope
