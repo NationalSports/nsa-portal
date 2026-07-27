@@ -78,6 +78,11 @@ const _docPdfItems=o=>safeItems(o).filter(it=>{
 const PLACEHOLDER_SKUS=new Set(['CUSTOM','MISC']);
 const isPlaceholderSku=s=>PLACEHOLDER_SKUS.has(String(s||'').trim().toUpperCase());
 const skuOk=s=>{const v=String(s||'').trim();return v.length>0&&!isPlaceholderSku(v)};
+// Lines already on an order when it was opened are grandfathered — the requirement is on
+// what gets added from here on, not on estimates and SOs that were already created and are
+// out with vendors. Matched on content rather than object identity or index: the background
+// sync rebuilds item objects, and lines get reordered.
+const _skuLineKey=it=>[String(it&&it.sku||'').trim().toUpperCase(),String(it&&it.name||'').trim().toLowerCase(),String(it&&it.color||'').trim().toLowerCase()].join('|');
 
 // "Placed via API" badge — surfaces wherever a PO that was submitted electronically to a
 // vendor (SanMar / S&S / Momentec) is shown, so a rep can tell at a glance it's a real
@@ -281,6 +286,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
+  // Baseline of placeholder SKUs the order already carried when it was opened, as a multiset
+  // of line keys. Snapshotted once — the editor is keyed by order id, so it remounts per
+  // order. These lines keep saving as-is: estimates and SOs created before the requirement
+  // aren't retroactively unsaveable.
+  //
+  // Only the literal placeholders ("CUSTOM"/"MISC") are grandfathered, not blank SKUs. Those
+  // strings are exactly what the old code stamped, so they identify already-created work —
+  // while every path that can still produce a missing SKU (AI import, email-to-estimate,
+  // NetSuite PDF) now leaves it blank. Grandfathering blanks too would exempt a freshly
+  // AI-generated estimate, since its lines are already there when the editor mounts.
+  const legacySkuBaseRef=useRef(null);
+  if(legacySkuBaseRef.current===null){const m=new Map();safeItems(order).forEach(it=>{if(!isPlaceholderSku(it.sku))return;const k=_skuLineKey(it);m.set(k,(m.get(k)||0)+1)});legacySkuBaseRef.current=m}
+  // The current lines covered by that baseline. Recomputed per edit so fixing one of two
+  // identical legacy lines doesn't hand the exemption to a newly added one.
+  const legacySkuItems=useMemo(()=>{const left=new Map(legacySkuBaseRef.current);const s=new Set();
+    safeItems(o).forEach(it=>{if(!isPlaceholderSku(it.sku))return;const k=_skuLineKey(it);const n=left.get(k)||0;if(n>0){left.set(k,n-1);s.add(it)}});
+    return s},[o]);
   // An estimate is effectively "converted" the instant a sales order references it. The estimate's own
   // status field can lag behind (approved on screen while an SO already exists), so drive the SO link and
   // the hide-the-re-convert-button decision off the actual linked SO — the same stale-status guard the
@@ -3757,7 +3779,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
           const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-          const noSku=validItems.find(it=>!skuOk(it.sku));
+          const noSku=validItems.find(it=>!skuOk(it.sku)&&!legacySkuItems.has(it));
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a real SKU'+(isPlaceholderSku(noSku.sku)?' — "'+String(noSku.sku).trim()+'" is no longer accepted':''),'error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
@@ -3771,7 +3793,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Cannot convert — add at least one item with quantities','error');return}
           /* Items with est_qty only (no size breakdown) are allowed — sizes can be added on the SO */
-          const noSku=validItems.find(it=>!skuOk(it.sku));
+          const noSku=validItems.find(it=>!skuOk(it.sku)&&!legacySkuItems.has(it));
           if(noSku){nf('Item '+(noSku.name||'#?')+' needs a real SKU'+(isPlaceholderSku(noSku.sku)?' — "'+String(noSku.sku).trim()+'" is no longer accepted':''),'error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
@@ -4333,11 +4355,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
                 {/* Editable whenever the SKU is missing or a placeholder, even on a non-custom
-                    line — otherwise a legacy "CUSTOM" line has no way to be fixed and Save
-                    can never pass. */}
-                {item.is_custom||!skuOk(item.sku)?(()=>{const _bad=!skuOk(item.sku);
+                    line — so a line that came in without one can be fixed here. Only the ones
+                    that actually block Save (i.e. not grandfathered) are flagged red. */}
+                {item.is_custom||!skuOk(item.sku)?(()=>{const _bad=!skuOk(item.sku)&&!legacySkuItems.has(item);const _legacy=!_bad&&!skuOk(item.sku);
                   return<input className="form-input" value={item.sku||''} onChange={e=>uI(idx,'sku',e.target.value)} placeholder="SKU"
-                    title={_bad?'Enter the vendor\'s style number — placeholder SKUs are no longer accepted':undefined}
+                    title={_bad?'Enter the vendor\'s style number — placeholder SKUs are no longer accepted'
+                      :_legacy?'Placeholder SKU from before this order was opened — kept as-is, but worth replacing with the vendor\'s style number':undefined}
                     onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)}
                     style={{fontFamily:'monospace',fontWeight:800,color:_bad?'#b91c1c':'#1e40af',background:_bad?'#fef2f2':'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid '+(_bad?'#fca5a5':'#93c5fd')}}/>;})()
                   :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
