@@ -326,7 +326,9 @@ const parseNetSuitePdf = (text, docType, products) => {
       }
       const sizesUnknown = Object.keys(sizes).length === 0;
       if (sizesUnknown) sizes['OSFA'] = qty;
-      result.lineItems.push({ sku: baseSku || 'MISC', description: productName || description, color, quantity: qty, rate, amount, isDecoration: false, sizes, _sizesUnknown: sizesUnknown, raw: dataLine });
+      // A line whose SKU couldn't be read comes through blank, not as a "MISC" placeholder —
+      // the order editor requires a real style number on every line before it can be saved.
+      result.lineItems.push({ sku: baseSku || '', description: productName || description, color, quantity: qty, rate, amount, isDecoration: false, sizes, _sizesUnknown: sizesUnknown, raw: dataLine });
     }
   });
 

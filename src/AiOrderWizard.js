@@ -139,7 +139,9 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const szKeys = Object.keys(sizes).sort(szSort);
       return {
         product_id: catMatch?.id || null,
-        sku: sku || 'CUSTOM',
+        // Unmatched lines come in with a blank SKU rather than a "CUSTOM" placeholder —
+        // the order editor requires a real style number before the order can be saved.
+        sku,
         name: catMatch?.name || r.name || '',
         brand,
         vendor_id: catMatch?.vendor_id || null,
@@ -193,7 +195,8 @@ export function AiOrderWizard({ open, onClose, supabase, products, customers, ve
       const szKeys = Object.keys(p.sizes || {});
       return {
         product_id: catMatch?.id || null,
-        sku: sku || 'CUSTOM',
+        // Blank, not "CUSTOM" — see buildRosterItems.
+        sku,
         name: catMatch?.name || p.name || '',
         brand,
         vendor_id: catMatch?.vendor_id || null,
