@@ -18,7 +18,8 @@ import { createClient } from '@supabase/supabase-js';
 import { makeBreakerFetch } from './requestBreaker';
 import { _sbAuthLock } from './supabase';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, _vendCols, _firmDateCols, _omgStoreCols } from '../constants';
-import { itemEditReconciles, itemsWithWipedQty } from '../businessLogic';
+import { itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems } from '../businessLogic';
+import { soItemKey } from '../safeHelpers';
 import { authFetch } from '../utils';
 
 // ─── Supabase Setup ───
@@ -657,12 +658,25 @@ const _prodDiffCmp=(p)=>JSON.stringify({
 });
 const _checkVersion=async(table,id,localVersion)=>{
   if(!supabase||!localVersion)return true;// skip check if no version tracked
-  // Skip version check for records this client recently saved (prevents false conflicts from own realtime echo)
-  if(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000)return true;
+  // Own-echo suppression. This used to be a blanket "skip the check entirely for 60s after any save
+  // of mine", which is how SO-1468 lost garment lines in July 2026: while one user saved repeatedly,
+  // ANOTHER user's write landed inside that same window, the check never ran, _versionConflict stayed
+  // null, and the stale-content guard in _dbSaveSOInner was therefore disarmed for the next save.
+  // The skip is now keyed on the version THIS client actually wrote (_dbOwnVersions, read back from
+  // the server post-save): a server sitting at or below our own last write is our own echo, but a
+  // server that has moved PAST it means someone else wrote and must surface as a real conflict.
+  const _recentlyMine=!!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000);
+  const _ownVersion=_dbOwnVersions[id];
+  // No recorded own-version — entity types that don't track one (invoices, customers), or a save whose
+  // post-write read-back failed. Fall back to the original time-boxed skip rather than manufacturing
+  // conflicts against ourselves; those paths are no worse off than before this change.
+  if(_recentlyMine&&_ownVersion==null)return true;
   try{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
     if(!data)return true;// new record
     if(data._version>localVersion){
+      // Our own bump (one logical save trips the DB trigger more than once), not a foreign edit.
+      if(_recentlyMine&&data._version<=_ownVersion)return true;
       console.warn(`[DB] Version conflict on ${table}/${id}: local v${localVersion}, server v${data._version} — auto-healing`);
       _dbRecentSaves[id]=Date.now();// prevent rapid re-conflict from polls during save
       return data._version;// return server version so callers can auto-heal
@@ -1204,8 +1218,8 @@ const _dbSaveSOInner = async (so) => {
     // 2026-06-30). Block and prompt a reload; a rep who genuinely wants a line removed just reloads and
     // removes it again, conflict-free.
     if(_versionConflict&&oldItemIds.length>0&&_clientSoItemCount>0){
-      const _dbKeyCounts={};_oldSoItems.forEach(r=>{const k=((r.sku||'')+'|'+(r.color||'')).toLowerCase();_dbKeyCounts[k]=(_dbKeyCounts[k]||0)+1});
-      (items||[]).forEach(it=>{const k=((it.sku||'')+'|'+(it.color||'')).toLowerCase();if(_dbKeyCounts[k])_dbKeyCounts[k]--});
+      const _dbKeyCounts={};_oldSoItems.forEach(r=>{const k=soItemKey(r);_dbKeyCounts[k]=(_dbKeyCounts[k]||0)+1});
+      (items||[]).forEach(it=>{const k=soItemKey(it);if(_dbKeyCounts[k])_dbKeyCounts[k]--});
       const _uncovered=Object.entries(_dbKeyCounts).filter(([,n])=>n>0).map(([k])=>k.split('|').filter(Boolean).join(' ')||'(custom line)');
       if(_uncovered.length){
         console.error('[DB] SAFETY: Blocking stale SO save for',so.id,'— server version moved (v'+_versionConflict.local+'→v'+_versionConflict.server+') and DB items missing from this tab\'s copy:',_uncovered.join(', '));
@@ -1267,9 +1281,42 @@ const _dbSaveSOInner = async (so) => {
       if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'so_art_files save error');_persistFailedIds();if(_dbNotify)_dbNotify('Art file save incomplete: '+(_failMsg||'see console'),'error');return false}
       _dbSaveFailedIds.delete(so.id);_persistFailedIds();return true;
     }
+    // Pure-deletion guard (SO-1468, 2026-07-13/14): refuse to delete DB item rows this session cannot
+    // account for. Two holes let real garment lines vanish here with nothing but a console.warn:
+    //   1. the count-mismatch guard below waves ANY shrink through once a session is hydrated, and
+    //      "hydrated" only means the load didn't time out — it says nothing about whether the list is
+    //      still complete at save time (a tab open across someone else's edit passes it fine);
+    //   2. _oldDistinctItemIndexCount counts DISTINCT item_index values, so a line dropped by the
+    //      loader's index-dedup (the _itemByIdx collapse in _dbLoad) leaves the counts EQUAL and never
+    //      reaches that guard at all.
+    // Hence this runs on every save with items on both sides, not only on a count mismatch.
+    //
+    // Scope is deliberately narrow — only a PURE SUBSET save is blocked: every client line matches a DB
+    // row and at least one DB row is left over. A silent drop is always a pure subset, whereas
+    // import/convert/replace flows introduce new sku|color keys and so are never one; they keep their
+    // existing behaviour untouched. Deliberate removals pass via the session tombstone the editor's rmI
+    // stamps (_deletedItemKeys), the same pattern _deletedDecoPoIds already uses for deco POs above.
+    if(oldItemIds.length>0&&_clientSoItemCount>0){
+      const _unexplained=unaccountedDroppedItems(items,_oldSoItems,so._deletedItemKeys);
+      if(_unexplained.length){
+        const _lbl=_unexplained.map(k=>k.split('|').filter(Boolean).join(' ')||'(custom line)').join(', ');
+        console.error('[DB] SAFETY: Blocking SO save for',so.id,'—',_clientSoItemCount,'client item(s) would drop DB line(s) this session never removed:',_lbl);
+        if(_dbNotify)_dbNotify('Save blocked — '+so.id+' would lose '+_lbl+'. Please reload the page.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'save would drop unremoved DB item(s) ['+_lbl+'] — client item list is a pure subset of the DB\'s'});
+        // TERMINAL for auto-retry, like the stale-content guard: re-POSTing this same copy can never
+        // succeed. Preserve the edit in the outbox conflict card so nothing the user typed is thrown away.
+        _emitOutboxConflict('sales_orders',so);
+        _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
+        return false;
+      }
+    }
     if(oldItemIds.length>0&&_clientSoItemCount!==_oldDistinctItemIndexCount){
       if(so._itemsHydrated||_everHydratedItems.has(so.id)){
         console.warn('[DB] SO',so.id,'saving with',_clientSoItemCount,'item(s) (DB had',_oldDistinctItemIndexCount,(oldItemIds.length!==_oldDistinctItemIndexCount?'distinct /'+oldItemIds.length+' raw':''),') — items were hydrated, treating as intentional edit');
+        // Shrinking on a hydrated session is allowed (the pure-deletion guard above already refused any
+        // unaccounted-for drop), but it must not stay invisible: an item count going DOWN is the exact
+        // shape of every loss in this class, and until now it left no trace outside the browser console.
+        if(_clientSoItemCount<_oldDistinctItemIndexCount&&_dataLossAlert)_dataLossAlert({kind:'hydrated_shrink',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'hydrated session reduced item count '+_oldDistinctItemIndexCount+'→'+_clientSoItemCount+' (allowed: every dropped line was accounted for)'});
       }else if(itemEditReconciles(items,_oldSoItems)){
         // Unhydrated session (e.g. the bulk so_items load timed out at boot), but the client's items reconcile
         // with the freshly-read DB rows by SKU/name — proof this client held the real order and the count change
@@ -1867,8 +1914,16 @@ const _dbSaveSOInner = async (so) => {
     }
     if(saveFailed){if(_isAuthError({message:_failMsg}))return _handleAuthSaveFailure(so.id,{message:_failMsg});_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,_failMsg||'unknown SO save error');_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save incomplete: '+(_failMsg||'see console'),'error');return false}
     _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();_dbRecentSaves[so.id]=Date.now();
-    // Bump local version to match server (DB trigger increments on UPDATE)
-    if(so._version)so._version=so._version+1;
+    // Adopt the server's ACTUAL _version instead of guessing +1. One logical save trips the DB's version
+    // trigger more than once (the initial row upsert, then the final updated_at bump above), so the old
+    // +1 left every client permanently behind the server — which is exactly why the own-echo skip in
+    // _checkVersion had to be a blanket 60s window, and why a second user's interleaved write could hide
+    // inside it. Reading the version back makes _dbOwnVersions exact, so _checkVersion can tell this
+    // client's own bump from someone else's. If the read fails, keep the old estimate and leave
+    // _dbOwnVersions unset — _checkVersion then falls back to its previous time-boxed behaviour.
+    {const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
+     if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version}
+     else if(so._version)so._version=so._version+1}
     return true;
   }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
@@ -1933,6 +1988,11 @@ const _dbSaveArtFilesInner = async (so) => {
     // version-conflict skip) treats the local copy as the fresher one for the next ~60s. The lightweight art save
     // otherwise never set this, unlike the full SO/estimate/customer saves.
     _dbRecentSaves[so.id]=Date.now();
+    // Record the resulting version too. This path bumps sales_orders (the updated_at write above) without
+    // going through the full SO save, so leaving _dbOwnVersions behind would make _checkVersion read our
+    // own art-save bump as another user's write and raise a conflict against ourselves.
+    {const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
+     if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version}}
     return true;
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };

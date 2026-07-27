@@ -122,7 +122,9 @@ It was written for phantom rows left by an interrupted save swap, and for that c
 correct. But it collapses **any** index collision, including two genuinely different
 products — and there is **no unique constraint on `(so_id, item_index)`** to prevent that
 state. Verified against `pg_indexes`: `so_items` has only `so_items_pkey`,
-`idx_so_items_so_id`, `idx_so_items_product_id`.
+`idx_so_items_so_id`, `idx_so_items_product_id`. That constraint also **cannot** simply be
+added — the save's insert-first swap requires both row sets to hold indexes 0..N-1 at once.
+See §7 item 2.
 
 The compounding problem is that the guard counts the same way. `_oldDistinctItemIndexCount`
 (`dbEngine.js:1179`) is a count of **distinct `item_index` values**, so when the loader
@@ -209,24 +211,50 @@ Both queries are reproduced in §8 so anyone can re-run them.
 
 ## 7. Recommended fixes, in priority order
 
-1. **Raise the vendor PO for JW4303 and JN1969 on SO-1468.** Ship date is Aug 4. (Ops, today.)
-2. **Add a unique constraint on `(so_id, item_index)`** to `so_items`. This removes the
-   precondition for §4.2 outright. Requires cleaning existing duplicates first.
-3. **Make the hydrated branch at `dbEngine.js:1276` fail loud instead of silent.** A save
-   that reduces the item count should at minimum emit `_dataLossAlert` and a
-   `stale_save_log` row so these stop being invisible. Ideally it should require the
-   removed lines to match a session-local tombstone set (the editor knows which lines the
-   user actually deleted — the same pattern `_deletedDecoPoIds` already uses for deco POs
-   at `:1116`).
-4. **Narrow the `_dbRecentSaves` echo suppression** so it keys on this client's own
-   expected version rather than a 60-second wall-clock window — e.g. skip only when the
-   server version equals the version this client's last save produced.
-5. **Stop non-sales roles from rewriting `so_items` at all.** An artist saving a proof
-   should not be able to delete a garment line. This is the cheapest fix with the broadest
-   blast-radius reduction, and it would have prevented five of the twelve incidents in §5.
+1. ~~**Raise the vendor PO for JW4303 and JN1969 on SO-1468.**~~ **Done manually** (2026-07-27).
+2. ~~**Add a unique constraint on `(so_id, item_index)`.**~~ **Withdrawn — this would break
+   every save.** Re-reading the save path before implementing it: the engine deliberately
+   inserts the new item rows *before* deleting the old ones (`dbEngine.js:1616`, "so_items
+   has no unique (so_id,item_index) constraint, so new+old rows can briefly coexist"), and
+   `allItemRows` re-numbers `item_index` from 0 each time. Both row sets therefore carry
+   indexes 0..N-1 simultaneously during the swap, so a unique constraint would reject every
+   save. The insert-first ordering is itself a data-loss fix — it closes the window where a
+   committed delete followed by a failed insert left an order permanently empty — so the
+   constraint is not worth trading for it. §4.2 is instead addressed by fix 3, which stops
+   keying the safety decision on `item_index` at all.
+3. **Refuse drops the session can't account for.** ✅ *Implemented.* New
+   `unaccountedDroppedItems` guard (`businessLogic.js`), called from `_dbSaveSOInner` before
+   the count-mismatch guard. Runs on every save with items on both sides — not just on a
+   count mismatch — so the §4.2 dedup case is covered. Blocks only a **pure subset** save
+   (every client line matches a DB row, at least one DB row left over), which is the shape
+   of a silent drop; import/convert/replace flows introduce new keys and are untouched.
+   Deliberate deletions pass via a session tombstone (`_deletedItemKeys`) stamped by the
+   editor's `rmI`, mirroring `_deletedDecoPoIds`. A blocked save goes to the outbox conflict
+   card, so nothing typed is lost. The remaining hydrated shrinks now also emit a
+   `_dataLossAlert` instead of only a `console.warn`.
+4. **Narrow the `_dbRecentSaves` echo suppression.** ✅ *Implemented.* `_checkVersion` now
+   keys the skip on `_dbOwnVersions` — the version this client actually wrote — rather than
+   a blanket 60-second window. A server at or below our own last write is our echo; a server
+   past it is a foreign edit and raises a real conflict. This required making the client's
+   recorded version authoritative: it now reads `_version` back after the save instead of
+   guessing `+1`, because one logical save trips the DB trigger more than once (the row
+   upsert, then the final `updated_at` bump) and the old estimate left every client
+   permanently behind the server. Entity types with no recorded own-version (invoices,
+   customers) fall back to the previous behaviour.
+5. **Stop non-sales roles from rewriting `so_items` at all.** *Not implemented — deliberately
+   deferred.* Fix 3 already blocks the artist/warehouse cases in §5, since those sessions
+   never stamp a tombstone and their losses are pure subsets. A role gate is a permissions
+   policy change with a different blast radius (it needs a role accessor wired into the
+   engine, and a decision about which roles may edit lines), and it belongs in its own change
+   rather than riding along with a data-loss fix.
 
-Items 2–5 are code/schema changes and are **not** implemented in this commit — this
-document is the investigation only.
+Fixes 3 and 4 ship with the investigation. Test coverage is in
+`src/__tests__/unaccountedDroppedItems.test.js` — the audit's standing complaint is that
+guards in this file ship untested, and writing those tests is what caught a false positive
+in the first cut of fix 3 (multiset counting reported a duplicate row left by an interrupted
+swap as a dropped line, which would have blocked every save on such an order — the exact
+failure `_oldDistinctItemIndexCount` was introduced to prevent). The guard compares sku|color
+as sets for that reason.
 
 ---
 
