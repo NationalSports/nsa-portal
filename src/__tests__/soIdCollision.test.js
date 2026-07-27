@@ -152,6 +152,27 @@ describe('_dbSaveSOInner — document-identity guard on id collision', () => {
     expect(so.id).toBe('SO-1507');
   });
 
+  test('a blocked save still preserves the edit on the outbox conflict card', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      sales_orders: [
+        { data: { _version: 12 }, error: null },
+        { data: { updated_at: 'x', deco_pos: null, created_at: '7/13/2026, 10:35:00 AM' }, error: null },
+      ],
+      ...emptyChildren(),
+    };
+
+    const { _dbSaveSO, _outboxList } = require('../lib/dbEngine');
+    const so = { id: 'SO-1507', memo: 'typed but unsaved', created_at: '7/13/2026, 10:36:38 AM', _version: 12, items: [] };
+    await _dbSaveSO(so);
+
+    // A refused write must never also discard what the rep typed.
+    const mine = (_outboxList() || []).filter(e => e && e.id === 'SO-1507');
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine[0].payload.memo).toBe('typed but unsaved');
+  });
+
   test('null created_at on the incumbent means "can\'t tell" and must not block the save', async () => {
     const { __mockState } = require('@supabase/supabase-js');
     __mockState.calls.length = 0;
@@ -171,5 +192,114 @@ describe('_dbSaveSOInner — document-identity guard on id collision', () => {
     const writes = soCalls(__mockState).filter(c => c.method === 'insert' || c.method === 'upsert');
     expect(writes.length).toBe(1);
     expect(writes[0].method).toBe('upsert');
+  });
+});
+
+// ── Invoices: same collision hole, but created_at is timestamptz, not text ──────────────────
+// _dbSaveInvoiceInner had NO new-vs-existing check at all — a bare upsert — so a stale tab that
+// re-minted a live INV number would replace another customer's invoice, payments included.
+//
+// The format trap is the whole reason these tests exist: invoices.created_at is
+// `timestamptz DEFAULT now()`, so a client that just created the invoice holds a toLocaleString()
+// value while the DB returns ISO with microseconds. Comparing those as STRINGS would block ordinary
+// re-saves on every freshly-created invoice. The guard compares parsed instants with a tolerance.
+const invChildren = () => ({
+  invoice_payments: [{ data: [], error: null }],
+  invoice_items: [{ data: [], error: null, count: 0 }, { data: [], error: null }],
+});
+
+const invCalls = (state) => state.calls.filter(c => c.table === 'invoices');
+
+describe('_dbSaveInvoiceInner — document-identity guard on id collision', () => {
+  beforeEach(() => { withSupabaseEnv(); jest.resetModules(); });
+  afterEach(() => { restoreEnv(); jest.resetModules(); });
+
+  test('same instant in two different formats is ONE invoice and must still upsert', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      // DB returns ISO-with-microseconds for the very instant the client holds as a locale string.
+      invoices: [
+        { data: { id: 'INV-63320', created_at: '2026-07-27T14:54:42.663188+00:00' }, error: null },
+        { error: null }, // upsert
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    // Date.parse of this locale form and of the ISO form above land within a second of each other,
+    // independent of the runner's timezone, because both are read as the same wall-clock instant.
+    const inv = { id: 'INV-63320', created_at: '2026-07-27T14:54:42+00:00', total: 100, payments: [], items: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).not.toBe(false);
+    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
+    expect(writes.length).toBeGreaterThan(0);
+    expect(inv.id).toBe('INV-63320'); // not renumbered
+  });
+
+  test('never-saved invoice whose number is held by another invoice re-mints, never upserts over it', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        // incumbent created hours earlier — unambiguously a different document
+        { data: { id: 'INV-63320', created_at: '2026-07-27T09:00:00.000000+00:00' }, error: null },
+        // _refreshMaxId scan; note the dashless id must be counted, not skipped
+        { data: [{ id: 'INV-63321' }, { id: 'INV63322' }], error: null },
+        { error: null }, // the re-minted upsert
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { id: 'INV-63320', created_at: '2026-07-27T21:54:42+00:00', total: 100, payments: [], items: [] };
+    await _dbSaveInvoice(inv);
+
+    // Re-minted above the highest number found, INCLUDING the dashless 'INV63322'.
+    expect(inv.id).toBe('INV-63323');
+    const writes = invCalls(__mockState).filter(c => c.method === 'upsert');
+    expect(writes.length).toBe(1);
+    expect(writes[0].args[0].id).toBe('INV-63323');
+  });
+
+  test('already-saved invoice whose number is now held by another blocks and parks the edit', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: { _version: 7 }, error: null }, // _checkVersion runs first
+        { data: { id: 'INV-63320', created_at: '2026-07-27T09:00:00.000000+00:00' }, error: null },
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice, _outboxList } = require('../lib/dbEngine');
+    const inv = { id: 'INV-63320', created_at: '2026-07-27T21:54:42+00:00', total: 100, memo: 'unsaved edit', _version: 7, payments: [], items: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).toBe(false);
+    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBe(0);
+    expect(inv.id).toBe('INV-63320'); // payments/items must not be stranded by a renumber
+    expect((_outboxList() || []).filter(e => e && e.id === 'INV-63320').length).toBeGreaterThan(0);
+  });
+
+  test('unparseable created_at means "can\'t tell" and must not block the save', async () => {
+    const { __mockState } = require('@supabase/supabase-js');
+    __mockState.calls.length = 0;
+    __mockState.responses = {
+      invoices: [
+        { data: { id: 'INV-63320', created_at: 'not-a-date' }, error: null },
+        { error: null }, // upsert
+      ],
+      ...invChildren(),
+    };
+
+    const { _dbSaveInvoice } = require('../lib/dbEngine');
+    const inv = { id: 'INV-63320', created_at: '2026-07-27T21:54:42+00:00', total: 100, payments: [], items: [] };
+    const result = await _dbSaveInvoice(inv);
+
+    expect(result).not.toBe(false);
+    expect(invCalls(__mockState).filter(c => c.method === 'upsert').length).toBeGreaterThan(0);
   });
 });

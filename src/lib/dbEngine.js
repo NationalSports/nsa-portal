@@ -1176,6 +1176,9 @@ const _dbSaveSOInner = async (so) => {
         console.error('[DB] SAFETY: Blocking save — SO',oldId,'is held by a different order (created',existingSO.created_at,'vs ours',so.created_at,')');
         if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different order. Please reload before editing.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different order (created_at '+existingSO.created_at+' != '+so.created_at+') — refused overwrite'});
+        // Preserve what the rep typed on the outbox conflict card, exactly as every other blocking
+        // guard in this function does — a refused write must never also discard the edit.
+        _emitOutboxConflict('sales_orders',so);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
         return false;
       }
     }
@@ -2101,6 +2104,45 @@ const _dbSaveInvoiceInner = async (inv) => {
       }}
     const{payments,items,...rest}=inv;
     let invRow=_pick(rest,_invCols);
+    // IDENTITY GUARD (2026-07-27, mirrors the SO/estimate paths). nextInvId mints from the same
+    // page-load-stale _dbMaxIds, and this path had NO new-vs-existing check at all — a bare upsert, so
+    // a stale tab that re-minted a live invoice number would silently replace another customer's
+    // invoice, payments and line items included. No invoice collision appears in the audit history
+    // (the INV range moves fast and invoices are minted-then-saved in one burst, so the window is
+    // narrow), but the hole is the same one that cost SO-1507 its header, on a money document.
+    //
+    // Unlike sales_orders/estimates, invoices.created_at is `timestamptz DEFAULT now()`, NOT text — so
+    // the two sides legitimately differ in FORMAT for the same instant: a client that just created the
+    // invoice holds toLocaleString() ("7/27/2026, 2:54:42 PM") while the DB returns ISO with
+    // microseconds. A string compare here would block ordinary re-saves, so compare parsed instants
+    // with a tolerance. If either side won't parse we cannot tell, and an unprovable mismatch must
+    // never block a save.
+    const _invSameDoc=(a,b)=>{
+      const ta=Date.parse(a),tb=Date.parse(b);
+      if(!Number.isFinite(ta)||!Number.isFinite(tb))return true;// unparseable → can't tell → allow
+      return Math.abs(ta-tb)<=5000;// one document across two formats stays far inside this
+    };
+    const{data:_existInv,error:_existInvErr}=await supabase.from('invoices').select('id,created_at').eq('id',inv.id).maybeSingle();
+    if(!_existInvErr&&_existInv&&inv.created_at&&_existInv.created_at&&!_invSameDoc(_existInv.created_at,inv.created_at)){
+      const oldId=inv.id;
+      if(!inv._version){
+        // Never saved, so no payments or items hang off this id yet — renumbering is clean. Scan on
+        // the 'INV' prefix, NOT 'INV-': some live ids carry no dash ('INV63316'), and a 'INV-%' scan
+        // would happily re-mint straight into one of them.
+        const freshMax=await _refreshMaxId('invoices','INV');
+        inv.id=invRow.id='INV-'+(Math.max(freshMax,parseInt((oldId.match(/\d+/)||['0'])[0])||0)+1);
+        console.warn('[DB] Invoice',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,') — re-minted to',inv.id);
+        if(_dbNotify)_dbNotify(oldId+' was already taken by another invoice — this one saved as '+inv.id+'. Reload to keep editing it.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'inv_id_reminted',soId:inv.id,reason:oldId+' belonged to a different invoice (created_at mismatch) — re-minted to '+inv.id});
+      }else{
+        // Already saved under this id: renumbering would strand its payments and line items.
+        console.error('[DB] SAFETY: Blocking invoice save —',oldId,'is held by a different invoice (created',_existInv.created_at,'vs ours',inv.created_at,')');
+        if(_dbNotify)_dbNotify('Save blocked — '+oldId+' now belongs to a different invoice. Please reload before editing.','error');
+        if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:oldId,reason:'id held by a different invoice (created_at mismatch) — refused overwrite'});
+        _emitOutboxConflict('invoices',inv);_dbSaveFailedIds.delete(oldId);_clearSaveError(oldId);_persistFailedIds();
+        return false;
+      }
+    }
     const{error:invErr}=await supabase.from('invoices').upsert(invRow,{onConflict:'id'});
     if(invErr){
       console.warn('[DB] invoices upsert failed, retrying without extra cols:',invErr.message);
