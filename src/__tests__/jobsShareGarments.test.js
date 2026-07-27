@@ -26,6 +26,18 @@ describe('jobsShareGarments', () => {
     expect(jobsShareGarments(b, a)).toBe(false);
   });
 
+  test('wizard-released slices (split_group survives, _artSplit marker lost) are still disjoint', () => {
+    // The job-wizard release whitelists historically dropped _artSplit (and the released-job
+    // heal restored split_group without it), so persisted split jobs commonly carry
+    // split_group alone. Same-family detection must key on split_group, not the marker.
+    const a = job('JOB-1-01', [{ item_idx: 0, split_group: 'sg1' }]);
+    const b = job('JOB-1-02', [{ item_idx: 0, split_group: 'sg1' }]);
+    expect(jobsShareGarments(a, b)).toBe(false);
+    const half = job('JOB-1-03', [{ item_idx: 0, _artSplit: true, split_group: 'sg1' }]);
+    expect(jobsShareGarments(a, half)).toBe(false);
+    expect(jobsShareGarments(half, a)).toBe(false);
+  });
+
   test('slices from DIFFERENT split families can overlap — still shared', () => {
     const a = job('JOB-1-01', [{ item_idx: 0, _artSplit: true, split_group: 'sg1' }]);
     const b = job('JOB-1-02', [{ item_idx: 0, _artSplit: true, split_group: 'sg2' }]);
