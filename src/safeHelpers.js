@@ -115,6 +115,53 @@ export const jobsShareGarments = (a, b) => {
   });
 };
 
+// Per-size shipped tally across a sales order's shipments: sku|color -> {size: qty}.
+// Feed the result to jobShippedUnits — jobs need per-size resolution, not line totals,
+// because art-split slices own only a size subset of their line.
+export const shippedSizesByLine = (shipments) => {
+  const m = {};
+  safeArr(shipments).forEach(shp => safeArr(shp?.items).forEach(it => {
+    if (!it) return;
+    const key = (it.sku || '') + '|' + (it.color || '');
+    const tgt = m[key] || (m[key] = {});
+    Object.entries(it.sizes || {}).forEach(([sz, v]) => { tgt[sz] = (tgt[sz] || 0) + safeNum(v); });
+  }));
+  return m;
+};
+
+// How many of THIS job's units have shipped? Crediting a job with its line's whole
+// sku|color shipped count over-credits art-split slices: sibling designs partition the
+// same line, so design A's shipped box would read as covering design B too — flipping B
+// to prod_status 'shipped' while B's actual garments sit unshipped, and dropping B from
+// the warehouse's ready-to-ship queues. A split slice (split_group + its own sizes)
+// counts only its per-size share of the line's shipped units; when same-family slices
+// share a size, jobs earlier in the list claim shipped units first (mirroring
+// allocateJobFulfillment / the released-heal's sibBefore apportioning). Whole-line items
+// keep the full-line count, matching the pre-split behavior.
+export const jobShippedUnits = (job, allJobs, shippedSizes) => {
+  const jobs = safeArr(allJobs);
+  const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
+  const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
+  let total = 0;
+  safeArr(job?.items).forEach(gi => {
+    if (!gi) return;
+    const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
+    if (!shipped) return;
+    const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
+    if (!share) { total += Object.values(shipped).reduce((a, v) => a + safeNum(v), 0); return; }
+    Object.entries(share).forEach(([sz, want]) => {
+      const w = safeNum(want);
+      if (w <= 0) return;
+      let avail = safeNum(shipped[sz]);
+      before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+        if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+      }));
+      total += Math.max(0, Math.min(w, avail));
+    });
+  });
+  return total;
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
@@ -336,7 +383,7 @@ export const realInkLines = (s) => String(s || '').split(/[,\n]/).map((c) => c.t
 // Approve — which need surface-specific delivery (nf toast vs alert) but must agree on
 // what the rep is told to do about it.
 export const missingMockupsMsg = (action, missing) =>
-  'Cannot ' + action + ' — no mockup yet for: ' + missing.join(', ') + '. Upload a mockup or link one ("use the same mockup as…") first.';
+  'Cannot ' + action + ' — no garment mockup yet for: ' + missing.join(', ') + '. A sew-out proof isn\'t enough: reuse an approved mock, link one ("use the same mockup as…"), or send to the artist for a mockup.';
 
 // ── Colorway image bridging (Momentec & other big-catalog API vendors) ──
 // The Momentec catalog (vendor v8) is excluded from the capped in-memory `prod`, and its
@@ -464,12 +511,14 @@ export const mockSlotKeys = (base, decos) => {
 // Production formats (.dst/.emb/.ai/.eps) never count.
 export const displayableProofFile = (f) =>
   /\.(png|jpe?g|webp|gif|pdf)(\?|#|$)/i.test(typeof f === 'string' ? f : (f && (f.name || f.url)) || '');
-// The files that stand in for a mockup when an art file carries NO per-garment mocks at
+// DISPLAY-ONLY fallback: the files shown in a mockup slot when an art file carries NO per-garment mocks at
 // all: the general mockup_files/files bucket (legacy single-design art), else the
-// digitizer's displayable sew-out proof in prod_files (reused library art). This is the
-// same ladder skusMissingMockups accepts and the OrderEditor/CoachPortal approval views
-// render — every mockup display surface (incl. the Art Dashboard slots) must use it so a
-// reused art never renders as "no mockup" on one screen while another screen shows proof.
+// digitizer's displayable sew-out proof in prod_files (reused library art). This ladder is
+// what the OrderEditor/CoachPortal approval views render — every mockup display surface
+// (incl. the Art Dashboard slots) must use it so a reused art never renders as "no mockup"
+// on one screen while another screen shows proof. NOTE: display only — the sew-out proof
+// does NOT satisfy the approval gate (skusMissingMockups requires a real garment mockup;
+// jobs are required to have one) and never appears on floor documents (_prodJobGenericMocks).
 // Returns [] the moment the art has ANY per-garment mock — per-item mocks make the
 // general/proof buckets ambiguous (wrong-colorway class), so they stop standing in.
 export const artProofFallback = (a) => {
@@ -583,20 +632,13 @@ export const skusMissingMockups = (job, so) => {
       return safeArr(a?.mockup_files).length > 0 ? safeArr(a?.mockup_files) : safeArr(a?.files);
     });
     if (general.length > 0) return;
-    // Reused/pre-digitized art with no mockups anywhere: the digitizer's sew-out proof (a
-    // displayable image/PDF sitting in prod_files) is what the approval views now show, so it
-    // satisfies the gate the same way — matches the prod-files display fallback in
-    // OrderEditor/CoachPortal. Non-displayable production files (.dst/.emb/.ai) never count.
-    const prodProof = artFiles.flatMap(a => {
-      // Respect an explicit proof dismissal (see artProofFallback): a cleared proof no longer
-      // satisfies the gate, so approval requires a real mockup — keeping the gate consistent with
-      // what every display surface now shows for this art (an empty upload slot).
-      if (a?.proof_dismissed) return [];
-      const hasPerItem = Object.values(a?.item_mockups || {}).some(v => safeArr(v).length > 0);
-      if (hasPerItem) return [];
-      return safeArr(a?.prod_files).filter(displayableProofFile);
-    });
-    if (prodProof.length > 0) return;
+    // POLICY: the digitizer's sew-out proof in prod_files does NOT satisfy the mockup
+    // gate. Jobs are required to carry a real garment mockup before Approve / Send to
+    // Coach — a sew-out is often a recolor, and one reaching a coach as "the mockup"
+    // is exactly what happened on SO-1661. The waiting_approval panel gives proof-only
+    // art its two compliant paths (reuse an approved prior mock, or send to the artist
+    // for a new one); the proof remains a labeled DISPLAY fallback (artProofFallback)
+    // so approval screens still show what exists — it just can't pass the gate.
     if (mSku) missing.push(mSku);
   });
   return missing;

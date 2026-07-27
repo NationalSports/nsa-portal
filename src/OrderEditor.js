@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations, jobsShareGarments, scopeRosterToSizes } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -6107,12 +6107,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                       if(!window.confirm('Delete this shipment? This will remove the package and its tracking info.'))return;
                       const updated=(o._shipments||[]).filter(s=>s.id!==shp.id);
                       // Revert jobs from 'shipped' back to 'completed' if units no longer fully shipped
-                      const shippedByItem={};updated.forEach(s=>{(s.items||[]).forEach(it=>{
-                        const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                      })});
-                      const revertedJobs=safeJobs(o).map(jj=>{
+                      // (per-size via jobShippedUnits so split-slice jobs only count their own share).
+                      const _remShippedSizes=shippedSizesByLine(updated);
+                      const _oJobs=safeJobs(o);
+                      const revertedJobs=_oJobs.map(jj=>{
                         if(jj.prod_status!=='shipped')return jj;
-                        const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                        const jobShipped=jobShippedUnits(jj,_oJobs,_remShippedSizes);
                         return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                       });
                       const hasShipments=updated.length>0;const firstShp2=updated[0];
@@ -9602,15 +9602,24 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _depsOfR=gi=>mockLinkDependents(_jobArts,gi.sku,gi.color).filter(k=>itemDetails.some(g=>(g.sku+'|'+(g.color||''))===k));
                 const _hasOwnMockR=g=>{const k=g.sku+'|'+(g.color||'');return _jobArts.some(a=>{const im=a?.item_mockups||{};return _filterDisplayable(im[k]&&im[k].length>0?im[k]:(im[g.sku]||[])).length>0})};
                 // "Use same mockup as …" chips — one per other garment, single click to link.
+                // The visible label carries the COLOR, not just the sku: a Navy and a White PA100
+                // render as distinct chips, and a cross-color link (which linkSwappedGarmentMock
+                // refuses to do silently — a different color must never inherit a mock unseen)
+                // asks for confirmation instead of applying on a bare click, since a mismatched
+                // link satisfies skusMissingMockups all the way to coach/production.
                 const _linkChipsR=gi=>{if(!_linkArtId||itemDetails.length<2)return null;const myKey=gi.sku+'|'+(gi.color||'');
                   const others=itemDetails.filter(g=>(g.sku+'|'+(g.color||''))!==myKey);
                   if(others.length===0)return null;
                   return<div style={{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap',padding:'0 10px 10px'}}>
                     <span style={{fontSize:10,color:'#94a3b8',fontWeight:600}}>or use the same mockup as:</span>
                     {others.map((g,oi)=>{const theirKey=g.sku+'|'+(g.color||'');const hasMock=_hasOwnMockR(g);
-                      return<button key={oi} onClick={()=>setMockLinkOE(_linkArtId,myKey,theirKey)}
+                      const colorMatch=(g.color||'')===(gi.color||'');
+                      return<button key={oi} onClick={()=>{
+                          if(!colorMatch&&!window.confirm('That mockup is on '+(g.color||'no color')+' '+g.sku+' — this garment is '+(gi.color||'no color')+' '+gi.sku+'.\n\nLink it anyway? The coach will see the '+(g.color||'other')+' mockup for this garment.'))return;
+                          setMockLinkOE(_linkArtId,myKey,theirKey);
+                        }}
                         style={{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',borderRadius:12,border:'1px solid '+(hasMock?'#a5b4fc':'#e2e8f0'),background:hasMock?'#eef2ff':'#f8fafc',color:hasMock?'#3730a3':'#64748b',fontSize:10,fontWeight:700,cursor:'pointer'}}
-                        title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')}>🔗 {g.sku}{hasMock?' 🖼️':''}</button>;})}
+                        title={'Use the same mockup as '+g.sku+(g.color?' — '+g.color:'')+(colorMatch?'':' (different color!)')}>🔗 {(g.color?g.color+' ':'')+g.sku}{hasMock?' 🖼️':''}{colorMatch?'':' ⚠️'}</button>;})}
                   </div>;};
                 // REUSE-7: a job that lands here with reused previously-approved art has NO mockups
                 // (addPrevArt strips them by design) and the Check Mock banner only renders at
@@ -9644,7 +9653,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _requestMockR=(gi,hasProof)=>{const it2=safeItems(o)[gi.item_idx];const _garment=(((it2?.color||gi.color||'')?(it2?.color||gi.color)+' ':'')+(it2?.sku||gi.sku||''))||'this garment';
                   return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
                     <div style={{fontSize:10,color:'#92400e',marginBottom:8,fontWeight:600}}>{hasProof
-                      ?"No garment mockup exists for this art yet — only the digitizer's sew-out proof above. Approve only if that proof is enough, or have the artist build a mockup on the garment."
+                      ?"No garment mockup exists for this art yet — only the digitizer's sew-out proof above, and a proof alone can't be approved or sent to the coach. Have the artist build a mockup on the garment."
                       :'No garment mockup or proof exists for this art yet, and there are no prior mocks to reuse. Have the artist build a mockup on the garment.'}</div>
                     <div onClick={e=>e.stopPropagation()}>
                       <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}

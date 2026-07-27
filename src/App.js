@@ -22,7 +22,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, jobsShareGarments, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, jobsShareGarments, shippedSizesByLine, jobShippedUnits, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
@@ -854,6 +854,11 @@ const _prodJobArtFiles=(j,so)=>{const ids=new Set();
 // mockups (legacy single-design art). Reused art arrives with the source order's generic
 // mocks still attached (a different garment/color from a prior SO), so once per-item
 // mocks exist the generic bucket is stale here — same rule as skusMissingMockups.
+// Deliberately NO sew-out-proof fallback here, unlike the approval surfaces: the
+// digitizer's sew-out is often a recolor, and a press operator color-matching from it is
+// worse than a blank. Jobs are required to carry a real mockup before they hit the floor
+// (the approval panel's "Send to artist for a mockup" path exists for exactly this), so
+// floor docs render the mock image or nothing.
 const _prodJobGenericMocks=artFiles=>artFiles.flatMap(a=>{
   const hasPerItem=Object.values(a?.item_mockups||{}).some(v=>(v||[]).length>0);
   return hasPerItem?[]:(a?.mockup_files||a?.files||[]);
@@ -7143,11 +7148,11 @@ export default function App(){
       const rep=REPS.find(r=>r.id===(c?.primary_rep_id||so.created_by))?.name?.split(' ')[0]||'—';
       const daysOut=so.expected_date?Math.ceil((new Date(so.expected_date)-new Date())/(1000*60*60*24)):null;
       const urgent=daysOut!=null&&daysOut<=3;
-      // Calculate already-shipped units for this SO (shared by the no-deco item loop and the job loop)
-      const soShippedByItem={};(so._shipments||[]).forEach(shp=>{(shp.items||[]).forEach(it=>{
-        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
-        soShippedByItem[key]=(soShippedByItem[key]||0)+szQty;
-      })});
+      // Calculate already-shipped units for this SO (shared by the no-deco item loop and the job
+      // loop). Kept per-size so split-slice jobs count only their own share (jobShippedUnits) —
+      // a sibling design's shipped box must not read as covering this design's garments.
+      const soShippedSizes=shippedSizesByLine(so._shipments);
+      const soShippedByItem={};Object.entries(soShippedSizes).forEach(([key,szs])=>{soShippedByItem[key]=Object.values(szs).reduce((a,v)=>a+safeNum(v),0)});
       // Running tally per sku|color so duplicate no-deco lines don't each subtract the full shipped qty
       const soShipConsumed={};
 
@@ -7221,8 +7226,8 @@ export default function App(){
       const _splitRoot=(jj)=>{let cur=jj,guard=0;const seen={};while(cur&&cur.split_from&&_jobById[cur.split_from]&&!seen[cur.id]&&guard++<64){seen[cur.id]=1;cur=_jobById[cur.split_from]}return(cur&&cur.id)||jj.id};
       allJobs.forEach(j=>{
         if(j.prod_status==='completed'||j.prod_status==='shipped'){
-          // Calculate remaining unshipped units for this job
-          const jobTotalShipped=(j.items||[]).reduce((a,gi)=>{const key=gi.sku+'|'+(gi.color||'');return a+(soShippedByItem[key]||0)},0);
+          // Calculate remaining unshipped units for this job (split-slice aware)
+          const jobTotalShipped=jobShippedUnits(j,allJobs,soShippedSizes);
           const remainingUnits=j.total_units-jobTotalShipped;
           if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
           else {
@@ -17980,12 +17985,11 @@ export default function App(){
                           }
                           const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
                           const so2=shp.so;
-                          const revertedJobs=safeJobs(so2).map(jj=>{
+                          const _remShippedSizes=shippedSizesByLine(updatedShipments);
+                          const _so2Jobs=safeJobs(so2);
+                          const revertedJobs=_so2Jobs.map(jj=>{
                             if(jj.prod_status!=='shipped')return jj;
-                            const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
-                              const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                            })});
-                            const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                            const jobShipped=jobShippedUnits(jj,_so2Jobs,_remShippedSizes);
                             return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                           });
                           const hasShipments=updatedShipments.length>0;
@@ -18420,17 +18424,14 @@ export default function App(){
                     if(soShipments.length>0){
                       const existing=so._shipments||[];
                       const allShipments=[...existing,...soShipments];
-                      // Calculate total shipped units per item across ALL shipments (existing + new)
-                      const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
-                        const key=it.sku+'|'+(it.color||'');const szQty=Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                        shippedByItem[key]=(shippedByItem[key]||0)+szQty;
-                      })});
+                      // Total shipped per sku|color|size across ALL shipments (existing + new) —
+                      // per-size so a split design's box can't flip its sibling design to shipped.
+                      const shippedSizes=shippedSizesByLine(allShipments);
                       // Only move completed jobs to shipped if ALL their units have been shipped
-                      const updatedJobs=safeJobs(so).map(jj=>{
+                      const soJobs=safeJobs(so);
+                      const updatedJobs=soJobs.map(jj=>{
                         if(jj.prod_status!=='completed')return jj;
-                        const jobShipped=(jj.items||[]).reduce((a,gi)=>{
-                          const key=gi.sku+'|'+(gi.color||'');return a+(shippedByItem[key]||0);
-                        },0);
+                        const jobShipped=jobShippedUnits(jj,soJobs,shippedSizes);
                         return jobShipped>=jj.total_units?{...jj,prod_status:'shipped'}:jj;
                       });
                       const allJobsShipped=updatedJobs.filter(jj=>jj.prod_status!=='draft').every(jj=>jj.prod_status==='shipped');
@@ -18534,9 +18535,8 @@ export default function App(){
                       }];
                     }
                     // Move completed jobs to shipped once all their units are covered by shipments
-                    const shippedByItem={};allShipments.forEach(shp=>{(shp.items||[]).forEach(it=>{
-                      const key=it.sku+'|'+(it.color||'');shippedByItem[key]=(shippedByItem[key]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+safeNum(v),0);
-                    })});
+                    // (per-size, so a split design's coverage can't flip its sibling design).
+                    const shippedSizes=shippedSizesByLine(allShipments);
                     // Jobs this Mark-Shipped action is explicitly clearing for this SO: the ready-to-ship
                     // tasks grouped here (deco_done tasks carry their job; wait_complete ships the whole
                     // order). Marking these directly reflects the user's intent and — unlike the sku|color
@@ -18550,7 +18550,7 @@ export default function App(){
                     const updatedJobs=origJobs.map(jj=>{
                       if(jj.prod_status!=='completed')return jj;
                       if(_wholeOrder||_clearedJobIds.has(jj.id))return{...jj,prod_status:'shipped'};
-                      const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                      const jobShipped=jobShippedUnits(jj,origJobs,shippedSizes);
                       return jobShipped>=safeNum(jj.total_units)?{...jj,prod_status:'shipped'}:jj;
                     });
                     const jobsChanged=updatedJobs.some((jj,ji)=>jj!==origJobs[ji]);
@@ -19569,12 +19569,11 @@ export default function App(){
                         }
                         const updatedShipments=(shp.so._shipments||[]).filter(s=>s.id!==shp.id);
                         const so2=shp.so;
-                        const revertedJobs=safeJobs(so2).map(jj=>{
+                        const _remShippedSizes=shippedSizesByLine(updatedShipments);
+                        const _so2Jobs=safeJobs(so2);
+                        const revertedJobs=_so2Jobs.map(jj=>{
                           if(jj.prod_status!=='shipped')return jj;
-                          const shippedByItem={};updatedShipments.forEach(s=>{(s.items||[]).forEach(it=>{
-                            const k=it.sku+'|'+(it.color||'');shippedByItem[k]=(shippedByItem[k]||0)+Object.values(it.sizes||{}).reduce((a,v)=>a+v,0);
-                          })});
-                          const jobShipped=(jj.items||[]).reduce((a,gi)=>a+(shippedByItem[gi.sku+'|'+(gi.color||'')]||0),0);
+                          const jobShipped=jobShippedUnits(jj,_so2Jobs,_remShippedSizes);
                           return jobShipped>=safeNum(jj.total_units)?jj:{...jj,prod_status:'completed'};
                         });
                         const hasShipments=updatedShipments.length>0;const firstShp=updatedShipments[0];
