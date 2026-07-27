@@ -9653,7 +9653,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 const _requestMockR=(gi,hasProof)=>{const it2=safeItems(o)[gi.item_idx];const _garment=(((it2?.color||gi.color||'')?(it2?.color||gi.color)+' ':'')+(it2?.sku||gi.sku||''))||'this garment';
                   return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
                     <div style={{fontSize:10,color:'#92400e',marginBottom:8,fontWeight:600}}>{hasProof
-                      ?"No garment mockup exists for this art yet — only the digitizer's sew-out proof above. Approve only if that proof is enough, or have the artist build a mockup on the garment."
+                      ?"No garment mockup exists for this art yet — only the digitizer's sew-out proof above, and a proof alone can't be approved or sent to the coach. Have the artist build a mockup on the garment."
                       :'No garment mockup or proof exists for this art yet, and there are no prior mocks to reuse. Have the artist build a mockup on the garment.'}</div>
                     <div onClick={e=>e.stopPropagation()}>
                       <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
