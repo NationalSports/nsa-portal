@@ -658,11 +658,14 @@ export function labelWeightLbs(items, store = {}, weightByPid = {}) {
 // One shared renderer for every warehouse 4×6: receiving, item fulfillment,
 // box / deco hand-off. Print stock is PORTRAIT 4in × 6in (@page below pins it
 // so the browser targets the label, not Letter). Layout, top→bottom:
-//   QR (scan) → CODE (IF#/PO#) → SO# → PROGRAM (team) → status note → items.
+//   QR (scan) → CODE (IF#/PO#) → SO# → PROGRAM (team) → MEMO → status note → items.
+// The memo is the sales order's memo/description line ("Fall 2026 Soccer
+// Warmups") — it rides directly under the program so the warehouse can tell two
+// concurrent orders for the same team apart without opening the SO.
 // Callers pass either the legacy {id,qrData,lines,shipBadge} shape — lines
-// tagged cls:'team'→program, 'so'→subtitle(SO#), 'sku'/'sz'/plain→items,
-// 'sub'→note — or explicit {program,subtitle,items,note,code,codeSub} which
-// wins over lines.
+// tagged cls:'team'→program, 'so'→subtitle(SO#), 'memo'→memo,
+// 'sku'/'sz'/plain→items, 'sub'→note — or explicit
+// {program,subtitle,memo,items,note,code,codeSub} which wins over lines.
 const _LABEL_CSS=`
   @page{size:4in 6in;margin:0.15in}
   @media print{html,body{width:3.7in}}
@@ -671,27 +674,113 @@ const _LABEL_CSS=`
   .page{width:3.7in;padding:6px 8px;page-break-after:always}
   .page:last-child{page-break-after:auto}
   .qr{text-align:center;margin-bottom:2px}
-  .qr img{width:1.3in;height:1.3in;display:inline-block;image-rendering:pixelated}
+  .qr img{width:1.15in;height:1.15in;display:inline-block;image-rendering:pixelated}
   .code{font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0}
   .subtitle{font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0}
   .program{font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word}
+  .memo{font-size:14px;font-weight:700;color:#334155;text-align:center;margin:3px 0 0;line-height:1.2;overflow-wrap:break-word}
   .rep{font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0}
   .badge{display:block;margin:6px auto 0;max-width:92%;padding:5px 8px;border:2px solid #d97706;border-radius:6px;font-weight:800;font-size:12px;text-align:center}
   .meta{font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3}
   .meta .mcode{font-weight:700;color:#334155}
-  .items{margin-top:8px}
-  .item{margin-bottom:6px;text-align:center}
+  .items{margin-top:5px}
+  .item{margin-bottom:4px;text-align:center;break-inside:avoid;page-break-inside:avoid}
   .item-title{font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word}
   .item-detail{font-size:13px;font-weight:500;color:#475569;margin-top:2px}
   .item-sz{font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px}
   .foot-note{font-size:10px;color:#64748b;font-weight:600;text-align:center;margin-top:8px}
+  /* Continuation pages (see _LABEL_PAGINATE_JS): a compact but still scannable
+     header — QR + SO# + team — so a page 2 found loose on the bench is still
+     identifiable and opens the same record. */
+  .cont-head{text-align:center;border-bottom:2px solid #cbd5e1;padding-bottom:5px;margin-bottom:6px}
+  .cont-head img{width:0.7in;height:0.7in;display:inline-block;image-rendering:pixelated}
+  .cont-head .ch-sub{font-size:16px;font-weight:800;line-height:1.1;margin-top:2px}
+  .cont-head .ch-prog{font-size:15px;font-weight:700;color:#334155;line-height:1.15;overflow-wrap:break-word}
+  .page-no{font-size:11px;font-weight:800;color:#475569;text-align:center;margin-top:6px}
+`;
+// Split any label whose items overrun the 4×6 into extra 4×6 pages, rather than
+// letting the browser spill them onto an unheadered page (which also used to
+// slice an item in half through its text). Each continuation page repeats a
+// compact QR+SO#+team header and every page of a split label gets "Page i of n".
+//
+// Heights are MEASURED in the print window rather than estimated: a long product
+// name or a wide size run wraps, so any fixed items-per-page guess is wrong for
+// exactly the labels that overflow. Runs after the QR images load (they're part
+// of the header height) and before print. Best-effort — on any error the label
+// prints exactly as it does today.
+const _LABEL_PAGINATE_JS=`
+  function paginate(){
+    try{
+      // Probe the printable box in the browser's own px-per-inch instead of
+      // assuming 96dpi: 6in page - 2*0.15in @page margin = 5.7in.
+      var probe=document.createElement('div');
+      probe.style.cssText='position:absolute;visibility:hidden;top:0;left:0;height:5.7in';
+      document.body.appendChild(probe);
+      var USABLE=probe.getBoundingClientRect().height;
+      document.body.removeChild(probe);
+      if(!(USABLE>20))return;
+      var h=function(el){if(!el)return 0;var r=el.getBoundingClientRect().height,cs=window.getComputedStyle(el);return r+(parseFloat(cs.marginTop)||0)+(parseFloat(cs.marginBottom)||0)};
+      [].slice.call(document.querySelectorAll('.page')).forEach(function(pg){
+        var itemsBox=pg.querySelector('.items');
+        if(!itemsBox)return;
+        var items=[].slice.call(itemsBox.children);
+        if(items.length<2)return;                       // nothing to split
+        if(pg.getBoundingClientRect().height<=USABLE)return;
+        var foot=pg.querySelector('.foot-note'),footH=h(foot);
+        // Everything above .items is the full header.
+        var headH=0;
+        for(var n=pg.firstElementChild;n&&n!==itemsBox;n=n.nextElementSibling)headH+=h(n);
+        headH+=parseFloat(window.getComputedStyle(itemsBox).marginTop)||0;
+        // Compact header cloned onto every continuation page.
+        var qrImg=pg.querySelector('.qr img'),sub=pg.querySelector('.subtitle'),prog=pg.querySelector('.program');
+        var mkCont=function(){
+          var d=document.createElement('div');d.className='cont-head';
+          if(qrImg){var i=document.createElement('img');i.src=qrImg.src;d.appendChild(i)}
+          if(sub){var s=document.createElement('div');s.className='ch-sub';s.textContent=sub.textContent;d.appendChild(s)}
+          if(prog){var p=document.createElement('div');p.className='ch-prog';p.textContent=prog.textContent;d.appendChild(p)}
+          return d;
+        };
+        var probeCont=mkCont();pg.appendChild(probeCont);
+        var contH=h(probeCont);pg.removeChild(probeCont);
+        var PAGENO=20;                                   // reserved for "Page i of n"
+        // Reserve the foot on every page — we don't know the last one yet.
+        var budget1=USABLE-headH-PAGENO-footH, budgetN=USABLE-contH-PAGENO-footH;
+        if(budget1<40||budgetN<40)return;                // header alone fills the label; leave it alone
+        var chunks=[[]],used=0,budget=budget1;
+        items.forEach(function(it){
+          var ih=h(it);
+          if(chunks[chunks.length-1].length&&used+ih>budget){chunks.push([]);used=0;budget=budgetN}
+          chunks[chunks.length-1].push(it);used+=ih;
+        });
+        if(chunks.length<2)return;
+        var total=chunks.length,after=pg;
+        chunks.forEach(function(chunk,ci){
+          var target;
+          if(ci===0){target=itemsBox;while(target.firstChild)target.removeChild(target.firstChild)}
+          else{
+            var np=document.createElement('div');np.className='page';
+            np.appendChild(mkCont());
+            target=document.createElement('div');target.className='items';
+            np.appendChild(target);
+            after.parentNode.insertBefore(np,after.nextSibling);after=np;
+          }
+          chunk.forEach(function(it){target.appendChild(it)});
+          var pn=document.createElement('div');pn.className='page-no';
+          pn.textContent='Page '+(ci+1)+' of '+total;
+          target.parentNode.appendChild(pn);
+        });
+        // The foot note (unit total / scan hint) belongs on the last page only.
+        if(foot)after.appendChild(foot);
+      });
+    }catch(e){/* pagination is best-effort — print the label unsplit */}
+  }
 `;
 // Wait for every QR image to finish loading before printing (a stacked
 // multi-label job has one <img> per page), with a safety timeout so a slow/
 // failed QR never wedges the print dialog.
 const _LABEL_PRINT_JS=`
   var imgs=[].slice.call(document.images),done=0,printed=false;
-  function go(){if(printed)return;printed=true;setTimeout(function(){try{window.focus()}catch(e){}window.print();},90);}
+  function go(){if(printed)return;printed=true;paginate();setTimeout(function(){try{window.focus()}catch(e){}window.print();},90);}
   function tick(){if(++done>=imgs.length)go();}
   if(!imgs.length){go();}else{imgs.forEach(function(im){if(im.complete&&im.naturalWidth>0){tick();}else{im.addEventListener('load',tick);im.addEventListener('error',tick);}});}
   setTimeout(go,4000);
@@ -700,20 +789,21 @@ const _qrImgSrc=(label,size)=>'https://api.qrserver.com/v1/create-qr-code/?size=
 // Resolve a label's display zones from either explicit fields or legacy `lines`.
 const _labelZones=(label={})=>{
   if(label.items||label.program||label.subtitle){
-    return {program:label.program||'',subtitle:label.subtitle||'',rep:label.rep||'',notes:label.note?[{text:label.note,style:label.noteStyle||''}]:[],items:label.items||[],code:label.code||label.id||''};
+    return {program:label.program||'',subtitle:label.subtitle||'',memo:label.memo||'',rep:label.rep||'',notes:label.note?[{text:label.note,style:label.noteStyle||''}]:[],items:label.items||[],code:label.code||label.id||''};
   }
   const norm=(label.lines||[]).filter(Boolean).map(l=>typeof l==='string'?{text:l}:l);
-  let program='',subtitle='',rep='';const notes=[],items=[];let cur=null;
+  let program='',subtitle='',memo='',rep='';const notes=[],items=[];let cur=null;
   norm.forEach(l=>{const t=l.text==null?'':l.text,cls=l.cls||'';
     if(cls==='team'&&!program){program=t;return}
     if(cls==='so'&&!subtitle){subtitle=t;return}
+    if(cls==='memo'&&!memo){memo=t;return}
     if(cls==='rep'&&!rep){rep=t;return}
     if(cls==='sku'){cur={title:t,detail:'',sizes:''};items.push(cur);return}
     if(cls==='sz'){if(cur){cur.sizes=cur.sizes?cur.sizes+'  '+t:t}else{cur={title:'',detail:'',sizes:t};items.push(cur)}return}
     if(cls==='sub'){notes.push({text:t,style:l.style||''});return}
     if(cur){cur.detail=cur.detail?cur.detail+' · '+t:t}else{notes.push({text:t,style:l.style||''})}
   });
-  return {program,subtitle,rep,notes,items,code:label.code||label.id||''};
+  return {program,subtitle,memo,rep,notes,items,code:label.code||label.id||''};
 };
 const _labelPageHtml=(label={})=>{
   const z=_labelZones(label);
@@ -735,6 +825,7 @@ const _labelPageHtml=(label={})=>{
     +(bigCode?`<div class="code">${bigCode}</div>`:'')
     +(z.subtitle?`<div class="subtitle">${z.subtitle}</div>`:'')
     +(z.program?`<div class="program">${z.program}</div>`:'')
+    +(z.memo?`<div class="memo">${z.memo}</div>`:'')
     +(z.rep?`<div class="rep">${z.rep}</div>`:'')
     +badge
     +metaHtml
@@ -749,7 +840,7 @@ export const printQrLabels=(labels)=>{
   const title=(list[0].code||list[0].id||'Label')+(list.length>1?(' +'+(list.length-1)):'');
   const html=`<!doctype html><html><head><title>${title}</title><style>${_LABEL_CSS}</style></head><body>`
     +list.map(_labelPageHtml).join('')
-    +`<script>${_LABEL_PRINT_JS}</script></body></html>`;
+    +`<script>${_LABEL_PAGINATE_JS}${_LABEL_PRINT_JS}</script></body></html>`;
   w.document.write(html);w.document.close();
 };
 export const printQrLabel=(label)=>printQrLabels([label]);
@@ -773,7 +864,9 @@ export const downloadQrLabel=async(label={})=>{
   if(!bigCode&&z.code)metaParts.push(`<span style="font-weight:700;color:#334155">${z.code}</span>`);
   (z.notes||[]).forEach(n=>metaParts.push(`<span style="${n.style||'color:#166534'}">${n.text}</span>`));
   const metaHtml=metaParts.length?`<div style="font-size:11px;font-weight:800;text-align:center;margin:6px 0 0;line-height:1.3">${metaParts.join(' · ')}</div>`:'';
-  const itemsHtml=(z.items||[]).map(it=>`<div style="margin-bottom:6px;text-align:center"><div style="font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:2px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px">${it.sizes}</div>`:''}</div>`).join('');
+  // .lbl-item is the html2pdf page-break anchor below — an item may move to the
+  // next PDF page whole, but never gets sliced through its own text.
+  const itemsHtml=(z.items||[]).map(it=>`<div class="lbl-item" style="margin-bottom:4px;text-align:center"><div style="font-size:21px;font-weight:800;line-height:1.15;overflow-wrap:break-word">${it.title||''}</div>${it.detail?`<div style="font-size:13px;font-weight:500;color:#475569;margin-top:2px">${it.detail}</div>`:''}${it.sizes?`<div style="font-size:18px;font-weight:800;letter-spacing:0.5px;margin-top:2px">${it.sizes}</div>`:''}</div>`).join('');
   // Off-screen container at position:absolute;left:-9999px (not fixed, no
   // negative z-index) so html2canvas captures the real box, not a blank region.
   const container=document.createElement('div');
@@ -784,6 +877,7 @@ export const downloadQrLabel=async(label={})=>{
     +(bigCode?`<div style="font-size:22px;font-weight:800;line-height:1.1;text-align:center;margin:2px 0 0">${bigCode}</div>`:'')
     +(z.subtitle?`<div style="font-size:24px;font-weight:700;line-height:1.1;text-align:center;margin:2px 0 0">${z.subtitle}</div>`:'')
     +(z.program?`<div style="font-size:28px;font-weight:900;line-height:1.08;text-align:center;margin:5px 0 0;overflow-wrap:break-word">${z.program}</div>`:'')
+    +(z.memo?`<div style="font-size:14px;font-weight:700;color:#334155;text-align:center;margin:3px 0 0;line-height:1.2;overflow-wrap:break-word">${z.memo}</div>`:'')
     +(z.rep?`<div style="font-size:11px;font-weight:700;color:#334155;text-align:center;margin:4px 0 0">${z.rep}</div>`:'')
     +badge+metaHtml
     +`<div style="margin-top:8px">${itemsHtml}</div>`
@@ -796,7 +890,7 @@ export const downloadQrLabel=async(label={})=>{
     if(imgEl&&!(imgEl.complete&&imgEl.naturalWidth>0)){await new Promise(resolve=>{imgEl.onload=resolve;imgEl.onerror=resolve;setTimeout(resolve,3000)})}
     await new Promise(r=>setTimeout(r,400));
     const html2pdf=(await import('html2pdf.js')).default;
-    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'}}).from(page).save();
+    await html2pdf().set({margin:0.15,filename:fname,image:{type:'jpeg',quality:0.98},html2canvas:{scale:3,useCORS:true,allowTaint:true,logging:false,backgroundColor:'#ffffff'},jsPDF:{unit:'in',format:[4,6],orientation:'portrait'},pagebreak:{mode:['css','legacy'],avoid:'.lbl-item'}}).from(page).save();
   }finally{
     document.body.removeChild(container);
   }

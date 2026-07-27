@@ -445,6 +445,25 @@ const jobLiveArtIds = (j, o) => {
   return arr.filter(id => { const a = safeArr(o?.art_files).find(f => f.id === id); return a && !a.archived; });
 };
 
+// Is this job the BACKORDER half of a split-by-received (the "-S" slice)?
+//
+// splitByReceived stamps `split_open` for exactly this question, but that flag has been lost in
+// the field: so_jobs rejects several columns the client sends (`priced_separately`,
+// `price_override`, `split_group`, `_draft` — none exist in the table), and once the save's
+// per-column retry budget is spent it falls back to core columns only, which drops `split_open`
+// with the rest of the extras. A slice whose flag was lost is treated as a plain deeper split and
+// claims its family's receipts FIRST, so the parent's received garments show up as still-open on
+// the parent and as in-hand on the backorder — the sizes look shuffled between the two jobs even
+// though the jobs' own unit totals are right (SO-1462: JOB-1462-01 rendered S 1/5 · M 4/7 next to
+// its 17/17 header while JOB-1462-01-S rendered S 4/4 · M 3/3 next to its 0/8).
+//
+// `key` is a core column that always survives, and the `__split__S` suffix is minted by
+// splitByReceived alone (`__split__B` is by-SKU, `__split__C` is custom), so deriving the
+// backorder from it makes the ordering independent of a flag that may not have persisted — and
+// heals the rows already saved without it. Nested backorders ("-S-S") keep the suffix and so stay
+// in the open tier too.
+const isOpenSplitSlice = (j) => !!(j && (j.split_open || /__split__S\d*$/.test(String(j.key || ''))));
+
 // ── Split-family fulfillment apportioning ──
 // Received/pulled units are tracked on the SO line item, so every job referencing that item
 // reads the same pool. For unrelated jobs that's correct — the same physical garment fulfills
@@ -454,7 +473,7 @@ const jobLiveArtIds = (j, o) => {
 // parent's open remainder would otherwise re-count the very receipts its slice was created to
 // own. Slices claim first (deepest split first — matching the receipts-go-to-the-split-first
 // convention used when a split is created); the root parent takes what's left. EXCEPTION: a slice
-// flagged split_open is a backorder peeled OFF a producible parent ("split off backorder"), so it
+// that isOpenSplitSlice recognizes is a backorder peeled OFF a producible parent ("split off backorder"), so it
 // claims LAST within its family — the received units stay on the parent, and the backorder slice
 // fills only as its own not-yet-received units actually arrive. Each job is
 // capped at its own per-size quantities (gi.sizes when the split recorded them, else the full
@@ -475,7 +494,7 @@ const allocateJobFulfillment = (jobs, items) => {
     // units, so they share one apportioning pool — otherwise each would count the same receipts.
     // Treating the split_group as the family root makes receipts fill one design, then the next.
     const root = (j && j.split_group) ? ('sg:' + j.split_group) : ((cur && cur.id) || (j && j.id) || '');
-    return { root, depth, open: (j && j.split_open) ? 1 : 0 };
+    return { root, depth, open: isOpenSplitSlice(j) ? 1 : 0 };
   };
   // open: 0 (received parent / normal slice) sorts before 1 (backorder slice) so the backorder
   // claims its family's receipts last; within each open-tier the deepest split still claims first.
@@ -1065,6 +1084,44 @@ function itemEditReconciles(clientItems, dbItems) {
   return cCat.size > 0 && dCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
 }
 
+// ─── Unaccounted-for line drops (data-loss guard helper) ───
+// Returns the sku|color keys of DB rows a save would delete WITHOUT this session having removed them.
+// Empty array = the save is safe to let through.
+//
+// Why this exists: the SO save rewrites so_items wholesale (insert-new / delete-old), and its count-mismatch
+// guard trusts any session that loaded items cleanly — but "loaded cleanly" is a fact about load time, not
+// about whether the list is still complete when the save fires. A tab open across another user's edit, or a
+// list shortened at load by the loader's item_index dedup, both pass that guard and silently delete real
+// garment lines (SO-1468 lost two, 2026-07-13/14).
+//
+// Deliberately narrow, so this can't block ordinary work: it only reports a drop when the client list is a
+// PURE SUBSET of the DB's — every client line matches a DB row, with at least one DB row left over. A silent
+// drop is always a pure subset; import/convert/replace flows introduce new keys and are never one, so they
+// keep their existing behaviour. `removedKeys` is the session tombstone the editor stamps when the user
+// actually deletes a line, which is what separates a deliberate removal from a loss.
+function unaccountedDroppedItems(clientItems, dbItems, removedKeys) {
+  const items = Array.isArray(clientItems) ? clientItems : [];
+  const rows = Array.isArray(dbItems) ? dbItems : [];
+  if (items.length === 0 || rows.length === 0) return [];// zero-wipe is a different guard's job
+  const keyOf = (x) => ((String((x && x.sku) || '')) + '|' + (String((x && x.color) || ''))).toLowerCase();
+  // Compared as SETS, not multisets, and deliberately so. An interrupted save swap (insert-new
+  // succeeded, delete-old never ran) leaves genuine duplicate rows behind — that is the state the
+  // loader's item_index dedup exists to collapse, and counting copies here would report the leftover
+  // as a dropped line and block every save on that order until someone cleaned it by hand. That is
+  // the very false-positive _oldDistinctItemIndexCount was introduced to avoid. A line is LOST only
+  // when its sku|color disappears from the order entirely, which is what set difference measures.
+  // Cost of this choice: two lines sharing a sku+color (same garment, different decoration) are one
+  // key, so deleting one of them is invisible here. That errs toward abstaining rather than
+  // false-blocking, and the pre-existing count/hydration guards still see that case.
+  const dbKeys = new Set(rows.map(keyOf));
+  const clientKeys = new Set(items.map(keyOf));
+  for (const k of clientKeys) { if (!dbKeys.has(k)) return []; }// new keys → replace/import, not a drop
+  const tombstoned = new Set(Array.isArray(removedKeys) ? removedKeys : []);
+  const out = [];
+  for (const k of dbKeys) { if (!clientKeys.has(k) && !tombstoned.has(k)) out.push(k); }
+  return out;
+}
+
 // ─── Per-item quantity-wipe detection (data-loss guard helper) ───
 // The item-count / decoration / art-file guards all reason about how many CHILD ROWS exist; none of them
 // looks INSIDE a surviving line at its quantities. The estimate save RPC (save_estimate) upserts each
@@ -1138,7 +1195,7 @@ module.exports = {
   // Pricing
   rQ, rT, spP, spFlatShare, spRunBlend, decoSplitRuns, emP, npP, twaP, twnP, dP, DTF, SP, EM, NP, TWA, TWN,
   // Business logic
-  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
+  poCommitted, calcSOStatus, buildJobs, outsourcedDecoTypes, decoIsOutsourced, decoConcreteType, isDecoOutsourced, pickCwAsset, normalizeWebLogos, garmentNeedsUnderbase, isJobReady, allocateJobFulfillment, isOpenSplitSlice, recalcJobFulfillment, deriveJobItemStatus, jobsNowReadyForDeco, jobReceivedAt, jobLiveArtIds, jobScreenKey, jobGroupKey, calcTotals, createInvoice,
   // Booking orders
   isBookingOrder, bookingDaysUntilShip, isBookingActive,
   // Promo dollars
@@ -1148,5 +1205,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty,
+  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
 };
