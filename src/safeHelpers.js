@@ -168,6 +168,14 @@ export const jobShippedUnits = (job, allJobs, shippedSizes) => {
 // for legacy invoices that pre-date this key.
 export const soLineKey = (it, idx) => (safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')+'|'+(idx==null?'':idx);
 
+// Identity key for matching a client item line against a so_items DB row. sku+color is the only
+// pair both sides always carry: row ids are re-minted on every save (the engine's insert-new /
+// delete-old swap) and item_index shifts whenever a middle line is removed. Lower-cased so a
+// casing difference between the editor's copy and the stored row can't read as a different line.
+// Single definition on purpose — the engine's save guards and the editor's delete handler both
+// key off this, and a drift between them would silently disarm the guards.
+export const soItemKey = (it) => ((safeStr(it?.sku)||'')+'|'+(safeStr(it?.color)||'')).toLowerCase();
+
 // Returns a Map of soLineKey -> total invoiced qty across the given invoices.
 // Matches first by exact key, then degrades to sku+color, then to sku alone,
 // for items from invoices written before the key existed or that lost their

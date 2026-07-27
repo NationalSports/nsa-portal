@@ -1084,6 +1084,44 @@ function itemEditReconciles(clientItems, dbItems) {
   return cCat.size > 0 && dCat.size > 0 && (subset(cCat, dCat) || subset(dCat, cCat));
 }
 
+// ─── Unaccounted-for line drops (data-loss guard helper) ───
+// Returns the sku|color keys of DB rows a save would delete WITHOUT this session having removed them.
+// Empty array = the save is safe to let through.
+//
+// Why this exists: the SO save rewrites so_items wholesale (insert-new / delete-old), and its count-mismatch
+// guard trusts any session that loaded items cleanly — but "loaded cleanly" is a fact about load time, not
+// about whether the list is still complete when the save fires. A tab open across another user's edit, or a
+// list shortened at load by the loader's item_index dedup, both pass that guard and silently delete real
+// garment lines (SO-1468 lost two, 2026-07-13/14).
+//
+// Deliberately narrow, so this can't block ordinary work: it only reports a drop when the client list is a
+// PURE SUBSET of the DB's — every client line matches a DB row, with at least one DB row left over. A silent
+// drop is always a pure subset; import/convert/replace flows introduce new keys and are never one, so they
+// keep their existing behaviour. `removedKeys` is the session tombstone the editor stamps when the user
+// actually deletes a line, which is what separates a deliberate removal from a loss.
+function unaccountedDroppedItems(clientItems, dbItems, removedKeys) {
+  const items = Array.isArray(clientItems) ? clientItems : [];
+  const rows = Array.isArray(dbItems) ? dbItems : [];
+  if (items.length === 0 || rows.length === 0) return [];// zero-wipe is a different guard's job
+  const keyOf = (x) => ((String((x && x.sku) || '')) + '|' + (String((x && x.color) || ''))).toLowerCase();
+  // Compared as SETS, not multisets, and deliberately so. An interrupted save swap (insert-new
+  // succeeded, delete-old never ran) leaves genuine duplicate rows behind — that is the state the
+  // loader's item_index dedup exists to collapse, and counting copies here would report the leftover
+  // as a dropped line and block every save on that order until someone cleaned it by hand. That is
+  // the very false-positive _oldDistinctItemIndexCount was introduced to avoid. A line is LOST only
+  // when its sku|color disappears from the order entirely, which is what set difference measures.
+  // Cost of this choice: two lines sharing a sku+color (same garment, different decoration) are one
+  // key, so deleting one of them is invisible here. That errs toward abstaining rather than
+  // false-blocking, and the pre-existing count/hydration guards still see that case.
+  const dbKeys = new Set(rows.map(keyOf));
+  const clientKeys = new Set(items.map(keyOf));
+  for (const k of clientKeys) { if (!dbKeys.has(k)) return []; }// new keys → replace/import, not a drop
+  const tombstoned = new Set(Array.isArray(removedKeys) ? removedKeys : []);
+  const out = [];
+  for (const k of dbKeys) { if (!clientKeys.has(k) && !tombstoned.has(k)) out.push(k); }
+  return out;
+}
+
 // ─── Per-item quantity-wipe detection (data-loss guard helper) ───
 // The item-count / decoration / art-file guards all reason about how many CHILD ROWS exist; none of them
 // looks INSIDE a surviving line at its quantities. The estimate save RPC (save_estimate) upserts each
@@ -1167,5 +1205,5 @@ module.exports = {
   // Inventory
   checkInventoryConflicts,
   // Data-loss guards
-  itemEditReconciles, itemsWithWipedQty,
+  itemEditReconciles, itemsWithWipedQty, unaccountedDroppedItems,
 };
