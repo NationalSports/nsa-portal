@@ -180,6 +180,17 @@ describe('buildBoxLabel', () => {
     expect(l.note).toBe('WEIRD — 6/16');
     expect(BOX_STATUS_META.weird).toBeUndefined();
   });
+  it('carries the SO memo through as its own zone, verbatim (no "Rep:"-style prefix)', () => {
+    const l = buildBoxLabel(box, { program: 'Grande FC', memo: 'Fall 2026 Boys Soccer Warmups', dateStr: '6/16' });
+    expect(l.memo).toBe('Fall 2026 Boys Soccer Warmups');
+    // The memo must not bleed into the lines the warehouse scans by.
+    expect(l.program).toBe('Grande FC');
+    expect(l.subtitle).toBe('SO-1234');
+    expect(l.note).toBe('IF-1071 · STAGED — 6/16');
+  });
+  it('omits the memo when the caller has none to resolve', () => {
+    expect(buildBoxLabel(box, { program: 'Grande FC', dateStr: '6/16' }).memo).toBe('');
+  });
 });
 
 // ── Adversarial-input regressions (2026-07-18 sweep) ──
