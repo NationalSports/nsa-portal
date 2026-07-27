@@ -91,6 +91,25 @@ export const jobHasLiveDecorations = (j, o) => {
   });
 };
 
+// Do two jobs decorate any of the SAME physical garments? Sharing an item_idx isn't
+// enough: an art-split partitions one SO line's units between designs (each job's entry
+// carries _artSplit + the family's split_group with its own disjoint split_sizes), so
+// same-family slices are separate batches of garments — one design's job must not be
+// displayed or gated as a "sibling on the same garments" of the other. Any other shared
+// line (multi-position decoration, a numbers/names job over the whole line, or slices
+// from two DIFFERENT split families whose units can overlap) still counts as shared.
+export const jobsShareGarments = (a, b) => {
+  const byIdx = {};
+  safeArr(b?.items).forEach(gi => { if (gi && gi.item_idx != null) byIdx[gi.item_idx] = gi; });
+  return safeArr(a?.items).some(gi => {
+    if (!gi || gi.item_idx == null) return false;
+    const other = byIdx[gi.item_idx];
+    if (!other) return false;
+    if (gi._artSplit && other._artSplit && gi.split_group && gi.split_group === other.split_group) return false;
+    return true;
+  });
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
