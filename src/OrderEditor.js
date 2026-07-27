@@ -9636,6 +9636,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 <span style={{fontSize:20}}>{_stca?'📤':'⚠️'}</span>
                 <span style={{fontWeight:800,fontSize:16,color:_stca?'#1e40af':'#92400e'}}>{_stca?'Sent to Coach for Approval':'Artwork Needs Your Approval'}</span>
               </div>
+              {/* The coach portal hides its Approve button until sent_to_coach_at is stamped (the
+              rep-review gate) — a rep who emails the portal link by hand instead of using Send to
+              Coach leaves the coach staring at "Proof in progress" with no way to act (SO-1645). */}
+              {!_stca&&<div style={{fontSize:12,color:'#92400e',marginBottom:10,fontWeight:600,padding:'8px 12px',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6}}>🔒 The coach can't see or approve this proof yet — their portal shows it as "in progress" until you click 📤 Send to Coach below. Sharing the portal link by email/text does not unlock it.</div>}
               {!_stca&&_jobArtFiles.some(a=>a?.status==='approved')&&<div style={{fontSize:12,color:'#92400e',marginTop:-4,marginBottom:10,fontWeight:600}}>♻️ This art was approved on a previous order — confirm it's good for this one (✅ below), send it to the coach, or request a new mock. It won't go to production until you pick.</div>}
               {_stca&&<div style={{fontSize:12,color:'#1e40af',marginBottom:8,fontWeight:600}}>
                 Sent {_stca.toLocaleDateString('en-US',{weekday:'short'})} {_stca.toLocaleDateString()} @ {_stca.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit',hour12:true})}

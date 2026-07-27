@@ -103,6 +103,7 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
       rejections: null,
       assigned_artist: 'artist-1',
       sent_to_coach_at: '2026-07-01T00:00:00.000Z',
+      sent_history: [{ sent_at: '2026-07-01T00:00:00.000Z', sent_by: 'Rep', methods: ['email'] }],
     };
     const lookups = buildExistingJobLookups([solo]);
     expect(lookups.existingByArtId['af-solo']).toBe(solo);
@@ -117,6 +118,7 @@ describe('buildExistingJobLookups / matchExistingJob', () => {
     expect(existing.id).toBe('JOB-2000-01');
     expect(inheritJobWorkflowFields(existing).assigned_artist).toBe('artist-1');
     expect(inheritJobWorkflowFields(existing).sent_to_coach_at).toBe('2026-07-01T00:00:00.000Z');
+    expect(inheritJobWorkflowFields(existing).sent_history).toEqual(solo.sent_history);
   });
 
   test('art-id fallback refuses an already-claimed job in the same pass', () => {
