@@ -45,3 +45,12 @@ jobs:
       - name: Check for drift
         if: steps.fetch.outputs.skip != 'true'
         run: node scripts/check-schema-drift.js --live live-migrations.json
+
+      # Complementary guard: drift catches migrations live-but-not-in-repo; this catches a column
+      # the client WRITES that no migration ever created. Both sample_art (estimate art) and the
+      # split-pricing columns slipped through because nothing compared the write lists to the schema.
+      - name: Check column parity
+        if: steps.fetch.outputs.skip != 'true'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: node scripts/check-column-parity.js
