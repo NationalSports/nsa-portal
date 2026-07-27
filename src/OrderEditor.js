@@ -70,6 +70,20 @@ const _docPdfItems=o=>safeItems(o).filter(it=>{
   return sq>0||safeNum(it.est_qty)>0||!!String(it.name||'').trim()||!!String(it.sku||'').trim();
 });
 
+// Custom lines used to fall back to a placeholder SKU ("CUSTOM", "MISC") when the rep
+// didn't type one. Those lines are unorderable downstream — a vendor PO, NetSuite, and
+// the warehouse all need the real style number — so a placeholder is no longer accepted
+// anywhere a line is created or saved. ("CUST-SUPPLIED" stays valid: the customer brings
+// the garment, so there's nothing to order.)
+const PLACEHOLDER_SKUS=new Set(['CUSTOM','MISC']);
+const isPlaceholderSku=s=>PLACEHOLDER_SKUS.has(String(s||'').trim().toUpperCase());
+const skuOk=s=>{const v=String(s||'').trim();return v.length>0&&!isPlaceholderSku(v)};
+// Lines already on an order when it was opened are grandfathered — the requirement is on
+// what gets added from here on, not on estimates and SOs that were already created and are
+// out with vendors. Matched on content rather than object identity or index: the background
+// sync rebuilds item objects, and lines get reordered.
+const _skuLineKey=it=>[String(it&&it.sku||'').trim().toUpperCase(),String(it&&it.name||'').trim().toLowerCase(),String(it&&it.color||'').trim().toLowerCase()].join('|');
+
 // "Placed via API" badge — surfaces wherever a PO that was submitted electronically to a
 // vendor (SanMar / S&S / Momentec) is shown, so a rep can tell at a glance it's a real
 // API-placed order rather than a manual website order. The vendor's returned order number
@@ -272,6 +286,23 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   };
   const isE=mode==='estimate';const isSO=mode==='so';
   const[o,setO]=useState(order);const[cust,setCust]=useState(ic);const[pS,setPS]=useState('');const[showAdd,setShowAdd]=useState(false);
+  // Baseline of placeholder SKUs the order already carried when it was opened, as a multiset
+  // of line keys. Snapshotted once — the editor is keyed by order id, so it remounts per
+  // order. These lines keep saving as-is: estimates and SOs created before the requirement
+  // aren't retroactively unsaveable.
+  //
+  // Only the literal placeholders ("CUSTOM"/"MISC") are grandfathered, not blank SKUs. Those
+  // strings are exactly what the old code stamped, so they identify already-created work —
+  // while every path that can still produce a missing SKU (AI import, email-to-estimate,
+  // NetSuite PDF) now leaves it blank. Grandfathering blanks too would exempt a freshly
+  // AI-generated estimate, since its lines are already there when the editor mounts.
+  const legacySkuBaseRef=useRef(null);
+  if(legacySkuBaseRef.current===null){const m=new Map();safeItems(order).forEach(it=>{if(!isPlaceholderSku(it.sku))return;const k=_skuLineKey(it);m.set(k,(m.get(k)||0)+1)});legacySkuBaseRef.current=m}
+  // The current lines covered by that baseline. Recomputed per edit so fixing one of two
+  // identical legacy lines doesn't hand the exemption to a newly added one.
+  const legacySkuItems=useMemo(()=>{const left=new Map(legacySkuBaseRef.current);const s=new Set();
+    safeItems(o).forEach(it=>{if(!isPlaceholderSku(it.sku))return;const k=_skuLineKey(it);const n=left.get(k)||0;if(n>0){left.set(k,n-1);s.add(it)}});
+    return s},[o]);
   // An estimate is effectively "converted" the instant a sales order references it. The estimate's own
   // status field can lag behind (approved on screen while an SO already exists), so drive the SO link and
   // the hide-the-re-convert-button decision off the actual linked SO — the same stale-status guard the
@@ -1446,7 +1477,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
   },[allOrders,o,products]);
   // Stock actually available to a NEW IF: on-hand minus units already reserved by open IFs.
   const availInv=(p,sz)=>p?Math.max(0,(p._inv?.[sz]||0)-(reservedInvMap[p.id+'|'+sz]||0)):0;
-  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
+  const[newAddr,setNewAddr]=useState('');const[showNA,setShowNA]=useState(false);const[showCustEdit,setShowCustEdit]=useState(false);const[showSzPicker,setShowSzPicker]=useState(null);const[showItemMenu,setShowItemMenu]=useState(null);const[itemMenuPos,setItemMenuPos]=useState(null);const[editingItemName,setEditingItemName]=useState(null);const[showCustom,setShowCustom]=useState(false);const[custItem,setCustItem]=useState({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'});const[showCustSupp,setShowCustSupp]=useState(false);const[custSuppItem,setCustSuppItem]=useState({name:'',color:'',item_type:'apparel',notes:''});
   const[aiBuild,setAiBuild]=useState(null);// {step:'input'|'review', inputMode:'text'|'image'|'url', text:'', images:[], url:'', loading:false, error:null, parsed:[], warnings:[], build_id:null}
 
   // ─── Live S&S Product Search ───
@@ -3748,8 +3779,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const saveO=(curMemo!==o.memo||curPO!==o.po_number)?{...o,memo:curMemo,...(isSO?{po_number:curPO}:{})}:o;
           const validItems=safeItems(saveO).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Add at least one item with quantities','error');return}
-          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
-          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noSku=validItems.find(it=>!skuOk(it.sku)&&!legacySkuItems.has(it));
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a real SKU'+(isPlaceholderSku(noSku.sku)?' — "'+String(noSku.sku).trim()+'" is no longer accepted':''),'error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           if(_shipPrefRequired()){nf('Select how this order gets to the customer (Ship or Deliver) before saving','error');return}
@@ -3762,8 +3793,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           const validItems=safeItems(o).filter(it=>{const sq=Object.values(safeSizes(it)).reduce((a,v)=>a+safeNum(v),0);return sq>0||safeNum(it.est_qty)>0});
           if(validItems.length===0){nf('Cannot convert — add at least one item with quantities','error');return}
           /* Items with est_qty only (no size breakdown) are allowed — sizes can be added on the SO */
-          const noSku=validItems.find(it=>!it.sku?.trim()&&!it.is_custom);
-          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a SKU or mark as custom','error');return}
+          const noSku=validItems.find(it=>!skuOk(it.sku)&&!legacySkuItems.has(it));
+          if(noSku){nf('Item '+(noSku.name||'#?')+' needs a real SKU'+(isPlaceholderSku(noSku.sku)?' — "'+String(noSku.sku).trim()+'" is no longer accepted':''),'error');return}
           const noPrice=validItems.find(it=>!it.is_free_promo&&!it.customer_supplied&&safeNum(it.unit_sell)<=0);
           if(noPrice){nf('Item '+(noPrice.sku||noPrice.name||'#?')+' needs a sell price','error');return}
           onConvertSO(o)}}><Icon name="box" size={14}/> Convert to SO</button>}
@@ -4323,7 +4354,15 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 </span>
               </div>}
               <div style={{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
-                {item.is_custom?<input className="form-input" value={item.sku} onChange={e=>uI(idx,'sku',e.target.value)} onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)} style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid #93c5fd'}}/>
+                {/* Editable whenever the SKU is missing or a placeholder, even on a non-custom
+                    line — so a line that came in without one can be fixed here. Only the ones
+                    that actually block Save (i.e. not grandfathered) are flagged red. */}
+                {item.is_custom||!skuOk(item.sku)?(()=>{const _bad=!skuOk(item.sku)&&!legacySkuItems.has(item);const _legacy=!_bad&&!skuOk(item.sku);
+                  return<input className="form-input" value={item.sku||''} onChange={e=>uI(idx,'sku',e.target.value)} placeholder="SKU"
+                    title={_bad?'Enter the vendor\'s style number — placeholder SKUs are no longer accepted'
+                      :_legacy?'Placeholder SKU from before this order was opened — kept as-is, but worth replacing with the vendor\'s style number':undefined}
+                    onFocus={e=>{e.currentTarget.dataset.prevSku=item.sku||'';e.currentTarget.dataset.prevColor=item.color||''}} onBlur={e=>_rekeyLineMocks(idx,e.currentTarget.dataset.prevSku,e.currentTarget.dataset.prevColor)}
+                    style={{fontFamily:'monospace',fontWeight:800,color:_bad?'#b91c1c':'#1e40af',background:_bad?'#fef2f2':'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15,width:100,border:'1px solid '+(_bad?'#fca5a5':'#93c5fd')}}/>;})()
                   :<span style={{fontFamily:'monospace',fontWeight:800,color:'#1e40af',background:'#dbeafe',padding:'3px 10px',borderRadius:4,fontSize:15}}>{item.sku}</span>}
                 {item.is_custom||editingItemName===idx?<input className="form-input" autoFocus={editingItemName===idx} value={item.name} onChange={e=>uI(idx,'name',e.target.value)} onBlur={()=>{if(editingItemName===idx)setEditingItemName(null)}} onKeyDown={e=>{if(e.key==='Enter'||e.key==='Escape')e.target.blur()}} style={{fontWeight:700,fontSize:15,flex:1,minWidth:150}} placeholder="Item name..."/>
                   :<span style={{fontWeight:700,fontSize:15}}>{item.name}</span>}
@@ -5153,7 +5192,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
     {showCustom&&<div className="card" style={{marginTop:8,borderLeft:'3px solid #d97706'}}><div style={{padding:'14px 18px'}}>
       <div style={{fontWeight:700,marginBottom:8}}>✏️ Custom Item {custItem.name&&<span style={{fontWeight:400,fontSize:12,color:'#64748b'}}>— {custItem.name}</span>}</div>
       <div style={{display:'grid',gridTemplateColumns:'120px 1fr 120px',gap:8,marginBottom:8}}>
-        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor</label><SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=vendorList.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
+        <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Brand / Vendor <span style={{color:'#dc2626'}}>*</span></label><SearchSelect options={vendorList.map(v=>({value:v.id,label:v.name}))} value={custItem.vendor_id} onChange={vid=>{const vn=vendorList.find(v=>v.id===vid)?.name||'';setCustItem(x=>({...x,vendor_id:vid,brand:vn}))}} placeholder="Search vendors..."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Item Name</label><input className="form-input" value={custItem.name} onChange={e=>setCustItem(x=>({...x,name:e.target.value}))} placeholder="Custom jersey, special order hat, etc."/></div>
         <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Color</label><input className="form-input" value={custItem.color} onChange={e=>setCustItem(x=>({...x,color:e.target.value}))} placeholder="Navy"/></div></div>
 
@@ -5189,7 +5228,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 :<><strong>📦 Standard Pricing:</strong> Cost × {mk}x markup = Sell price. {brandName?'Brand: '+brandName:'Select brand above.'}</>}
           </div>
           <div style={{display:'grid',gridTemplateColumns:'100px 100px 100px 100px 1fr',gap:8,marginBottom:8,alignItems:'end'}}>
-            <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>SKU</label><input className="form-input" value={custItem.sku} onChange={e=>setCustItem(x=>({...x,sku:e.target.value}))}/></div>
+            <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>SKU <span style={{color:'#dc2626'}}>*</span></label><input className="form-input" value={custItem.sku} onChange={e=>setCustItem(x=>({...x,sku:e.target.value}))} placeholder="Style #"
+              style={skuOk(custItem.sku)||!String(custItem.sku||'').trim()?undefined:{borderColor:'#dc2626',background:'#fef2f2'}}
+              title="The vendor's style number — required so the item can be ordered and invoiced"/></div>
             {au&&<div><label style={{fontSize:10,fontWeight:600,color:'#1e40af'}}>Retail $</label><$In value={custItem.retail_price||0} onChange={v=>{const costMult=auCostMult(brandName,isFw);const cost=Math.floor(v*costMult*100)/100;const sell=rQ(v*(1-disc));setCustItem(x=>({...x,retail_price:v,nsa_cost:cost,unit_sell:sell}))}}/></div>}
             <div><label style={{fontSize:10,fontWeight:600,color:au?'#64748b':'#166534'}}>{au?'Cost (auto)':'Cost $'}</label><$In value={custItem.nsa_cost} onChange={v=>{const sell=au?v:rQ(v*mk);setCustItem(x=>({...x,nsa_cost:v,...(!au&&{unit_sell:sell})}))}}/></div>
             <div><label style={{fontSize:10,fontWeight:600,color:'#64748b'}}>Sell $</label><$In value={custItem.unit_sell} onChange={v=>setCustItem(x=>({...x,unit_sell:v}))}/></div>
@@ -5215,22 +5256,30 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
           </div>
         </div>
       </div>
+      {(()=>{const missing=[!custItem.vendor_id&&'a vendor',!String(custItem.sku||'').trim()&&'a SKU',!custItem.name.trim()&&'an item name'].filter(Boolean);
+        const badSku=isPlaceholderSku(custItem.sku);
+        if(!missing.length&&!badSku)return null;
+        return<div style={{marginBottom:8,fontSize:11,fontWeight:600,color:'#b45309'}}>
+          {badSku?'"'+String(custItem.sku).trim()+'" isn\'t a SKU — enter the vendor\'s style number.'
+            :'Still needed: '+missing.join(', ')+'. Every line needs a vendor and a real SKU so it can be ordered and invoiced.'}
+        </div>;})()}
       <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
-        <button className="btn btn-primary" disabled={!custItem.name} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'Custom';
+        <button className="btn btn-primary" disabled={!custItem.name.trim()||!custItem.vendor_id||!skuOk(custItem.sku)} onClick={()=>{const brandName=vendorList.find(v=>v.id===custItem.vendor_id)?.name||'';
           const itType=custItem.item_type||'apparel';
           const availSz=itType==='footwear'?[...FOOTWEAR_DEFAULT_SIZES]:itType==='osfa'?['OSFA']:['S','M','L','XL','2XL'];
-          const newItem={product_id:null,sku:custItem.sku||'CUSTOM',name:custItem.name,brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[]};
-          if(custItem.saveToCatalog&&onSaveProduct&&custItem.sku&&custItem.sku!=='CUSTOM'){
+          const cSku=custItem.sku.trim();
+          const newItem={product_id:null,sku:cSku,name:custItem.name.trim(),brand:brandName,vendor_id:custItem.vendor_id,color:custItem.color,nsa_cost:custItem.nsa_cost,retail_price:custItem.retail_price||0,unit_sell:custItem.unit_sell,available_sizes:availSz,sizes:{},qty_only:false,decorations:[],is_custom:true,is_footwear:itType==='footwear',image_url:custItem.image_url||'',images:custItem.images||[]};
+          if(custItem.saveToCatalog&&onSaveProduct){
             const catCategory=itType==='footwear'?'Footwear':itType==='osfa'?'Hats':'Tees';
-            const newProd={id:'p'+Date.now(),vendor_id:custItem.vendor_id||null,sku:custItem.sku,name:custItem.name,brand:brandName,color:custItem.color||'',
+            const newProd={id:'p'+Date.now(),vendor_id:custItem.vendor_id||null,sku:cSku,name:custItem.name.trim(),brand:brandName,color:custItem.color||'',
               category:catCategory,retail_price:custItem.retail_price||0,nsa_cost:custItem.nsa_cost||0,available_sizes:availSz,is_active:true,_inv:{},image_url:custItem.image_url||'',back_image_url:'',images:custItem.images||[]};
             onSaveProduct(newProd);newItem.product_id=newProd.id;nf('Item saved to product catalog')}
           sv('items',[...o.items,newItem]);
-          setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'CUSTOM',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'})}}>Add Item</button>
+          setShowCustom(false);setCustItem({vendor_id:'',name:'',sku:'',nsa_cost:0,unit_sell:0,retail_price:0,color:'',brand:'',saveToCatalog:false,image_url:'',images:[],item_type:'apparel'})}}>Add Item</button>
         <button className="btn btn-secondary" onClick={()=>setShowCustom(false)}>Cancel</button>
         {onSaveProduct&&<label style={{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:11,color:'#475569',marginLeft:8}}>
           <input type="checkbox" checked={custItem.saveToCatalog||false} onChange={e=>setCustItem(x=>({...x,saveToCatalog:e.target.checked}))} style={{width:14,height:14}}/>
-          Save to product catalog {custItem.saveToCatalog&&(!custItem.sku||custItem.sku==='CUSTOM')&&<span style={{color:'#d97706',fontSize:10}}>(enter a SKU first)</span>}
+          Save to product catalog
         </label>}</div>
     </div></div>}
 
@@ -5439,7 +5488,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         </div>
 
         <div style={{marginTop:8,padding:8,background:'#f8fafc',borderRadius:6,fontSize:11,color:'#64748b'}}>
-          💡 Unmatched items will be added as custom items — you can fix the SKU here or in the order, and pricing will pull from the catalog when matched.
+          💡 Unmatched items will be added as custom items — every line needs a real SKU before the order can be saved, so fill in any blanks here or on the order. Pricing pulls from the catalog when matched.
         </div>
 
         <div style={{marginTop:12,display:'flex',gap:8}}>
@@ -5461,7 +5510,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const szKeys=Object.keys(p.sizes||{});
               return{
                 product_id:catMatch?.id||null,
-                sku:sku||'CUSTOM',
+                // No placeholder SKU — an unmatched line comes in blank so the rep has to
+                // fill in the real style number before the order can be saved.
+                sku:sku,
                 name:catMatch?.name||p.name||'',
                 brand,
                 color:catMatch?.color||p.color||'',
