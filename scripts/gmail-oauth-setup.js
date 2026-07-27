@@ -26,6 +26,9 @@ const scopes = [
   'https://www.googleapis.com/auth/gmail.readonly',
   'https://www.googleapis.com/auth/gmail.compose',
 ];
+const expectedMailbox = String(
+  process.env.GMAIL_AI_INBOX || 'sales@nationalsportsapparel.com'
+).trim().toLowerCase();
 
 if (!clientId || !clientSecret) {
   console.error(
@@ -78,15 +81,26 @@ const server = http.createServer(async (req, res) => {
     if (!tokenResponse.ok || !tokens.refresh_token) {
       throw new Error(tokens.error_description || tokens.error || 'No refresh token returned');
     }
+    const profileResponse = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
+    });
+    const profile = await profileResponse.json().catch(() => ({}));
+    const authorizedEmail = String(profile.emailAddress || '').trim().toLowerCase();
+    if (!profileResponse.ok || authorizedEmail !== expectedMailbox) {
+      throw new Error(
+        `Wrong Gmail account authorized: ${authorizedEmail || 'unknown'}. ` +
+        `Sign out of that Google account and authorize ${expectedMailbox}.`
+      );
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('NSA Portal Gmail authorization complete. Return to the terminal.');
+    res.end(`NSA Portal Gmail authorization complete for ${expectedMailbox}. Return to the terminal.`);
     const outputPath = path.join(__dirname, '.env');
     const syncSecret = crypto.randomBytes(32).toString('hex');
     const envFile = [
       `GMAIL_CLIENT_ID=${clientId}`,
       `GMAIL_CLIENT_SECRET=${clientSecret}`,
       `GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`,
-      'GMAIL_AI_INBOX=sales@nationalsportsapparel.com',
+      `GMAIL_AI_INBOX=${expectedMailbox}`,
       `GMAIL_AI_SYNC_SECRET=${syncSecret}`,
       '',
     ].join('\n');
@@ -103,7 +117,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  console.log('Authorize while signed into sales@nationalsportsapparel.com:\n');
+  console.log(`Authorize while signed into ${expectedMailbox}:\n`);
   console.log(authUrl.toString());
   console.log(`\nWaiting for Google on ${redirectUri}`);
 });

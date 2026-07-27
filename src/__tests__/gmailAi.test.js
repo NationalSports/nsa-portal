@@ -1,4 +1,4 @@
-const { parseMessage, buildMime, sendReply } = require('../../netlify/functions/_gmailAi');
+const { parseMessage, buildMime, getAccessToken, sendReply } = require('../../netlify/functions/_gmailAi');
 const {
   extractForwardedMessage,
   cartPayloadForMessage,
@@ -81,6 +81,40 @@ test('sendReply sends the verified-rep acknowledgement in the original Gmail thr
     expect(raw).toContain('We received your AI request.');
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test('getAccessToken refuses to use a refresh token belonging to a personal mailbox', async () => {
+  const originalFetch = global.fetch;
+  const originalEnv = {
+    clientId: process.env.GMAIL_CLIENT_ID,
+    clientSecret: process.env.GMAIL_CLIENT_SECRET,
+    refreshToken: process.env.GMAIL_REFRESH_TOKEN,
+  };
+  process.env.GMAIL_CLIENT_ID = 'client-id';
+  process.env.GMAIL_CLIENT_SECRET = 'client-secret';
+  process.env.GMAIL_REFRESH_TOKEN = 'refresh-token';
+  global.fetch = jest.fn()
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ access_token: 'access-token' }),
+    })
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ emailAddress: 'steve@nationalsportsapparel.com' }),
+    });
+  try {
+    await expect(getAccessToken()).rejects.toThrow(
+      /authorized as steve@nationalsportsapparel\.com; expected sales@nationalsportsapparel\.com/
+    );
+  } finally {
+    global.fetch = originalFetch;
+    if (originalEnv.clientId === undefined) delete process.env.GMAIL_CLIENT_ID;
+    else process.env.GMAIL_CLIENT_ID = originalEnv.clientId;
+    if (originalEnv.clientSecret === undefined) delete process.env.GMAIL_CLIENT_SECRET;
+    else process.env.GMAIL_CLIENT_SECRET = originalEnv.clientSecret;
+    if (originalEnv.refreshToken === undefined) delete process.env.GMAIL_REFRESH_TOKEN;
+    else process.env.GMAIL_REFRESH_TOKEN = originalEnv.refreshToken;
   }
 });
 
