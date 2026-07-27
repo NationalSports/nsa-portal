@@ -22,7 +22,7 @@ import * as fabric from 'fabric';
 // export, OCR) and pre-warmed during browser idle (see _warmHeavyLibs below), so first paint
 // stays light with no wait on first use. (barcode-detector was imported but never used — removed.)
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _loadArtRow, _jobExtraCols, _jobCols, _custCols, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, dgCodeOf, artProdFilesReady, artProdFilesConfirmed, artDstOnFile, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, _vendCols, _firmDateCols, _issueCols, _omgStoreCols, DEFAULT_REPS, WAREHOUSE_LEAD_IDS, NSA_DEFAULTS, NSA, NSA_WAREHOUSE, ART_LABELS, ART_FILE_LABELS, ART_FILE_SC, PRINT_CSS, CATEGORIES, BINS, CONTACT_ROLES, COLOR_CATEGORIES, EXTRA_SIZES, FOOTWEAR_DEFAULT_SIZES, NUMERIC_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, SZ_NORM, orderedSizeKeys, sizeBreakdownStr, SC, D_C, BATCH_VENDORS, MACHINES, D_V, D_P, D_E, D_SO, D_MSG, D_INV, D_OMG } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, mockSlotKeys, mockLinksOf, mockLinkKeyOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, artProofFallback, soLineKey, buildInvoicedQtyMap, jobItemDecosOfKind, jobItemDecoIdxs, jobHasUnresolvedArt, jobsShareGarments, scopeRosterToSizes, buildColorwayImageMap, lookupColorwayImage } from './safeHelpers';
 import { Icon, Toast, SortHeader, SearchSelect, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadAdder, ThreadQuickPicks, ImgGallery } from './components';
 import { buildAppliedBillRows, legacyAppliedBillRows, isMissingLedgerColumnError, mergeServerBills } from './appliedBillsLedger';
 import { billAnomalyFlags } from './lib/billAnomalies';
@@ -7226,12 +7226,13 @@ export default function App(){
           const remainingUnits=j.total_units-jobTotalShipped;
           if(remainingUnits<=0&&j.prod_status==='shipped'){}// Fully shipped — skip
           else {
-            // Check if all sibling jobs (a different decoration sharing any item_idx) are also done.
+            // Check if all sibling jobs (a different decoration sharing any garments) are also done.
             // Split-family siblings are excluded — they're disjoint batches of THIS decoration, not
             // another deco layer, so an unfinished backorder/split slice can't hold this batch back.
-            const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
+            // Same for deco-level art splits: jobsShareGarments treats same-split_group slices of a
+            // line as disjoint garments, so one design's finished batch ships without the other's.
             const jRoot=_splitRoot(j);
-            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&_splitRoot(j2)!==jRoot&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+            const siblingJobs=allJobs.filter(j2=>j2.id!==j.id&&j2.prod_status!=='draft'&&_splitRoot(j2)!==jRoot&&jobsShareGarments(j,j2));
             const allSiblingsDone=siblingJobs.every(j2=>j2.prod_status==='completed'||j2.prod_status==='shipped');
             if(!allSiblingsDone){
               // Sibling jobs still in progress — this item stays in production queue, not ready to ship
@@ -10836,8 +10837,9 @@ export default function App(){
     // shipping. Exclude the jobs we just completed together.
     if(newStatus==='completed'){
       const _movedHere=new Set(moveSet.filter(m=>m.soId===j.soId).map(m=>m.id));
-      const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-      const siblingJobs=safeJobs(so).filter(j2=>!_movedHere.has(j2.id)&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx))&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
+      // jobsShareGarments: art-split slices of the same line are disjoint batches — the other
+      // design's job doesn't block shipping this one, so don't list it as "still needs".
+      const siblingJobs=safeJobs(so).filter(j2=>!_movedHere.has(j2.id)&&jobsShareGarments(j,j2)&&j2.prod_status!=='completed'&&j2.prod_status!=='shipped');
       if(siblingJobs.length>0){
         const names=siblingJobs.map(j2=>j2.art_name||j2.deco_type?.replace(/_/g,' ')||'Job').join(', ');
         nf('🏭 '+j.id+' completed'+_extra+'! Still needs: '+names+' before shipping','warning');
