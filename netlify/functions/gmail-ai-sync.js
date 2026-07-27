@@ -1,5 +1,12 @@
 const { getSupabaseAdmin } = require('./_shared');
-const { getAccessToken, listInboxMessages, getMessage, parseMessage, sendReply } = require('./_gmailAi');
+const {
+  getAccessToken,
+  listInboxMessages,
+  getMessage,
+  parseMessage,
+  isAddressedToSales,
+  sendReply,
+} = require('./_gmailAi');
 const {
   extractForwardedMessage,
   findAuthorizedRep,
@@ -145,7 +152,11 @@ exports.handler = async (event) => {
       try {
         const raw = await getMessage(token, ref.id);
         const parsed = parseMessage(raw);
-        if (!parsed.sender_email || parsed.sender_email === process.env.GMAIL_AI_INBOX?.toLowerCase()) continue;
+        if (
+          !parsed.sender_email ||
+          parsed.sender_email === process.env.GMAIL_AI_INBOX?.toLowerCase() ||
+          !isAddressedToSales(parsed)
+        ) continue;
         const forwarded = extractForwardedMessage(parsed.text_body);
         const rep = forwarded.is_forwarded
           ? await findAuthorizedRep(admin, parsed.sender_email)

@@ -1,4 +1,10 @@
-const { parseMessage, buildMime, getAccessToken, sendReply } = require('../../netlify/functions/_gmailAi');
+const {
+  parseMessage,
+  isAddressedToSales,
+  buildMime,
+  getAccessToken,
+  sendReply,
+} = require('../../netlify/functions/_gmailAi');
 const {
   extractForwardedMessage,
   cartPayloadForMessage,
@@ -32,6 +38,19 @@ test('parseMessage extracts sender, thread headers, body, and attachment metadat
   expect(parsed.sender_name).toBe('Coach Rivera');
   expect(parsed.text_body).toBe('Please quote 12 jerseys.');
   expect(parsed.attachment_meta[0]).toMatchObject({ filename: 'roster.pdf', attachment_id: 'att-1' });
+});
+
+test('only messages explicitly addressed To: sales trigger the agent', () => {
+  expect(isAddressedToSales({
+    to_emails: ['sales@nationalsportsapparel.com'],
+  })).toBe(true);
+  expect(isAddressedToSales({
+    to_emails: ['steve@nationalsportsapparel.com'],
+    cc_emails: ['sales@nationalsportsapparel.com'],
+  })).toBe(false);
+  expect(isAddressedToSales({
+    to_emails: ['sales-alias@nationalsportsapparel.com'],
+  })).toBe(false);
 });
 
 test('buildMime creates a threaded multipart reply with a PDF attachment', () => {
