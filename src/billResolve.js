@@ -28,6 +28,32 @@ export const descStyleToken = (desc) => {
   const tok = m[1].replace(/[^A-Z0-9]/g, '');
   return /[0-9]/.test(tok) && tok.length >= 3 ? tok : '';
 };
+// OUR number for a bill line, for DISPLAY (owner 2026-07-27: "the bill upload still features
+// the SanMar in-house SKU, not the one we actually order with — always show our in-house sku").
+// SanMar/S&S bill with their own per-size catalog numbers ("2793471", "B00708043"); the number
+// we order, stock and quote with is the mfr style ("ST941", "PC61"). Strongest evidence first:
+//   1. _alias_sku — a learned vendor# → portal-SKU mapping (written by past accepted pushes)
+//   2. _ss_style  — the mfr style S&S's own /Products API returned for that part number
+//   3. descStyleToken(desc) — the style the vendor prints at the head of its own description
+//      ("ST941. ST Teknical Hybrid Vest" → "ST941")
+// Tier 3 is a heuristic on free text, so it only fires when the billed SKU actually LOOKS like a
+// vendor-internal catalog number (all digits, 5+ — SanMar's "2793471"/"1207621" shape) or is
+// missing. Without that guard a line whose SKU is already ours ("R25TFM") but whose description
+// opens with a year ("2026 Championship Tee") would display "2026" as our style. Tiers 1-2 are
+// explicit lookups, not guesses, so they are never gated.
+// Returns '' when we have nothing BETTER than what the bill printed (no evidence, or it agrees
+// with bl.sku) — the caller then shows bl.sku unchanged. DISPLAY ONLY: bl.sku itself is never
+// rewritten here, because every tie tier, the alias learner and the audit trail read it.
+const _vendorInternalSku = (s) => { const f = _ns(s); return !f || /^\d{5,}$/.test(f); };
+export const ourBillSku = (bl) => {
+  if (!bl) return '';
+  const ours = String(
+    bl._alias_sku || bl._ss_style || (_vendorInternalSku(bl.sku) ? descStyleToken(bl.desc) : '') || ''
+  ).trim();
+  if (!ours) return '';
+  return _ns(ours) === _ns(bl.sku) ? '' : ours;
+};
+
 const _num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
 
 // Agron (and some Sports Inc feeds) append a single LETTER suffix to the adidas article

@@ -2,7 +2,7 @@
 // Fixtures mirror REAL production cases from the 2026-07-16 reconciliation audit:
 // the Trinity typo'd-PO bill, the Agron SKU-suffix bill, and the prefix-less
 // old-system PO class.
-const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken } = require('../billResolve');
+const { proposeResolutions, cleanAutoAccept, highConfidenceAutoAccept, vendorsCompatible, poParts, editDistance, looksPrePortalGlued, numberMatchTagOk, skuZeroBase, descStyleToken, ourBillSku } = require('../billResolve');
 
 const canon = (s) => String(s || '').toUpperCase().trim();
 
@@ -240,6 +240,43 @@ describe('descStyleToken — leading mfr style from a description', () => {
     expect(descStyleToken('Youth Garment-Dyed Heavyweight T-Shirt')).toBe('');
     expect(descStyleToken('Mens Polo')).toBe('');
     expect(descStyleToken('')).toBe('');
+  });
+});
+
+// ── ourBillSku — the number WE order with, for every bill-line display ───────────────
+// Owner 2026-07-27: a SanMar bill line printed "2793471" (SanMar's own per-size catalog
+// number) where we order "ST941". Every bill-line display now renders ourBillSku() and
+// falls back to bl.sku only when there's nothing better.
+describe('ourBillSku — our style, not the vendor’s internal number', () => {
+  test('the owner’s case: SanMar 2793471 displays as ST941 (from the description)', () => {
+    expect(ourBillSku({ sku: '2793471', desc: 'ST941. ST Teknical Hybrid Vest' })).toBe('ST941');
+  });
+  test('a learned alias outranks the S&S style and the description token', () => {
+    expect(ourBillSku({ sku: 'B00708043', _alias_sku: 'PC61', _ss_style: '1717', desc: '1717. CC Heavyweight Tee' })).toBe('PC61');
+  });
+  test('the S&S style outranks the description token', () => {
+    expect(ourBillSku({ sku: 'B00708043', _ss_style: '1717', desc: '9018. Something Else' })).toBe('1717');
+  });
+  test('returns "" when we have nothing better — the caller keeps the billed number', () => {
+    expect(ourBillSku({ sku: '2793471', desc: 'Teknical Hybrid Vest' })).toBe('');
+    expect(ourBillSku({ sku: 'ST941' })).toBe('');
+    expect(ourBillSku({})).toBe('');
+    expect(ourBillSku(null)).toBe('');
+  });
+  test('returns "" when our number IS what the bill printed (punctuation/case ignored)', () => {
+    expect(ourBillSku({ sku: 'ST941', desc: 'ST941. ST Teknical Hybrid Vest' })).toBe('');
+    expect(ourBillSku({ sku: 'st-941', _alias_sku: 'ST941' })).toBe('');
+  });
+  test('never invents a style from the description when the billed SKU is already ours', () => {
+    // "R25TFM" is our own number — a description opening with a year must not become the SKU.
+    expect(ourBillSku({ sku: 'R25TFM', desc: '2026 Championship Tee' })).toBe('');
+    expect(ourBillSku({ sku: '112', desc: '2026 Trucker Cap' })).toBe('');
+    // …but an explicit alias/style lookup still wins, gate or no gate.
+    expect(ourBillSku({ sku: 'R25TFM', _alias_sku: 'R25', desc: '2026 Championship Tee' })).toBe('R25');
+  });
+  test('the description fallback still fires on a vendor-internal (all-digit) number', () => {
+    expect(ourBillSku({ sku: '1207621', desc: 'NL6210. NL Unisex CVC Tee' })).toBe('NL6210');
+    expect(ourBillSku({ sku: '', desc: 'DM130. DT Perfect Tri Tee' })).toBe('DM130');
   });
 });
 
