@@ -666,10 +666,11 @@ const _checkVersion=async(table,id,localVersion)=>{
   // the server post-save): a server sitting at or below our own last write is our own echo, but a
   // server that has moved PAST it means someone else wrote and must surface as a real conflict.
   const _recentlyMine=!!(_dbRecentSaves[id]&&Date.now()-_dbRecentSaves[id]<60000);
-  const _ownVersion=_dbOwnVersions[id];
-  // No recorded own-version — entity types that don't track one (invoices, customers), or a save whose
-  // post-write read-back failed. Fall back to the original time-boxed skip rather than manufacturing
-  // conflicts against ourselves; those paths are no worse off than before this change.
+  // Only a SERVER-CONFIRMED own-version can tighten the skip (see _dbOwnVersionExact). Without one —
+  // entity types that track no version (invoices, customers), the pre-00128 estimate fallback that
+  // guesses +1, or a save whose read-back failed — fall back to the original time-boxed skip rather
+  // than manufacturing conflicts against ourselves. Those paths are no worse off than before.
+  const _ownVersion=_dbOwnVersionExact.has(id)?_dbOwnVersions[id]:null;
   if(_recentlyMine&&_ownVersion==null)return true;
   try{
     const{data}=await supabase.from(table).select('_version').eq('id',id).single();
@@ -990,7 +991,7 @@ const _dbSaveEstimateInner = async (est) => {
         return 'stale';
       }
       // Advance our base _version from the RPC result so this client's own next save isn't seen as stale.
-      if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_dbOwnVersions[est.id]=est._version;_serverVersioned=true}
+      if(_rpcRes.data&&typeof _rpcRes.data.version==='number'){est._version=_rpcRes.data.version;_dbOwnVersions[est.id]=est._version;_dbOwnVersionExact.add(est.id);_serverVersioned=true}
     }
     // Sync art_files: upsert current, delete removed. Optimistic concurrency via the _version trigger — never
     // overwrite an art row whose DB copy is newer than the client's, and only delete rows the client had loaded.
@@ -1039,6 +1040,10 @@ const _dbSaveEstimateInner = async (est) => {
     // the most common conflict case.
     if(est._version&&!_serverVersioned)est._version=est._version+1;
     if(est._version)_dbOwnVersions[est.id]=est._version;
+    // The fallback above only GUESSES the post-save version, so it must not be treated as exact —
+    // drop any authority a previous RPC-versioned save recorded, or _checkVersion would compare a
+    // real server version against a stale guess and raise a conflict against this client's own write.
+    if(!_serverVersioned)_dbOwnVersionExact.delete(est.id);
     return true;
   }catch(e){console.error('[DB] save estimate:',e);if(_isAuthError(e))return _handleAuthSaveFailure(est.id,e);_dbSaveFailedIds.add(est.id);_recordSaveError(est.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Estimate save failed: '+e.message,'error');return false}});
 };
@@ -1301,11 +1306,16 @@ const _dbSaveSOInner = async (so) => {
       if(_unexplained.length){
         const _lbl=_unexplained.map(k=>k.split('|').filter(Boolean).join(' ')||'(custom line)').join(', ');
         console.error('[DB] SAFETY: Blocking SO save for',so.id,'—',_clientSoItemCount,'client item(s) would drop DB line(s) this session never removed:',_lbl);
-        if(_dbNotify)_dbNotify('Save blocked — '+so.id+' would lose '+_lbl+'. Please reload the page.','error');
         if(_dataLossAlert)_dataLossAlert({kind:'blocked',soId:so.id,prevCount:_oldDistinctItemIndexCount,newCount:_clientSoItemCount,reason:'save would drop unremoved DB item(s) ['+_lbl+'] — client item list is a pure subset of the DB\'s'});
-        // TERMINAL for auto-retry, like the stale-content guard: re-POSTing this same copy can never
-        // succeed. Preserve the edit in the outbox conflict card so nothing the user typed is thrown away.
-        _emitOutboxConflict('sales_orders',so);
+        // Toast + conflict card only for a USER-initiated save. A poll/realtime _diffSave carries
+        // nothing the user typed, so there is no edit to preserve and a card popped by a background
+        // sync would be unexplainable to whoever sees it — blocking (plus the alert above) is the
+        // whole job there. Both paths are TERMINAL for auto-retry like the stale-content guard:
+        // re-POSTing this same copy can never succeed, so the id is cleared rather than queued.
+        if(!_bgSync){
+          if(_dbNotify)_dbNotify('Save blocked — '+so.id+' would lose '+_lbl+'. Please reload the page.','error');
+          _emitOutboxConflict('sales_orders',so);
+        }
         _dbSaveFailedIds.delete(so.id);_clearSaveError(so.id);_persistFailedIds();
         return false;
       }
@@ -1921,9 +1931,14 @@ const _dbSaveSOInner = async (so) => {
     // inside it. Reading the version back makes _dbOwnVersions exact, so _checkVersion can tell this
     // client's own bump from someone else's. If the read fails, keep the old estimate and leave
     // _dbOwnVersions unset — _checkVersion then falls back to its previous time-boxed behaviour.
-    {const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
-     if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version}
-     else if(so._version)so._version=so._version+1}
+    // try/catch, not just an error check: this runs AFTER the save has committed, so a throw here would
+    // be caught by the outer handler and report a successful save as failed — enrolling it in the retry
+    // loop and re-POSTing work that is already durable. A missed read-back costs only the exactness.
+    try{
+      const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
+      if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version;_dbOwnVersionExact.add(so.id)}
+      else{_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1}
+    }catch(e){_dbOwnVersionExact.delete(so.id);if(so._version)so._version=so._version+1;console.warn('[DB] post-save _version read-back failed for',so.id,'— falling back to +1 estimate:',e?.message||e)}
     return true;
   }catch(e){console.error('[DB] save SO:',e);if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);_dbSaveFailedIds.add(so.id);_recordSaveError(so.id,e.message||String(e));_persistFailedIds();if(_dbNotify)_dbNotify('Sales order save failed: '+e.message,'error');return false}});
 };
@@ -1991,8 +2006,11 @@ const _dbSaveArtFilesInner = async (so) => {
     // Record the resulting version too. This path bumps sales_orders (the updated_at write above) without
     // going through the full SO save, so leaving _dbOwnVersions behind would make _checkVersion read our
     // own art-save bump as another user's write and raise a conflict against ourselves.
-    {const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
-     if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version}}
+    try{
+      const{data:_verRow}=await supabase.from('sales_orders').select('_version').eq('id',so.id).maybeSingle();
+      if(_verRow&&typeof _verRow._version==='number'){so._version=_verRow._version;_dbOwnVersions[so.id]=_verRow._version;_dbOwnVersionExact.add(so.id)}
+      else _dbOwnVersionExact.delete(so.id);
+    }catch(e){_dbOwnVersionExact.delete(so.id);console.warn('[DB] post-art-save _version read-back failed for',so.id,':',e?.message||e)}
     return true;
   }catch(e){if(_isAuthError(e))return _handleAuthSaveFailure(so.id,e);console.error('[DB] save art files:',e);if(_dbNotify)_dbNotify('Artwork file change failed to save: '+(e.message||e),'error');return false}});
 };
@@ -2807,6 +2825,13 @@ const _dbRecentSaves={};// {id: timestamp}
 // wrote: after a foreign write the base is still below the server's version, so the stale guard and
 // conflict card fire exactly as before.
 const _dbOwnVersions={};// id → last _version this client successfully wrote
+// Ids whose _dbOwnVersions entry came from an authoritative SERVER read (the SO save's post-write
+// read-back, or save_estimate's returned version) rather than a client-side +1 estimate. Only those
+// may tighten _checkVersion's own-echo skip into an exact comparison: a guessed version that runs
+// LOW would make the server look like it had moved past our write and manufacture a conflict against
+// ourselves. Entries not in this set keep the original time-boxed skip. Deliberately separate from
+// _dbOwnVersions so _rebaseOntoOwnWrite's existing behaviour is untouched.
+const _dbOwnVersionExact=new Set();
 const _rebaseOntoOwnWrite=(entity)=>{const own=_dbOwnVersions[entity.id];if(own&&(entity._version||0)<own){console.warn('[DB] '+entity.id+': rebasing save base v'+(entity._version||0)+' onto this client\'s own last write v'+own);entity._version=own}};
 // True if THIS client saved the record within the last 60s — gates the art-file superset merge so it only
 // protects this client's own just-uploaded files (the read-after-own-write race) and otherwise trusts the DB,

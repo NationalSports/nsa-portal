@@ -239,8 +239,14 @@ Both queries are reproduced in §8 so anyone can re-run them.
    recorded version authoritative: it now reads `_version` back after the save instead of
    guessing `+1`, because one logical save trips the DB trigger more than once (the row
    upsert, then the final `updated_at` bump) and the old estimate left every client
-   permanently behind the server. Entity types with no recorded own-version (invoices,
-   customers) fall back to the previous behaviour.
+   permanently behind the server. Only **server-confirmed** versions tighten the check
+   (`_dbOwnVersionExact`) — the pre-00128 estimate fallback still guesses `+1`, and treating
+   a guess as exact would have made the server look like it had moved past our own write and
+   raised conflicts against ourselves on a path this change never meant to touch. Entity
+   types with no recorded own-version (invoices, customers) keep the previous behaviour.
+   Both read-backs are wrapped in `try`/`catch`: they run *after* the save has committed, so
+   a throw there would otherwise be caught by the outer handler and report a durable save as
+   failed, re-POSTing work that already landed.
 5. **Stop non-sales roles from rewriting `so_items` at all.** *Not implemented — deliberately
    deferred.* Fix 3 already blocks the artist/warehouse cases in §5, since those sessions
    never stamp a tombstone and their losses are pure subsets. A role gate is a permissions
