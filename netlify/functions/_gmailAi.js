@@ -137,8 +137,13 @@ function parseMessage(message) {
   };
 }
 
+function isAddressedToSales(message) {
+  return Array.isArray(message?.to_emails) &&
+    message.to_emails.some((email) => String(email || '').trim().toLowerCase() === SALES_EMAIL);
+}
+
 async function listInboxMessages(token, maxResults = 20) {
-  const query = encodeURIComponent(`in:inbox newer_than:30d -from:${SALES_EMAIL}`);
+  const query = encodeURIComponent(`in:inbox newer_than:30d to:${SALES_EMAIL} -from:${SALES_EMAIL}`);
   const data = await gmailFetch(token, `/messages?q=${query}&maxResults=${Math.min(100, maxResults)}`);
   return data.messages || [];
 }
@@ -243,6 +248,7 @@ module.exports = {
   listInboxMessages,
   getMessage,
   parseMessage,
+  isAddressedToSales,
   buildMime,
   createReplyDraft,
   sendReply,
