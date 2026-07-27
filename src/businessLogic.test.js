@@ -1449,6 +1449,25 @@ describe('Job Fulfillment Recalculation (recalcJobFulfillment)', () => {
     expect(j.items.reduce((a, gi) => a + gi.fulfilled, 0)).toBe(j.fulfilled_units);
   });
 
+  test('a split/merged line with correct fulfillment still gets its stale gi.units healed', () => {
+    // The gi.sizes branch has an identity short-circuit keyed on fulfillment being unchanged.
+    // A line merged back from a split carries per-size sizes and already-correct fulSizes, so that
+    // fast path would return it untouched and keep a units scalar that disagrees with its own
+    // sizes — which is exactly what the Merge Jobs / Merge Back buttons then summed into the
+    // merged job's total. Heal must key on units too, without disturbing the fulfillment fields.
+    const so = makeSO({
+      jobs: [{ id: 'JOB-1', item_status: 'items_received', fulfilled_units: 10, total_units: 10,
+        items: [{ item_idx: 0, units: 6, fulfilled: 10, sizes: { S: 5, M: 5 }, fulSizes: { S: 5, M: 5 } }] }],
+    });
+    const items = [makeSOItem({ sizes: { S: 5, M: 5 },
+      po_lines: [{ po_id: 'PO-1', S: 5, M: 5, received: { S: 5, M: 5 } }] })];
+    const [j] = recalcJobFulfillment(so, items);
+    expect(j.items[0].units).toBe(10);
+    expect(j.items[0].fulfilled).toBe(10);
+    expect(j.items[0].fulSizes).toEqual({ S: 5, M: 5 });
+    expect(j.total_units).toBe(10);
+  });
+
   test('a job line whose SO item no longer exists keeps its gi.units instead of being zeroed', () => {
     // itemTotals is left undefined for a dangling item_idx, so the heal must skip it — silently
     // rewriting the line to 0 units would erase the only record of what the job was built from.
