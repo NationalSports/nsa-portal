@@ -115,6 +115,53 @@ export const jobsShareGarments = (a, b) => {
   });
 };
 
+// Per-size shipped tally across a sales order's shipments: sku|color -> {size: qty}.
+// Feed the result to jobShippedUnits — jobs need per-size resolution, not line totals,
+// because art-split slices own only a size subset of their line.
+export const shippedSizesByLine = (shipments) => {
+  const m = {};
+  safeArr(shipments).forEach(shp => safeArr(shp?.items).forEach(it => {
+    if (!it) return;
+    const key = (it.sku || '') + '|' + (it.color || '');
+    const tgt = m[key] || (m[key] = {});
+    Object.entries(it.sizes || {}).forEach(([sz, v]) => { tgt[sz] = (tgt[sz] || 0) + safeNum(v); });
+  }));
+  return m;
+};
+
+// How many of THIS job's units have shipped? Crediting a job with its line's whole
+// sku|color shipped count over-credits art-split slices: sibling designs partition the
+// same line, so design A's shipped box would read as covering design B too — flipping B
+// to prod_status 'shipped' while B's actual garments sit unshipped, and dropping B from
+// the warehouse's ready-to-ship queues. A split slice (split_group + its own sizes)
+// counts only its per-size share of the line's shipped units; when same-family slices
+// share a size, jobs earlier in the list claim shipped units first (mirroring
+// allocateJobFulfillment / the released-heal's sibBefore apportioning). Whole-line items
+// keep the full-line count, matching the pre-split behavior.
+export const jobShippedUnits = (job, allJobs, shippedSizes) => {
+  const jobs = safeArr(allJobs);
+  const jobIdx = jobs.findIndex(j2 => j2 && job && j2.id === job.id);
+  const before = jobIdx > 0 ? jobs.slice(0, jobIdx) : [];
+  let total = 0;
+  safeArr(job?.items).forEach(gi => {
+    if (!gi) return;
+    const shipped = (shippedSizes || {})[(gi.sku || '') + '|' + (gi.color || '')];
+    if (!shipped) return;
+    const share = gi.split_group && gi.sizes && Object.keys(gi.sizes).length > 0 ? gi.sizes : null;
+    if (!share) { total += Object.values(shipped).reduce((a, v) => a + safeNum(v), 0); return; }
+    Object.entries(share).forEach(([sz, want]) => {
+      const w = safeNum(want);
+      if (w <= 0) return;
+      let avail = safeNum(shipped[sz]);
+      before.forEach(j2 => safeArr(j2?.items).forEach(g2 => {
+        if (g2 && g2.item_idx === gi.item_idx && g2.split_group === gi.split_group && g2.sizes) avail -= safeNum(g2.sizes[sz]);
+      }));
+      total += Math.max(0, Math.min(w, avail));
+    });
+  });
+  return total;
+};
+
 // Stable-ish identifier for a sales-order line item, used to track which SO
 // lines have been invoiced. Combines sku + color + position so reordering an
 // SO with duplicate sku+color rows doesn't collide. Falls back to sku+color
