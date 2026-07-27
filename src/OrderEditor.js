@@ -6,7 +6,7 @@ import html2pdf from 'html2pdf.js';
 import * as fabric from 'fabric';
 import ImageTracer from 'imagetracerjs';
 import { _pick, _estCols, _soCols, _itemCols, _decoCols, _itemExtraCols, _estExtraCols, _soExtraCols, _decoExtraCols, _sanitizeDeco, _msgCols, _msgExtraCols, _artCols, _artExtraCols, _jobExtraCols, _jobCols, ART_FILE_LABELS, ART_FILE_SC, ART_LABELS, PROD_FILES_STATUSES, prodFilesStatusFor, isDstFile, isStaleFile, artDstOnFile, markDstsStale, reviveSoleStaleDst, artProdFilesReady, artProdFilesConfirmed, garmentColorClass, BATCH_VENDORS, BATCH_NOTIFY_VENDORS, APPAREL_SIZES, FOOTWEAR_SIZES, FOOTWEAR_DEFAULT_SIZES, BALL_SIZES, BALL_DEFAULT_SIZES, SZ_ORD, sizeBreakdownStr, SC, PANTONE_MAP, pantoneHex, pantoneSearch, THREAD_COLORS, threadHex, D_V, PRINT_CSS, MACHINES, NSA } from './constants';
-import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations, scopeRosterToSizes } from './safeHelpers';
+import { safeNum, safeItems, safeSizes, safePicks, safePOs, safeDecos, safeArr, safeObj, safeStr, safeArt, safeJobs, safeFirm, skusMissingMockups, missingMockupsMsg, realInkLines, garmentsNeedingMockCheck, mockLinksOf, resolveMockLink, mockLinkDependents, mockLinkSourceFiles, rekeyGarmentMocks, linkSwappedGarmentMock, soLineKey, buildInvoicedQtyMap, sumDepositInvoiced, shouldSkipZeroFinalInvoice, jobItemDecoIdxs, jobItemDecosOfKind, jobHasUnresolvedArt, jobHasLiveDecorations, jobsShareGarments, scopeRosterToSizes } from './safeHelpers';
 import { Icon, SortHeader, SearchSelect, ProductPicker, Bg, $In, EmailBadge, getAddrs, resolveOrderShipTo, orderShipToSub, custShipAddrSub, calcSOStatus, SendModal, FollowUpAutoPanel, seedFollowUp, PantoneAdder, PantoneQuickPicks, ThreadQuickPicks, ImgGallery, ColorWaysEditor } from './components';
 import { CustModal } from './modals';
 import SanMarPreviewModal from './SanMarPreviewModal';
@@ -3297,9 +3297,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         let u=0,f=0;
         _szE.forEach(([sz,v])=>{total+=v;u+=v;if(gi.fulSizes!=null){f+=Math.min(v,safeNum(gi.fulSizes[sz]))}else{const pQ=safePicks(it).filter(pk=>pk.status==='pulled').reduce((a,pk)=>a+safeNum(pk[sz]),0);const rQ=safePOs(it).reduce((a,pk)=>a+safeNum((pk.received||{})[sz]),0);let avail=pQ+rQ;if(_osd){const claimedBefore=_sib.reduce((a,dd)=>a+safeNum((dd.split_sizes||{})[sz]),0);avail=Math.max(0,avail-claimedBefore)}f+=Math.min(v,avail)}});
         fulfilled+=f;
-        // Only the healed split branch rewrites the item — stamp its true share (sizes/split_group)
-        // so the size grid, the split modal and allocateJobFulfillment all read the share, not the line.
-        return _osd?{...gi,units:u,fulfilled:f,sizes:{...giSz},split_group:_osd.d.split_group}:gi;
+        // Only the healed split branch rewrites the item — stamp its true share (sizes/split_group
+        // + the _artSplit marker) so the size grid, the split modal, allocateJobFulfillment and
+        // jobsShareGarments all read the share, not the line.
+        return _osd?{...gi,units:u,fulfilled:f,sizes:{...giSz},split_group:_osd.d.split_group,_artSplit:true}:gi;
       });
       const _idCh=_snapItems.some((gi,ix)=>gi!==(j.items||[])[ix]);
       if(total===0)return _idCh?{...j,items:_snapItems}:j;// no real units anywhere — leave the (empty) snapshot as-is
@@ -9292,8 +9293,8 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   </>}
                 </div>
                 <div style={{fontSize:12,color:'#64748b'}}>{j.deco_type?.replace(/_/g,' ')} · {j.positions} · {(j.items||[]).length} garment{(j.items||[]).length!==1?'s':''}</div>
-                {(()=>{const jobItemIdxs=new Set((j.items||[]).map(it=>it.item_idx));
-                  const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&(j2.items||[]).some(it=>jobItemIdxs.has(it.item_idx)));
+                {(()=>{// Art-split slices of the same line are disjoint garment batches, not a multi-job item — jobsShareGarments filters them.
+                  const siblings=safeJobs(o).filter(j2=>j2.id!==j.id&&jobsShareGarments(j,j2));
                   if(siblings.length===0)return null;
                   return<div style={{fontSize:10,marginTop:3,padding:'3px 8px',background:'#fef3c7',borderRadius:4,border:'1px solid #fde68a',color:'#92400e'}}>
                     Multi-job item: {siblings.map(s=><span key={s.id} style={{fontWeight:700}}>{s.art_name||s.deco_type?.replace(/_/g,' ')} <span style={{padding:'1px 4px',borderRadius:3,fontSize:9,background:s.prod_status==='completed'||s.prod_status==='shipped'?'#dcfce7':'#fee2e2',color:s.prod_status==='completed'||s.prod_status==='shipped'?'#166534':'#dc2626'}}>{prodLabels[s.prod_status]||s.prod_status}</span></span>).reduce((acc,el,i)=>i===0?[el]:[...acc,<span key={'sep-'+i}> · </span>,el],[])}
@@ -9635,6 +9636,26 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         }}>🎨 None fit — send to artist for a new mock</button>
                     </div>
                   </div>;};
+                // Art with NO prior mocks to reuse (_priorPickR returns null): the rep still needs a
+                // one-click path to have the artist build a real garment mockup — whether the panel is
+                // showing only a digitizer sew-out proof (hasProof, which satisfies the mock gate) or
+                // nothing at all (Approve/Send-to-Coach would dead-end on skusMissingMockups with no
+                // rep-side upload UI to satisfy it).
+                const _requestMockR=(gi,hasProof)=>{const it2=safeItems(o)[gi.item_idx];const _garment=(((it2?.color||gi.color||'')?(it2?.color||gi.color)+' ':'')+(it2?.sku||gi.sku||''))||'this garment';
+                  return<div style={{margin:'0 10px 10px',padding:10,background:'#fffbeb',borderRadius:6,border:'1px solid #fde047'}}>
+                    <div style={{fontSize:10,color:'#92400e',marginBottom:8,fontWeight:600}}>{hasProof
+                      ?"No garment mockup exists for this art yet — only the digitizer's sew-out proof above. Approve only if that proof is enough, or have the artist build a mockup on the garment."
+                      :'No garment mockup or proof exists for this art yet, and there are no prior mocks to reuse. Have the artist build a mockup on the garment.'}</div>
+                    <div onClick={e=>e.stopPropagation()}>
+                      <button className="btn btn-sm" style={{fontSize:10,padding:'3px 10px',background:'white',color:'#b91c1c',border:'1px solid #fca5a5',borderRadius:6,fontWeight:700}}
+                        title="Pull the art back and have the artist make a garment mockup"
+                        onClick={()=>{
+                          const _who=REPS.find(r=>r.id===j.assigned_artist)?.name||'the artist';
+                          if(!window.confirm('Send "'+(j.art_name||'this art')+'" to '+_who+' for a garment mockup on '+_garment+'?\n\nThe art goes back to Waiting for Art and any coach-approval state on this job is cleared.'))return;
+                          _sendBackToArtist('Need a garment mockup for '+_garment+' — '+(hasProof?'reused art only has the digitizer sew-out proof, no mock.':'no mockup or displayable proof on file.'));
+                        }}>🎨 Send to artist for a mockup</button>
+                    </div>
+                  </div>;};
                 return<div style={{marginBottom:12}}>
                   {itemDetails.map((gi,gii)=>{
                     const _myLinkSrc=_linkOfR(gi);
@@ -9697,7 +9718,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                         </div>;})()
                       :itemMockups.length>0?(()=>{const _ordered=[...itemMockups].sort((a,b)=>_mockOrd(a)-_mockOrd(b));const _ou=_ordered.map(f=>typeof f==='string'?f:(f?.url||''));return<><div style={{padding:10}}>
                         {_myDeps.length>0&&<div style={{fontSize:10,fontWeight:700,color:'#3730a3',marginBottom:6}}>🔗 Mockup also used by {_myDeps.map(k=>k.split('|')[0]).join(', ')}</div>}
-                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from this art's production files — not a garment mockup. Reuse an approved mock below, or send to the artist for a new one.</div>}
+                        {_proofOnly&&<div style={{fontSize:11,fontWeight:700,color:'#92400e',background:'#fffbeb',border:'1px solid #fde047',borderRadius:6,padding:'6px 10px',marginBottom:8}}>♻️ Sew-out proof from this art's production files — not a garment mockup. Pick an option below: reuse an approved mock or send to the artist for one.</div>}
                         <div style={{display:'grid',gridTemplateColumns:_ordered.length>1?'1fr 1fr':'1fr',gap:8}}>
                           {_ordered.map((f,fi)=>{const url=typeof f==='string'?f:(f?.url||'');const name=fileDisplayName(f);const _sd=_mockSide(f);const _lbl=(typeof f!=='string'&&f?.art_label)||'';const _cap=[_lbl,_sd==='front'?'Front':_sd==='back'?'Back':''].filter(Boolean).join(' — ')||name;
                             return<div key={fi} style={{position:'relative',borderRadius:8,border:'2px solid #f59e0b',overflow:'hidden',background:'white'}}>
@@ -9724,11 +9745,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                             </div>})}
                         </div>
                       </div>
-                      {_proofOnly&&_priorPickR(gi)}
+                      {_proofOnly&&(_priorPickR(gi)||_requestMockR(gi,true))}
                       {_proofOnly&&_linkChipsR(gi)}
                       </>})():<>
                        <div style={{padding:14,margin:'10px 10px 6px',textAlign:'center',background:'#fff7ed',border:'1px dashed #fdba74',borderRadius:6,color:'#9a3412',fontSize:12,fontWeight:600}}>No mockup uploaded yet for {gi.sku}</div>
-                       {_priorPickR(gi)}
+                       {_priorPickR(gi)||_requestMockR(gi,false)}
                        {_linkChipsR(gi)}
                       </>}
                       {/* Decoration spec */}
@@ -10091,7 +10112,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               {!canProduce&&j.prod_status!=='hold'&&<span style={{fontSize:9,color:'#d97706',marginLeft:4}}>⚠️ Items/art incomplete</span>}</>}
               <div style={{marginLeft:'auto',display:'flex',gap:6}}>
                 {j.art_status==='needs_art'&&(j.items||[]).length>0&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10,fontWeight:700}} title="Set up just this job — assign an artist, skip the artist, or build a quick mock" onClick={()=>{
-                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const decoIdxs=Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]);const allDecos=decoIdxs.map(di=>safeDecos(it||{})[di]).filter(Boolean);const artDeco=allDecos.find(d=>d.kind==='art'&&d.art_file_id)||allDecos.find(d=>d.kind==='art');const itemArtFileId=artDeco?.art_file_id||null;const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;const itemPosition=artDeco?.position||j.positions||'Front Center';return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:decoIdxs,sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:gItem.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,art_name:af2?.name||'',position:itemPosition};});
+                  const grpItems=(j.items||[]).map(gItem=>{const it=safeItems(o)[gItem.item_idx];const decoIdxs=Array.isArray(gItem.deco_idxs)&&gItem.deco_idxs.length?gItem.deco_idxs:(gItem.deco_idx!=null?[gItem.deco_idx]:[]);const allDecos=decoIdxs.map(di=>safeDecos(it||{})[di]).filter(Boolean);const artDeco=allDecos.find(d=>d.kind==='art'&&d.art_file_id)||allDecos.find(d=>d.kind==='art');const itemArtFileId=artDeco?.art_file_id||null;const af2=itemArtFileId?safeArr(o?.art_files).find(f=>f.id===itemArtFileId):null;const itemPosition=artDeco?.position||j.positions||'Front Center';return{item_idx:gItem.item_idx,deco_idx:gItem.deco_idx,deco_idxs:decoIdxs,sku:gItem.sku||it?.sku||'',name:gItem.name||safeStr(it?.name),color:gItem.color||it?.color||'',units:gItem.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:gItem.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,art_name:af2?.name||'',position:itemPosition,...(gItem.sizes&&Object.keys(gItem.sizes).length>0?{sizes:{...gItem.sizes}}:{}),...(gItem.split_group?{split_group:gItem.split_group,_artSplit:true}:{})};});
                   const group={name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items:grpItems,artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],_split:!!j.split_from,_existingJobId:j.id,_merged:!!j._merged};
                   setSelJob(null);
                   setJobWizard({groups:[group],scopeJobId:j.id});
@@ -10615,7 +10636,11 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               const itemPosition=artDeco?.position||j.positions||'Front Center';
               return{item_idx:ji.item_idx,deco_idx:ji.deco_idx,deco_idxs:decoIdxs,sku:ji.sku||it?.sku||'',name:ji.name||safeStr(it?.name),color:ji.color||it?.color||'',
                 units:ji.units||Object.values(safeSizes(it||{})).reduce((a,v)=>a+v,0)||safeNum(it?.est_qty),fulfilled:ji.fulfilled||0,art_file_id:itemArtFileId||j.art_file_id,
-                art_name:af2?.name||'',position:itemPosition};
+                art_name:af2?.name||'',position:itemPosition,
+                // Carry a split slice's share through the wizard — dropping sizes/split_group here
+                // forced recalcedReleased to re-heal every released split job, and losing _artSplit
+                // made jobsShareGarments falsely re-couple the released split designs.
+                ...(ji.sizes&&Object.keys(ji.sizes).length>0?{sizes:{...ji.sizes}}:{}),...(ji.split_group?{split_group:ji.split_group,_artSplit:true}:{})};
             });
             return{name:j.art_name||j.deco_type.replace(/_/g,' '),deco_type:j.deco_type,items,
               artist:j.assigned_artist||'',notes:j.rep_notes||'',files:[],
@@ -10634,9 +10659,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const dt=af2?.deco_type||d.deco_type||'screen_print';
             const groupKey=dt+'::'+d.art_file_id;
             if(!dtMap[groupKey])dtMap[groupKey]={name:af2?.name||DECO_LABELS_W[dt]||dt.replace(/_/g,' '),deco_type:dt,items:[]};
+            const _splitShare=d.split_group&&d.split_sizes&&Object.keys(d.split_sizes).length>0?{sizes:{...d.split_sizes},split_group:d.split_group,_artSplit:true}:null;
             dtMap[groupKey].items.push({item_idx:idx,deco_idx:di,sku:it.sku,name:safeStr(it.name),color:it.color||'',
-              units:Object.values(safeSizes(it)).reduce((a,v)=>a+v,0)||safeNum(it.est_qty),fulfilled:0,art_file_id:d.art_file_id,
-              art_name:af2?.name||'',position:d.position||'Front Center'});
+              units:_splitShare?Object.values(d.split_sizes).reduce((a,v)=>a+safeNum(v),0):(Object.values(safeSizes(it)).reduce((a,v)=>a+v,0)||safeNum(it.est_qty)),fulfilled:0,art_file_id:d.art_file_id,
+              art_name:af2?.name||'',position:d.position||'Front Center',...(_splitShare||{})});
           });
         });
         setJobWizard({groups:Object.values(dtMap)});
@@ -10753,10 +10779,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             assigned_artist:g.artist||'',
             rep_notes:g.notes||'',
             ...(autoArtRequest?{art_requests:[{id:'AR-'+Date.now()+'-'+gi,artist:g.artist||'',artist_name:artistObj?.name||'',instructions:g.notes||'Requested on release',files:g.files||[],status:'requested',created_at:new Date().toISOString(),created_by:cu?.name||'System',auto:false}]}:{}),
-            // Carry a split-art item's per-size share (sizes) + split_group into the frozen snapshot —
-            // without them recalcedReleased re-derives the total from the WHOLE garment line, inflating
-            // each split design back to the full quantity (SO-1131: Servite 55 / Friars 66 vs 17 / 39).
-            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled,sizes,split_group})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0,...(sizes&&Object.keys(sizes).length>0?{sizes:{...sizes}}:{}),...(split_group?{split_group}:{})}))
+            // Carry a split-art item's per-size share (sizes) + split_group + _artSplit into the frozen
+            // snapshot — without sizes/split_group recalcedReleased re-derives the total from the WHOLE
+            // garment line, inflating each split design back to the full quantity (SO-1131: Servite 55 /
+            // Friars 66 vs 17 / 39); without _artSplit the released split designs read as falsely
+            // coupled siblings again (jobsShareGarments).
+            items:releaseItems.map(({item_idx,deco_idx,deco_idxs,sku,name,color,units,fulfilled,sizes,split_group})=>({item_idx,deco_idx,deco_idxs:Array.isArray(deco_idxs)&&deco_idxs.length?deco_idxs:(deco_idx!=null?[deco_idx]:[]),sku,name,color,units,fulfilled:fulfilled||0,...(sizes&&Object.keys(sizes).length>0?{sizes:{...sizes}}:{}),...(split_group?{split_group,_artSplit:true}:{})}))
           });
         });
         // Store rep's sample art files on the art file records (separate from artist mockups)
