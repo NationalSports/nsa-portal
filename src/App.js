@@ -33,6 +33,7 @@ import { calcOrderTotals, calcOrderMargin, auTierDisc, isAU, auCostMult, linkedA
 import { soFulfillment as opsFulfillment, isShippedOut as opsShippedOut, isCheckedIn as opsCheckedIn, shortOnPull as opsShortOnPull, pulledGroups as opsPulledGroups, isReadyToInvoice as opsReadyToInvoice, isShippedNotInvoiced as opsShippedNotInvoiced, isOpenInvoice as opsOpenInvoice, invoiceBalance as opsInvoiceBalance, invoiceDaysPastDue as opsInvoiceDaysPastDue, isFullyPaidInvoice as opsFullyPaid, paymentsLatestYmd as opsPaymentsLatestYmd, quoteAgeDays as opsQuoteAgeDays, quoteColdBucket as opsQuoteColdBucket, numericSizeKeys as opsNumericSizeKeys } from './lib/opsRecap';
 import { parseNetSuitePdf, parseNetSuitePdfMulti } from './lib/netsuitePdfParser';
 import { REC_PARAM_FOR_PG, buildRouteSearch, recKey as _recKeyOf } from './lib/recordRoute';
+import { consolidateArtFamilies, artFamilyIds } from './lib/artSplitFamily';
 import { AppDataProvider } from './AppContext';
 
 // Pre-warm the heavy point-of-use libraries during browser idle, after the portal's first
@@ -5598,12 +5599,12 @@ export default function App(){
   // print its SCANNABLE plate label (buildBoxLabel — resolves via ?scan= after the box-scan
   // fix). When box tracking isn't deployed (createBoxFor → null), runs printFallback so
   // receiving degrades to today's PO-scan label exactly like the pull path.
-  const receiveBoxAndPrint=async({poId,soId,lines,program,rep,printFallback})=>{
+  const receiveBoxAndPrint=async({poId,soId,lines,program,memo,rep,printFallback})=>{
     const contents=_recvBoxContents(lines,poId);
     let box=null;
     try{if(contents.length)box=await createBoxFor({kind:'receiving',soId:soId||null,poId,contents})}catch(e){/* best-effort */}
     if(box){
-      const _lbl=buildBoxLabel(box,{program:program||'',scanBase:window.location.origin+window.location.pathname});
+      const _lbl=buildBoxLabel(box,{program:program||'',memo:memo||'',scanBase:window.location.origin+window.location.pathname});
       printQrLabel({..._lbl,rep:rep||'',note:'RECEIVED — '+new Date().toLocaleDateString(),noteStyle:'color:#166534'});
     } else if(typeof printFallback==='function'){printFallback()}
     return box;
@@ -5640,7 +5641,7 @@ export default function App(){
   const printBoxLabel=(box)=>{
     const _so=sos.find(s=>s.id===box.so_id);
     const _c=_so?cust.find(x=>x.id===_so.customer_id):null;
-    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',scanBase:window.location.origin+window.location.pathname}));
+    printQrLabel(buildBoxLabel(box,{program:_c?.name||'',memo:_so?.memo||'',scanBase:window.location.origin+window.location.pathname}));
   };
   // Combine: absorb `srcBox` into the box with id `tgtId` — sum SKUs+sizes, mark the absorbed
   // plate combined + merged_into (its label keeps resolving via the lookup redirect), reprint one label.
@@ -11906,20 +11907,23 @@ export default function App(){
     const _recvOne=(arr,key)=>{const s=[...new Set((arr||[]).map(x=>x[key]).filter(Boolean))];return s.length===1?s[0]:''};
     // Full program name = the SO's customer name (PO lines only carry the short alpha_tag); fall back to the tag.
     const _recvName=(soId,fallback)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fallback||''};
+    // SO memo — the order's description line, printed under the program name so a
+    // receiver can tell two live orders for the same team apart at the bench.
+    const _recvMemo=(soId)=>{const so=soId&&sos.find(s=>s.id===soId);return (so&&so.memo)||''};
     // Sales rep for the SO (customer's primary rep, else the SO creator), first name only.
     const _recvRep=(soId)=>{const so=soId&&sos.find(s=>s.id===soId);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
     const _recvNoteStyle=(boxLabel)=>/received/i.test(boxLabel||'')?'color:#166534':'color:#475569';
     // Single 4×6 — a non-batch PO, or one source PO pulled out of a batch.
     const printLabel=(items,poId,boxLabel)=>{
       const soId=_recvOne(items,'soId');
-      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),rep:_recvRep(soId),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
+      printQrLabel({code:poId,qrData:_recvScanUrl(poId),program:_recvName(soId,_recvOne(items,'customer')),memo:_recvMemo(soId),rep:_recvRep(soId),subtitle:soId,note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(items),codeSub:_recvUnits(items)+' units · scan to open PO'});
     };
     // One 4×6 page per source PO in a batch — each box carries its own
     // customer + items, but all scan back to the same parent PO.
     const printBatchSeparateLabels=(sourcePOs,poId,boxLabel)=>{
       const n=(sourcePOs||[]).length;
       printQrLabels((sourcePOs||[]).map((sp,i)=>({
-        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),rep:_recvRep(sp.so_id),
+        code:poId,qrData:_recvScanUrl(poId),program:_recvName(sp.so_id,sp.customer),memo:_recvMemo(sp.so_id),rep:_recvRep(sp.so_id),
         subtitle:[sp.so_id,n>1?('Box '+(i+1)+' of '+n):''].filter(Boolean).join(' · '),
         note:boxLabel,noteStyle:_recvNoteStyle(boxLabel),items:_recvItems(sp.items),
         codeSub:_recvUnits(sp.items)+' units · scan to open '+poId
@@ -12168,7 +12172,7 @@ export default function App(){
                     // Box the received goods (kind='receiving', scannable plate) from the ACTUAL received
                     // qtys; fall back to the PO-scan label when box tracking isn't deployed.
                     const _bsid=_recvOne(_recvLines.length?_recvLines:labelItems,'soId');
-                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
+                    receiveBoxAndPrint({poId,soId:_bsid,lines:_recvLines.length?_recvLines:labelItems,program:_recvName(_bsid,_recvOne(labelItems,'customer')),memo:_recvMemo(_bsid),rep:_recvRep(_bsid),printFallback:()=>printLabel(labelItems,poId,'RECEIVED — '+new Date().toLocaleDateString())});
                   }
                 }}>✅ Confirm Received (<span id="po-recv-total">0</span> units)</button>}
             </div>
@@ -16950,13 +16954,14 @@ export default function App(){
                         const pulledItemsForLabel=pickItems.map(pi=>({pi,qtys:pullQtys[pi.itemIdx]||{}})).filter(x=>Object.values(x.qtys).some(v=>v>0));
                         if(pulledItemsForLabel.length>0){
                           const labelShipBadge=shipDest==='in_house'?null:{text:(shipDest==='ship_customer'?'SHIP TO CUSTOMER':'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:'')),color:shipDest==='ship_customer'?'#3b82f6':'#d97706',bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'};
-                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
+                          const _soMemo=t.so?.memo||'';
+                          const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(_soMemo)lines.push({text:_soMemo,cls:'memo'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});lines.push({text:'PULLED — '+new Date().toLocaleDateString(),cls:'sub',style:'color:#166534;font-weight:800;'});
                           pulledItemsForLabel.forEach(({pi,qtys})=>{const szList=pi.szKeys.filter(sz=>(qtys[sz]||0)>0);const qty=szList.reduce((a,sz)=>a+(qtys[sz]||0),0);lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+qty+' units'});lines.push({text:szList.map(sz=>sz+': '+qtys[sz]).join(' &nbsp; '),cls:'sz'})});
                           if(pulledItemsForLabel.length>1)lines.push({text:'TOTAL: '+totPulling2+' units',cls:'sz'});
                           const legacyLabel={id:pickIdToUse,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickIdToUse),shipBadge:labelShipBadge,lines};
                           const boxContents=pulledItemsForLabel.map(({pi,qtys})=>({sku:pi.sku,name:pi.name,color:pi.color||'',so_id:t.soId,if_id:pickIdToUse,sizes:Object.fromEntries(pi.szKeys.filter(sz=>(qtys[sz]||0)>0).map(sz=>[sz,qtys[sz]]))}));
                           createBoxForPull({ifId:pickIdToUse,soId:t.soId,contents:boxContents}).then(box=>{
-                            printQrLabel(box?{...buildBoxLabel(box,{program:t.cName||'',rep:t.rep&&t.rep!=='—'?t.rep:'',scanBase:window.location.origin+window.location.pathname}),shipBadge:labelShipBadge}:legacyLabel);
+                            printQrLabel(box?{...buildBoxLabel(box,{program:t.cName||'',memo:_soMemo,rep:t.rep&&t.rep!=='—'?t.rep:'',scanBase:window.location.origin+window.location.pathname}),shipBadge:labelShipBadge}:legacyLabel);
                           }).catch(()=>printQrLabel(legacyLabel));
                         }
                       }catch(e){/* label print is best-effort */}
@@ -17030,7 +17035,7 @@ export default function App(){
                   color:shipDest==='ship_customer'?'#3b82f6':'#d97706',
                   bg:shipDest==='ship_customer'?'#eff6ff':'#fffbeb'
                 };
-                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
+                const buildLines=()=>{const lines=[];if(t.cName)lines.push({text:t.cName,cls:'team'});if(t.so?.memo)lines.push({text:t.so.memo,cls:'memo'});if(t.rep&&t.rep!=='—')lines.push({text:'Rep: '+t.rep,cls:'rep'});lines.push({text:t.soId,cls:'so'});pickItems.forEach(pi=>{lines.push({text:pi.sku+' '+pi.name,cls:'sku'});lines.push({text:(pi.color||'')+' — '+pi.needsPull+' units'});lines.push({text:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join(' &nbsp; '),cls:'sz'})});if(pickItems.length>1)lines.push({text:'TOTAL: '+grandNeed+' units',cls:'sz'});return lines};
                 return<div style={{display:'flex',gap:6,marginTop:8,flexWrap:'wrap'}}>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={()=>printQrLabel({id:pickId,qrData,shipBadge,lines:buildLines()})}>🖨️ Print Label (4×6)</button>
                   <button className="btn btn-sm btn-secondary" style={{fontSize:11}} onClick={async()=>{try{await downloadQrSheet({id:pickId,qrData,shipBadge,title:t.cName||t.soId,subtitle:t.soId,totalUnits:grandNeed,items:pickItems.map(pi=>({sku:pi.sku||'',name:pi.name||'',color:pi.color||'',units:pi.needsPull,sizes:pi.szKeys.map(sz=>sz+': '+(pi.sizes[sz]||0)).join('  ')}))});nf('Pick ticket downloaded')}catch(err){nf('Download failed: '+err.message,'error')}}}>⬇️ Download (PDF)</button>
@@ -17078,7 +17083,7 @@ export default function App(){
                       <button className="btn btn-sm btn-secondary" style={{fontSize:10,padding:'3px 8px'}} disabled={boxUnits===0} title="Print 4×6 box label" onClick={()=>{
                         const _sb=shipDest==='ship_customer'?{text:'SHIP TO CUSTOMER',color:'#3b82f6',bg:'#eff6ff'}:shipDest==='ship_deco'?{text:'SHIP TO DECO'+(activePick?.deco_vendor?' — '+activePick.deco_vendor:''),color:'#d97706',bg:'#fffbeb'}:null;
                         const _items=(box.items||[]).map(it2=>{const sz=Object.entries(it2.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it2.sku||'')+' '+(it2.name||'')).trim(),detail:[(it2.color&&it2.color!=='—')?it2.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
-                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',rep:t.rep&&t.rep!=='—'?'Rep: '+t.rep:'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
+                        printQrLabel({code:pickId,qrData:window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(pickId),program:t.cName||'',memo:t.so?.memo||'',rep:t.rep&&t.rep!=='—'?'Rep: '+t.rep:'',subtitle:[t.soId,boxes.length>1?('Box '+(bi+1)+' of '+boxes.length):''].filter(Boolean).join(' · '),shipBadge:_sb,items:_items,codeSub:boxUnits+' units · scan to open IF'});
                       }}>🖨️ Label</button>
                       {boxes.length>1&&<button style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:14,fontWeight:700}}
                         onClick={()=>{const b=[...boxes];b.splice(bi,1);setBoxes(b)}}>×</button>}
@@ -17637,16 +17642,19 @@ export default function App(){
                     const _mkItems=(arr)=>(arr||[]).map(it=>{const sz=Object.entries(it.sizes||{}).filter(([,v])=>v>0);const q=sz.reduce((a,[,v])=>a+v,0);return{title:((it.sku||'')+' '+(it.name||'')).trim(),detail:[(it.color&&it.color!=='—')?it.color:'',q+' units'].filter(Boolean).join(' · '),sizes:sz.map(([s,v])=>s+': '+v).join('  ')}});
                     const _pName=(sid,fb)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);return (cc&&cc.name)||fb||''};
                     const _pRep=(sid)=>{const so=sid&&sos.find(s=>s.id===sid);const cc=so&&cust.find(x=>x.id===so.customer_id);const r=REPS.find(rr=>rr.id===((cc&&cc.primary_rep_id)||(so&&so.created_by)));return r&&r.name?'Rep: '+r.name.split(' ')[0]:''};
+                    // SO memo — printed under the program so the check-in bench can tell
+                    // two live orders for the same team apart without opening the SO.
+                    const _pMemo=(sid)=>{const so=sid&&sos.find(s=>s.id===sid);return (so&&so.memo)||''};
                     if(batchMatch&&batchMatch.source_pos&&batchMatch.source_pos.length>1){
                       const n=batchMatch.source_pos.length;
-                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
+                      printQrLabels(batchMatch.source_pos.map((sp,spi)=>({code:poId,qrData:_scanUrl,program:_pName(sp.so_id,sp.customer),memo:_pMemo(sp.so_id),rep:_pRep(sp.so_id),subtitle:[sp.so_id,'Box '+(spi+1)+' of '+n].filter(Boolean).join(' · '),note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(sp.items),codeSub:'scan to open '+poId})));
                     } else {
                       const _rcv=justReceived.length>0?justReceived:poItems.map(it=>({sku:it.sku,name:it.name,color:it.color,sizes:it.ordered,soId:it.soId}));
                       const _sid=soIds.length===1?soIds[0]:'';
-                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
+                      const _poLabel={code:poId,qrData:_scanUrl,program:_pName(_sid,custNames.length===1?custNames[0]:''),memo:_pMemo(_sid),rep:_pRep(_sid),subtitle:_sid||vendorName||'',note:'RECEIVED — '+_rDate,noteStyle:'color:#166534',items:_mkItems(_rcv),codeSub:totalQtyReceived+' units · scan to open PO'};
                       // Box tracking v1: the received goods get a kind='receiving' box (source_refs=[{PO}])
                       // and a SCANNABLE plate label; falls back to the PO-scan label above when boxes aren't deployed.
-                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
+                      receiveBoxAndPrint({poId,soId:_sid,lines:_rcv,program:_pName(_sid,custNames.length===1?custNames[0]:''),memo:_pMemo(_sid),rep:_pRep(_sid),printFallback:()=>printQrLabel(_poLabel)});
                     }
                     setWhRecvPO(null)}
                   else{const allAlreadyDone=totalOpen<=0;nf(allAlreadyDone?'All items on '+poId+' already fully received':'Enter at least one quantity to receive','error')}
@@ -20063,6 +20071,12 @@ export default function App(){
     });
 
     // ─── Shared helpers ───
+    // Every art write below targets the card's whole split family, not one job id. The slices
+    // share one artwork by construction, so an approval, a mockup send, an artist assignment or a
+    // rejection that landed on only one of them left the other stranded in an earlier column —
+    // and the artist redid work that was already done. Cards that aren't a family resolve to just
+    // their own id, so this is a no-op everywhere else.
+    const _inFam=(j,jj)=>!!jj&&artFamilyIds(j).includes(jj.id);
     const moveArtStatus=(j,newStatus)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return false;
       if(newStatus==='art_complete'){
@@ -20081,7 +20095,7 @@ export default function App(){
       }
       const currentJobs=buildJobs(so);
       const updatedJobs=currentJobs.map(jj=>{
-        if(jj.id!==j.id)return jj;
+        if(!_inFam(j,jj))return jj;
         const upd={...jj,art_status:newStatus,assigned_artist:jj.assigned_artist||j.assigned_artist};
         // Any forward move supersedes a prior coach rejection — clear the flag in the SAME write so the
         // workboard status and coach_rejected stay consistent (rejections[] keeps the history). Leaving
@@ -20116,7 +20130,7 @@ export default function App(){
     const setArtHidden=(j,hidden)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
-      const updJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_hidden:!!hidden}:jj);
+      const updJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,art_hidden:!!hidden}:jj);
       savSO({...so,jobs:updJobs});
       nf(hidden?'Job hidden from workboard':'Job restored to workboard');
     };
@@ -20126,7 +20140,7 @@ export default function App(){
       // Keep the open art request pointing at the same artist as assigned_artist — the artist
       // board matches on either, and letting them diverge is how jobs go invisible.
       const _artistName=REPS.find(r=>r.id===artistId)?.name||'';
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,assigned_artist:artistId,
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,assigned_artist:artistId,
         art_requests:(jj.art_requests||[]).map(r=>r.status==='requested'||r.status==='in_progress'?{...r,artist:artistId,artist_name:_artistName}:r)}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Assigned to '+(_artistName||'Unassigned'));
@@ -20135,7 +20149,7 @@ export default function App(){
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const rejection={by:cu.name,at:new Date().toISOString(),reason};
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,art_status:'art_in_progress',rejections:[...(jj.rejections||[]),rejection]}:jj);
       const updArt=safeArt(so).map(a=>a.id===j.art_file_id?{...a,status:'waiting_for_art'}:a);
       savSO({...so,jobs:updatedJobs,art_files:updArt});
       nf('Art rejected — sent back to artist');
@@ -20143,7 +20157,7 @@ export default function App(){
     const updateArtRequest=(j,updates)=>{
       const so=sos.find(s=>s.id===j.soId);if(!so)return;
       const currentJobs=buildJobs(so);
-      const updatedJobs=currentJobs.map(jj=>jj.id===j.id?{...jj,...updates}:jj);
+      const updatedJobs=currentJobs.map(jj=>_inFam(j,jj)?{...jj,...updates}:jj);
       savSO({...so,jobs:updatedJobs});
       nf('Art request updated');
     };
@@ -20163,19 +20177,28 @@ export default function App(){
     // Embroidery/DTF jobs that have been approved are owned by the rep/CSR (upload DST+PDF or order films),
     // not the artist — drop them off the artist board once they reach the production-files step.
     const _repOwnsProdStep=(j)=>j.art_status==='order_dtf_transfers'||j.art_status==='upload_emb_files'||(j.art_status==='production_files_needed'&&['embroidery','dtf','heat_press'].includes(j.artFile?.deco_type||j.deco_type));
-    const artistJobs=filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j));
+    // ─── Split families are ONE piece of art ───
+    // A split partitions one decoration's units across a parent and its slices; every slice keeps
+    // the parent's artwork, so the artist draws one design, sends one mockup and needs one
+    // approval. Collapse each family to a single card (least-advanced member represents it, so the
+    // card sits in the column that still has work) and let the art actions below write to every
+    // member — two cards meant the same design was drawn and approved twice, and the halves drifted.
+    const _ART_COL_RANK={waiting_for_art:0,needs_approval:1,approved:2,art_complete:3};
+    const _artColRank=j=>{const r=_ART_COL_RANK[getArtFileStatus(j)];return r==null?9:r};
+    const _famed=list=>consolidateArtFamilies(list,_artColRank);
+    const artistJobs=_famed(filtered.filter(j=>j.art_status!=='art_complete'&&j.art_status!=='needs_art'&&!j.art_hidden&&!_repOwnsProdStep(j)));
     // In Production: art complete but decoration not finished yet
-    const inProductionJobs=filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden);
+    const inProductionJobs=_famed(filtered.filter(j=>j.art_status==='art_complete'&&!['completed','shipped'].includes(j.prod_status)&&!j.art_hidden));
     // Hidden: jobs the artist has hidden from the workboard (booking orders, far-out items, etc.)
-    const hiddenArtJobs=filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status));
+    const hiddenArtJobs=_famed(filtered.filter(j=>j.art_hidden&&!['completed','shipped'].includes(j.prod_status)));
     // Completed: art complete AND decoration done (completed/shipped) — reference for artists
-    const completedArtJobs=allArtJobs.filter(j=>{
+    const completedArtJobs=_famed(allArtJobs.filter(j=>{
       if(j.art_status!=='art_complete'||!['completed','shipped'].includes(j.prod_status))return false;
       if(artCompletedSearch){const s=artCompletedSearch.toLowerCase();
         if(!(j.customer||'').toLowerCase().includes(s)&&!(j.art_name||'').toLowerCase().includes(s)&&
           !(j.soId||'').toLowerCase().includes(s)&&!(j.id||'').toLowerCase().includes(s))return false}
       return true;
-    });
+    }));
     const artistCols=[
       {id:'waiting_for_art',label:'Waiting for Art',color:'#dc2626',bg:'#fef2f2',desc:'Needs artist attention'},
       {id:'needs_approval',label:'Needs Approval',color:'#92400e',bg:'#fef3c7',desc:'Waiting for rep/customer approval'},
@@ -20192,6 +20215,8 @@ export default function App(){
       const artist=REPS.find(r=>r.id===j.assigned_artist);
       const af=j.artFile;
       const cardKey=j.id+j.soId+view;
+      // Split family this card stands for (null when it's just the one job) — see consolidateArtFamilies.
+      const _fam=(j._famMembers||[]).length>1?j._famMembers:null;
       const isExp=expandedArtCard===cardKey;
       const openDetails=()=>{setArtJobDetailModal(j);setArtJobDetailMsg('');setArtJobDetailEditColors(null);setArtJobDetailEditCW(null);setArtJobDetailApprovalMsg('')};
       return<div key={cardKey} className="card" style={{marginBottom:6,border:urgent?'2px solid #dc2626':'1px solid #e2e8f0',borderRadius:8,overflow:'hidden'}}>
@@ -20207,7 +20232,11 @@ export default function App(){
             {af&&(()=>{const fSt=(j.coach_rejected&&(j.art_status==='art_requested'||j.art_status==='art_in_progress'))?'changes_requested':getArtFileStatus(j);return<span style={{padding:'1px 5px',borderRadius:6,fontSize:8,fontWeight:700,background:ART_FILE_SC[fSt]?.bg||'#f1f5f9',color:ART_FILE_SC[fSt]?.c||'#64748b',flexShrink:0,whiteSpace:'nowrap'}}>{ART_FILE_LABELS[fSt]||fSt}</span>})()}
           </div>
           <div style={{display:'flex',alignItems:'center',gap:4,minWidth:0}}>
-            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {j.total_units}u</span>
+            <span style={{fontSize:10,color:'#64748b',flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{j.deco_type?.replace(/_/g,' ')} · {j.id} · {j.soId} · {_fam?j._famUnits:j.total_units}u</span>
+            {/* Split family — one artwork across several jobs. Its own non-truncating chip (like the
+                rep chip) so the artist can see at a glance that this card covers more than one job
+                number and that the units shown are the family's combined total. */}
+            {_fam&&<span style={{fontSize:9,fontWeight:700,color:'#6d28d9',background:'#f5f3ff',padding:'1px 6px',borderRadius:4,flexShrink:0,whiteSpace:'nowrap'}} title={'Same artwork on '+_fam.length+' split jobs: '+_fam.map(m=>m.id+' · '+m.total_units+'u').join(', ')+'.\nArt requests, mockups and approvals on this card apply to all of them.'}>✂️ {_fam.length} jobs</span>}
             {/* Sales rep this order is for — its own non-truncating chip so it survives on a narrow
                 column instead of being the first token ellipsed off the shared meta line above.
                 The artist asked to see who each job belongs to; this is that answer at a glance. */}
@@ -20217,6 +20246,13 @@ export default function App(){
         </div>
         {/* EXPANDED — full details + actions. Collapsed by default, mirrors production board UX. */}
         {isExp&&<div style={{padding:'6px 10px 10px',borderTop:'1px solid #e2e8f0'}}>
+          {/* Split family roll-up — the artist needs to know this one design covers several job
+              numbers (and how the units divide) before drawing it or sending it for approval. */}
+          {_fam&&<div style={{marginBottom:4,padding:'3px 6px',background:'#f5f3ff',borderRadius:4,border:'1px solid #ddd6fe'}}>
+            <div style={{fontSize:9,fontWeight:700,color:'#6d28d9'}}>✂️ One artwork · {_fam.length} split jobs · {j._famUnits}u total</div>
+            <div style={{fontSize:9,color:'#5b21b6'}}>{_fam.map(m=>m.id+' ('+m.total_units+'u)').join(' · ')}</div>
+            <div style={{fontSize:8,color:'#7c3aed'}}>These were split off each other, so the art is identical — everything on this card applies to all of them.</div>
+          </div>}
           {af&&(()=>{const genMocks=(af.mockup_files||af.files||[]).length;const itemMocks=Object.values(af.item_mockups||{}).reduce((a,arr)=>a+(arr||[]).length,0);const totalMocks=Math.max(genMocks,itemMocks);const proofN=totalMocks===0?artProofFallback(af).length:0;
             return<div style={{marginBottom:4}}>
             {totalMocks>0&&<div style={{fontSize:9,color:'#166534',fontWeight:700,padding:'1px 5px',background:'#dcfce7',borderRadius:3,display:'inline-block',marginBottom:2}}>{totalMocks} mockup{totalMocks!==1?'s':''} uploaded</div>}
@@ -20286,7 +20322,7 @@ export default function App(){
                 if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
                 if(!_confirmResendIfRejected(j))return;
                 const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-                const updJobs=buildJobs(so2).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+                const updJobs=buildJobs(so2).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
                 const updArt3=safeArt(so2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
                 savSO({...so2,art_files:updArt3,jobs:updJobs});
                 nf('Mockup sent to rep for approval')}}>Send to Rep</button>}
@@ -20918,7 +20954,7 @@ export default function App(){
               if(missing.length>0){nf('Cannot send for approval — mockups missing for: '+missing.join(', '),'error');return}
               if(!_confirmResendIfRejected(j))return;
               const sysMsg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
-              const updJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
+              const updJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_messages:[...(jj.art_messages||[]),sysMsg],art_status:'waiting_approval',coach_rejected:false,assigned_artist:jj.assigned_artist||j.assigned_artist,sent_to_coach_at:null,_coach_cleared:true}:jj);
               const updArt=safeArt(liveSO).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a);
               savSO({...liveSO,art_files:updArt,jobs:updJobs});
               setArtMockupModal(null);
@@ -21130,7 +21166,7 @@ export default function App(){
               // Update the job's art_file_id if it was null
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             // Refresh modal with updated data
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
@@ -21185,7 +21221,7 @@ export default function App(){
               updArt=[...existingArt,newAf];
               if(!j.art_file_id)j.art_file_id=newArtFileId;
             }
-            const updatedJobs=buildJobs(liveSO).map(jj=>jj.id===j.id?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
+            const updatedJobs=buildJobs(liveSO).map(jj=>_inFam(j,jj)?{...jj,art_file_id:j.art_file_id,art_status:jj.art_status==='needs_art'||jj.art_status==='art_requested'?'art_in_progress':jj.art_status}:jj);
             const newSO=savSO({...liveSO,art_files:updArt,jobs:updatedJobs});
             const updatedAf=updArt.find(a=>a.id===j.art_file_id);
             setArtJobDetailModal({...j,artFile:updatedAf,art_status:updatedJobs.find(jj=>jj.id===j.id)?.art_status||j.art_status});
@@ -21303,7 +21339,7 @@ export default function App(){
           const msg={id:'AM-'+Date.now(),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:artJobDetailMsg.trim(),ts:new Date().toISOString()};
           const updatedMsgs=[...artMessages,msg];
           const liveSO2=sos.find(s=>s.id===(j.soId||so.id))||so;
-          const updatedJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:updatedMsgs}:jj);
+          const updatedJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:updatedMsgs}:jj);
           savSO({...liveSO2,jobs:updatedJobs});
           setArtJobDetailModal({...j,art_messages:updatedMsgs});
           // Also post as a regular SO message so it shows on Messages tab and rep dashboard
@@ -21338,7 +21374,7 @@ export default function App(){
           }
           const sysMsg={id:'AM-'+(Date.now()+1),from_id:cu.id,from_name:cu.name,from_role:cu.role,text:'Mockup sent to rep for approval',ts:new Date().toISOString(),is_system:true};
           msgs.push(sysMsg);
-          const updJobs=buildJobs(liveSO2).map(jj=>jj.id===j.id?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
+          const updJobs=buildJobs(liveSO2).map(jj=>_inFam(j,jj)?{...jj,art_messages:msgs,art_status:'waiting_approval',coach_rejected:false,sent_to_coach_at:null,_coach_cleared:true}:jj);
           savSO({...liveSO2,art_files:safeArt(liveSO2).map(a=>a.id===j.art_file_id?{...a,status:'needs_approval'}:a),jobs:updJobs});
           setArtJobDetailModal(null);
           setArtJobDetailApprovalMsg('');

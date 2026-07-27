@@ -75,9 +75,10 @@ export const mergeSourceRefs = (a, b) =>
 
 // 4×6 label object for printQrLabel/downloadQrLabel (utils.js zones shape).
 // Meta line renders as: BX-2001 · IF-1071 · PULLED — 6/16 (code + note);
-// team stays the big program line, SO# the subtitle — unchanged from the
-// merged label design. QR encodes the plate: <scanBase>?scan=BX-2001.
-export const buildBoxLabel = (box, { program = '', rep = '', scanBase = '', dateStr } = {}) => {
+// team stays the big program line, SO# the subtitle, and the SO memo (when the
+// caller resolves one) sits under the team. QR encodes the plate:
+// <scanBase>?scan=BX-2001.
+export const buildBoxLabel = (box, { program = '', memo = '', rep = '', scanBase = '', dateStr } = {}) => {
   const st = BOX_STATUS_META[box?.status]?.label || box?.status || 'Staged';
   const when = dateStr || new Date(box?.updated_at || Date.now()).toLocaleDateString();
   const items = (box?.contents || []).map((e) => {
@@ -93,6 +94,7 @@ export const buildBoxLabel = (box, { program = '', rep = '', scanBase = '', date
     code: box?.id || '',
     qrData: scanBase ? scanBase + '?scan=' + encodeURIComponent(box?.id || '') : (box?.id || ''),
     program,
+    memo: memo || '',
     rep: rep ? 'Rep: ' + rep : '',
     subtitle: box?.so_id || '',
     note: [box?.if_id, st.toUpperCase() + ' — ' + when].filter(Boolean).join(' · '),

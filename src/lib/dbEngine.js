@@ -1704,14 +1704,21 @@ const _dbSaveSOInner = async (so) => {
         // (sent_to_coach_at, coach_approved_at, coach_rejected, follow_up_*) with it. PGRST204 names
         // the missing column — drop just that one and retry, bounded; the strip-all fallback only
         // remains for an unparseable error.
-        let _rows=jobRows;
-        for(let _a=0;_a<4&&jobErr&&_isSchemaErr(jobErr);_a++){
+        // Budget note: so_jobs is currently missing FOUR columns the client sends on every save
+        // (_draft, priced_separately, price_override, split_group), so a budget of 4 left no
+        // headroom — one more unknown column and the strip-all fallback below fires, silently
+        // dropping split_open (which mis-orders split-family receipt apportioning, SO-1462) along
+        // with the coach/follow-up flags. Keep the budget comfortably above the known gap.
+        let _rows=jobRows;const _stripped=[];
+        for(let _a=0;_a<8&&jobErr&&_isSchemaErr(jobErr);_a++){
           const _m=(jobErr.message||'').match(/'([^']+)' column/)||(jobErr.message||'').match(/column "([^".]+)"/);
           if(!_m||!_rows.some(r=>_m[1] in r))break;
+          _stripped.push(_m[1]);
           console.warn('[DB] so_jobs: column',_m[1],'missing in schema — retrying without it');
           _rows=_rows.map(r=>{const{[_m[1]]:_x,...cr}=r;return cr});
           ({error:jobErr}=await supabase.from('so_jobs').upsert(_rows,{onConflict:'so_id,id'}));
         }
+        if(!jobErr&&_stripped.length)console.warn('[DB] so_jobs saved without unknown column(s):',_stripped.join(', '));
         if(jobErr&&_isSchemaErr(jobErr)){
           const coreRows=jobRows.map(r=>{const cr={};Object.keys(r).forEach(k=>{if(!_jobExtraCols.has(k))cr[k]=r[k]});return cr});
           ({error:jobErr}=await supabase.from('so_jobs').upsert(coreRows,{onConflict:'so_id,id'}));

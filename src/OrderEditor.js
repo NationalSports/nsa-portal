@@ -9250,7 +9250,13 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         if(!j)return<div className="card"><div className="card-body"><button className="btn btn-sm btn-secondary" onClick={()=>setSelJob(null)}><Icon name="back" size={12}/> Back to Jobs</button><div style={{padding:20,color:'#94a3b8'}}>Job not found</div></div></div>;
         const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';
         const canOverride=cu.role==="admin"||cu.role==="production"||cu.role==="prod_manager"||cu.role==="gm";
-        const pct=j.total_units>0?Math.round(j.fulfilled_units/j.total_units*100):0;
+        // Live allocation, same as the jobs list — otherwise clicking a row that reads 37/37 opened
+        // a detail header still reading its stored 40/40. itemDetails below already derives its
+        // per-size chips live, so this also keeps the header agreeing with the grid under it.
+        const _dAl=_jobAllocs[ji]||{};
+        const dTot=safeNum(_dAl.total)||safeNum(j.total_units);
+        const dFul=_dAl.total>0?safeNum(_dAl.fulfilled):safeNum(j.fulfilled_units);
+        const pct=dTot>0?Math.round(dFul/dTot*100):0;
         const artF=safeArt(o).find(a=>a.id===j.art_file_id);
         const allArtFiles=(j._art_ids||[j.art_file_id].filter(Boolean)).map(aid=>safeArt(o).find(a=>a.id===aid)).filter(Boolean);
         // Get full size breakdowns per item — split jobs carry per-item sizes/fulSizes overrides.
@@ -9444,7 +9450,7 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                 })()}
               </div>
               <div style={{textAlign:'right'}}>
-                <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{j.fulfilled_units}/{j.total_units}</div>
+                <div style={{fontSize:24,fontWeight:800,color:pct>=100?'#166534':'#1e40af'}}>{dFul}/{dTot}</div>
                 <div style={{width:80,background:'#e2e8f0',borderRadius:4,height:6,marginTop:4}}><div style={{height:6,borderRadius:4,background:pct>=100?'#22c55e':pct>0?'#f59e0b':'#e2e8f0',width:pct+'%'}}/></div>
                 <div style={{fontSize:10,color:'#64748b',marginTop:2}}>{pct}% fulfilled</div>
               </div>
@@ -10145,12 +10151,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   setSelJob(null);
                   setJobWizard({groups:[group],scopeJobId:j.id});
                 }}>🎨 Set up job</button>}
-                {(j.items||[]).length>0&&j.total_units>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
+                {(j.items||[]).length>0&&dTot>1&&<button className="btn btn-sm" style={{background:'#7c3aed',color:'white',fontSize:10}} onClick={()=>setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}>✂️ Split Job</button>}
                 <button className="btn btn-sm btn-secondary" onClick={()=>{
                   const w=window.open('','_blank','width=700,height=900');
                   w.document.write('<html><head><title>'+j.id+' — '+j.art_name+'</title><style>body{font-family:sans-serif;padding:24px;font-size:13px}h1{font-size:20px;margin:0 0 4px}h2{font-size:14px;margin:16px 0 8px;border-bottom:1px solid #ccc;padding-bottom:4px}table{width:100%;border-collapse:collapse;margin:8px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:center;font-size:12px}th{background:#f0f0f0;font-weight:700}.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:700}.info{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0}.info div{padding:8px;background:#f8f8f8;border-radius:4px}.label{font-size:10px;color:#666;font-weight:600;text-transform:uppercase}@media print{body{padding:12px}}</style></head><body>');
                   w.document.write('<h1>'+j.id+' — '+j.art_name+'</h1>');
-                  w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+j.total_units+' total units</p>');
+                  w.document.write('<p>'+j.deco_type?.replace(/_/g,' ')+' · '+(j.positions||'').replace(/^,\s*/,'')+' · '+dTot+' total units</p>');
                   w.document.write('<p>SO: '+o.id+' — '+(o.memo||'')+'</p>');
                   // Run-together siblings — only those checked in and ready to run right now, so the
                   // press only sees jobs it can actually put on this screen setup today.
@@ -10161,12 +10167,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   const _pidOf=s=>{const c=(allCustomers||[]).find(x=>x.id===s.customer_id);return c?.parent_id||c?.id||null};
                   const _sibs=[];
                   if(_gk)(allOrders||[]).forEach(s=>{if(!_famIds.has(s.customer_id))return;const src=s.id===o.id?o:s;safeJobs(src).forEach(jj=>{if(s.id===o.id&&jj.id===j.id)return;if(jobGroupKey(jj,_pidOf(s))!==_gk)return;if(!isJobReady(jj,src))return;_sibs.push({soId:s.id,cust:_cn(s.customer_id),qty:jj.total_units,manual:!!jj.link_group})})});
-                  if(_sibs.length){const _scrTot=j.total_units+_sibs.reduce((a,s)=>a+s.qty,0);w.document.write('<div style="margin:8px 0;padding:8px 10px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+_scrTot+' units total)</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>')}
+                  if(_sibs.length){const _scrTot=dTot+_sibs.reduce((a,s)=>a+s.qty,0);w.document.write('<div style="margin:8px 0;padding:8px 10px;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px"><div style="font-size:11px;font-weight:700;color:#3730a3">🔗 Runs together — reuse one screen setup ('+_scrTot+' units total)</div><ul style="margin:4px 0 0;padding-left:18px;font-size:12px">'+_sibs.map(s=>'<li>'+s.soId+' · '+s.cust+' — '+s.qty+' units'+(s.manual?'':' (matched by art)')+'</li>').join('')+'</ul></div>')}
                   // Mockup image at top
                   const _jsMocks=[...(artF?.mockup_files||artF?.files||[]),...Object.values(artF?.item_mockups||{}).flat()].filter(f=>f);
                   const _jsMockUrl=(()=>{for(const f of _jsMocks){const u=typeof f==='string'?f:(f?.url||'');if(_isImgUrl(u,f))return u;const pt=_isPdfUrl(u,f)?_cloudinaryPdfThumb(u):null;if(pt)return pt}return itemDetails.find(gi=>gi.image_url&&_isImgUrl(gi.image_url))?.image_url||null})();
                   if(_jsMockUrl){w.document.write('<div style="text-align:center;margin:12px 0;padding:16px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px"><img src="'+_jsMockUrl+'" style="max-width:100%;max-height:350px;object-fit:contain;border-radius:6px"/><div style="font-size:10px;color:#666;margin-top:4px">Mockup Preview</div></div>')}
-                  w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[jItemStatus(j)]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+j.fulfilled_units+'/'+j.total_units+' ('+pct+'%)</div></div>');
+                  w.document.write('<div class="info"><div><div class="label">Art Status</div>'+artLabels[j.art_status]+'</div><div><div class="label">Item Status</div>'+itemLabels[jItemStatus(j)]+'</div><div><div class="label">Production</div>'+prodLabels[j.prod_status]+'</div><div><div class="label">Fulfilled</div>'+dFul+'/'+dTot+' ('+pct+'%)</div></div>');
                   if(artF){w.document.write('<h2>Art Details</h2><div class="info"><div><div class="label">Deco Type</div>'+(artF.deco_type?.replace(/_/g,' ')||'—')+'</div><div><div class="label">Art Size</div>'+(artF.art_size||'—')+'</div><div><div class="label">Ink Colors</div>'+(artF.ink_colors||'—')+'</div><div><div class="label">Thread Colors</div>'+(artF.thread_colors||'—')+'</div></div>')}
                   w.document.write('<h2>Items & Sizes</h2>');
                   itemDetails.forEach(gi=>{
@@ -11125,6 +11131,10 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const allItems=[...(target.items||[])];
             [...sel.slice(1),..._extraIdxs].forEach(ji=>{const mj=jobs[ji];if(mj)allItems.push(...(mj.items||[]))});
             const mergeItems=_mergeJobItems(allItems);
+            // Seed only — recalcJobFulfillment below re-derives both from live sizes/receipts.
+            // _mergeJobItems sums the constituents' STORED gi.units/gi.fulfilled, which are
+            // build-time snapshots that only refresh on a receive/pull, so merging two jobs
+            // carrying drifted lines used to persist their drift as the merged job's total.
             const mergeUnits=mergeItems.reduce((a,gi)=>a+safeNum(gi.units),0);
             const mergeFulfilled=mergeItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);
             // Art + approvals SURVIVE the merge. Carry every design across the merged jobs
@@ -11147,7 +11157,12 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
               art_requests:_as.art_requests,art_messages:_as.art_messages,sent_history:_as.sent_history,rejections:_as.rejections,
               ..._coachFields,_merged:true,split_from:null,priced_separately:false,price_override:null};
             const removeIdxs=new Set([...sel.slice(1),..._extraIdxs]);const newJobs=jobs.map((j,i)=>i===sel[0]?merged:j).filter((j,i)=>!removeIdxs.has(i));
-            const updated=stampSplitRuns({...o,jobs:newJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
+            // Re-derive units/receipts from the live line items — same step splitBySku takes, and
+            // for the same reason: merged jobs are preserved verbatim by the job sync, so a stale
+            // snapshot baked in here would never self-heal. Runs on the POST-filter array so the
+            // absorbed slices are already gone and the merged job is its own clean split family.
+            const recalcedMerged=recalcJobFulfillment({...o,jobs:newJobs},safeItems(o));
+            const updated=stampSplitRuns({...o,jobs:recalcedMerged,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);setMergeMode(null);
             nf('Merged '+(sel.length+_extraIdxs.length)+' jobs into '+target.id);
           }}>Merge {mergeMode.selected.length} Selected</button>
           <button className="btn btn-sm btn-secondary" style={{fontSize:10}} onClick={()=>setMergeMode(null)}>Cancel</button></>})()}
@@ -11167,7 +11182,6 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
         {jobs.length>0&&<table style={{fontSize:12}}><thead><tr>{mergeMode&&<th style={{width:30}}></th>}<th>Job ID</th><th>Artwork / Decoration</th><th>Items</th><th>Units</th><th>Items Status</th><th>Art</th><th>Production</th><th></th></tr></thead><tbody>
           {_clustered.map(({j,oi})=>{const ji=oi;
             const canProduce=j.item_status==='items_received'&&j.art_status==='art_complete';const canOverride2=cu.role==='admin'||cu.role==='super_admin'||cu.role==='production'||cu.role==='prod_manager'||cu.role==='gm';
-            const canSplit=(j.items||[]).length>0&&j.total_units>1;
             // UNITS reads the LIVE family-apportioned allocation, not the stored scalars — same
             // source as the per-size chips on the sub-rows below and as the ITEMS STATUS badge
             // (jItemStatus). The stored snapshots only refresh when a receive/split runs, so a
@@ -11177,6 +11191,9 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
             const jTot=safeNum(_al.total)||safeNum(j.total_units);
             const jFul=_al.total>0?safeNum(_al.fulfilled):safeNum(j.fulfilled_units);
             const pct=jTot>0?Math.round(jFul/jTot*100):0;
+            // Gate the Split button on the live total too — a job drifted down to a stored 1 hid
+            // the button on a genuinely splittable job (and vice versa offered it on a 1-unit job).
+            const canSplit=(j.items||[]).length>0&&jTot>1;
             // Reused art still needing its mock confirmed for this garment — show "Check Mock"
             // instead of an "approved / complete" status in the list (mirrors the job detail).
             const _cm=(j.art_status==='art_complete'||PROD_FILES_STATUSES.includes(j.art_status))&&garmentsNeedingMockCheck(j,o,priorMocks).length>0;
@@ -11212,11 +11229,18 @@ function OrderEditor({order,mode,customer:ic,allCustomers,products,vendors:vendo
                   {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#6d28d9',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setArtReqModal({jIdx:ji,artist:_activeArtistId(j.assigned_artist||((j.art_requests||[]).slice(-1)[0]?.artist)),instructions:'',files:[]})}} title="Send a change straight to the artist — job stays in place; the new art needs approval again">Update</button>}
                   {(hasActiveReqs||(j.art_status&&j.art_status!=='needs_art'))&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#dc2626',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();_recallArt(ji,'Update')}} title="Pull the art back completely — use when the design/logo itself is changing">Recall</button>}</>})()}
                 {canSplit&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#7c3aed',color:'white',borderRadius:4,marginRight:3}} onClick={e=>{e.stopPropagation();setSplitModal({jIdx:ji,jobId:j.id,mode:null,selectedIdxs:[]})}} title="Split job">✂️ Split</button>}
-                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
+                {j.split_from&&<button className="btn btn-sm" style={{fontSize:9,padding:'2px 6px',background:'#1e40af',color:'white',borderRadius:4}} onClick={e=>{e.stopPropagation();const parentIdx=jobs.findIndex(pj=>pj.id===j.split_from);if(parentIdx<0){nf('Parent job '+j.split_from+' not found','error');return}const parent=jobs[parentIdx];const mergedItems=_mergeJobItems([...(parent.items||[]),...(j.items||[])]);
+// Seed only — recalcJobFulfillment below re-derives both from the live sizes/receipts (see the
+// Merge Jobs button); the summed gi.units/gi.fulfilled here are build-time snapshots.
+const mergedUnits=mergedItems.reduce((a,gi)=>a+safeNum(gi.units),0);const mergedFulfilled=mergedItems.reduce((a,gi)=>a+safeNum(gi.fulfilled),0);let updJobs=jobs.map((jj,i2)=>i2===parentIdx?{...jj,items:mergedItems,total_units:mergedUnits,fulfilled_units:mergedFulfilled}:jj).filter((_,i2)=>i2!==ji);
 // If the parent has no remaining split children it's one run again — drop the separate-pricing
 // flag so the design goes back to combined-tier billing (stampSplitRuns clears d.split_runs).
 if(!updJobs.some(jj=>jj.split_from===j.split_from))updJobs=updJobs.map(jj=>jj.id===j.split_from?{...jj,priced_separately:false,price_override:null}:jj);
-const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
+// Re-derive from live picks/receipts before persisting — the slice is already removed from
+// updJobs, so the reunited parent claims the full line again instead of inheriting the two
+// halves' summed snapshots.
+const recalcedBack=recalcJobFulfillment({...o,jobs:updJobs},safeItems(o));
+const updated=stampSplitRuns({...o,jobs:recalcedBack,updated_at:new Date().toLocaleString()}).order;setO(updated);onSave(updated);setDirty(false);nf('Merged back into '+j.split_from)}} title="Merge back into parent job">Merge Back</button>}
                 {j.priced_separately&&(()=>{const po=j.price_override;const _isAdm=cu?.role==='admin'||cu?.role==='super_admin';
                   if(po?.status==='approved')return<span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#f1f5f9',color:'#475569',marginLeft:3}} title={'Pricing override approved — design bills at the combined qty tier again. Approved by '+(po.approved_by||'admin')+(po.reason?'. Request reason: '+po.reason:'')}>$ Combined ✓</span>;
                   return<><span style={{fontSize:8,padding:'1px 5px',borderRadius:8,fontWeight:700,background:'#ede9fe',color:'#6d28d9',marginLeft:3}} title="Split jobs are separate press runs — this design is priced per run (each run bills at its own qty tier, blended into the line's per-piece price)">$ Split-priced</span>
@@ -11261,13 +11285,22 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
           const sizes=_giSizes(gi);
           const fulSizes=_fulSizes[gii]||{};
           const received=Object.values(fulSizes).reduce((a,v)=>a+safeNum(v),0);
-          return{...gi,sizes,fulSizes,received};
+          // units must come from the SAME size map the pickers below cap against, not the stored
+          // scalar — every "x total", "/ n splitting" and preview count in this modal reads it.
+          // A drifted snapshot showed "40 total · 37 received" on a garment with 37 sizes, and
+          // offered a denominator the size inputs could never reach. qty_only lines have no size
+          // grid (their count lives in gi.units), so fall back to the scalar there.
+          const units=Object.values(sizes).reduce((a,v)=>a+safeNum(v),0)||safeNum(gi.units);
+          return{...gi,sizes,fulSizes,received,units};
         });
         const totalReceived=items.reduce((a,gi)=>a+gi.received,0);
+        // Job total from the same per-line source, so the header and the "not-yet-received"
+        // maths agree with the rows underneath them.
+        const totalUnits=items.reduce((a,gi)=>a+safeNum(gi.units),0)||safeNum(j.total_units);
         return<div className="modal-overlay" onClick={()=>setSplitModal(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:600}}>
           <div className="modal-header"><h2>✂️ Split Job — {j.id}</h2><button className="modal-close" onClick={()=>setSplitModal(null)}>×</button></div>
           <div className="modal-body">
-            <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Choose how to split <strong>{j.art_name}</strong> ({j.total_units} total units, {totalReceived} received)</p>
+            <p style={{fontSize:13,color:'#64748b',marginBottom:12}}>Choose how to split <strong>{j.art_name}</strong> ({totalUnits} total units, {totalReceived} received)</p>
             <div style={{padding:'8px 10px',background:'#fffbeb',border:'1px solid #fde68a',borderRadius:8,fontSize:11,color:'#92400e',marginBottom:12}}>
               💲 <strong>Pricing:</strong> split jobs run as separate press runs, so this design will bill each run at its own quantity tier (blended into the line's per-piece price). If the split is the warehouse's fault, request a pricing override on the job afterwards — an admin can restore combined pricing.
             </div>
@@ -11276,7 +11309,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
             {!splitModal.mode&&<div style={{display:'flex',gap:12,flexDirection:'column'}}>
               <button className="btn" style={{padding:16,background:'#f0fdf4',border:'2px solid #86efac',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'received'}))}>
                 <div style={{fontWeight:800,fontSize:14,color:'#166534',marginBottom:4}}>📦 Split by Received Inventory</div>
-                <div style={{fontSize:12,color:'#475569'}}>Keeps the <strong>{totalReceived} received/pulled units</strong> on {j.id} (ready for production) and moves the {j.total_units-totalReceived} not-yet-received units to a new <strong>backorder</strong> job.</div>
+                <div style={{fontSize:12,color:'#475569'}}>Keeps the <strong>{totalReceived} received/pulled units</strong> on {j.id} (ready for production) and moves the {totalUnits-totalReceived} not-yet-received units to a new <strong>backorder</strong> job.</div>
                 {totalReceived===0&&<div style={{fontSize:11,color:'#dc2626',marginTop:4}}>⚠️ No units received yet — nothing to split</div>}
               </button>
               <button className="btn" style={{padding:16,background:'#eff6ff',border:'2px solid #93c5fd',borderRadius:12,textAlign:'left',cursor:'pointer'}} onClick={()=>setSplitModal(m=>({...m,mode:'sku',selectedSkus:[]}))}>
@@ -11297,9 +11330,9 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
                 <div><span style={{fontWeight:700,fontSize:12}}>{gi.sku}</span> <span style={{fontSize:12}}>{gi.name}</span> <span style={{color:'#94a3b8',fontSize:11}}>({gi.color})</span></div>
                 <div style={{textAlign:'right'}}><span style={{fontWeight:700,color:gi.received>0?'#166534':'#94a3b8'}}>{gi.received}</span><span style={{color:'#94a3b8'}}>/{gi.units}</span> <span style={{fontSize:10,color:'#64748b'}}>received</span></div>
               </div>)}
-              {totalReceived<j.total_units?<div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
+              {totalReceived<totalUnits?<div style={{padding:10,background:'#fef9c3',borderRadius:6,marginTop:8,fontSize:12}}>
                 <strong>Stays on {j.id}:</strong> {totalReceived} received units → Ready for Prod<br/>
-                <strong>New backorder job ({j.id}-S):</strong> {j.total_units-totalReceived} not-yet-received units → Waiting for items
+                <strong>New backorder job ({j.id}-S):</strong> {totalUnits-totalReceived} not-yet-received units → Waiting for items
               </div>:<div style={{padding:10,background:'#dcfce7',borderRadius:6,marginTop:8,fontSize:12,color:'#166534'}}>
                 Everything on this job is already received — there's no backorder to split off.
               </div>}
@@ -11329,7 +11362,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
               const ci=splitModal.customInclude||{};
               const _itemSplitQty=gi=>Object.entries(cs[gi.item_idx]||{}).reduce((a,[sz,v])=>a+(ci[gi.item_idx]?Math.min(safeNum(v),safeNum(gi.sizes[sz])):0),0);
               const totalSplit=items.reduce((a,gi)=>a+_itemSplitQty(gi),0);
-              const totalRemain=j.total_units-totalSplit;
+              const totalRemain=totalUnits-totalSplit;
               const _setSizes=(item_idx,upd)=>setSplitModal(m=>({...m,customSizes:{...m.customSizes,[item_idx]:{...(m.customSizes?.[item_idx]||{}),...upd}}}));
               const _toggleInclude=(item_idx,on)=>setSplitModal(m=>{
                 const next={...(m.customInclude||{}),[item_idx]:on};
@@ -11389,12 +11422,12 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
           <div className="modal-footer">
             {splitModal.mode&&<button className="btn btn-secondary" onClick={()=>setSplitModal(m=>({...m,mode:null}))}>← Back</button>}
             <button className="btn btn-secondary" onClick={()=>setSplitModal(null)}>Cancel</button>
-            {splitModal.mode==='received'&&totalReceived>0&&totalReceived<j.total_units&&<button className="btn btn-primary" onClick={()=>splitByReceived(_smIdx)}>✂️ Split Off Backorder ({j.total_units-totalReceived} units)</button>}
+            {splitModal.mode==='received'&&totalReceived>0&&totalReceived<totalUnits&&<button className="btn btn-primary" onClick={()=>splitByReceived(_smIdx)}>✂️ Split Off Backorder ({totalUnits-totalReceived} units)</button>}
             {splitModal.mode==='sku'&&(splitModal.selectedIdxs||[]).length>0&&(splitModal.selectedIdxs||[]).length<items.length&&<button className="btn btn-primary" onClick={()=>splitBySku(_smIdx,splitModal.selectedIdxs)}>✂️ Split Selected SKUs</button>}
             {splitModal.mode==='custom'&&(()=>{
               const cs=splitModal.customSizes||{};const ci=splitModal.customInclude||{};
               const ts=items.reduce((a,gi)=>a+Object.entries(cs[gi.item_idx]||{}).reduce((b,[sz,v])=>b+(ci[gi.item_idx]?Math.min(safeNum(v),safeNum(gi.sizes[sz])):0),0),0);
-              const tr=j.total_units-ts;
+              const tr=totalUnits-ts;
               if(!(ts>0&&tr>0))return null;
               // Build payload: only included items, capped per size.
               const payload={};items.forEach(gi=>{if(!ci[gi.item_idx])return;const out={};Object.entries(cs[gi.item_idx]||{}).forEach(([sz,v])=>{const want=Math.min(safeNum(v),safeNum(gi.sizes[sz]));if(want>0)out[sz]=want});if(Object.keys(out).length)payload[gi.item_idx]=out});
@@ -11591,7 +11624,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
     {receivedConfirm&&(()=>{
       const rc=receivedConfirm;
       const qrData=window.location.origin+window.location.pathname+'?scan='+encodeURIComponent(rc.poId);
-      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
+      const buildLines=()=>{const lines=[];if(rc.custName)lines.push({text:rc.custName,cls:'team'});if(o?.memo)lines.push({text:o.memo,cls:'memo'});{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}lines.push({text:rc.soId,cls:'so'});lines.push({text:'RECEIVED — '+rc.date,cls:'sub',style:'color:#166534;font-weight:800;'});rc.items.forEach(it=>{lines.push({text:(it.sku||'')+' '+(it.name||''),cls:'sku'});lines.push({text:(it.color||'')+' — '+it.qty+' units'});lines.push({text:Object.entries(it.sizes).map(([sz,v])=>sz+': '+v).join(' &nbsp; '),cls:'sz'})});if(rc.items.length>1)lines.push({text:'TOTAL: '+rc.totalQty+' units',cls:'sz'});return lines};
       return<div className="modal-overlay" onClick={()=>setReceivedConfirm(null)}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:560}}>
         <div className="modal-header"><h2>📦 Received — {rc.poId}</h2>
           <button className="modal-close" onClick={()=>setReceivedConfirm(null)}>x</button></div>
@@ -11655,6 +11688,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
       const buildLabelLines=()=>{
         const lines=[];
         if(cust?.name)lines.push({text:cust.name,cls:'team'});
+        if(o?.memo)lines.push({text:o.memo,cls:'memo'});
         {const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));if(_r&&_r.name)lines.push({text:'Rep: '+_r.name.split(' ')[0],cls:'rep'});}
         lines.push({text:o.id,cls:'so'});
         itemInfos.forEach(info=>{
@@ -12210,6 +12244,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
                   qrData:shQrData,
                   lines:[
                     {text:(cust?.name||o.id),cls:'team'},
+                    ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
                     ...(_shRep?[{text:_shRep,cls:'rep'}]:[]),
                     {text:o.id+' — Shipment #'+(si+1),cls:'so'},
                     {text:'Received: '+sh.date,cls:'sub',style:'color:#166534;font-weight:800;'},
@@ -12380,6 +12415,7 @@ const updated=stampSplitRuns({...o,jobs:updJobs,updated_at:new Date().toLocaleSt
             <button className="btn btn-sm btn-secondary" style={{marginTop:8,fontSize:11}} onClick={()=>{
               const lines=[
                 {text:(cust?.name||o.id),cls:'team'},
+                ...(o?.memo?[{text:o.memo,cls:'memo'}]:[]),
                 ...((()=>{const _r=REPS&&REPS.find(rr=>rr.id===(cust?.primary_rep_id||o?.created_by));return _r&&_r.name?[{text:'Rep: '+_r.name.split(' ')[0],cls:'rep'}]:[]})()),
                 {text:o.id,cls:'so'},
                 {text:(item?.sku||'')+' '+(item?.name||''),cls:'sku'},
